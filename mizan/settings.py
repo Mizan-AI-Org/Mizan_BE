@@ -3,31 +3,35 @@ from pathlib import Path
 from decouple import config
 from datetime import timedelta
 
+# ---------------------------
+# Base
+# ---------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
+GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'  
+GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'  
 
-# SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production!')
-
-# SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
-
 ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
-# Application definition
+# ---------------------------
+# Installed Apps
+# ---------------------------
 INSTALLED_APPS = [
+    # Django apps
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    
+
     # Third-party apps
     'rest_framework',
     'rest_framework_simplejwt',
     'corsheaders',
     'channels',
-    
+
     # Local apps
     'accounts',
     'scheduling',
@@ -35,20 +39,30 @@ INSTALLED_APPS = [
     'reporting',
 ]
 
-# CORRECTED MIDDLEWARE ORDER
+# ---------------------------
+# Middleware
+# ---------------------------
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',                      # MUST be first for CORS
     'django.middleware.security.SecurityMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',       # REQUIRED before auth
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',    # REQUIRED for admin
+    'django.contrib.messages.middleware.MessageMiddleware',       # REQUIRED for admin
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+# ---------------------------
+# URLs
+# ---------------------------
 ROOT_URLCONF = 'mizan.urls'
+WSGI_APPLICATION = 'mizan.wsgi.application'
+ASGI_APPLICATION = 'mizan.asgi.application'
 
+# ---------------------------
+# Templates
+# ---------------------------
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -57,7 +71,7 @@ TEMPLATES = [
         'OPTIONS': {
             'context_processors': [
                 'django.template.context_processors.debug',
-                'django.template.context_processors.request',
+                'django.template.context_processors.request',   # REQUIRED for admin
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
             ],
@@ -65,9 +79,9 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'mizan.wsgi.application'
-
-# Database
+# ---------------------------
+# Database (PostgreSQL)
+# ---------------------------
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -79,40 +93,41 @@ DATABASES = {
     }
 }
 
+# ---------------------------
 # Password validation
+# ---------------------------
 AUTH_PASSWORD_VALIDATORS = [
-    {
-        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
-    },
-    {
-        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
-    },
+    {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator'},
+    {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
 
+# ---------------------------
 # Internationalization
+# ---------------------------
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
-# Static files (CSS, JavaScript, Images)
+# ---------------------------
+# Static / Media files
+# ---------------------------
 STATIC_URL = '/static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
-# Media files (for staff photos)
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
+# ---------------------------
 # Default primary key field type
+# ---------------------------
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# REST Framework configuration
+# ---------------------------
+# REST Framework / JWT
+# ---------------------------
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
@@ -125,12 +140,11 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PARSER_CLASSES': [
         'rest_framework.parsers.JSONParser',
-        'rest_framework.parsers.MultiPartParser',  # For file uploads (photos)
+        'rest_framework.parsers.MultiPartParser',
         'rest_framework.parsers.FormParser',
     ],
 }
 
-# JWT Settings
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
@@ -138,7 +152,9 @@ SIMPLE_JWT = {
     'BLACKLIST_AFTER_ROTATION': True,
 }
 
-# CORS settings
+# ---------------------------
+# CORS Settings
+# ---------------------------
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:8080",
     "http://127.0.0.1:8080",
@@ -146,19 +162,9 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
 ]
 
-# Development CORS settings (REMOVE IN PRODUCTION)
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = True  # ⚠️ development only
 CORS_ALLOW_CREDENTIALS = True
-
-CORS_ALLOW_METHODS = [
-    'DELETE',
-    'GET',
-    'OPTIONS',
-    'PATCH',
-    'POST',
-    'PUT',
-]
-
+CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',
@@ -171,8 +177,9 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
-# Channels for WebSockets
-ASGI_APPLICATION = 'mizan.asgi.application'
+# ---------------------------
+# Channels (WebSockets)
+# ---------------------------
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
@@ -182,13 +189,17 @@ CHANNEL_LAYERS = {
     },
 }
 
-# Custom user model (you'll create this in accounts/models.py)
-# AUTH_USER_MODEL = 'accounts.CustomUser'
+# ---------------------------
+# Custom user model
+# ---------------------------
+AUTH_USER_MODEL = 'accounts.CustomUser'
 
-# Security settings for production (commented out for development)
+# ---------------------------
+# Security settings (production)
+# ---------------------------
 # CSRF_COOKIE_SECURE = True
 # SESSION_COOKIE_SECURE = True
 # SECURE_SSL_REDIRECT = True
-# SECURE_HSTS_SECONDS = 31536000  # 1 year
+# SECURE_HSTS_SECONDS = 31536000
 # SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 # SECURE_HSTS_PRELOAD = True
