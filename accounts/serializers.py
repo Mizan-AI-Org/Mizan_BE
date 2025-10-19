@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
-from .models import CustomUser, Restaurant, StaffProfile
-
+from .models import CustomUser, Restaurant, StaffProfile, StaffInvitation
+from django.contrib.auth.password_validation import validate_password
 class RestaurantSerializer(serializers.ModelSerializer):
     class Meta:
         model = Restaurant
@@ -15,12 +15,25 @@ class StaffProfileSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     profile = StaffProfileSerializer(read_only=True)
     restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
+    restaurant = RestaurantSerializer(read_only=True) # Nested serializer for restaurant details
     
     class Meta:
         model = CustomUser
-        fields = ('id', 'username', 'email', 'role', 'pin_code', 'restaurant', 
-                 'restaurant_name', 'phone', 'is_active', 'profile')
-        read_only_fields = ('pin_code',)
+        fields = ('id', 'email', 'first_name', 'last_name', 'role', 'restaurant', 
+                  'restaurant_name', 'phone', 'is_active', 'is_verified', 'created_at', 'profile')
+        read_only_fields = ('id', 'created_at',)
+        extra_kwargs = {'password': {'write_only': True}}
+        
+    def create(self, validated_data):
+        password = validated_data.pop('password', None)
+        user = CustomUser.objects.create_user(**validated_data, password=password)
+        return user
+
+class StaffInvitationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StaffInvitation
+        fields = '__all__'
+        read_only_fields = ('id', 'invited_by', 'restaurant', 'token', 'is_accepted', 'created_at', 'expires_at')
 
 class PinLoginSerializer(serializers.Serializer):
     pin_code = serializers.CharField(max_length=6)

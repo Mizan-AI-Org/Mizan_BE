@@ -21,10 +21,11 @@ from django.conf.urls.static import static
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/auth/', include('accounts.urls')),
-    path('api/scheduling/', include('scheduling.urls')),
-    path('api/timeclock/', include('timeclock.urls')),
     path('api/reporting/', include('reporting.urls')),
+    path('api/auth/', include('accounts.urls')),  # Auth endpoints
+    path('api/staff/', include('staff.urls')),    # Staff management
+    path('api/timeloss/', include('timeclock.urls')),  # Time tracking (using timeclock app)
+    path('api/schedule/', include('scheduling.urls')),  # Schedule (using scheduling app)
 ]
 
 if settings.DEBUG:

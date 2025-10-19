@@ -37,6 +37,7 @@ INSTALLED_APPS = [
     'scheduling',
     'timeclock',
     'reporting',
+    'staff',
 ]
 
 # ---------------------------
@@ -156,10 +157,10 @@ SIMPLE_JWT = {
 # CORS Settings
 # ---------------------------
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:8080",
-    "http://127.0.0.1:8080",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    "http://localhost:8080",  # React frontend
+    "http://127.0.0.1:8080",  # React frontend alternative
+    "http://localhost:8000",  # Django backend (for testing)
+    "http://127.0.0.1:8000",  # Django backend alternative
 ]
 
 CORS_ALLOW_ALL_ORIGINS = True  # ⚠️ development only
@@ -194,6 +195,18 @@ CHANNEL_LAYERS = {
 # ---------------------------
 AUTH_USER_MODEL = 'accounts.CustomUser'
 
+
+# Email Configuration
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'  # or your SMTP server
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'your-email@gmail.com'
+EMAIL_HOST_PASSWORD = 'your-app-password'
+DEFAULT_FROM_EMAIL = 'your-email@gmail.com'
+
+# For development - use console backend
+# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # ---------------------------
 # Security settings (production)
 # ---------------------------
