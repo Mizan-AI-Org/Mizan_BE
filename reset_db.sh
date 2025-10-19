@@ -26,6 +26,7 @@ psql -U macbookpro -c "CREATE USER mizan_user WITH PASSWORD 'mizan_password123';
 psql -U macbookpro -c "CREATE DATABASE mizan OWNER mizan_user;"
 
 echo "------------------------------------------"
+source venv/bin/activate
 echo "Applying migrations..."
 python manage.py makemigrations
 python manage.py migrate

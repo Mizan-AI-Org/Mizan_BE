@@ -1,4 +1,4 @@
-#!/Users/macbookpro/code/mizan-backend/venv/bin/python3
+#!/Users/macbookpro/code/Mizan_AI/mizan-backend/venv/bin/python3.12
 import sys
 from sqlparse.__main__ import main
 if __name__ == '__main__':

@@ -6,4 +6,6 @@ urlpatterns = [
     path('current/', views.current_schedule, name='current-schedule'),
     path('my-schedule/', views.my_schedule, name='my-schedule'),
     path('assign-shift/', views.assign_shift, name='assign-shift'),
+    
+    path('upcoming/', views.my_schedule, name='upcoming-shifts'),
 ]
