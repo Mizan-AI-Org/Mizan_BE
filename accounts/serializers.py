@@ -13,7 +13,7 @@ class StaffProfileSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 class UserSerializer(serializers.ModelSerializer):
-    profile = StaffProfileSerializer(read_only=True)
+    profile = StaffProfileSerializer(required=False)
     restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
     restaurant = RestaurantSerializer(read_only=True) # Nested serializer for restaurant details
     
@@ -25,8 +25,11 @@ class UserSerializer(serializers.ModelSerializer):
         extra_kwargs = {'password': {'write_only': True}}
         
     def create(self, validated_data):
+        profile_data = validated_data.pop('profile', None)
         password = validated_data.pop('password', None)
         user = CustomUser.objects.create_user(**validated_data, password=password)
+        if profile_data:
+            StaffProfile.objects.create(user=user, **profile_data)
         return user
 
 class StaffInvitationSerializer(serializers.ModelSerializer):
@@ -37,22 +40,30 @@ class StaffInvitationSerializer(serializers.ModelSerializer):
 
 class PinLoginSerializer(serializers.Serializer):
     pin_code = serializers.CharField(max_length=6)
-    latitude = serializers.FloatField()
-    longitude = serializers.FloatField()
+    latitude = serializers.FloatField(required=False, allow_null=True)
+    longitude = serializers.FloatField(required=False, allow_null=True)
+    image_data = serializers.CharField(required=False, allow_null=True)
     
     def validate(self, attrs):
         pin_code = attrs.get('pin_code')
         latitude = attrs.get('latitude')
         longitude = attrs.get('longitude')
         
-        try:
-            user = CustomUser.objects.get(pin_code=pin_code, is_active=True)
-        except CustomUser.DoesNotExist:
+        user = CustomUser.objects.filter(is_active=True, pin_code__isnull=False).first()
+        if not user or not user.check_pin(pin_code):
             raise serializers.ValidationError('Invalid PIN code')
         
         # Basic geofencing check (simplified)
         restaurant = user.restaurant
         # In production, implement proper geofencing logic here
+        if restaurant.latitude and restaurant.longitude and restaurant.geo_fence_radius:
+            from geopy.distance import geodesic
+            restaurant_coords = (restaurant.latitude, restaurant.longitude)
+            user_coords = (latitude, longitude)
+            distance = geodesic(restaurant_coords, user_coords).meters
+            
+            if distance > restaurant.geo_fence_radius:
+                raise serializers.ValidationError("You are not within the restaurant premises.")
         
         attrs['user'] = user
         return attrs

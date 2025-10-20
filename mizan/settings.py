@@ -3,6 +3,15 @@ from pathlib import Path
 from decouple import config
 from datetime import timedelta
 
+STAFF_ROLES_CHOICES = [
+    ('SUPER_ADMIN', 'Super Admin'),
+    ('ADMIN', 'Admin'),
+    ('MANAGER', 'Manager'), # Assuming Manager is also a role
+    ('CHEF', 'Chef'),
+    ('WAITER', 'Waiter'),
+    ('CLEANER', 'Cleaner'),
+    ('CASHIER', 'Cashier'),
+]
 # ---------------------------
 # Base
 # ---------------------------
@@ -38,7 +47,28 @@ INSTALLED_APPS = [
     'timeclock',
     'reporting',
     'staff',
+    'notifications',
+    'kitchen',
+    'chat',
+    'firebase_admin', # Add firebase_admin to INSTALLED_APPS
 ]
+
+# ---------------------------
+# Firebase Admin SDK Initialization
+# ---------------------------
+import json
+import firebase_admin
+from firebase_admin import credentials
+
+FIREBASE_SERVICE_ACCOUNT_KEY = config('FIREBASE_SERVICE_ACCOUNT_KEY', default='{}')
+
+if not firebase_admin._apps and FIREBASE_SERVICE_ACCOUNT_KEY != '{}':
+    try:
+        cred = credentials.Certificate(json.loads(FIREBASE_SERVICE_ACCOUNT_KEY))
+        firebase_admin.initialize_app(cred)
+        print("Firebase Admin SDK initialized successfully.")
+    except Exception as e:
+        print(f"Error initializing Firebase Admin SDK: {e}")
 
 # ---------------------------
 # Middleware

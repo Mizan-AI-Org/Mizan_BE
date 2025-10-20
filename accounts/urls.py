@@ -16,12 +16,13 @@
 # ]
 from django.urls import path
 from . import views
-from .views import RestaurantOwnerSignupView, LoginView, AcceptInvitationView
+from .views import RestaurantOwnerSignupView, LoginView, AcceptInvitationView, LogoutView
 
 urlpatterns = [
     # Auth endpoints
     path('signup/owner/', RestaurantOwnerSignupView.as_view(), name='owner-signup'),
     path('login/', LoginView.as_view(), name='login'),
+    path('logout/', LogoutView.as_view(), name='logout'),
     path('accept-invitation/', AcceptInvitationView.as_view(), name='accept-invitation'),
     
     # User management

@@ -1,133 +1,145 @@
-from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework import generics, status, permissions
+from rest_framework.views import APIView
 from rest_framework.response import Response
+from django.shortcuts import get_object_or_404
+from django.db.models import Sum, Count, F
 from django.utils import timezone
-from django.db.models import Sum, Count, Avg
 from datetime import timedelta
-from accounts.models import CustomUser
-from timeclock.models import ClockEvent, Shift
-from reporting.models import Report
 
-@api_view(['GET'])
-def attendance_report(request):
-    date_from = request.GET.get('date_from', (timezone.now() - timedelta(days=30)).date())
-    date_to = request.GET.get('date_to', timezone.now().date())
-    
-    # Calculate attendance metrics
-    staff_attendance = CustomUser.objects.filter(
-        restaurant=request.user.restaurant,
-        is_active=True
-    ).annotate(
-        total_shifts=Count('shifts'),
-        completed_shifts=Count('shifts', filter=models.Q(shifts__status='completed')),
-        late_arrivals=Count('clock_events', filter=models.Q(
-            clock_events__event_type='in',
-            clock_events__timestamp__date__gte=date_from,
-            clock_events__timestamp__date__lte=date_to
-        )),  # Add proper late calculation logic
-        total_hours=Sum('shifts__actual_hours')
-    )
-    
-    report_data = {
-        'period': {'from': date_from, 'to': date_to},
-        'summary': {
-            'total_staff': staff_attendance.count(),
-            'total_hours': staff_attendance.aggregate(Sum('shifts__actual_hours'))['shifts__actual_hours__sum'] or 0,
-            'attendance_rate': 95,  # Calculate properly
-        },
-        'staff_performance': [
-            {
-                'name': staff.username,
-                'role': staff.role,
-                'total_shifts': staff.total_shifts,
-                'completed_shifts': staff.completed_shifts,
-                'attendance_rate': round((staff.completed_shifts / staff.total_shifts * 100) if staff.total_shifts > 0 else 0, 1),
-                'total_hours': staff.total_hours or 0
+from .models import Report
+from .serializers import ReportSerializer
+
+from accounts.permissions import IsAdminOrManager  # Assuming you have this permission
+from staff.models import Order, OrderItem, Product
+from timeclock.models import ClockEvent
+from scheduling.models import AssignedShift
+
+class ReportListAPIView(generics.ListAPIView):
+    serializer_class = ReportSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
+
+    def get_queryset(self):
+        return Report.objects.filter(restaurant=self.request.user.restaurant).order_by('-generated_at')
+
+class ReportGenerateAPIView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
+
+    def post(self, request):
+        report_type = request.data.get('report_type')
+        start_date_str = request.data.get('start_date')
+        end_date_str = request.data.get('end_date')
+
+        if not all([report_type, start_date_str, end_date_str]):
+            return Response({'error': 'report_type, start_date, and end_date are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            start_date = timezone.datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            end_date = timezone.datetime.strptime(end_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        report_data = {}
+
+        if report_type == 'SALES_SUMMARY':
+            orders = Order.objects.filter(
+                restaurant=request.user.restaurant,
+                created_at__date__range=[start_date, end_date],
+                status__in=['COMPLETED']
+            )
+            total_sales = orders.aggregate(total_amount=Sum('total_amount'))['total_amount'] or 0.00
+            total_orders = orders.count()
+            average_order_value = total_sales / total_orders if total_orders > 0 else 0.00
+
+            # Top selling products
+            top_products = OrderItem.objects.filter(order__in=orders) \
+                                .values('product__name') \
+                                .annotate(total_quantity=Sum('quantity')) \
+                                .order_by('-total_quantity')[:5]
+
+            report_data = {
+                'total_sales': float(total_sales),
+                'total_orders': total_orders,
+                'average_order_value': float(average_order_value),
+                'top_products': list(top_products)
             }
-            for staff in staff_attendance
-        ]
-    }
-    
-    # Save report
-    Report.objects.create(
-        restaurant=request.user.restaurant,
-        report_type='attendance',
-        date_from=date_from,
-        date_to=date_to,
-        data=report_data
-    )
-    
-    return Response(report_data)
+        elif report_type == 'ATTENDANCE_OVERVIEW':
+            # Get all staff for the restaurant
+            staff_members = request.user.restaurant.customuser_set.filter(is_staff=True, is_active=True)
+            attendance_records = []
 
-@api_view(['GET'])
-def payroll_report(request):
-    date_from = request.GET.get('date_from', (timezone.now() - timedelta(days=30)).date())
-    date_to = request.GET.get('date_to', timezone.now().date())
-    
-    payroll_data = CustomUser.objects.filter(
-        restaurant=request.user.restaurant,
-        is_active=True
-    ).annotate(
-        total_hours=Sum('shifts__actual_hours', filter=models.Q(
-            shifts__start_time__date__gte=date_from,
-            shifts__start_time__date__lte=date_to
-        )),
-        total_pay=models.F('total_hours') * models.F('profile__hourly_rate')
-    )
-    
-    report_data = {
-        'period': {'from': date_from, 'to': date_to},
-        'total_payroll': sum(staff.total_pay or 0 for staff in payroll_data),
-        'staff_payroll': [
-            {
-                'name': staff.username,
-                'role': staff.role,
-                'hourly_rate': staff.profile.hourly_rate if hasattr(staff, 'profile') else 0,
-                'total_hours': staff.total_hours or 0,
-                'total_pay': staff.total_pay or 0
+            for staff in staff_members:
+                clock_events = ClockEvent.objects.filter(
+                    staff=staff,
+                    timestamp__date__range=[start_date, end_date]
+                ).order_by('timestamp')
+
+                total_hours_worked = 0
+                current_session_start = None
+
+                for event in clock_events:
+                    if event.event_type == 'in':
+                        current_session_start = event.timestamp
+                    elif event.event_type == 'out' and current_session_start:
+                        duration = event.timestamp - current_session_start
+                        total_hours_worked += duration.total_seconds() / 3600
+                        current_session_start = None
+                
+                attendance_records.append({
+                    'staff_name': f'{staff.first_name} {staff.last_name}',
+                    'staff_role': staff.role,
+                    'total_hours_worked': round(total_hours_worked, 2),
+                })
+            report_data = {
+                'attendance_summary': attendance_records
             }
-            for staff in payroll_data
-        ]
-    }
-    
-    return Response(report_data)
+        elif report_type == 'INVENTORY_STATUS':
+            # This would typically require an Inventory model, 
+            # but for now, let's mock it or use product list as a proxy
+            products = Product.objects.filter(restaurant=request.user.restaurant, is_active=True).values('name', 'base_price', 'category__name')
+            report_data = {
+                'product_list': list(products),
+                'note': 'Full inventory management requires dedicated models.'
+            }
+        elif report_type == 'SHIFT_PERFORMANCE':
+            # Requires more complex logic, possibly comparing scheduled vs actual hours,
+            # or sales generated per shift/staff. For now, a basic overview.
+            shifts = AssignedShift.objects.filter(
+                schedule__restaurant=request.user.restaurant,
+                shift_date__range=[start_date, end_date]
+            ).select_related('staff')
 
-@api_view(['GET'])
-def dashboard_metrics(request):
-    today = timezone.now().date()
-    
-    # Today's metrics
-    clocked_in_count = ClockEvent.objects.filter(
-        staff__restaurant=request.user.restaurant,
-        event_type='in',
-        timestamp__date=today
-    ).count()
-    
-    total_staff = CustomUser.objects.filter(
-        restaurant=request.user.restaurant,
-        is_active=True
-    ).count()
-    
-    # Weekly hours
-    week_start = today - timedelta(days=today.weekday())
-    weekly_hours = Shift.objects.filter(
-        staff__restaurant=request.user.restaurant,
-        start_time__date__gte=week_start
-    ).aggregate(total_hours=Sum('actual_hours'))['total_hours'] or 0
-    
-    metrics = {
-        'today': {
-            'clocked_in': clocked_in_count,
-            'total_staff': total_staff,
-            'attendance_rate': round((clocked_in_count / total_staff * 100) if total_staff > 0 else 0, 1)
-        },
-        'weekly_hours': weekly_hours,
-        'active_shifts': Shift.objects.filter(
-            staff__restaurant=request.user.restaurant,
-            start_time__lte=timezone.now(),
-            end_time__gte=timezone.now(),
-            status='scheduled'
-        ).count()
-    }
-    
-    return Response(metrics)
+            shift_performance_data = []
+            for shift in shifts:
+                shift_performance_data.append({
+                    'staff_name': f'{shift.staff.first_name} {shift.staff.last_name}',
+                    'shift_date': shift.shift_date,
+                    'start_time': shift.start_time,
+                    'end_time': shift.end_time,
+                    'role': shift.role,
+                    'scheduled_hours': shift.actual_hours, # Assuming actual_hours property calculates scheduled duration
+                    # You could add more performance metrics here (e.g., sales per shift, clock-in accuracy)
+                })
+            report_data = {
+                'shift_performance_summary': shift_performance_data
+            }
+        else:
+            return Response({'error': 'Invalid report type.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Save the generated report
+        report = Report.objects.create(
+            restaurant=request.user.restaurant,
+            report_type=report_type,
+            data=report_data,
+            generated_by=request.user
+        )
+
+        return Response(ReportSerializer(report).data, status=status.HTTP_201_CREATED)
+
+class ReportDetailAPIView(generics.RetrieveAPIView):
+    serializer_class = ReportSerializer
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
+    queryset = Report.objects.all()
+    lookup_field = 'pk'
+
+    def get_queryset(self):
+        return Report.objects.filter(restaurant=self.request.user.restaurant)

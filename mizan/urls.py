@@ -26,6 +26,8 @@ urlpatterns = [
     path('api/staff/', include('staff.urls')),    # Staff management
     path('api/timeloss/', include('timeclock.urls')),  # Time tracking (using timeclock app)
     path('api/schedule/', include('scheduling.urls')),  # Schedule (using scheduling app)
+    path('api/notifications/', include('notifications.urls')), # Notifications
+    path('api/chat/', include('chat.urls')), # Chat
 ]
 
 if settings.DEBUG:

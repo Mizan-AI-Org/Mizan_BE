@@ -9,6 +9,10 @@ from django.contrib.auth import authenticate
 from .models import CustomUser, Restaurant, StaffInvitation
 from .serializers import UserSerializer, RestaurantSerializer
 from django.utils import timezone
+from django.core.files.base import ContentFile
+import base64
+import os
+from django.conf import settings
 
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
@@ -25,7 +29,26 @@ def pin_login(request):
     
     if serializer.is_valid():
         user = serializer.validated_data['user']
+        image_data = serializer.validated_data.get('image_data')
         
+        if image_data:
+            # Decode base64 image data
+            format, imgstr = image_data.split(';base64,') # format looks like: data:image/png
+            ext = format.split('/')[-1]
+            
+            data = ContentFile(base64.b64decode(imgstr), name=f'{user.id}_clock_in.{ext}')
+            
+            # Save the image (you might want to link this to a ClockEvent or UserProfile)
+            # For now, let's just save it to a temporary location or a user-specific folder
+            image_path = os.path.join(settings.MEDIA_ROOT, 'clock_in_photos', data.name)
+            os.makedirs(os.path.dirname(image_path), exist_ok=True)
+            with open(image_path, 'wb+') as destination:
+                destination.write(data.read())
+            
+            # You can also save the image path to the user's profile or a clock event model
+            # For example: user.profile.clock_in_photo = image_path
+            # user.profile.save()
+            
         # Generate JWT tokens
         refresh = RefreshToken.for_user(user)
         
@@ -127,6 +150,18 @@ class LoginView(APIView):
             {'error': 'Invalid credentials'}, 
             status=status.HTTP_401_UNAUTHORIZED
         )
+
+class LogoutView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        try:
+            refresh_token = request.data["refresh_token"]
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+            return Response(status=status.HTTP_205_RESET_CONTENT)
+        except Exception as e:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
 
 class AcceptInvitationView(APIView):
     permission_classes = [permissions.AllowAny]
