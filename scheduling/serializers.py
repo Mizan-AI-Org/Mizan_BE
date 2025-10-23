@@ -1,52 +1,39 @@
 from rest_framework import serializers
 from .models import ScheduleTemplate, TemplateShift, WeeklySchedule, AssignedShift, ShiftSwapRequest
-from accounts.serializers import UserSerializer
+from accounts.serializers import CustomUserSerializer
 
-class AssignedShiftSerializer(serializers.ModelSerializer):
-    staff_info = UserSerializer(source='staff', read_only=True)
-    
+class ScheduleTemplateSerializer(serializers.ModelSerializer):
     class Meta:
-        model = AssignedShift
+        model = ScheduleTemplate
         fields = '__all__'
-
-class ShiftSwapRequestSerializer(serializers.ModelSerializer):
-    requester_info = UserSerializer(source='requester', read_only=True)
-    receiver_info = UserSerializer(source='receiver', read_only=True)
-    shift_to_swap_info = AssignedShiftSerializer(source='shift_to_swap', read_only=True)
-
-    class Meta:
-        model = ShiftSwapRequest
-        fields = '__all__'
-        read_only_fields = ('id', 'requester', 'status', 'created_at', 'updated_at')
-
-class ShiftSwapRequestCreateSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ShiftSwapRequest
-        fields = ('shift_to_swap', 'request_message', 'receiver')
-        extra_kwargs = {'receiver': {'required': False, 'allow_null': True}}
+        read_only_fields = ('restaurant', 'created_at')
 
 class TemplateShiftSerializer(serializers.ModelSerializer):
     class Meta:
         model = TemplateShift
         fields = '__all__'
-
-class ScheduleTemplateSerializer(serializers.ModelSerializer):
-    shifts = TemplateShiftSerializer(many=True, read_only=True)
-    
-    class Meta:
-        model = ScheduleTemplate
-        fields = '__all__'
+        read_only_fields = ('template',)
 
 class WeeklyScheduleSerializer(serializers.ModelSerializer):
-    assigned_shifts = AssignedShiftSerializer(many=True, read_only=True) # Nested serializer
-    
     class Meta:
         model = WeeklySchedule
         fields = '__all__'
+        read_only_fields = ('restaurant', 'created_at')
 
-class ShiftAssignmentSerializer(serializers.ModelSerializer):
-    staff_info = UserSerializer(source='staff', read_only=True)
-    
+class AssignedShiftSerializer(serializers.ModelSerializer):
+    staff_info = CustomUserSerializer(source='staff', read_only=True)
+
     class Meta:
-        model = AssignedShift # Use AssignedShift model
+        model = AssignedShift
         fields = '__all__'
+        read_only_fields = ('schedule', 'created_at', 'updated_at', 'actual_hours')
+
+class ShiftSwapRequestSerializer(serializers.ModelSerializer):
+    shift_to_swap_info = AssignedShiftSerializer(source='shift_to_swap', read_only=True)
+    requester_info = CustomUserSerializer(source='requester', read_only=True)
+    receiver_info = CustomUserSerializer(source='receiver', read_only=True)
+
+    class Meta:
+        model = ShiftSwapRequest
+        fields = '__all__'
+        read_only_fields = ('status', 'created_at', 'updated_at')

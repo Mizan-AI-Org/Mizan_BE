@@ -35,14 +35,22 @@ class CustomUserManager(BaseUserManager):
 class Restaurant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
-    address = models.TextField()
-    phone = models.CharField(max_length=20)
-    email = models.EmailField()
+    address = models.CharField(max_length=255)
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    email = models.EmailField(unique=True)
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    geo_fence_radius = models.DecimalField(max_digits=9, decimal_places=2, null=True, blank=True)
+    radius = models.DecimalField(max_digits=9, decimal_places=2, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    timezone = models.CharField(max_length=50, default='America/New_York')
+    currency = models.CharField(max_length=10, default='USD')
+    language = models.CharField(max_length=10, default='en')
+    operating_hours = models.JSONField(default=dict)
+    automatic_clock_out = models.BooleanField(default=False)
+    break_duration = models.IntegerField(default=30) # Default to 30 minutes
+    email_notifications = models.JSONField(default=dict)
+    push_notifications = models.JSONField(default=dict)
     
     class Meta:
         db_table = 'restaurants'
@@ -57,7 +65,7 @@ class CustomUser(AbstractUser):
     pin_code = models.CharField(max_length=6, unique=True, blank=True, null=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
     phone = models.CharField(max_length=20, blank=True, null=True)
-    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='staff')
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='staff', null=True, blank=True)
     is_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -75,7 +83,7 @@ class CustomUser(AbstractUser):
         db_table = 'users'
     
     def __str__(self):
-        return f"{self.get_full_name()} - {self.restaurant.name}"
+        return f"{self.get_full_name()} - {self.restaurant.name}" if self.restaurant else self.get_full_name()
         
     def set_pin(self, raw_pin):
         self.pin_code = make_password(raw_pin)

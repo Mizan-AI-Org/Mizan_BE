@@ -1,4 +1,4 @@
-#!/Users/macbookpro/code/Mizan_AI/mizan-backend/venv/bin/python3.12
+#!/Users/macbookpro/code/Mizan_AI/mizan-backend/venv/bin/python3
 import sys
 from rsa.cli import keygen
 if __name__ == '__main__':

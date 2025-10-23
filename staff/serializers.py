@@ -1,14 +1,7 @@
 from rest_framework import serializers
-from .models import Staff, Category, Product, Order, OrderItem, Table
-from accounts.serializers import UserSerializer
+from .models import Category, Product, Order, OrderItem, Table
+from accounts.serializers import CustomUserSerializer, RestaurantSerializer
 import decimal
-
-class StaffSerializer(serializers.ModelSerializer):
-    user_info = UserSerializer(source='user', read_only=True)
-    
-    class Meta:
-        model = Staff
-        fields = '__all__'
 
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
@@ -32,7 +25,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
-    staff_info = UserSerializer(source='staff', read_only=True)
+    staff_info = CustomUserSerializer(source='staff', read_only=True)
 
     class Meta:
         model = Order

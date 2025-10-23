@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mizan AI - Staff Invitation</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        line-height: 1.6;
+        color: #333333;
+        background-color: #f4f4f4;
+        margin: 0;
+        padding: 0;
+      }
+      .container {
+        max-width: 600px;
+        margin: 20px auto;
+        background-color: #ffffff;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      }
+      .header {
+        background-color: #4caf50;
+        color: #ffffff;
+        padding: 10px 20px;
+        text-align: center;
+        border-radius: 8px 8px 0 0;
+      }
+      .content {
+        padding: 20px;
+      }
+      .button {
+        display: inline-block;
+        background-color: #4caf50;
+        color: #ffffff;
+        padding: 10px 20px;
+        text-decoration: none;
+        border-radius: 5px;
+        margin-top: 20px;
+      }
+      .footer {
+        text-align: center;
+        margin-top: 20px;
+        font-size: 0.8em;
+        color: #666666;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h2>You've been invited to join Mizan AI!</h2>
+      </div>
+      <div class="content">
+        <p>Dear team member,</p>
+        <p>
+          You have been invited by <strong>{{ restaurant_name }}</strong> to
+          join their team on Mizan AI.
+        </p>
+        <p>
+          Mizan AI is a complete restaurant management system designed to
+          streamline operations and enhance efficiency.
+        </p>
+        <p>
+          To accept your invitation and set up your account, please click on the
+          link below:
+        </p>
+        <p style="text-align: center">
+          <a href="{{ invite_link }}" class="button">Accept Invitation</a>
+        </p>
+        <p>
+          If the button above does not work, please copy and paste the following
+          URL into your web browser:
+        </p>
+        <p><a href="{{ invite_link }}">{{ invite_link }}</a></p>
+        <p>This invitation will expire in 7 days.</p>
+        <p>Thank you,</p>
+        <p>The Mizan AI Team</p>
+      </div>
+      <div class="footer">
+        <p>&copy; {{ year }} Mizan AI. All rights reserved.</p>
+      </div>
+    </div>
+  </body>
+</html>

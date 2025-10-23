@@ -1,21 +1,35 @@
-from django.urls import path
+from django.urls import path, include
 from .views import (
-    ScheduleTemplateListCreateView, ScheduleTemplateDetailView,
-    WeeklyScheduleGenerateView, WeeklyScheduleDetailView,
-    ShiftDetailAPIView, MyAssignedShiftsView, weekly_schedule_view,
-    ShiftSwapRequestCreateView, MyShiftSwapRequestsView, ManagerShiftSwapRequestsView, ShiftSwapRequestActionView
+    ScheduleTemplateListCreateAPIView,
+    ScheduleTemplateRetrieveUpdateDestroyAPIView,
+    TemplateShiftListCreateAPIView,
+    TemplateShiftRetrieveUpdateDestroyAPIView,
+    WeeklyScheduleListCreateAPIView,
+    WeeklyScheduleRetrieveUpdateDestroyAPIView,
+    AssignedShiftListCreateAPIView,
+    AssignedShiftRetrieveUpdateDestroyAPIView,
+    ShiftSwapRequestListCreateAPIView,
+    ShiftSwapRequestRetrieveUpdateDestroyAPIView,
 )
 
 urlpatterns = [
-    path('templates/', ScheduleTemplateListCreateView.as_view(), name='schedule-template-list-create'),
-    path('templates/<uuid:pk>/', ScheduleTemplateDetailView.as_view(), name='schedule-template-detail'),
-    path('generate-weekly-schedule/', WeeklyScheduleGenerateView.as_view(), name='generate-weekly-schedule'),
-    path('weekly-schedules/<uuid:pk>/', WeeklyScheduleDetailView.as_view(), name='weekly-schedule-detail'),
-    path('weekly-schedule/', weekly_schedule_view, name='weekly-schedule-view'),
-    path('assigned-shifts/<uuid:pk>/', ShiftDetailAPIView.as_view(), name='assigned-shift-detail'),
-    path('my-shifts/', MyAssignedShiftsView.as_view(), name='my-assigned-shifts'),
-    path('shift-swap-requests/', ShiftSwapRequestCreateView.as_view(), name='shift-swap-request-create'),
-    path('my-shift-swap-requests/', MyShiftSwapRequestsView.as_view(), name='my-shift-swap-requests'),
-    path('manager-shift-swap-requests/', ManagerShiftSwapRequestsView.as_view(), name='manager-shift-swap-requests'),
-    path('shift-swap-requests/<uuid:pk>/<str:action>/', ShiftSwapRequestActionView.as_view(), name='shift-swap-request-action'),
+    # Schedule Templates
+    path('templates/', ScheduleTemplateListCreateAPIView.as_view(), name='schedule-template-list-create'),
+    path('templates/<uuid:pk>/', ScheduleTemplateRetrieveUpdateDestroyAPIView.as_view(), name='schedule-template-detail'),
+
+    # Template Shifts (nested under templates)
+    path('templates/<uuid:template_pk>/shifts/', TemplateShiftListCreateAPIView.as_view(), name='template-shift-list-create'),
+    path('templates/<uuid:template_pk>/shifts/<uuid:pk>/', TemplateShiftRetrieveUpdateDestroyAPIView.as_view(), name='template-shift-detail'),
+
+    # Weekly Schedules
+    path('weekly-schedules/', WeeklyScheduleListCreateAPIView.as_view(), name='weekly-schedule-list-create'),
+    path('weekly-schedules/<uuid:pk>/', WeeklyScheduleRetrieveUpdateDestroyAPIView.as_view(), name='weekly-schedule-detail'),
+
+    # Assigned Shifts (nested under weekly schedules)
+    path('weekly-schedules/<uuid:schedule_pk>/assigned-shifts/', AssignedShiftListCreateAPIView.as_view(), name='assigned-shift-list-create'),
+    path('weekly-schedules/<uuid:schedule_pk>/assigned-shifts/<uuid:pk>/', AssignedShiftRetrieveUpdateDestroyAPIView.as_view(), name='assigned-shift-detail'),
+
+    # Shift Swap Requests
+    path('shift-swap-requests/', ShiftSwapRequestListCreateAPIView.as_view(), name='shift-swap-request-list-create'),
+    path('shift-swap-requests/<uuid:pk>/', ShiftSwapRequestRetrieveUpdateDestroyAPIView.as_view(), name='shift-swap-request-detail'),
 ]

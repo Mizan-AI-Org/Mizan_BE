@@ -6,7 +6,6 @@ from datetime import timedelta
 STAFF_ROLES_CHOICES = [
     ('SUPER_ADMIN', 'Super Admin'),
     ('ADMIN', 'Admin'),
-    ('MANAGER', 'Manager'), # Assuming Manager is also a role
     ('CHEF', 'Chef'),
     ('WAITER', 'Waiter'),
     ('CLEANER', 'Cleaner'),
@@ -43,14 +42,18 @@ INSTALLED_APPS = [
 
     # Local apps
     'accounts',
+    'dashboard',
     'scheduling',
     'timeclock',
     'reporting',
+    'menu', # New menu app
+    'inventory', # New inventory app
+    'pos',
     'staff',
     'notifications',
     'kitchen',
     'chat',
-    'firebase_admin', # Add firebase_admin to INSTALLED_APPS
+    'firebase_admin', #  firebase_admin
 ]
 
 # ---------------------------
@@ -228,12 +231,12 @@ AUTH_USER_MODEL = 'accounts.CustomUser'
 
 # Email Configuration
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'  # or your SMTP server
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'your-email@gmail.com'
-EMAIL_HOST_PASSWORD = 'your-app-password'
-DEFAULT_FROM_EMAIL = 'your-email@gmail.com'
+EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='your-email@example.com')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='your-app-password')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='your-email@example.com')
 
 # For development - use console backend
 # EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
