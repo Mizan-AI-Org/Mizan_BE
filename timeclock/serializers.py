@@ -2,7 +2,8 @@ from rest_framework import serializers
 
 from accounts.models import CustomUser
 from accounts.utils import validate_clockin_location
-from .models import ClockEvent, Shift
+from .models import ClockEvent
+from scheduling.models import AssignedShift
 
 class ClockEventSerializer(serializers.ModelSerializer):
     class Meta:
@@ -11,7 +12,7 @@ class ClockEventSerializer(serializers.ModelSerializer):
 
 class ShiftSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Shift
+        model = AssignedShift
         fields = '__all__'
 class ClockInSerializer(serializers.Serializer):
     pin_code = serializers.CharField(max_length=6)

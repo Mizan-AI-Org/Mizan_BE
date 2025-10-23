@@ -17,3 +17,7 @@ class IsSameRestaurant(permissions.BasePermission):
         elif isinstance(obj, request.user.__class__):
             return obj.restaurant == request.user.restaurant
         return False
+
+class IsAdminOrManager(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.role in ['SUPER_ADMIN', 'ADMIN', 'MANAGER']
