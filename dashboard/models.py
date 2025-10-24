@@ -5,7 +5,7 @@ from django.conf import settings
 class DailyKPI(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='daily_kpis')
-    date = models.DateField(unique_for_date=['restaurant'])
+    date = models.DateField(unique_for_date='restaurant')
     total_revenue = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     total_orders = models.IntegerField(default=0)
     avg_order_value = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
