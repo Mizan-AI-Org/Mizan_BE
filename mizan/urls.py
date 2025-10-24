@@ -25,7 +25,6 @@ urlpatterns = [
     path('api/dashboard/', include('dashboard.urls')),
     path('api/menu/', include('menu.urls')),
     path('api/inventory/', include('inventory.urls')),
-    path('api/pos/', include('pos.urls')),
     path('api/reporting/', include('reporting.urls')),
     path('api/timeclock/', include('timeclock.urls')),
     path('api/scheduling/', include('scheduling.urls')),

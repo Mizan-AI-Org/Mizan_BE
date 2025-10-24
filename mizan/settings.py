@@ -48,7 +48,6 @@ INSTALLED_APPS = [
     'reporting',
     'menu', # New menu app
     'inventory', # New inventory app
-    'pos',
     'staff',
     'notifications',
     'kitchen',

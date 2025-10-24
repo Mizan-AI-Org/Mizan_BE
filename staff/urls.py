@@ -1,12 +1,17 @@
-from django.urls import path
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
 from . import views
 from .views import (
     InviteStaffView, StaffCreateView, CategoryListAPIView, 
     ProductListAPIView, OrderCreateAPIView, OrderDetailAPIView, 
     StaffOrderListAPIView, TableListCreateAPIView, TableDetailAPIView,
     TableAssignOrderAPIView, TableClearOrderAPIView, CategoryDetailAPIView,
-    ProductDetailAPIView, TablesNeedingCleaningListAPIView, MarkTableCleanAPIView, RestaurantOrderListAPIView
+    ProductDetailAPIView, TablesNeedingCleaningListAPIView, MarkTableCleanAPIView, RestaurantOrderListAPIView,
+    ScheduleViewSet
 )
+
+router = DefaultRouter()
+router.register(r'schedules', ScheduleViewSet)
 
 urlpatterns = [
     path('create/', views.StaffCreateView.as_view(), name='staff-create'),
@@ -31,4 +36,5 @@ urlpatterns = [
     path('tables/<uuid:pk>/clear-order/', TableClearOrderAPIView.as_view(), name='table-clear-order'),
     path('tables/needing-cleaning/', TablesNeedingCleaningListAPIView.as_view(), name='tables-needing-cleaning'),
     path('tables/<uuid:pk>/mark-clean/', MarkTableCleanAPIView.as_view(), name='mark-table-clean'),
+    path('', include(router.urls)),
 ]

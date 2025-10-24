@@ -1,4 +1,4 @@
-#!/Users/macbookpro/code/Mizan_AI/mizan-backend/venv/bin/python3.14
+#!/Users/macbookpro/code/Mizan_AI/mizan-backend/venv/bin/python3.12
 import sys
 from pip._internal.cli.main import main
 if __name__ == '__main__':

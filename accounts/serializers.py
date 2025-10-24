@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile
+from django.contrib.auth import authenticate
 
 class RestaurantSerializer(serializers.ModelSerializer):
     class Meta:
@@ -27,4 +28,24 @@ class StaffProfileSerializer(serializers.ModelSerializer):
         model = StaffProfile
         fields = '__all__'
         read_only_fields = ['user']
-    
+
+
+class PinLoginSerializer(serializers.Serializer):
+    pin_code = serializers.CharField(max_length=6)
+    email = serializers.EmailField(required=False, allow_blank=True)
+
+    def validate(self, data):
+        email = data.get('email')
+        pin_code = data.get('pin_code')
+
+        if not pin_code:
+            raise serializers.ValidationError("PIN code is required.")
+
+        # Authenticate by pin code only
+        user = CustomUser.objects.filter(pin_code__isnull=False, is_active=True).first()
+        if user and user.check_pin(pin_code):
+            data['user'] = user
+        else:
+            raise serializers.ValidationError("Invalid PIN code or inactive user.")
+
+        return data 
