@@ -13,7 +13,7 @@ class ClockEvent(models.Model):
     staff = models.ForeignKey('accounts.CustomUser', on_delete=models.CASCADE, related_name='clock_events')
     event_type = models.CharField(max_length=20, choices=EVENT_TYPES)
     timestamp = models.DateTimeField(auto_now_add=True)
-    photo = models.ImageField(upload_to='clock_photos/', null=True, blank=True)
+    photo = models.ImageField(upload_to='clock_photos/', null=False, blank=False)
     latitude = models.FloatField(null=True, blank=True)
     longitude = models.FloatField(null=True, blank=True)
     device_id = models.CharField(max_length=255, blank=True)
