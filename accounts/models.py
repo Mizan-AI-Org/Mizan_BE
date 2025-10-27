@@ -9,16 +9,31 @@ class CustomUserManager(BaseUserManager):
         if not email:
             raise ValueError('The Email field must be set')
         email = self.normalize_email(email)
-        is_verified = extra_fields.pop('is_verified', False) # Extract and remove is_verified
+        
+        # Get the pin_code from extra_fields, if it exists
+        pin_code = extra_fields.pop('pin_code', None)
+        
+        is_verified = extra_fields.pop('is_verified', False) 
         user = self.model(email=email, is_verified=is_verified, **extra_fields)
+
         if password:
+            # For superusers or owners who use a password
             user.set_password(password)
-        if 'pin_code' in extra_fields and extra_fields['pin_code']:
-            user.pin_code = make_password(extra_fields['pin_code'])
+        elif pin_code:
+            # For staff who use a PIN
+            user.set_pin(pin_code)
+            user.set_unusable_password() # This is the magic part!
+        else:
+            # No password or PIN provided
+            raise ValueError('A password or a pin_code is required to create a user.')
+
         user.save(using=self._db)
         return user
 
     def create_superuser(self, email, password=None, **extra_fields):
+        # create_user with a password, so the superuser
+        # will have a password and not a PIN.
+        
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('is_active', True)
@@ -30,7 +45,6 @@ class CustomUserManager(BaseUserManager):
             raise ValueError('Superuser must have is_superuser=True.')
         
         return self.create_user(email, password, **extra_fields)
-
 
 class Restaurant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
