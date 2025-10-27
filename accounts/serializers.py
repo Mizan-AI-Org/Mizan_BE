@@ -48,4 +48,62 @@ class PinLoginSerializer(serializers.Serializer):
         else:
             raise serializers.ValidationError("Invalid PIN code or inactive user.")
 
-        return data 
+        return data
+
+
+# Enhanced serializers for user management
+class UserSerializer(serializers.ModelSerializer):
+    """Enhanced user serializer with profile data"""
+    restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
+    role_display = serializers.CharField(source='get_role_display', read_only=True)
+    
+    class Meta:
+        model = CustomUser
+        fields = [
+            'id', 'email', 'first_name', 'last_name', 'role', 'role_display',
+            'phone', 'restaurant', 'restaurant_name', 'is_verified', 'is_active',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name', 'role_display']
+
+
+class BulkInviteSerializer(serializers.Serializer):
+    """Serializer for bulk invitation requests"""
+    type = serializers.ChoiceField(choices=['csv', 'json'])
+    csv_content = serializers.CharField(required=False, allow_blank=True)
+    invitations = serializers.ListField(
+        child=serializers.DictField(),
+        required=False
+    )
+    
+    def validate(self, data):
+        invite_type = data.get('type')
+        
+        if invite_type == 'csv':
+            if not data.get('csv_content'):
+                raise serializers.ValidationError("csv_content is required for CSV type")
+        elif invite_type == 'json':
+            if not data.get('invitations'):
+                raise serializers.ValidationError("invitations list is required for JSON type")
+        
+        return data
+
+
+class AcceptInvitationSerializer(serializers.Serializer):
+    """Serializer for accepting invitations"""
+    token = serializers.CharField(max_length=100)
+    password = serializers.CharField(min_length=8, write_only=True)
+    first_name = serializers.CharField(max_length=150)
+    last_name = serializers.CharField(max_length=150)
+
+
+class UpdateUserRoleSerializer(serializers.Serializer):
+    """Serializer for updating user roles"""
+    role = serializers.ChoiceField(choices=[
+        ('SUPER_ADMIN', 'Super Admin'),
+        ('ADMIN', 'Admin'),
+        ('CHEF', 'Chef'),
+        ('WAITER', 'Waiter'),
+        ('CLEANER', 'Cleaner'),
+        ('CASHIER', 'Cashier'),
+    ])

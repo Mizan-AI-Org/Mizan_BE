@@ -1,4 +1,5 @@
-from django.urls import path
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
 from .views import (
     CustomTokenObtainPairView, CustomTokenRefreshView, RegisterView, VerifyEmailView, PasswordResetRequestView,
     PasswordResetConfirmView, RestaurantDetailView, RestaurantUpdateView, StaffInvitationCreateView,
@@ -6,8 +7,14 @@ from .views import (
     StaffListAPIView,
     LoginView, MeView
 )
+from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
+
+router = DefaultRouter()
+router.register(r'settings', RestaurantSettingsViewSet, basename='settings')
+router.register(r'location', StaffLocationViewSet, basename='location')
 
 urlpatterns = [
+    path('', include(router.urls)),
     path('token/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('token/refresh/', CustomTokenRefreshView.as_view(), name='token_refresh'),
     path('register/', RegisterView.as_view(), name='register'),

@@ -2,13 +2,23 @@ from django.db import models
 import uuid
 from django.utils import timezone
 from django.conf import settings
+from django.core.exceptions import ValidationError
 
 class ScheduleTemplate(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE)
     name = models.CharField(max_length=100)
     is_active = models.BooleanField(default=True)
+    description = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'schedule_templates'
+        ordering = ['name']
+        indexes = [
+            models.Index(fields=['restaurant', 'is_active']),
+        ]
     
     def __str__(self):
         return f"{self.name} - {self.restaurant.name}"
@@ -44,28 +54,69 @@ class WeeklySchedule(models.Model):
         return f"Week of {self.week_start} - {self.restaurant.name}"
 
 class AssignedShift(models.Model):
+    STATUS_CHOICES = (
+        ('SCHEDULED', 'Scheduled'),
+        ('CONFIRMED', 'Confirmed'),
+        ('COMPLETED', 'Completed'),
+        ('CANCELLED', 'Cancelled'),
+    )
+    
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     schedule = models.ForeignKey(WeeklySchedule, on_delete=models.CASCADE, related_name='assigned_shifts')
     staff = models.ForeignKey('accounts.CustomUser', on_delete=models.CASCADE, related_name='assigned_shifts')
     shift_date = models.DateField()
     start_time = models.TimeField()
     end_time = models.TimeField()
-    break_duration = models.DurationField(default=timezone.timedelta(minutes=30)) # Example default 30 min break
-    role = models.CharField(max_length=20, choices=settings.STAFF_ROLES_CHOICES) # Assuming STAFF_ROLES_CHOICES in settings
+    break_duration = models.DurationField(default=timezone.timedelta(minutes=30))
+    role = models.CharField(max_length=20, choices=settings.STAFF_ROLES_CHOICES)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='SCHEDULED')
     notes = models.TextField(blank=True, null=True)
+    is_confirmed = models.BooleanField(default=False)
+    color = models.CharField(max_length=7, default='#6b7280', blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        db_table = 'assigned_shifts'
         unique_together = ['schedule', 'staff', 'shift_date']
         ordering = ['shift_date', 'start_time']
+        indexes = [
+            models.Index(fields=['staff', 'shift_date']),
+            models.Index(fields=['status', 'shift_date']),
+        ]
     
     def __str__(self):
         return f'{self.staff.first_name} {self.staff.last_name} - {self.shift_date} ({self.start_time}-{self.end_time})'
 
+    def clean(self):
+        """Validate shift doesn't conflict with other shifts"""
+        from django.db.models import Q
+        
+        # Check for overlapping shifts
+        overlapping = AssignedShift.objects.filter(
+            staff=self.staff,
+            shift_date=self.shift_date,
+            status__in=['SCHEDULED', 'CONFIRMED', 'COMPLETED']
+        ).exclude(id=self.id)
+        
+        # Convert to datetime for comparison
+        shift_start = timezone.datetime.combine(self.shift_date, self.start_time)
+        shift_end = timezone.datetime.combine(self.shift_date, self.end_time)
+        
+        for existing_shift in overlapping:
+            existing_start = timezone.datetime.combine(existing_shift.shift_date, existing_shift.start_time)
+            existing_end = timezone.datetime.combine(existing_shift.shift_date, existing_shift.end_time)
+            
+            if shift_start < existing_end and shift_end > existing_start:
+                raise ValidationError(f"Staff member has overlapping shift from {existing_shift.start_time} to {existing_shift.end_time}")
+    
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
+
     @property
     def actual_hours(self):
-        # Combine date and time to create datetime objects for calculation
+        """Calculate actual working hours excluding break time"""
         shift_start_datetime = timezone.datetime.combine(self.shift_date, self.start_time)
         shift_end_datetime = timezone.datetime.combine(self.shift_date, self.end_time)
         
@@ -79,7 +130,17 @@ class AssignedShift(models.Model):
         if self.break_duration:
             duration -= self.break_duration
             
-        return duration.total_seconds() / 3600 # Return hours as a float
+        return duration.total_seconds() / 3600
+    
+    @property
+    def is_today(self):
+        """Check if shift is today"""
+        return self.shift_date == timezone.now().date()
+    
+    @property
+    def is_upcoming(self):
+        """Check if shift is in the future"""
+        return self.shift_date >= timezone.now().date()
 
 class ShiftSwapRequest(models.Model):
     STATUS_CHOICES = (
@@ -105,4 +166,78 @@ class ShiftSwapRequest(models.Model):
 
     def __str__(self):
         return f"Shift Swap Request from {self.requester.first_name} for {self.shift_to_swap}"
+
+
+class TaskCategory(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='task_categories')
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True, null=True)
+    color = models.CharField(max_length=7, default='#3B82F6')  # Hex color code
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'task_categories'
+        unique_together = ['restaurant', 'name']
+        verbose_name_plural = 'Task Categories'
+    
+    def __str__(self):
+        return f"{self.name} - {self.restaurant.name}"
+
+
+class ShiftTask(models.Model):
+    PRIORITY_CHOICES = (
+        ('LOW', 'Low'),
+        ('MEDIUM', 'Medium'),
+        ('HIGH', 'High'),
+        ('URGENT', 'Urgent'),
+    )
+    
+    STATUS_CHOICES = (
+        ('TODO', 'To Do'),
+        ('IN_PROGRESS', 'In Progress'),
+        ('COMPLETED', 'Completed'),
+        ('CANCELLED', 'Cancelled'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    shift = models.ForeignKey(AssignedShift, on_delete=models.CASCADE, related_name='tasks')
+    category = models.ForeignKey(TaskCategory, on_delete=models.SET_NULL, null=True, blank=True, related_name='tasks')
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True, null=True)
+    priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='MEDIUM')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='TODO')
+    assigned_to = models.ForeignKey('accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='shift_assigned_tasks')
+    estimated_duration = models.DurationField(null=True, blank=True)  # Time estimate
+    parent_task = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='subtasks')
+    notes = models.TextField(blank=True, null=True)
+    created_by = models.ForeignKey('accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='created_tasks')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    
+    class Meta:
+        db_table = 'shift_tasks'
+        ordering = ['-priority', 'created_at']
+        indexes = [
+            models.Index(fields=['shift', 'status']),
+            models.Index(fields=['assigned_to', 'status']),
+        ]
+    
+    def __str__(self):
+        return f"{self.title} - {self.shift}"
+    
+    def mark_completed(self):
+        self.status = 'COMPLETED'
+        self.completed_at = timezone.now()
+        self.save()
+    
+    def get_progress_percentage(self):
+        """Calculate progress based on subtasks completion"""
+        if not self.subtasks.exists():
+            return 0 if self.status == 'TODO' else (50 if self.status == 'IN_PROGRESS' else 100)
+        
+        completed = self.subtasks.filter(status='COMPLETED').count()
+        total = self.subtasks.count()
+        return int((completed / total) * 100) if total > 0 else 0
     

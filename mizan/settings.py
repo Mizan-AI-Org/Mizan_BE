@@ -52,7 +52,10 @@ INSTALLED_APPS = [
     'notifications',
     'kitchen',
     'chat',
+    'ai_assistant',  # AI Assistant app
     'firebase_admin', #  firebase_admin
+    'pos',  # Point of Sale app
+    'core',  # Core utilities app
 ]
 
 # ---------------------------
@@ -157,6 +160,13 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 # Default primary key field type
 # ---------------------------
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# ---------------------------
+# Authentication Backend
+# ---------------------------
+AUTHENTICATION_BACKENDS = [
+    'accounts.backends.EmailBackend',
+]
 
 # ---------------------------
 # REST Framework / JWT
