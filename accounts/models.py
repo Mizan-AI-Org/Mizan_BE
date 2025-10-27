@@ -76,7 +76,7 @@ class CustomUser(AbstractUser):
     ROLE_CHOICES = settings.STAFF_ROLES_CHOICES
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    pin_code = models.CharField(max_length=6, unique=True, blank=True, null=True)
+    pin_code = models.CharField(max_length=255, unique=True, blank=True, null=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
     phone = models.CharField(max_length=20, blank=True, null=True)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='staff', null=True, blank=True)

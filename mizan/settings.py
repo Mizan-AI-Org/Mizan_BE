@@ -15,8 +15,19 @@ STAFF_ROLES_CHOICES = [
 # Base
 # ---------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
-GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'  
-GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'  
+# GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'  
+# GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'  
+GDAL_LIBRARY_PATH = '/usr/lib/aarch64-linux-gnu/libgdal.so'
+GEOS_LIBRARY_PATH = '/usr/lib/aarch64-linux-gnu/libgeos_c.so'
+# import platform
+
+# if platform.system() == "Darwin":  # macOS
+#     GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'
+#     GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'
+# else:  # Linux / Docker
+#     GEOS_LIBRARY_PATH = '/usr/lib/x86_64-linux-gnu/libgeos_c.so'
+#     GDAL_LIBRARY_PATH = '/usr/lib/x86_64-linux-gnu/libgdal.so'
+
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production!')
 DEBUG = config('DEBUG', default=True, cast=bool)
@@ -39,6 +50,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     'channels',
+    'drf_spectacular',  # Optional: for API schema and docs
 
     # Local apps
     'accounts',
@@ -117,17 +129,29 @@ TEMPLATES = [
 
 # ---------------------------
 # Database (PostgreSQL)
-# ---------------------------
+# # ---------------------------
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': config('DB_NAME', default='mizan_db2'),
+#         'USER': config('DB_USER', default='mizan_user'),
+#         'PASSWORD': config('DB_PASSWORD', default='mizan_password123'),
+#         'HOST': config('DB_HOST', default='localhost'),
+#         'PORT': config('DB_PORT', default='5432'),
+#     }
+# }
+
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': config('DB_NAME', default='mizan'),
-        'USER': config('DB_USER', default='mizan_user'),
-        'PASSWORD': config('DB_PASSWORD', default='mizan_password123'),
-        'HOST': config('DB_HOST', default='localhost'),
-        'PORT': config('DB_PORT', default='5432'),
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.getenv("POSTGRES_DB", "mizan_db"),
+        "USER": os.getenv("POSTGRES_USER", "aankote"),  # local default
+        "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),  # local default
+        "HOST": os.getenv("POSTGRES_HOST", "localhost"),
+        "PORT": os.getenv("POSTGRES_PORT", "5432"),
     }
 }
+
 
 # ---------------------------
 # Password validation
@@ -186,6 +210,8 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.MultiPartParser',
         'rest_framework.parsers.FormParser',
     ],
+    # This tells DRF to use drf-spectacular for its schema
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
 SIMPLE_JWT = {
