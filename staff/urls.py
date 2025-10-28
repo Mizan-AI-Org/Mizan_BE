@@ -2,7 +2,7 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import views
 from .views import (
-    InviteStaffView, StaffCreateView, CategoryListAPIView, 
+    StaffCreateView, CategoryListAPIView, 
     ProductListAPIView, OrderCreateAPIView, OrderDetailAPIView, 
     StaffOrderListAPIView, TableListCreateAPIView, TableDetailAPIView,
     TableAssignOrderAPIView, TableClearOrderAPIView, CategoryDetailAPIView,
@@ -15,7 +15,6 @@ router.register(r'schedules', ScheduleViewSet)
 
 urlpatterns = [
     path('create/', views.StaffCreateView.as_view(), name='staff-create'),
-    path('invite/', InviteStaffView.as_view(), name='invite-staff'),
     path('', views.staff_list, name='staff-list'),
     path('<uuid:user_id>/', views.staff_detail, name='staff-detail'),
     path('dashboard/', views.staff_dashboard, name='staff-dashboard'),

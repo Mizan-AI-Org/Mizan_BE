@@ -18,6 +18,7 @@ from django.contrib.auth.models import UserManager
 from django.utils.crypto import get_random_string
 from django.core.mail import send_mail
 from django.utils.html import strip_tags
+from django.template.loader import render_to_string
 from rest_framework import generics
 from .models import CustomUser
 from .serializers import CustomUserSerializer
@@ -216,7 +217,7 @@ class InviteStaffView(APIView):
             expires_at=expires_at
         )
 
-        invite_link = f"http://localhost:5173/accept-invitation?token={token}"
+        invite_link = f"http://localhost:8081/accept-invitation?token={token}"
         print(f"Staff Invitation Link for {email}: {invite_link}")
 
         # Uncomment and configure email settings in production

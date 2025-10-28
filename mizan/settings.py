@@ -1,4 +1,4 @@
-import os
+import os, sys
 from pathlib import Path
 from decouple import config # type: ignore
 from datetime import timedelta
@@ -258,29 +258,22 @@ CHANNEL_LAYERS = {
 AUTH_USER_MODEL = 'accounts.CustomUser'
 
 
-# Email Configuration
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='your-email@example.com')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='your-app-password')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='your-email@example.com')
-
-
 # This backend prints the email content directly to your console/terminal
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
-# You still need a "from" email, even though it's not really sending
-DEFAULT_FROM_EMAIL = 'no-reply@mizan.ai'
 # For development - use console backend
 # EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # ---------------------------
 # Security settings (production)
 # ---------------------------
-# CSRF_COOKIE_SECURE = True
-# SESSION_COOKIE_SECURE = True
-# SECURE_SSL_REDIRECT = True
-# SECURE_HSTS_SECONDS = 31536000
-# SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-# SECURE_HSTS_PRELOAD = True
+
+# EMAIL Configuration for Production
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True  # For secure connection
+EMAIL_HOST_USER ='jarjuadama101@gmail.com'
+# EMAIL_HOST_PASSWORD =  os.getenv('EMAIL_HOST_PASSWORD', '')
+# DEFAULT_FROM_EMAIL = os.getenv("EMAIL_HOST_USER", "ankoteayoub@gmail.com")
+EMAIL_HOST_PASSWORD='bumnpudklskwjaly'
+DEFAULT_FROM_EMAIL='jarjuadama101@gmail.com'
