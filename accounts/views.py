@@ -345,3 +345,82 @@ class RestaurantDetailView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    pass
+
+
+class CustomTokenRefreshView(TokenRefreshView):
+    pass
+
+
+class RegisterView(RestaurantOwnerSignupView):
+    pass
+
+
+class VerifyEmailView(APIView):
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request):
+        return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class PasswordResetRequestView(APIView):
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request):
+        return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class PasswordResetConfirmView(APIView):
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request):
+        return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class RestaurantUpdateView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    
+    def put(self, request):
+        restaurant = request.user.restaurant
+        serializer = RestaurantSerializer(restaurant, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class StaffInvitationCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
+    
+    def post(self, request):
+        return InviteStaffView().post(request)
+
+
+class StaffInvitationAcceptView(APIView):
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request):
+        return AcceptInvitationView().post(request)
+
+
+class StaffInvitationListView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
+    
+    def get(self, request):
+        invitations = StaffInvitation.objects.filter(restaurant=request.user.restaurant)
+        serializer = StaffInvitationSerializer(invitations, many=True)
+        return Response(serializer.data)
+
+
+class ResendVerificationEmailView(APIView):
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request):
+        return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class StaffListAPIView(StaffListView):
+    pass
