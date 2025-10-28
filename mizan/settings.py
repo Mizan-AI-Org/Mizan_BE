@@ -258,23 +258,23 @@ CHANNEL_LAYERS = {
 AUTH_USER_MODEL = 'accounts.CustomUser'
 
 
-# Email Configuration (Production)
-# EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
+# Email Configuration
+# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 # EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
 # EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-# EMAIL_USE_TLS = str_to_bool(config('EMAIL_USE_TLS', default='True'))
+# EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
 # EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='your-email@example.com')
 # EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='your-app-password')
 # DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='your-email@example.com')
 
-EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
-EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-EMAIL_USE_TLS = str_to_bool(config('EMAIL_USE_TLS', default='True'))
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='jarjuadama101@gmail.com')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='bumnpudklskwjaly')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='jarjuadama101@gmail.com')
 
+# This backend prints the email content directly to your console/terminal
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+# You still need a "from" email, even though it's not really sending
+DEFAULT_FROM_EMAIL = 'no-reply@mizan.ai'
+# For development - use console backend
+# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # ---------------------------
 # Security settings (production)
 # ---------------------------
