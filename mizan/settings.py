@@ -206,8 +206,8 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=30),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
 }
@@ -271,4 +271,10 @@ EMAIL_PORT = 587
 EMAIL_USE_TLS = True  # For secure connection
 EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "ankoteayoub@gmail.com")
 EMAIL_HOST_PASSWORD =  os.getenv('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.getenv("EMAIL_HOST_USER", "ankoteayoub@gmail.com")
+
+# EMAIL_HOST_USER = 'put use email here'
+# EMAIL_HOST_PASSWORD = 'put password here'
+# How to generate password : go to 
+# https://myaccount.google.com/apppasswords?continue=https://myaccount.google.com/&pli=1&rapt=AEjHL4M1Onqr9B9F_jjj5MtH4YxLBet2EYxE2vdE3mltlTFeQRAxGSBbsrepaIfONygqGo3tweBl9cemkEWTtBKQ7DhmmmKP6SAjsnb8O7SX6FWrx_PAEk4
 DEFAULT_FROM_EMAIL = os.getenv("EMAIL_HOST_USER", "ankoteayoub@gmail.com")

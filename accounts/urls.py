@@ -9,6 +9,7 @@ from .views import (
     StaffListView,
     StaffDetailView,
     RestaurantDetailView,
+    StaffPinLoginView,
 )
 
 urlpatterns = [
@@ -24,7 +25,7 @@ urlpatterns = [
     path('staff/list/', StaffListView.as_view(), name='staff-list'),
     path('staff/<uuid:pk>/role/', StaffDetailView.as_view(), name='staff-detail-role'), # PUT for role update
     path('staff/<uuid:pk>/', StaffDetailView.as_view(), name='staff-detail'), # GET, DELETE
-
+    path('staff/login/', StaffPinLoginView.as_view(), name='staff-pin-login'),
     # RESTAURANT MANAGEMENT ENDPOINTS
     path('restaurant/', RestaurantDetailView.as_view(), name='restaurant-detail'),
 ]
