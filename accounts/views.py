@@ -213,7 +213,7 @@ class InviteStaffView(APIView):
             expires_at=expires_at
         )
 
-        invite_link = f"http://localhost:5173/accept-invitation?token={token}"
+        invite_link = f"http://localhost:8081/accept-invitation?token={token}"
         print(f"Staff Invitation Link for {email}: {invite_link}")
 
         # Uncomment and configure email settings in production
