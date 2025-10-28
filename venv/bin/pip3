@@ -1,12 +1,7 @@
-<<<<<<< HEAD
-#!/Users/macbookpro/code/Mizan_AI/mizan-backend/venv/bin/python3.12
-=======
-#!/Users/ankote/Desktop/profissional/projects/Mizan-full/Mizan_BE/venv/bin/python3.13
-# -*- coding: utf-8 -*-
-import re
->>>>>>> 83fc7e12a4557ce9ab3e5a8e42721b7ddc4fbd6e
+#!/Users/macbookpro/code/Mizan_AI/mizan-backend/venv/bin/python3.13
 import sys
 from pip._internal.cli.main import main
 if __name__ == '__main__':
-    sys.argv[0] = re.sub(r'(-script\.pyw|\.exe)?$', '', sys.argv[0])
+    if sys.argv[0].endswith('.exe'):
+        sys.argv[0] = sys.argv[0][:-4]
     sys.exit(main())

@@ -38,16 +38,13 @@ urlpatterns = [
     path('api/timeclock/', include('timeclock.urls')),
     path('api/scheduling/', include('scheduling.urls')),
     path('api/notifications/', include('notifications.urls')),
-<<<<<<< HEAD
     path('api/pos/', include('pos.urls')),
     path('api/', include(router.urls)),
-=======
 
 
     # SWAGGER URLS
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/swagger-ui/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
->>>>>>> 83fc7e12a4557ce9ab3e5a8e42721b7ddc4fbd6e
 ]
 
 if settings.DEBUG:

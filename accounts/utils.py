@@ -1,6 +1,4 @@
 from math import radians, sin, cos, sqrt, atan2
-from django.contrib.gis.geos import Point
-from django.contrib.gis.measure import Distance
 
 def calculate_distance(lat1, lon1, lat2, lon2):
     """

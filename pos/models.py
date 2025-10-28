@@ -5,6 +5,10 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
+
+def generate_order_number():
+    return f"ORD-{uuid.uuid4().hex[:8].upper()}"
+
 class Discount(models.Model):
     """Discount codes and promotions"""
     DISCOUNT_TYPE_CHOICES = (
@@ -119,7 +123,7 @@ class Order(models.Model):
     table = models.ForeignKey(Table, on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
     server = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='pos_orders_served')
     
-    order_number = models.CharField(max_length=50, unique=True)  # e.g., ORD-001
+    order_number = models.CharField(max_length=50, unique=True, default=generate_order_number)  # e.g., ORD-001
     order_type = models.CharField(max_length=20, choices=ORDER_TYPE_CHOICES, default='DINE_IN')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
     

@@ -283,17 +283,28 @@ class InviteStaffView(APIView):
         invite_link = f"http://localhost:5173/accept-invitation?token={token}"
         print(f"Staff Invitation Link for {email}: {invite_link}")
 
-        # Uncomment and configure email settings in production
-        html_message = render_to_string('emails/staff_invite.html', {'invite_link': invite_link, 'restaurant_name': request.user.restaurant.name, 'year': timezone.now().year})
-        plain_message = strip_tags(html_message)
-        send_mail(
-            'You\'ve been invited to join Mizan AI!',
-            plain_message,
-            settings.DEFAULT_FROM_EMAIL,
-            [email],
-            html_message=html_message,
-            fail_silently=False,
-        )
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Email Config - Backend: {settings.EMAIL_BACKEND}")
+        logger.info(f"Email Config - Host: {settings.EMAIL_HOST}:{settings.EMAIL_PORT}")
+        logger.info(f"Email Config - TLS: {settings.EMAIL_USE_TLS}")
+        logger.info(f"Email Config - From: {settings.DEFAULT_FROM_EMAIL}")
+
+        try:
+            subject = "You're invited to join Mizan AI"
+            message = f"Hi,\n\nYou have been invited to join {request.user.restaurant.name} on Mizan AI.\n\nPlease follow the link below to accept the invitation and set up your account:\n\n{invite_link}\n\nThis invitation expires in 7 days.\n\nBest regards,\nMizan AI Team"
+            
+            send_mail(
+                subject,
+                message,
+                settings.DEFAULT_FROM_EMAIL,
+                [email],
+                fail_silently=False,
+            )
+            print(f"Invitation email sent successfully to {email}")
+        except Exception as e:
+            print(f"Error sending invitation email to {email}: {str(e)}")
+            return Response({'error': f'Failed to send invitation email: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({'message': 'Invitation sent successfully', 'token': token}, status=status.HTTP_201_CREATED)
 
@@ -442,16 +453,28 @@ class StaffInvitationCreateView(APIView):
         invite_link = f"http://localhost:5173/accept-invitation?token={token}"
         print(f"Staff Invitation Link for {email}: {invite_link}")
 
-        html_message = render_to_string('emails/staff_invite.html', {'invite_link': invite_link, 'restaurant_name': request.user.restaurant.name, 'year': timezone.now().year})
-        plain_message = strip_tags(html_message)
-        send_mail(
-            'You\'ve been invited to join Mizan AI!',
-            plain_message,
-            settings.DEFAULT_FROM_EMAIL,
-            [email],
-            html_message=html_message,
-            fail_silently=False,
-        )
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"Email Config - Backend: {settings.EMAIL_BACKEND}")
+        logger.info(f"Email Config - Host: {settings.EMAIL_HOST}:{settings.EMAIL_PORT}")
+        logger.info(f"Email Config - TLS: {settings.EMAIL_USE_TLS}")
+        logger.info(f"Email Config - From: {settings.DEFAULT_FROM_EMAIL}")
+
+        try:
+            subject = "You're invited to join Mizan AI"
+            message = f"Hi,\n\nYou have been invited to join {request.user.restaurant.name} on Mizan AI.\n\nPlease follow the link below to accept the invitation and set up your account:\n\n{invite_link}\n\nThis invitation expires in 7 days.\n\nBest regards,\nMizan AI Team"
+            
+            send_mail(
+                subject,
+                message,
+                settings.DEFAULT_FROM_EMAIL,
+                [email],
+                fail_silently=False,
+            )
+            print(f"Invitation email sent successfully to {email}")
+        except Exception as e:
+            print(f"Error sending invitation email to {email}: {str(e)}")
+            return Response({'error': f'Failed to send invitation email: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({'message': 'Invitation sent successfully', 'token': token}, status=status.HTTP_201_CREATED)
 
