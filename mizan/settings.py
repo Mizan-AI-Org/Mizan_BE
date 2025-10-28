@@ -1,4 +1,4 @@
-import os
+import os, sys
 from pathlib import Path
 from decouple import config
 from datetime import timedelta
@@ -15,8 +15,19 @@ STAFF_ROLES_CHOICES = [
 # Base
 # ---------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
-GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'  
-GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'  
+# GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'  
+# GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'  
+GDAL_LIBRARY_PATH = '/usr/lib/aarch64-linux-gnu/libgdal.so'
+GEOS_LIBRARY_PATH = '/usr/lib/aarch64-linux-gnu/libgeos_c.so'
+# import platform
+
+# if platform.system() == "Darwin":  # macOS
+#     GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'
+#     GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'
+# else:  # Linux / Docker
+#     GEOS_LIBRARY_PATH = '/usr/lib/x86_64-linux-gnu/libgeos_c.so'
+#     GDAL_LIBRARY_PATH = '/usr/lib/x86_64-linux-gnu/libgdal.so'
+
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production!')
 DEBUG = config('DEBUG', default=True, cast=bool)
@@ -39,6 +50,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'corsheaders',
     'channels',
+    'drf_spectacular',  # Optional: for API schema and docs
 
     # Local apps
     'accounts',
@@ -115,17 +127,29 @@ TEMPLATES = [
 
 # ---------------------------
 # Database (PostgreSQL)
-# ---------------------------
+# # ---------------------------
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': config('DB_NAME', default='mizan_db2'),
+#         'USER': config('DB_USER', default='mizan_user'),
+#         'PASSWORD': config('DB_PASSWORD', default='mizan_password123'),
+#         'HOST': config('DB_HOST', default='localhost'),
+#         'PORT': config('DB_PORT', default='5432'),
+#     }
+# }
+
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.postgresql',
-        'NAME': config('DB_NAME', default='mizan'),
-        'USER': config('DB_USER', default='mizan_user'),
-        'PASSWORD': config('DB_PASSWORD', default='mizan_password123'),
-        'HOST': config('DB_HOST', default='localhost'),
-        'PORT': config('DB_PORT', default='5432'),
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": os.getenv("POSTGRES_DB", "mizan_db"),
+        "USER": os.getenv("POSTGRES_USER", "aankote"),  # local default
+        "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),  # local default
+        "HOST": os.getenv("POSTGRES_HOST", "localhost"),
+        "PORT": os.getenv("POSTGRES_PORT", "5432"),
     }
 }
+
 
 # ---------------------------
 # Password validation
@@ -177,11 +201,13 @@ REST_FRAMEWORK = {
         'rest_framework.parsers.MultiPartParser',
         'rest_framework.parsers.FormParser',
     ],
+    # This tells DRF to use drf-spectacular for its schema
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=30),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
 }
@@ -229,23 +255,26 @@ CHANNEL_LAYERS = {
 AUTH_USER_MODEL = 'accounts.CustomUser'
 
 
-# Email Configuration
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='your-email@example.com')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='your-app-password')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='your-email@example.com')
+# This backend prints the email content directly to your console/terminal
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
 # For development - use console backend
 # EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # ---------------------------
 # Security settings (production)
 # ---------------------------
-# CSRF_COOKIE_SECURE = True
-# SESSION_COOKIE_SECURE = True
-# SECURE_SSL_REDIRECT = True
-# SECURE_HSTS_SECONDS = 31536000
-# SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-# SECURE_HSTS_PRELOAD = True
+
+# EMAIL Configuration for Production
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True  # For secure connection
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "ankoteayoub@gmail.com")
+EMAIL_HOST_PASSWORD =  os.getenv('EMAIL_HOST_PASSWORD', '')
+DEFAULT_FROM_EMAIL = os.getenv("EMAIL_HOST_USER", "ankoteayoub@gmail.com")
+
+# EMAIL_HOST_USER = 'put use email here'
+# EMAIL_HOST_PASSWORD = 'put password here'
+# How to generate password : go to 
+# https://myaccount.google.com/apppasswords?continue=https://myaccount.google.com/&pli=1&rapt=AEjHL4M1Onqr9B9F_jjj5MtH4YxLBet2EYxE2vdE3mltlTFeQRAxGSBbsrepaIfONygqGo3tweBl9cemkEWTtBKQ7DhmmmKP6SAjsnb8O7SX6FWrx_PAEk4
+DEFAULT_FROM_EMAIL = os.getenv("EMAIL_HOST_USER", "ankoteayoub@gmail.com")

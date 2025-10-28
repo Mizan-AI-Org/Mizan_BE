@@ -12,13 +12,12 @@ from django.core.files.base import ContentFile
 import base64
 import os
 from django.conf import settings
-
+from django.contrib.auth.models import UserManager
 # New imports for invitation
 from django.utils.crypto import get_random_string
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
-
 
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
@@ -186,64 +185,6 @@ class MeView(APIView):
         serializer = CustomUserSerializer(request.user)
         return Response(serializer.data)
 
-class AcceptInvitationView(APIView):
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        token = request.data.get('token')
-        password = request.data.get('password')
-        first_name = request.data.get('first_name')
-        last_name = request.data.get('last_name')
-        pin_code = request.data.get('pin_code')
-
-        if not all([token, password, first_name, last_name]):
-            return Response({'error': 'Missing required fields.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            invitation = StaffInvitation.objects.get(
-                token=token,
-                is_accepted=False,
-                expires_at__gt=timezone.now()
-            )
-
-            if CustomUser.objects.filter(email=invitation.email).exists():
-                return Response(
-                    {'error': 'User with this email already exists'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            user = CustomUser.objects.create_user(
-                email=invitation.email,
-                first_name=first_name,
-                last_name=last_name,
-                role=invitation.role,
-                restaurant=invitation.restaurant,
-                password=password,
-                is_verified=True
-            )
-            if pin_code:
-                user.set_pin(pin_code)
-                user.save()
-
-            invitation.is_accepted = True
-            invitation.save()
-
-            refresh = RefreshToken.for_user(user)
-
-            return Response({
-                'user': CustomUserSerializer(user).data,
-                'tokens': {
-                    'refresh': str(refresh),
-                    'access': str(refresh.access_token),
-                }
-            }, status=status.HTTP_201_CREATED)
-
-        except StaffInvitation.DoesNotExist:
-            return Response(
-                {'error': 'Invalid or expired invitation'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
 class InviteStaffView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
@@ -272,7 +213,7 @@ class InviteStaffView(APIView):
             expires_at=expires_at
         )
 
-        invite_link = f"http://localhost:5173/accept-invitation?token={token}"
+        invite_link = f"http://localhost:8081/accept-invitation?token={token}"
         print(f"Staff Invitation Link for {email}: {invite_link}")
 
         # Uncomment and configure email settings in production
@@ -288,6 +229,81 @@ class InviteStaffView(APIView):
         )
 
         return Response({'message': 'Invitation sent successfully', 'token': token}, status=status.HTTP_201_CREATED)
+
+class AcceptInvitationView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        data = request.data
+        token = data.get('token')
+        first_name = data.get('first_name')
+        last_name = data.get('last_name')
+        pin_code = data.get('pin_code')  # <-- This is now the required field
+
+        # Build an error dictionary
+        errors = {}
+        if not token:
+            errors['token'] = 'This field is required.'
+        if not first_name:
+            errors['first_name'] = 'This field is required.'
+        if not last_name:
+            errors['last_name'] = 'This field is required.'
+        if not pin_code:
+            errors['pin_code'] = 'This field is required.' # <-- Changed from 'password'
+
+        if errors:
+            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            invitation = StaffInvitation.objects.get(
+                token=token,
+                is_accepted=False,
+                expires_at__gt=timezone.now()
+            )
+
+            if CustomUser.objects.filter(email=invitation.email).exists():
+                return Response(
+                    {'error': 'User with this email already exists'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # 1. Generate a secure, random password the user will never see
+           # Creates a random 12-character string to use as the password
+            random_password = get_random_string(12)
+
+            # 2. Create the user with the random password
+            user = CustomUser.objects.create_user(
+                email=invitation.email,
+                password=random_password,  # <-- Use the random password
+                first_name=first_name,
+                last_name=last_name,
+                role=invitation.role,
+                restaurant=invitation.restaurant,
+                is_verified=True
+            )
+            
+            # 3. Set the PIN
+            user.set_pin(pin_code)  # We know pin_code exists because we checked it
+            user.save()
+
+            invitation.is_accepted = True
+            invitation.save()
+
+            refresh = RefreshToken.for_user(user)
+
+            return Response({
+                'user': CustomUserSerializer(user).data,
+                'tokens': {
+                    'refresh': str(refresh),
+                    'access': str(refresh.access_token),
+                }
+            }, status=status.HTTP_201_CREATED)
+
+        except StaffInvitation.DoesNotExist:
+            return Response(
+                {'error': 'Invalid or expired invitation'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
 class StaffListView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
@@ -333,3 +349,44 @@ class RestaurantDetailView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+class StaffPinLoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email')
+        pin_code = request.data.get('pin_code')
+
+        if not email or not pin_code:
+            return Response(
+                {'error': 'Email and PIN code are required.'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # 1. Find the user by email
+            user = CustomUser.objects.get(email=email)
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'error': 'Invalid credentials.'}, 
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # 2. Check the PIN
+        if not user.check_pin(pin_code):
+            return Response(
+                {'error': 'Invalid credentials.'}, 
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # 3. Generate tokens
+        refresh = RefreshToken.for_user(user)
+
+        # 4. Return user data and tokens
+        return Response({
+            'user': CustomUserSerializer(user).data,
+            'tokens': {
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+            }
+        }, status=status.HTTP_200_OK)

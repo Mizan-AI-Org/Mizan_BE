@@ -10,7 +10,8 @@ from .models import ClockEvent
 from .serializers import ClockEventSerializer, ClockInSerializer, ShiftSerializer
 from accounts.models import CustomUser
 from scheduling.models import AssignedShift
-
+import base64  # <--- ADD THIS IMPORT
+from django.core.files.base import ContentFile  # <--- ADD THIS IMPORT
 # Your existing geolocation endpoints (keep these)
 @api_view(['POST'])
 def clock_in(request):
@@ -104,25 +105,36 @@ def staff_attendance(request, user_id):
     return Response(serializer.data)
 
 # NEW ENDPOINTS FOR REACT FRONTEND WITH GEOLOCATION
+import base64, sys  # <--- ADD THIS IMPORT
+from django.core.files.base import ContentFile  # <--- ADD THIS IMPORT
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def web_clock_in(request):
     """Clock-in for React frontend with geolocation"""
+    # print(request.data, file=sys.stderr),
     user = request.user
     
     # Get geolocation data from request
     latitude = request.data.get('latitude')
     longitude = request.data.get('longitude')
     accuracy = request.data.get('accuracy')
-    
+    photo = request.data.get('photo_url') 
+    # --- Get new photo and device_id data ---
+    photo_data = request.data.get('photo')
+    client_device_id = request.data.get('device_id') 
+
     # Validate required geolocation data
     if not latitude or not longitude:
         return Response({
             'error': 'Geolocation data required',
             'message': 'Please enable location services to clock in'
         }, status=status.HTTP_400_BAD_REQUEST)
-    
+    if not photo:
+        return Response({
+            'error': 'Photo required',
+            'message': 'Please provide a photo to clock in'
+        }, status=status.HTTP_400_BAD_REQUEST)
     # Check if user is already clocked in
     last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
     if last_event and last_event.event_type == 'in':
@@ -153,22 +165,49 @@ def web_clock_in(request):
         # Restaurant location not set, allow clock-in with warning
         distance = None
     
-    # Create clock in event with geolocation
+    # Use client_device_id if provided, otherwise fall back to User-Agent
+    device_id = client_device_id or request.META.get('HTTP_USER_AGENT', '')
+    
+    # Create clock in event (without photo first)
     clock_event = ClockEvent.objects.create(
         staff=user,
         event_type='in',
         latitude=latitude,
         longitude=longitude,
-        device_id=request.META.get('HTTP_USER_AGENT', ''),
-        notes=f"Web clock-in | GPS Accuracy: {accuracy}m" if accuracy else "Web clock-in"
+        device_id=device_id,  # <--- UPDATED THIS
+        notes=f"Web clock-in | GPS Accuracy: {accuracy}m" if accuracy else "Web clock-in",
+        photo=photo  
     )
+
+    # --- Handle and save the photo ---
+    if photo_data:
+        try:
+            # Split the base64 string (e.g., "data:image/png;base64,iVBOR...")
+            format, imgstr = photo_data.split(';base64,') 
+            ext = format.split('/')[-1] # e.g., "png"
+            
+            # Create a unique name for the file
+            file_name = f"{user.id}_{clock_event.id}.{ext}"
+            
+            # Decode the string and create a Django ContentFile
+            data = ContentFile(base64.b64decode(imgstr), name=file_name)
+            
+            # Save the file to the 'photo' field
+            clock_event.photo.save(file_name, data, save=True)
+            
+        except Exception as e:
+            # Handle error if base64 is malformed
+            clock_event.notes += f" | Photo failed to save: {str(e)}"
+            clock_event.save()
+
     
     response_data = {
         'session_id': str(clock_event.id),
         'clock_in_time': clock_event.timestamp.isoformat(),
         'location_verified': True,
         'distance_from_restaurant': f"{distance:.0f}m" if distance else "Unknown",
-        'message': 'Clocked in successfully with location verification'
+        'message': 'Clocked in successfully with location verification',
+        'photo_url': clock_event.photo.url if clock_event.photo else None # <--- ADDED
     }
     
     return Response(response_data)
