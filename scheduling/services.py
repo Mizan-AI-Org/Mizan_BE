@@ -260,3 +260,83 @@ class SchedulingService:
                 2
             )
         }
+    
+    @staticmethod
+    def notify_shift_assignment(shift: 'AssignedShift') -> None:
+        """
+        Send notification to staff about shift assignment
+        """
+        from notifications.models import Notification
+        from django.template.loader import render_to_string
+        from django.core.mail import send_mail
+        from django.conf import settings
+        
+        try:
+            # Create in-app notification
+            message = f"You have been assigned a shift on {shift.shift_date} from {shift.start_time} to {shift.end_time}"
+            Notification.objects.create(
+                recipient=shift.staff,
+                message=message,
+                notification_type='SHIFT_UPDATE'
+            )
+            
+            # Send email notification
+            subject = f"New Shift Assignment - {shift.shift_date}"
+            html_message = render_to_string('emails/shift_assigned.html', {
+                'staff_name': shift.staff.get_full_name(),
+                'shift_date': shift.shift_date,
+                'start_time': shift.start_time,
+                'end_time': shift.end_time,
+                'role': shift.role,
+                'restaurant_name': shift.schedule.restaurant.name,
+            })
+            
+            send_mail(
+                subject,
+                message,
+                settings.DEFAULT_FROM_EMAIL,
+                [shift.staff.email],
+                html_message=html_message,
+                fail_silently=True,
+            )
+        except Exception as e:
+            print(f"Error notifying shift assignment: {e}")
+    
+    @staticmethod
+    def notify_shift_cancellation(shift: 'AssignedShift') -> None:
+        """
+        Send notification to staff about shift cancellation
+        """
+        from notifications.models import Notification
+        from django.template.loader import render_to_string
+        from django.core.mail import send_mail
+        from django.conf import settings
+        
+        try:
+            # Create in-app notification
+            message = f"Your shift on {shift.shift_date} from {shift.start_time} to {shift.end_time} has been cancelled"
+            Notification.objects.create(
+                recipient=shift.staff,
+                message=message,
+                notification_type='SHIFT_UPDATE'
+            )
+            
+            # Send email notification
+            subject = f"Shift Cancelled - {shift.shift_date}"
+            html_message = render_to_string('emails/shift_cancelled.html', {
+                'staff_name': shift.staff.get_full_name(),
+                'shift_date': shift.shift_date,
+                'start_time': shift.start_time,
+                'end_time': shift.end_time,
+            })
+            
+            send_mail(
+                subject,
+                message,
+                settings.DEFAULT_FROM_EMAIL,
+                [shift.staff.email],
+                html_message=html_message,
+                fail_silently=True,
+            )
+        except Exception as e:
+            print(f"Error notifying shift cancellation: {e}")

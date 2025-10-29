@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import (
     ScheduleTemplate, TemplateShift, AssignedShift, WeeklySchedule, 
-    ShiftSwapRequest, TaskCategory, ShiftTask
+    ShiftSwapRequest, TaskCategory, ShiftTask, Timesheet, TimesheetEntry
 )
 
 class TemplateShiftSerializer(serializers.ModelSerializer):
@@ -90,3 +90,32 @@ class AIScheduleRequestSerializer(serializers.Serializer):
         if value.weekday() != 0:
             raise serializers.ValidationError("week_start must be a Monday")
         return value
+
+
+# Timesheet Serializers
+class TimesheetEntrySerializer(serializers.ModelSerializer):
+    shift_details = AssignedShiftSerializer(source='shift', read_only=True)
+    
+    class Meta:
+        model = TimesheetEntry
+        fields = ['id', 'shift', 'shift_details', 'hours_worked', 'notes', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
+class TimesheetSerializer(serializers.ModelSerializer):
+    staff_name = serializers.CharField(source='staff.get_full_name', read_only=True)
+    approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True, allow_null=True)
+    entries = TimesheetEntrySerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = Timesheet
+        fields = [
+            'id', 'staff', 'staff_name', 'restaurant', 'start_date', 'end_date',
+            'total_hours', 'total_earnings', 'hourly_rate', 'status', 'notes',
+            'submitted_at', 'approved_at', 'approved_by', 'approved_by_name',
+            'paid_at', 'created_at', 'updated_at', 'entries'
+        ]
+        read_only_fields = [
+            'id', 'total_hours', 'total_earnings', 'submitted_at',
+            'approved_at', 'approved_by', 'paid_at', 'created_at', 'updated_at'
+        ]

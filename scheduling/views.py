@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from .models import (
     ScheduleTemplate, TemplateShift, WeeklySchedule, AssignedShift, 
-    ShiftSwapRequest, TaskCategory, ShiftTask
+    ShiftSwapRequest, TaskCategory, ShiftTask, Timesheet, TimesheetEntry
 )
 from .serializers import (
     ScheduleTemplateSerializer,
@@ -17,6 +17,8 @@ from .serializers import (
     ShiftSwapRequestSerializer,
     TaskCategorySerializer,
     ShiftTaskSerializer,
+    TimesheetSerializer,
+    TimesheetEntrySerializer,
 )
 from .services import SchedulingService
 from accounts.views import IsAdmin, IsSuperAdmin, IsManagerOrAdmin
@@ -199,6 +201,18 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(shift_date__lte=date_to)
         
         return queryset.order_by('shift_date', 'start_time')
+    
+    def perform_create(self, serializer):
+        """Create shift and send notification"""
+        shift = serializer.save()
+        # Send notification to staff about the new shift
+        SchedulingService.notify_shift_assignment(shift)
+    
+    def perform_destroy(self, instance):
+        """Delete shift and send notification"""
+        # Send notification before deleting
+        SchedulingService.notify_shift_cancellation(instance)
+        instance.delete()
     
     @action(detail=False, methods=['get'])
     def detect_conflicts(self, request):
@@ -427,3 +441,126 @@ class ShiftTaskViewSet(viewsets.ModelViewSet):
                 {'detail': 'User not found in your restaurant'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+
+# Timesheet ViewSets
+class TimesheetViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing timesheets"""
+    serializer_class = TimesheetSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        user = self.request.user
+        # Staff can see only their own timesheets
+        if user.role == 'ADMIN' or user.role == 'SUPER_ADMIN' or user.role == 'MANAGER':
+            # Admins/managers can see all timesheets for their restaurant
+            return Timesheet.objects.filter(restaurant=user.restaurant).order_by('-end_date')
+        else:
+            # Staff can only see their own timesheets
+            return Timesheet.objects.filter(staff=user).order_by('-end_date')
+    
+    def perform_create(self, serializer):
+        # Managers/admins create timesheets for staff
+        serializer.save(restaurant=self.request.user.restaurant)
+    
+    @action(detail=True, methods=['post'])
+    def submit(self, request, pk=None):
+        """Submit a timesheet for approval"""
+        timesheet = self.get_object()
+        if timesheet.status != 'DRAFT':
+            return Response(
+                {'detail': 'Only draft timesheets can be submitted'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        timesheet.status = 'SUBMITTED'
+        timesheet.submitted_at = timezone.now()
+        timesheet.save()
+        return Response({'detail': 'Timesheet submitted successfully', 'timesheet': self.get_serializer(timesheet).data})
+    
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        """Approve a submitted timesheet"""
+        if not (request.user.role == 'ADMIN' or request.user.role == 'SUPER_ADMIN'):
+            return Response(
+                {'detail': 'Only admins can approve timesheets'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        timesheet = self.get_object()
+        if timesheet.status != 'SUBMITTED':
+            return Response(
+                {'detail': 'Only submitted timesheets can be approved'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        timesheet.status = 'APPROVED'
+        timesheet.approved_at = timezone.now()
+        timesheet.approved_by = request.user
+        timesheet.save()
+        return Response({'detail': 'Timesheet approved successfully', 'timesheet': self.get_serializer(timesheet).data})
+    
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        """Reject a submitted timesheet"""
+        if not (request.user.role == 'ADMIN' or request.user.role == 'SUPER_ADMIN'):
+            return Response(
+                {'detail': 'Only admins can reject timesheets'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        timesheet = self.get_object()
+        if timesheet.status != 'SUBMITTED':
+            return Response(
+                {'detail': 'Only submitted timesheets can be rejected'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        timesheet.status = 'REJECTED'
+        timesheet.save()
+        return Response({'detail': 'Timesheet rejected', 'timesheet': self.get_serializer(timesheet).data})
+    
+    @action(detail=True, methods=['post'])
+    def mark_paid(self, request, pk=None):
+        """Mark timesheet as paid"""
+        if not (request.user.role == 'ADMIN' or request.user.role == 'SUPER_ADMIN'):
+            return Response(
+                {'detail': 'Only admins can mark timesheets as paid'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        timesheet = self.get_object()
+        if timesheet.status != 'APPROVED':
+            return Response(
+                {'detail': 'Only approved timesheets can be marked as paid'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        timesheet.status = 'PAID'
+        timesheet.paid_at = timezone.now()
+        timesheet.save()
+        return Response({'detail': 'Timesheet marked as paid', 'timesheet': self.get_serializer(timesheet).data})
+    
+    @action(detail=True, methods=['post'])
+    def recalculate(self, request, pk=None):
+        """Recalculate timesheet totals from shifts"""
+        timesheet = self.get_object()
+        timesheet.calculate_totals()
+        return Response({'detail': 'Timesheet recalculated', 'timesheet': self.get_serializer(timesheet).data})
+
+
+class TimesheetEntryViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing timesheet entries"""
+    serializer_class = TimesheetEntrySerializer
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
+    
+    def get_queryset(self):
+        timesheet_id = self.request.query_params.get('timesheet_id')
+        if timesheet_id:
+            return TimesheetEntry.objects.filter(
+                timesheet__id=timesheet_id,
+                timesheet__restaurant=self.request.user.restaurant
+            )
+        return TimesheetEntry.objects.filter(timesheet__restaurant=self.request.user.restaurant)
+    
+    def perform_create(self, serializer):
+        serializer.save()

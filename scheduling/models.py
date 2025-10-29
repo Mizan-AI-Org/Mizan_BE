@@ -240,4 +240,81 @@ class ShiftTask(models.Model):
         completed = self.subtasks.filter(status='COMPLETED').count()
         total = self.subtasks.count()
         return int((completed / total) * 100) if total > 0 else 0
+
+
+class Timesheet(models.Model):
+    """Track staff work hours and earnings"""
+    PAYROLL_STATUS_CHOICES = (
+        ('DRAFT', 'Draft'),
+        ('SUBMITTED', 'Submitted'),
+        ('APPROVED', 'Approved'),
+        ('PAID', 'Paid'),
+        ('REJECTED', 'Rejected'),
+    )
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    staff = models.ForeignKey('accounts.CustomUser', on_delete=models.CASCADE, related_name='timesheets')
+    restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='timesheets')
+    start_date = models.DateField()
+    end_date = models.DateField()
+    total_hours = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    total_earnings = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    hourly_rate = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+    status = models.CharField(max_length=20, choices=PAYROLL_STATUS_CHOICES, default='DRAFT')
+    notes = models.TextField(blank=True, null=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approved_by = models.ForeignKey('accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_timesheets')
+    paid_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'timesheets'
+        unique_together = ['staff', 'start_date', 'end_date', 'restaurant']
+        ordering = ['-end_date']
+        indexes = [
+            models.Index(fields=['staff', 'status']),
+            models.Index(fields=['restaurant', 'status']),
+            models.Index(fields=['end_date']),
+        ]
+    
+    def __str__(self):
+        return f"Timesheet for {self.staff.email} ({self.start_date} to {self.end_date})"
+    
+    def calculate_totals(self):
+        """Recalculate total hours and earnings from shifts"""
+        shifts = AssignedShift.objects.filter(
+            staff=self.staff,
+            shift_date__gte=self.start_date,
+            shift_date__lte=self.end_date,
+            status__in=['COMPLETED', 'CONFIRMED']
+        )
+        
+        total_hours = sum(shift.actual_hours for shift in shifts)
+        self.total_hours = total_hours
+        self.total_earnings = total_hours * self.hourly_rate
+        self.save()
+    
+    @property
+    def is_editable(self):
+        """Check if timesheet can still be edited"""
+        return self.status in ['DRAFT', 'SUBMITTED']
+
+
+class TimesheetEntry(models.Model):
+    """Individual shift entry in a timesheet"""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    timesheet = models.ForeignKey(Timesheet, on_delete=models.CASCADE, related_name='entries')
+    shift = models.ForeignKey(AssignedShift, on_delete=models.CASCADE)
+    hours_worked = models.DecimalField(max_digits=6, decimal_places=2)
+    notes = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'timesheet_entries'
+        unique_together = ['timesheet', 'shift']
+    
+    def __str__(self):
+        return f"Entry in {self.timesheet} - {self.shift.staff.email}"
     

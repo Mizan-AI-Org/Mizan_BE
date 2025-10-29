@@ -15,6 +15,8 @@ from .views import (
     ShiftSwapRequestRetrieveUpdateDestroyAPIView,
     TaskCategoryViewSet,
     ShiftTaskViewSet,
+    TimesheetViewSet,
+    TimesheetEntryViewSet,
 )
 
 router = DefaultRouter()
@@ -22,6 +24,8 @@ router.register(r'weekly-schedules-v2', WeeklyScheduleViewSet, basename='weekly-
 router.register(r'assigned-shifts-v2', AssignedShiftViewSet, basename='assigned-shift-v2')
 router.register(r'task-categories', TaskCategoryViewSet, basename='task-category')
 router.register(r'shift-tasks', ShiftTaskViewSet, basename='shift-task')
+router.register(r'timesheets', TimesheetViewSet, basename='timesheet')
+router.register(r'timesheet-entries', TimesheetEntryViewSet, basename='timesheet-entry')
 
 urlpatterns = [
     # Schedule Templates
