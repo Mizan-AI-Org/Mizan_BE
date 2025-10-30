@@ -425,3 +425,46 @@ class ResendVerificationEmailView(APIView):
 
 class StaffListAPIView(StaffListView):
     pass
+
+    
+class StaffPinLoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email')
+        pin_code = request.data.get('pin_code')
+
+        if not email or not pin_code:
+            return Response(
+                {'error': 'Email and PIN code are required.'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            # 1. Find the user by email
+            user = CustomUser.objects.get(email=email)
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'error': 'Invalid credentials.'}, 
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # 2. Check the PIN
+        if not user.check_pin(pin_code):
+            return Response(
+                {'error': 'Invalid credentials.'}, 
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # 3. Generate tokens
+        refresh = RefreshToken.for_user(user)
+
+        # 4. Return user data and tokens
+        return Response({
+            'user': CustomUserSerializer(user).data,
+            'tokens': {
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+            }
+        }, status=status.HTTP_200_OK)
+    
