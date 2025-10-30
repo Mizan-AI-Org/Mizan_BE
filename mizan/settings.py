@@ -38,6 +38,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_filters',
 
     # Third-party apps
     'rest_framework',
@@ -268,10 +269,14 @@ EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # ---------------------------
 
 # EMAIL Configuration for Production
+
+print(os.getenv('EMAIL_HOST_PASSWORD', ''), file=sys.stderr)
+print(os.getenv('EMAIL_HOST_USER', 'jarjuadama101@gmail.com'), file=sys.stderr)
+
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True  # For secure connection
-EEMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "jarjuadama101@gmail.com")
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "jarjuadama101@gmail.com")
 EMAIL_HOST_PASSWORD =  os.getenv('EMAIL_HOST_PASSWORD', '')
-DEFAULT_FROM_EMAIL = os.getenv("EMAIL_HOST_USER", "jarjuadama101@gmail.com")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "jarjuadama101@gmail.com")

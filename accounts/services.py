@@ -255,7 +255,7 @@ class UserManagementService:
         try:
             context = {
                 'invitation': invitation,
-                'acceptance_link': f"{settings.FRONTEND_URL}/auth/accept-invitation/{invitation.invitation_token}",
+                'acceptance_link': f"{settings.FRONTEND_URL}/staff/accept-invitation/{invitation.invitation_token}",
                 'expires_at': invitation.expires_at.strftime('%Y-%m-%d %H:%M:%S'),
                 'restaurant_name': invitation.restaurant.name,
             }

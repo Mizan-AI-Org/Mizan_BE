@@ -4,7 +4,7 @@ from .views import (
     CustomTokenObtainPairView, CustomTokenRefreshView, RegisterView, VerifyEmailView, PasswordResetRequestView,
     PasswordResetConfirmView, RestaurantDetailView, RestaurantUpdateView, StaffInvitationListView, 
     StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView,
-    LoginView, MeView, InviteStaffView, AcceptInvitationView
+    LoginView, MeView, InviteStaffView, AcceptInvitationView, pin_login
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
 
@@ -30,4 +30,5 @@ urlpatterns = [
     path('auth/me/', MeView.as_view(), name='me'),
     path('staff/invite/', InviteStaffView.as_view(), name='invite_staff'),
     path('staff/accept-invitation/', AcceptInvitationView.as_view(), name='accept_invitation'),
+    path('staff/login/', pin_login, name='pin_login'),
 ]
