@@ -257,21 +257,30 @@ CHANNEL_LAYERS = {
 # ---------------------------
 AUTH_USER_MODEL = 'accounts.CustomUser'
 
-
-# This backend prints the email content directly to your console/terminal
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-
-# For development - use console backend
-# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # ---------------------------
-# Security settings (production)
+# Frontend URL used in emails
 # ---------------------------
+# Default to local dev URL; can be overridden via environment
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:8081')
 
-# EMAIL Configuration for Production
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True  # For secure connection
-EEMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "jarjuadama101@gmail.com")
-EMAIL_HOST_PASSWORD =  os.getenv('EMAIL_HOST_PASSWORD', '')
-DEFAULT_FROM_EMAIL = os.getenv("EMAIL_HOST_USER", "jarjuadama101@gmail.com")
+# ---------------------------
+# Email Configuration
+# ---------------------------
+# Use a reliable local SMTP sink (Mailhog) in development, SMTP in production
+if DEBUG:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_HOST = os.getenv('DEV_EMAIL_HOST', 'localhost')
+    EMAIL_PORT = int(os.getenv('DEV_EMAIL_PORT', '1025'))
+    EMAIL_USE_TLS = False
+    EMAIL_HOST_USER = os.getenv('DEV_EMAIL_USER', '')
+    EMAIL_HOST_PASSWORD = os.getenv('DEV_EMAIL_PASSWORD', '')
+    DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'no-reply@mizan.local')
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
+    EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+    EMAIL_USE_TLS = True
+    EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+    EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+    DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', os.getenv('EMAIL_HOST_USER', 'no-reply@mizan.local'))
+

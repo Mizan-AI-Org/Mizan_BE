@@ -24,34 +24,27 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
     """
     permission_classes = [IsAuthenticated]
     
-    @action(detail=False, methods=['get'])
+    @action(detail=False, methods=['get', 'put'])
     def my_restaurant(self, request):
-        """Get current restaurant settings"""
+        """Get/update current restaurant settings"""
         if not request.user.restaurant:
             return Response(
                 {'error': 'No restaurant associated'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        serializer = RestaurantSettingsSerializer(request.user.restaurant)
-        return Response(serializer.data)
-    
-    @action(detail=False, methods=['put'])
-    def update_my_restaurant(self, request):
-        """Update restaurant settings"""
-        if not request.user.restaurant:
-            return Response(
-                {'error': 'No restaurant associated'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        restaurant = request.user.restaurant
-        serializer = RestaurantSettingsSerializer(restaurant, data=request.data, partial=True)
-        
-        if serializer.is_valid():
-            serializer.save()
+        if request.method == 'GET':
+            serializer = RestaurantSettingsSerializer(request.user.restaurant)
             return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        elif request.method == 'PUT':
+            restaurant = request.user.restaurant
+            serializer = RestaurantSettingsSerializer(restaurant, data=request.data, partial=True)
+            
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     @action(detail=False, methods=['get', 'post'])
     def geolocation(self, request):

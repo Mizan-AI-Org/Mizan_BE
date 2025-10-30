@@ -168,7 +168,7 @@ class InvitationViewSet(viewsets.ModelViewSet):
         )
         
         # Send invitation email
-        UserManagementService.send_invitation_email(invitation)
+        UserManagementService._send_invitation_email(invitation)
     
     @action(detail=False, methods=['post'])
     def bulk(self, request):
@@ -258,7 +258,12 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        success = UserManagementService.send_invitation_email(invitation)
+        # Attempt to send invitation email; returns None, log handled inside
+        try:
+            UserManagementService._send_invitation_email(invitation)
+            success = True
+        except Exception:
+            success = False
         
         if success:
             return Response({'detail': 'Invitation email sent'})

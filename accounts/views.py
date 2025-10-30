@@ -2,26 +2,23 @@ from rest_framework import status, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView # Import JWT views
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.shortcuts import get_object_or_404
-from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer # Removed UserSerializer
+from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
-from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile # Added StaffProfile
+from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile
 from django.utils import timezone
 from django.core.files.base import ContentFile
 import base64
 import os
 from django.conf import settings
 from django.contrib.auth.models import UserManager
-# New imports for invitation
 from django.utils.crypto import get_random_string
 from django.core.mail import send_mail
 from django.utils.html import strip_tags
 from django.template.loader import render_to_string
 from rest_framework import generics
-from .models import CustomUser
-from .serializers import CustomUserSerializer
 
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
@@ -188,6 +185,62 @@ class MeView(APIView):
     def get(self, request):
         serializer = CustomUserSerializer(request.user)
         return Response(serializer.data)
+        
+    def patch(self, request):
+        user = request.user
+        profile_data = request.data.pop('profile', None)
+        
+        # Update user data
+        user_serializer = CustomUserSerializer(user, data=request.data, partial=True)
+        if not user_serializer.is_valid():
+            return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        user_serializer.save()
+        
+        # Update or create profile data if provided
+        if profile_data:
+            profile = getattr(user, 'profile', None)
+            if not profile:
+                # Create profile if it doesn't exist
+                profile = StaffProfile.objects.create(user=user)
+            
+            profile_serializer = StaffProfileSerializer(profile, data=profile_data, partial=True)
+            if profile_serializer.is_valid():
+                profile_serializer.save()
+            else:
+                return Response(profile_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Return updated user data
+        serializer = CustomUserSerializer(user)
+        return Response(serializer.data)
+    
+    def patch(self, request):
+        user = request.user
+        profile_data = request.data.pop('profile', None)
+        
+        # Update user data
+        user_serializer = CustomUserSerializer(user, data=request.data, partial=True)
+        if user_serializer.is_valid():
+            user_serializer.save()
+            
+            # Update or create profile data if provided
+            if profile_data:
+                profile = getattr(user, 'profile', None)
+                if not profile:
+                    # Create profile if it doesn't exist
+                    profile = StaffProfile.objects.create(user=user)
+                
+                profile_serializer = StaffProfileSerializer(profile, data=profile_data, partial=True)
+                if profile_serializer.is_valid():
+                    profile_serializer.save()
+                else:
+                    return Response(profile_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Re-fetch user to get updated data
+            updated_user = CustomUser.objects.get(pk=user.pk)
+            response_serializer = CustomUserSerializer(updated_user)
+            return Response(response_serializer.data)
+        
+        return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class InviteStaffView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
@@ -217,7 +270,7 @@ class InviteStaffView(APIView):
             expires_at=expires_at
         )
 
-        invite_link = f"http://localhost:8081/accept-invitation?token={token}"
+        invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
         print(f"Staff Invitation Link for {email}: {invite_link}")
 
         # Uncomment and configure email settings in production

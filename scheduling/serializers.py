@@ -3,6 +3,7 @@ from .models import (
     ScheduleTemplate, TemplateShift, AssignedShift, WeeklySchedule, 
     ShiftSwapRequest, TaskCategory, ShiftTask, Timesheet, TimesheetEntry
 )
+from .task_templates import TaskTemplate, Task
 
 class TemplateShiftSerializer(serializers.ModelSerializer):
     class Meta:
@@ -47,6 +48,27 @@ class ShiftTaskSerializer(serializers.ModelSerializer):
             subtasks = obj.subtasks.all()
             return ShiftTaskSerializer(subtasks, many=True, read_only=True).data
         return []
+
+class TaskTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TaskTemplate
+        fields = '__all__'
+
+class TaskSerializer(serializers.ModelSerializer):
+    assigned_to_details = serializers.SerializerMethodField()
+    category_details = TaskCategorySerializer(source='category', read_only=True)
+    subtasks_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Task
+        fields = '__all__'
+        
+    def get_subtasks_count(self, obj):
+        return obj.subtasks.count()
+        
+    def get_assigned_to_details(self, obj):
+        from accounts.serializers import UserSerializer
+        return UserSerializer(obj.assigned_to.all(), many=True).data
 
 class AssignedShiftSerializer(serializers.ModelSerializer):
     staff_name = serializers.CharField(source='staff.__str__', read_only=True)
