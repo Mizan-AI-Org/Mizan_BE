@@ -63,7 +63,6 @@ INSTALLED_APPS = [
     'firebase_admin', #  firebase_admin
     'pos',  # Point of Sale app
     'core',  # Core utilities app
-    'checklists',  # Checklist management app
 ]
 
 # ---------------------------
@@ -93,9 +92,6 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',    # REQUIRED for admin
-    'scheduling.middleware.AuditMiddleware',                      # Audit context middleware
-    'scheduling.middleware.RequestLoggingMiddleware',             # Request logging middleware
-    'scheduling.middleware.SecurityAuditMiddleware',              # Security audit middleware
     'django.contrib.messages.middleware.MessageMiddleware',       # REQUIRED for admin
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -264,8 +260,14 @@ CHANNEL_LAYERS = {
 # ---------------------------
 AUTH_USER_MODEL = 'accounts.CustomUser'
 
+
+# This backend prints the email content directly to your console/terminal
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+# For development - use console backend
+# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # ---------------------------
-# Frontend URL used in emails
+# Security settings (production)
 # ---------------------------
 # Default to local dev URL; can be overridden via environment
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:8080')
