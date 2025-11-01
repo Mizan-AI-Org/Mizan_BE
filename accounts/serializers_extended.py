@@ -58,6 +58,15 @@ class RestaurantGeolocationSerializer(serializers.ModelSerializer):
             'language',
             'operating_hours'
         ]
+    
+    def validate_radius(self, value):
+        """Validate radius is within 5m to 100m range"""
+        if value is not None:
+            if value < 5 or value > 100:
+                raise serializers.ValidationError(
+                    "Geofence radius must be between 5 and 100 meters."
+                )
+        return value
 
 
 class RestaurantSettingsSerializer(serializers.ModelSerializer):
@@ -92,6 +101,15 @@ class RestaurantSettingsSerializer(serializers.ModelSerializer):
             'pos_integration',
             'ai_config'
         ]
+    
+    def validate_radius(self, value):
+        """Validate radius is within 5m to 100m range"""
+        if value is not None:
+            if value < 5 or value > 100:
+                raise serializers.ValidationError(
+                    "Geofence radius must be between 5 and 100 meters."
+                )
+        return value
 
 
 class StaffProfileExtendedSerializer(serializers.ModelSerializer):

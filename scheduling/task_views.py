@@ -1,11 +1,16 @@
 from rest_framework import viewsets, status
+from rest_framework import serializers as drf_serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from django.db.models import Q
+from django.core.files.base import ContentFile
+import base64
+import uuid
 
-from .task_templates import TaskTemplate, TaskCategory, Task
+from .task_templates import TaskTemplate, Task
+from .models import TaskCategory
 from .serializers import TaskTemplateSerializer, TaskCategorySerializer, TaskSerializer
 
 class TaskTemplateViewSet(viewsets.ModelViewSet):
@@ -25,6 +30,32 @@ class TaskTemplateViewSet(viewsets.ModelViewSet):
             restaurant=self.request.user.restaurant,
             created_by=self.request.user
         )
+
+    def create(self, request, *args, **kwargs):
+        """Override create to prevent 500s and surface clear validation errors"""
+        serializer = self.get_serializer(data=request.data)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except drf_serializers.ValidationError as e:
+            # Return DRF validation errors directly
+            return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            self.perform_create(serializer)
+        except drf_serializers.ValidationError as e:
+            # Catch validation errors raised during save/create
+            return Response(e.detail, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            # Log unexpected exceptions and return a safe 400 with message
+            import logging
+            logging.getLogger(__name__).exception("TaskTemplate creation failed: %s", str(e))
+            return Response({
+                'detail': 'Failed to create task template.',
+                'message': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
     
     @action(detail=True, methods=['post'])
     def duplicate(self, request, pk=None):
@@ -169,3 +200,268 @@ class TaskViewSet(viewsets.ModelViewSet):
         
         serializer = self.get_serializer(tasks, many=True)
         return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def complete_with_verification(self, request, pk=None):
+        """Complete a task with photo verification and notes"""
+        task = self.get_object()
+        
+        # Check if user is assigned to this task
+        if task.assigned_to.filter(id=request.user.id).exists() or request.user.role in ['MANAGER', 'ADMIN']:
+            completion_data = {
+                'notes': request.data.get('notes', ''),
+                'location': request.data.get('location', ''),
+                'completion_photo': None
+            }
+            
+            # Handle photo upload
+            photo_data = request.data.get('completion_photo')
+            if photo_data:
+                try:
+                    # Decode base64 image
+                    format, imgstr = photo_data.split(';base64,')
+                    ext = format.split('/')[-1]
+                    photo_file = ContentFile(
+                        base64.b64decode(imgstr),
+                        name=f'task_completion_{task.id}_{uuid.uuid4()}.{ext}'
+                    )
+                    completion_data['completion_photo'] = photo_file
+                except Exception as e:
+                    return Response(
+                        {'detail': f'Invalid photo format: {str(e)}'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            
+            # Mark task as completed with verification data
+            task.mark_completed(
+                user=request.user,
+                completion_notes=completion_data['notes'],
+                completion_photo=completion_data['completion_photo'],
+                completion_location=completion_data['location']
+            )
+            
+            serializer = self.get_serializer(task)
+            return Response({
+                'task': serializer.data,
+                'message': 'Task completed successfully with verification'
+            })
+        else:
+            return Response(
+                {'detail': 'You are not assigned to this task'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+    @action(detail=True, methods=['post'])
+    def update_progress(self, request, pk=None):
+        """Update task progress with real-time tracking"""
+        task = self.get_object()
+        
+        # Check if user is assigned to this task
+        if task.assigned_to.filter(id=request.user.id).exists() or request.user.role in ['MANAGER', 'ADMIN']:
+            progress_percentage = request.data.get('progress_percentage', 0)
+            progress_notes = request.data.get('progress_notes', '')
+            
+            # Validate progress percentage
+            if not (0 <= progress_percentage <= 100):
+                return Response(
+                    {'detail': 'Progress percentage must be between 0 and 100'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Update task progress
+            task.progress_percentage = progress_percentage
+            task.progress_notes = progress_notes
+            task.last_updated = timezone.now()
+            
+            # Auto-update status based on progress
+            if progress_percentage == 0:
+                task.status = 'TODO'
+            elif progress_percentage == 100:
+                task.status = 'COMPLETED'
+                task.completed_at = timezone.now()
+                task.completed_by = request.user
+            else:
+                task.status = 'IN_PROGRESS'
+                if not task.started_at:
+                    task.started_at = timezone.now()
+            
+            task.save()
+            
+            serializer = self.get_serializer(task)
+            return Response({
+                'task': serializer.data,
+                'message': f'Progress updated to {progress_percentage}%'
+            })
+        else:
+            return Response(
+                {'detail': 'You are not assigned to this task'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+    @action(detail=True, methods=['post'])
+    def add_checkpoint(self, request, pk=None):
+        """Add a checkpoint/milestone to task progress"""
+        task = self.get_object()
+        
+        # Check if user is assigned to this task
+        if task.assigned_to.filter(id=request.user.id).exists() or request.user.role in ['MANAGER', 'ADMIN']:
+            checkpoint_data = {
+                'description': request.data.get('description', ''),
+                'timestamp': timezone.now(),
+                'user': request.user.id,
+                'photo': None
+            }
+            
+            # Handle checkpoint photo
+            photo_data = request.data.get('checkpoint_photo')
+            if photo_data:
+                try:
+                    format, imgstr = photo_data.split(';base64,')
+                    ext = format.split('/')[-1]
+                    photo_file = ContentFile(
+                        base64.b64decode(imgstr),
+                        name=f'checkpoint_{task.id}_{uuid.uuid4()}.{ext}'
+                    )
+                    checkpoint_data['photo'] = photo_file.name
+                except Exception as e:
+                    return Response(
+                        {'detail': f'Invalid photo format: {str(e)}'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            
+            # Add checkpoint to task
+            if not hasattr(task, 'checkpoints') or task.checkpoints is None:
+                task.checkpoints = []
+            
+            task.checkpoints.append(checkpoint_data)
+            task.save()
+            
+            serializer = self.get_serializer(task)
+            return Response({
+                'task': serializer.data,
+                'message': 'Checkpoint added successfully'
+            })
+        else:
+            return Response(
+                {'detail': 'You are not assigned to this task'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+    @action(detail=False, methods=['get'])
+    def my_active_tasks(self, request):
+        """Get current user's active tasks with real-time status"""
+        user = request.user
+        
+        tasks = Task.objects.filter(
+            restaurant=user.restaurant,
+            assigned_to=user,
+            status__in=['TODO', 'IN_PROGRESS']
+        ).order_by('-priority', 'due_date')
+        
+        serializer = self.get_serializer(tasks, many=True)
+        return Response({
+            'tasks': serializer.data,
+            'total_active': tasks.count(),
+            'in_progress': tasks.filter(status='IN_PROGRESS').count(),
+            'todo': tasks.filter(status='TODO').count()
+        })
+
+    @action(detail=False, methods=['get'])
+    def task_analytics(self, request):
+        """Get task completion analytics for the user"""
+        user = request.user
+        restaurant = user.restaurant
+        
+        # Get date range from query params
+        start_date = request.query_params.get('start_date', timezone.now().date() - timezone.timedelta(days=30))
+        end_date = request.query_params.get('end_date', timezone.now().date())
+        
+        # Calculate analytics
+        total_tasks = Task.objects.filter(
+            restaurant=restaurant,
+            assigned_to=user,
+            created_at__date__gte=start_date,
+            created_at__date__lte=end_date
+        ).count()
+        
+        completed_tasks = Task.objects.filter(
+            restaurant=restaurant,
+            assigned_to=user,
+            status='COMPLETED',
+            completed_at__date__gte=start_date,
+            completed_at__date__lte=end_date
+        ).count()
+        
+        overdue_tasks = Task.objects.filter(
+            restaurant=restaurant,
+            assigned_to=user,
+            due_date__lt=timezone.now().date(),
+            status__in=['TODO', 'IN_PROGRESS']
+        ).count()
+        
+        completion_rate = (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0
+        
+        return Response({
+            'total_tasks': total_tasks,
+            'completed_tasks': completed_tasks,
+            'overdue_tasks': overdue_tasks,
+            'completion_rate': round(completion_rate, 2),
+            'period': {
+                'start_date': start_date,
+                'end_date': end_date
+            }
+        })
+
+    @action(detail=True, methods=['get'])
+    def task_timeline(self, request, pk=None):
+        """Get detailed timeline of task progress and activities"""
+        task = self.get_object()
+        
+        timeline = []
+        
+        # Task creation
+        timeline.append({
+            'event': 'created',
+            'timestamp': task.created_at,
+            'user': f"{task.created_by.first_name} {task.created_by.last_name}",
+            'description': 'Task created'
+        })
+        
+        # Task started
+        if task.started_at:
+            timeline.append({
+                'event': 'started',
+                'timestamp': task.started_at,
+                'user': f"{task.created_by.first_name} {task.created_by.last_name}",
+                'description': 'Task started'
+            })
+        
+        # Add checkpoints
+        if hasattr(task, 'checkpoints') and task.checkpoints:
+            for checkpoint in task.checkpoints:
+                timeline.append({
+                    'event': 'checkpoint',
+                    'timestamp': checkpoint.get('timestamp'),
+                    'user': checkpoint.get('user'),
+                    'description': checkpoint.get('description', 'Checkpoint added'),
+                    'photo': checkpoint.get('photo')
+                })
+        
+        # Task completion
+        if task.completed_at:
+            timeline.append({
+                'event': 'completed',
+                'timestamp': task.completed_at,
+                'user': f"{task.completed_by.first_name} {task.completed_by.last_name}" if task.completed_by else 'Unknown',
+                'description': 'Task completed',
+                'notes': getattr(task, 'completion_notes', ''),
+                'photo': getattr(task, 'completion_photo', None)
+            })
+        
+        # Sort timeline by timestamp
+        timeline.sort(key=lambda x: x['timestamp'])
+        
+        return Response({
+            'task_id': task.id,
+            'timeline': timeline
+        })

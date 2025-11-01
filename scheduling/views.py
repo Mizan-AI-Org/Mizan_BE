@@ -21,6 +21,7 @@ from .serializers import (
     TimesheetEntrySerializer,
 )
 from .services import SchedulingService
+from .task_assignment_service import TaskAssignmentService
 from accounts.views import IsAdmin, IsSuperAdmin, IsManagerOrAdmin
 
 
@@ -441,6 +442,283 @@ class ShiftTaskViewSet(viewsets.ModelViewSet):
                 {'detail': 'User not found in your restaurant'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated, IsManagerOrAdmin])
+    def intelligent_assign(self, request, pk=None):
+        """Intelligently assign a task using the task assignment service"""
+        task = self.get_object()
+        
+        try:
+            assignment_service = TaskAssignmentService(request.user.restaurant)
+            assignment = assignment_service.assign_task(task)
+            
+            if assignment:
+                task.assigned_to = assignment['staff']
+                task.save()
+                
+                return Response({
+                    'task': self.get_serializer(task).data,
+                    'assignment_reason': assignment['reason'],
+                    'score': assignment['score']
+                })
+            else:
+                return Response(
+                    {'detail': 'No suitable staff member found for this task'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        except Exception as e:
+            return Response(
+                {'detail': f'Assignment failed: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['post'], permission_classes=[permissions.IsAuthenticated, IsManagerOrAdmin])
+    def bulk_assign(self, request):
+        """Assign multiple tasks intelligently"""
+        task_ids = request.data.get('task_ids', [])
+        
+        if not task_ids:
+            return Response(
+                {'detail': 'task_ids field is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            tasks = ShiftTask.objects.filter(
+                id__in=task_ids,
+                shift__schedule__restaurant=request.user.restaurant
+            )
+            
+            assignment_service = TaskAssignmentService(request.user.restaurant)
+            assignments = assignment_service.assign_multiple_tasks(list(tasks))
+            
+            # Apply assignments
+            for assignment in assignments:
+                task = assignment['task']
+                task.assigned_to = assignment['staff']
+                task.save()
+            
+            return Response({
+                'assignments': [
+                    {
+                        'task_id': assignment['task'].id,
+                        'staff_id': assignment['staff'].id,
+                        'staff_name': f"{assignment['staff'].first_name} {assignment['staff'].last_name}",
+                        'reason': assignment['reason'],
+                        'score': assignment['score']
+                    }
+                    for assignment in assignments
+                ]
+            })
+        except Exception as e:
+            return Response(
+                {'detail': f'Bulk assignment failed: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=True, methods=['get'], permission_classes=[permissions.IsAuthenticated, IsManagerOrAdmin])
+    def assignment_recommendations(self, request, pk=None):
+        """Get assignment recommendations for a task"""
+        task = self.get_object()
+        
+        try:
+            assignment_service = TaskAssignmentService(request.user.restaurant)
+            recommendations = assignment_service.get_assignment_recommendations(task)
+            
+            return Response({
+                'recommendations': [
+                    {
+                        'staff_id': rec['staff'].id,
+                        'staff_name': f"{rec['staff'].first_name} {rec['staff'].last_name}",
+                        'score': rec['score'],
+                        'reason': rec['reason']
+                    }
+                    for rec in recommendations
+                ]
+            })
+        except Exception as e:
+            return Response(
+                {'detail': f'Failed to get recommendations: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated, IsManagerOrAdmin])
+    def workload_analysis(self, request):
+        """Get workload analysis for all staff"""
+        try:
+            assignment_service = TaskAssignmentService(request.user.restaurant)
+            analysis = assignment_service.analyze_staff_workload()
+            
+            return Response({
+                'workload_analysis': [
+                    {
+                        'staff_id': item['staff'].id,
+                        'staff_name': f"{item['staff'].first_name} {item['staff'].last_name}",
+                        'total_tasks': item['total_tasks'],
+                        'high_priority_tasks': item['high_priority_tasks'],
+                        'workload_score': item['workload_score'],
+                        'status': item['status']
+                    }
+                    for item in analysis
+                ]
+            })
+        except Exception as e:
+            return Response(
+                {'detail': f'Workload analysis failed: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'])
+    def my_tasks(self, request):
+        """Get tasks assigned to the current user"""
+        tasks = ShiftTask.objects.filter(
+            assigned_to=request.user,
+            shift__schedule__restaurant=request.user.restaurant
+        ).order_by('-priority', 'created_at')
+        
+        serializer = self.get_serializer(tasks, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def update_progress(self, request, pk=None):
+        """Update task progress with notes and location"""
+        task = self.get_object()
+        
+        # Check if user is assigned to this task
+        if task.assigned_to != request.user:
+            return Response(
+                {'detail': 'You can only update progress for tasks assigned to you'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        progress_percentage = request.data.get('progress_percentage')
+        progress_notes = request.data.get('progress_notes', '')
+        completion_location = request.data.get('completion_location', '')
+        
+        if progress_percentage is not None:
+            try:
+                progress_percentage = int(progress_percentage)
+                if 0 <= progress_percentage <= 100:
+                    task.progress_percentage = progress_percentage
+                    task.progress_notes = progress_notes
+                    task.completion_location = completion_location
+                    
+                    # Update status based on progress
+                    if progress_percentage == 0:
+                        task.status = 'TODO'
+                    elif progress_percentage == 100:
+                        task.status = 'COMPLETED'
+                        task.completed_at = timezone.now()
+                    else:
+                        task.status = 'IN_PROGRESS'
+                    
+                    task.save()
+                    serializer = self.get_serializer(task)
+                    return Response(serializer.data)
+                else:
+                    return Response(
+                        {'detail': 'Progress percentage must be between 0 and 100'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            except (ValueError, TypeError):
+                return Response(
+                    {'detail': 'Progress percentage must be a valid integer'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        return Response(
+            {'detail': 'progress_percentage is required'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    @action(detail=True, methods=['post'])
+    def add_checkpoint(self, request, pk=None):
+        """Add a progress checkpoint with optional photo"""
+        task = self.get_object()
+        
+        # Check if user is assigned to this task
+        if task.assigned_to != request.user:
+            return Response(
+                {'detail': 'You can only add checkpoints for tasks assigned to you'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        description = request.data.get('description', '')
+        location = request.data.get('location', '')
+        progress_percentage = request.data.get('progress_percentage', task.progress_percentage)
+        photo = request.FILES.get('photo')
+        
+        if not description.strip():
+            return Response(
+                {'detail': 'Description is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Create checkpoint data
+        checkpoint = {
+            'id': f"checkpoint_{len(task.checkpoints)}_{timezone.now().timestamp()}",
+            'timestamp': timezone.now().isoformat(),
+            'description': description,
+            'location': location,
+            'progress_percentage': int(progress_percentage)
+        }
+        
+        # Handle photo upload if provided
+        if photo:
+            # Save photo and add URL to checkpoint
+            # For now, we'll just indicate that a photo was uploaded
+            checkpoint['photo'] = f"checkpoint_photo_{checkpoint['id']}.jpg"
+        
+        # Add checkpoint to task
+        if not isinstance(task.checkpoints, list):
+            task.checkpoints = []
+        
+        task.checkpoints.append(checkpoint)
+        task.progress_percentage = int(progress_percentage)
+        
+        # Update status based on progress
+        if task.progress_percentage == 0:
+            task.status = 'TODO'
+        elif task.progress_percentage == 100:
+            task.status = 'COMPLETED'
+            task.completed_at = timezone.now()
+        else:
+            task.status = 'IN_PROGRESS'
+        
+        task.save()
+        serializer = self.get_serializer(task)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def complete(self, request, pk=None):
+        """Complete task with optional photo and location"""
+        task = self.get_object()
+        
+        # Check if user is assigned to this task
+        if task.assigned_to != request.user:
+            return Response(
+                {'detail': 'You can only complete tasks assigned to you'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        completion_photo = request.FILES.get('completion_photo')
+        completion_location = request.data.get('completion_location', '')
+        progress_notes = request.data.get('progress_notes', task.progress_notes or '')
+        
+        # Mark task as completed
+        task.status = 'COMPLETED'
+        task.progress_percentage = 100
+        task.progress_notes = progress_notes
+        task.completion_location = completion_location
+        task.completed_at = timezone.now()
+        
+        # Handle completion photo
+        if completion_photo:
+            task.completion_photo = completion_photo
+        
+        task.save()
+        serializer = self.get_serializer(task)
+        return Response(serializer.data)
 
 
 # Timesheet ViewSets

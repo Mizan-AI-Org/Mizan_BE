@@ -156,17 +156,131 @@ class ScheduleNotification(models.Model):
         ordering = ['-created_at']
 
 class StaffAvailability(models.Model):
-    """Staff availability preferences"""
+    """Staff availability preferences and time-off requests"""
+    AVAILABILITY_TYPE_CHOICES = [
+        ('REGULAR', 'Regular Availability'),
+        ('TIME_OFF', 'Time Off Request'),
+        ('PREFERRED', 'Preferred Shift'),
+        ('UNAVAILABLE', 'Unavailable'),
+        ('EMERGENCY', 'Emergency Unavailability'),
+    ]
+    
+    REQUEST_STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('APPROVED', 'Approved'),
+        ('DENIED', 'Denied'),
+        ('CANCELLED', 'Cancelled'),
+    ]
+    
+    PRIORITY_CHOICES = [
+        ('LOW', 'Low'),
+        ('MEDIUM', 'Medium'),
+        ('HIGH', 'High'),
+        ('URGENT', 'Urgent'),
+    ]
+    
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     staff = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='availability')
-    day_of_week = models.IntegerField(choices=[(i, day) for i, day in enumerate(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'])])
-    start_time = models.TimeField()
-    end_time = models.TimeField()
+    
+    # Availability type and status
+    availability_type = models.CharField(max_length=20, choices=AVAILABILITY_TYPE_CHOICES, default='REGULAR')
+    status = models.CharField(max_length=20, choices=REQUEST_STATUS_CHOICES, default='APPROVED')
+    priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default='MEDIUM')
+    
+    # Time specifications
+    day_of_week = models.IntegerField(
+        choices=[(i, day) for i, day in enumerate(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'])],
+        null=True, blank=True,
+        help_text="For recurring availability patterns"
+    )
+    specific_date = models.DateField(null=True, blank=True, help_text="For specific date requests")
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
+    start_datetime = models.DateTimeField(null=True, blank=True, help_text="For specific datetime requests")
+    end_datetime = models.DateTimeField(null=True, blank=True, help_text="For specific datetime requests")
+    
+    # Availability preferences
     is_available = models.BooleanField(default=True)
+    preferred_hours_per_week = models.IntegerField(null=True, blank=True, help_text="Preferred weekly hours")
+    max_consecutive_days = models.IntegerField(null=True, blank=True, help_text="Maximum consecutive working days")
+    min_hours_between_shifts = models.IntegerField(default=8, help_text="Minimum hours between shifts")
+    
+    # Request details
+    reason = models.TextField(blank=True, null=True, help_text="Reason for time-off or availability change")
+    notes = models.TextField(blank=True, null=True, help_text="Additional notes or special requirements")
+    
+    # Approval workflow
+    requested_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        CustomUser, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True,
+        related_name='reviewed_availability_requests'
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    approval_notes = models.TextField(blank=True, null=True)
+    
+    # Recurring patterns
+    is_recurring = models.BooleanField(default=False)
+    recurrence_pattern = models.CharField(
+        max_length=20,
+        choices=[
+            ('DAILY', 'Daily'),
+            ('WEEKLY', 'Weekly'),
+            ('BIWEEKLY', 'Bi-weekly'),
+            ('MONTHLY', 'Monthly'),
+        ],
+        null=True, blank=True
+    )
+    recurrence_end_date = models.DateField(null=True, blank=True)
+    
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    def clean(self):
+        """Validate availability data"""
+        from django.core.exceptions import ValidationError
+        
+        # Ensure either day_of_week or specific_date is provided
+        if not self.day_of_week and not self.specific_date:
+            raise ValidationError("Either day_of_week or specific_date must be specified")
+        
+        # Validate time ranges
+        if self.start_time and self.end_time:
+            if self.start_time >= self.end_time:
+                raise ValidationError("Start time must be before end time")
+        
+        if self.start_datetime and self.end_datetime:
+            if self.start_datetime >= self.end_datetime:
+                raise ValidationError("Start datetime must be before end datetime")
+        
+        # Validate recurring patterns
+        if self.is_recurring and not self.recurrence_pattern:
+            raise ValidationError("Recurrence pattern is required for recurring availability")
+    
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
+    
+    def __str__(self):
+        if self.availability_type == 'TIME_OFF':
+            date_str = self.specific_date.strftime('%Y-%m-%d') if self.specific_date else f"{self.get_day_of_week_display()}"
+            return f"{self.staff.get_full_name()} - Time Off: {date_str}"
+        elif self.day_of_week is not None:
+            return f"{self.staff.get_full_name()} - {self.get_day_of_week_display()}: {self.start_time}-{self.end_time}"
+        else:
+            return f"{self.staff.get_full_name()} - {self.specific_date}: {self.start_time}-{self.end_time}"
     
     class Meta:
-        unique_together = ('staff', 'day_of_week')
-        ordering = ['day_of_week', 'start_time']
+        ordering = ['day_of_week', 'specific_date', 'start_time']
+        indexes = [
+            models.Index(fields=['staff', 'availability_type']),
+            models.Index(fields=['staff', 'status']),
+            models.Index(fields=['specific_date']),
+            models.Index(fields=['day_of_week']),
+        ]
 
 class PerformanceMetric(models.Model):
     """Staff performance tracking"""

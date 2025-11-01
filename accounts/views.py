@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.shortcuts import get_object_or_404
-from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer
+from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer, UserSerializer
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
 from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile
@@ -478,3 +478,13 @@ class ResendVerificationEmailView(APIView):
 
 class StaffListAPIView(StaffListView):
     pass
+
+
+class StaffUsersListView(APIView):
+    """List actual staff users for the current restaurant."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        users = CustomUser.objects.filter(restaurant=request.user.restaurant).order_by('first_name', 'last_name')
+        serializer = UserSerializer(users, many=True)
+        return Response(serializer.data)

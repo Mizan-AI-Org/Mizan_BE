@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     'firebase_admin', #  firebase_admin
     'pos',  # Point of Sale app
     'core',  # Core utilities app
+    'checklists',  # Checklist management app
 ]
 
 # ---------------------------
@@ -91,6 +92,9 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',    # REQUIRED for admin
+    'scheduling.middleware.AuditMiddleware',                      # Audit context middleware
+    'scheduling.middleware.RequestLoggingMiddleware',             # Request logging middleware
+    'scheduling.middleware.SecurityAuditMiddleware',              # Security audit middleware
     'django.contrib.messages.middleware.MessageMiddleware',       # REQUIRED for admin
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]

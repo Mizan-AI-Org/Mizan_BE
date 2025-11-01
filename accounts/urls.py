@@ -3,14 +3,17 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     CustomTokenObtainPairView, CustomTokenRefreshView, RegisterView, VerifyEmailView, PasswordResetRequestView,
     PasswordResetConfirmView, RestaurantDetailView, RestaurantUpdateView, StaffInvitationListView, 
-    StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView,
+    StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView, StaffUsersListView,
     LoginView, MeView, InviteStaffView, AcceptInvitationView, pin_login
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
+from .views_invitations import InvitationViewSet, UserManagementViewSet
 
 router = DefaultRouter()
 router.register(r'settings', RestaurantSettingsViewSet, basename='settings')
 router.register(r'location', StaffLocationViewSet, basename='location')
+router.register(r'invitations', InvitationViewSet, basename='invitations')
+router.register(r'users', UserManagementViewSet, basename='users')
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -26,6 +29,7 @@ urlpatterns = [
     path('staff/invitations/', StaffInvitationListView.as_view(), name='staff_invitations'),
     path('staff/profile/<uuid:pk>/update/', StaffProfileUpdateView.as_view(), name='staff_profile_update'),
     path('staff/', StaffListAPIView.as_view(), name='staff_list'),
+    path('staff/users/', StaffUsersListView.as_view(), name='staff_users_list'),
     path('auth/login/', LoginView.as_view(), name='login'),
     path('auth/pin-login/', pin_login, name='pin_login'),
     path('auth/me/', MeView.as_view(), name='me'),

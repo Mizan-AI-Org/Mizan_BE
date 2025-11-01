@@ -26,7 +26,7 @@ class CustomUserSerializer(serializers.ModelSerializer):
 class StaffInvitationSerializer(serializers.ModelSerializer):
     class Meta:
         model = StaffInvitation
-        fields = ['id', 'email', 'role', 'restaurant', 'invited_by', 'token', 'is_accepted', 'created_at', 'expires_at']
+        fields = ['id', 'email', 'role', 'restaurant', 'invited_by', 'token', 'is_accepted', 'created_at', 'expires_at', 'extra_data']
         read_only_fields = ['id', 'token', 'is_accepted', 'created_at', 'expires_at']
 
 

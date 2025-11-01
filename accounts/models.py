@@ -1,5 +1,6 @@
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
+from django.core.validators import MinValueValidator, MaxValueValidator
 import uuid
 from django.contrib.auth.hashers import make_password, check_password
 from django.conf import settings
@@ -54,7 +55,10 @@ class Restaurant(models.Model):
     email = models.EmailField(unique=True)
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
-    radius = models.DecimalField(max_digits=9, decimal_places=2, null=True, blank=True, default=500)  # Default 500m perimeter
+    radius = models.DecimalField(max_digits=9, decimal_places=2, null=True, blank=True, default=100, validators=[
+        MinValueValidator(5),
+        MaxValueValidator(100)
+    ])  # Geofence radius in meters (5m to 100m range)
     geofence_enabled = models.BooleanField(default=True)
     geofence_polygon = models.JSONField(default=list, blank=True)  # Array of lat/lon coordinates for custom perimeter
     created_at = models.DateTimeField(auto_now_add=True)
@@ -129,6 +133,8 @@ class StaffInvitation(models.Model):
     is_accepted = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
+    # Store optional onboarding data like department and phone
+    extra_data = models.JSONField(default=dict, blank=True)
     
     class Meta:
         db_table = 'staff_invitations'
@@ -327,6 +333,8 @@ class StaffProfile(models.Model):
     last_location_longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
     last_location_timestamp = models.DateTimeField(null=True, blank=True)
     geofence_alerts_enabled = models.BooleanField(default=True)
+    # Optional department info captured during onboarding
+    department = models.CharField(max_length=100, blank=True, null=True)
     
     def __str__(self):
         return f"Profile - {self.user.email}"

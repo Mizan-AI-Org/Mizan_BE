@@ -2,6 +2,7 @@ from rest_framework import viewsets, status, filters
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
+from .permissions import IsManagerOrReadOnly
 from django.db import transaction
 from django.utils import timezone
 from datetime import datetime, timedelta
@@ -27,28 +28,40 @@ logger = logging.getLogger(__name__)
 
 # Task Management ViewSets
 class StandardOperatingProcedureViewSet(viewsets.ModelViewSet):
-    """API endpoint for Standard Operating Procedures (SOPs)"""
+    """API endpoint for Standard Operating Procedures (SOPs)
+    Admins/Managers can create/update/delete; staff have read-only access to relevant SOPs
+    """
     queryset = StandardOperatingProcedure.objects.all()
     serializer_class = StandardOperatingProcedureSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsManagerOrReadOnly]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['title', 'description', 'safety_level']
     ordering_fields = ['title', 'safety_level', 'created_at']
     
     def get_queryset(self):
-        """Filter SOPs based on user permissions"""
+        """Filter SOPs based on user permissions
+        - Admins/Managers: all SOPs for their restaurant
+        - Staff: only SOPs linked to their scheduled tasks
+        """
         user = self.request.user
         queryset = StandardOperatingProcedure.objects.all()
-        
+
         # Filter by restaurant
-        if user.restaurant:
+        if getattr(user, 'restaurant', None):
             queryset = queryset.filter(restaurant=user.restaurant)
-            
-        # Filter by safety level if specified
+
+        # Staff can only view SOPs relevant to their schedules/tasks
+        if user.role not in ['SUPER_ADMIN', 'ADMIN', 'MANAGER']:
+            sop_ids = ScheduleTask.objects.filter(
+                schedule__staff=user
+            ).values_list('sop_id', flat=True)
+            queryset = queryset.filter(id__in=sop_ids)
+
+        # Optional safety level filter
         safety_level = self.request.query_params.get('safety_level')
         if safety_level:
             queryset = queryset.filter(safety_level=safety_level)
-            
+
         return queryset
     
     def perform_create(self, serializer):
