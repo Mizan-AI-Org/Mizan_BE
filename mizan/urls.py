@@ -20,17 +20,26 @@ from django.conf import settings
 from django.conf.urls.static import static
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
+from rest_framework.routers import DefaultRouter
+from ai_assistant.views import AIAssistantViewSet, TaskAssignmentAIViewSet
+
+# Create routers for AI Assistant
+router = DefaultRouter()
+router.register(r'assistant', AIAssistantViewSet, basename='ai-assistant')
+router.register(r'assistant/task-assignment', TaskAssignmentAIViewSet, basename='task-assignment-ai')
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('accounts.urls')),
     path('api/dashboard/', include('dashboard.urls')),
     path('api/menu/', include('menu.urls')),
     path('api/inventory/', include('inventory.urls')),
-    path('api/pos/', include('pos.urls')),
     path('api/reporting/', include('reporting.urls')),
     path('api/timeclock/', include('timeclock.urls')),
     path('api/scheduling/', include('scheduling.urls')),
     path('api/notifications/', include('notifications.urls')),
+    path('api/pos/', include('pos.urls')),
+    path('api/', include(router.urls)),
 
 
     # SWAGGER URLS

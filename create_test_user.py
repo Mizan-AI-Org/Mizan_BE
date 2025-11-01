@@ -25,7 +25,8 @@ try:
         first_name="Test",
         last_name="User",
         role="SUPER_ADMIN",
-        restaurant=restaurant
+        restaurant=restaurant,
+        is_verified=True
     )
     
     print("✅ User created successfully!")

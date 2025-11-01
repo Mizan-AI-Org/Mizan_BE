@@ -7,7 +7,6 @@ from django.utils import timezone
 from datetime import timedelta
 
 from menu.models import MenuItem
-from pos.models import Order, OrderItem
 from timeclock.models import ClockEvent
 from scheduling.models import AssignedShift
 from reporting.models import DailySalesReport, AttendanceReport, InventoryReport

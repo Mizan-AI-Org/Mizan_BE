@@ -1,25 +1,20 @@
 from django.urls import path, include
+from rest_framework.routers import DefaultRouter
 from .views import (
-    TableListCreateAPIView,
-    TableRetrieveUpdateDestroyAPIView,
-    OrderListCreateAPIView,
-    OrderRetrieveUpdateDestroyAPIView,
-    OrderStatusUpdateAPIView,
-    OrderItemListCreateAPIView,
-    OrderItemRetrieveUpdateDestroyAPIView,
+    TableViewSet, OrderViewSet, OrderLineItemViewSet,
+    PaymentViewSet, POSTransactionViewSet, ReceiptSettingViewSet,
+    DiscountViewSet
 )
 
+router = DefaultRouter()
+router.register(r'tables', TableViewSet, basename='pos-table')
+router.register(r'orders', OrderViewSet, basename='pos-order')
+router.register(r'line-items', OrderLineItemViewSet, basename='pos-line-item')
+router.register(r'payments', PaymentViewSet, basename='pos-payment')
+router.register(r'transactions', POSTransactionViewSet, basename='pos-transaction')
+router.register(r'receipt-settings', ReceiptSettingViewSet, basename='pos-receipt-setting')
+router.register(r'discounts', DiscountViewSet, basename='pos-discount')
+
 urlpatterns = [
-    # Tables
-    path('tables/', TableListCreateAPIView.as_view(), name='table-list-create'),
-    path('tables/<uuid:pk>/', TableRetrieveUpdateDestroyAPIView.as_view(), name='table-detail'),
-
-    # Orders
-    path('orders/', OrderListCreateAPIView.as_view(), name='order-list-create'),
-    path('orders/<uuid:pk>/', OrderRetrieveUpdateDestroyAPIView.as_view(), name='order-detail'),
-    path('orders/<uuid:pk>/status/', OrderStatusUpdateAPIView.as_view(), name='order-status-update'),
-
-    # Order Items (nested under orders)
-    path('orders/<uuid:order_pk>/items/', OrderItemListCreateAPIView.as_view(), name='order-item-list-create'),
-    path('orders/<uuid:order_pk>/items/<uuid:pk>/', OrderItemRetrieveUpdateDestroyAPIView.as_view(), name='order-item-detail'),
-] 
+    path('', include(router.urls)),
+]

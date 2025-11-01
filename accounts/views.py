@@ -2,11 +2,12 @@ from rest_framework import status, permissions
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView # Import JWT views
 from django.shortcuts import get_object_or_404
-from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer
+from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer # Removed UserSerializer
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
-from .models import CustomUser, Restaurant, StaffInvitation
+from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile # Added StaffProfile
 from django.utils import timezone
 from django.core.files.base import ContentFile
 import base64
@@ -16,8 +17,11 @@ from django.contrib.auth.models import UserManager
 # New imports for invitation
 from django.utils.crypto import get_random_string
 from django.core.mail import send_mail
-from django.template.loader import render_to_string
 from django.utils.html import strip_tags
+from django.template.loader import render_to_string
+from rest_framework import generics
+from .models import CustomUser
+from .serializers import CustomUserSerializer
 
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
@@ -64,14 +68,14 @@ def pin_login(request):
         return Response({
             'refresh': str(refresh),
             'access': str(refresh.access_token),
-            'user': UserSerializer(user).data
+            'user': CustomUserSerializer(user).data # Changed UserSerializer to CustomUserSerializer
         })
     
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET'])
 def user_profile(request):
-    serializer = UserSerializer(request.user)
+    serializer = CustomUserSerializer(request.user) # Changed UserSerializer to CustomUserSerializer
     return Response(serializer.data)
 
 
@@ -308,18 +312,11 @@ class AcceptInvitationView(APIView):
 class StaffListView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
-    def get(self, request):
-        staff = CustomUser.objects.filter(restaurant=request.user.restaurant).exclude(role='SUPER_ADMIN')
-        serializer = CustomUserSerializer(staff, many=True)
-        return Response(serializer.data)
+    def get_queryset(self):
+        return StaffInvitation.objects.filter(restaurant=self.request.user.restaurant).order_by('-created_at')
 
-class StaffDetailView(APIView):
-    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
-
-    def get(self, request, pk):
-        staff_member = get_object_or_404(CustomUser, pk=pk, restaurant=request.user.restaurant)
-        serializer = CustomUserSerializer(staff_member)
-        return Response(serializer.data)
+class StaffProfileUpdateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
 
     def put(self, request, pk):
         staff_member = get_object_or_404(CustomUser, pk=pk, restaurant=request.user.restaurant)
@@ -349,6 +346,86 @@ class RestaurantDetailView(APIView):
             serializer.save()
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    pass
+
+
+class CustomTokenRefreshView(TokenRefreshView):
+    pass
+
+
+class RegisterView(RestaurantOwnerSignupView):
+    pass
+
+
+class VerifyEmailView(APIView):
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request):
+        return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class PasswordResetRequestView(APIView):
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request):
+        return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class PasswordResetConfirmView(APIView):
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request):
+        return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class RestaurantUpdateView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    
+    def put(self, request):
+        restaurant = request.user.restaurant
+        serializer = RestaurantSerializer(restaurant, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class StaffInvitationCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
+    
+    def post(self, request):
+        return InviteStaffView().post(request)
+
+
+class StaffInvitationAcceptView(APIView):
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request):
+        return AcceptInvitationView().post(request)
+
+
+class StaffInvitationListView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
+    
+    def get(self, request):
+        invitations = StaffInvitation.objects.filter(restaurant=request.user.restaurant)
+        serializer = StaffInvitationSerializer(invitations, many=True)
+        return Response(serializer.data)
+
+
+class ResendVerificationEmailView(APIView):
+    permission_classes = [permissions.AllowAny]
+    
+    def post(self, request):
+        return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class StaffListAPIView(StaffListView):
+    pass
+
     
 class StaffPinLoginView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -390,3 +467,4 @@ class StaffPinLoginView(APIView):
                 'access': str(refresh.access_token),
             }
         }, status=status.HTTP_200_OK)
+    

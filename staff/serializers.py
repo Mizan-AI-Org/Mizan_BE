@@ -1,7 +1,8 @@
 from rest_framework import serializers
-from .models import Category, Product, Order, OrderItem, Table
+from .models import Category, Product, Order, OrderItem, Table, Schedule
 from accounts.serializers import CustomUserSerializer, RestaurantSerializer
 import decimal
+from accounts.models import CustomUser # Assuming CustomUser model is in accounts app
 
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
@@ -91,3 +92,16 @@ class OrderCreateSerializer(serializers.ModelSerializer):
             OrderItem.objects.create(order=order, **item_data)
 
         return order
+
+class StaffSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = CustomUser
+        fields = ('id', 'username', 'email', 'first_name', 'last_name')
+
+class ScheduleSerializer(serializers.ModelSerializer):
+    staff = StaffSerializer(read_only=True)
+    staff_id = serializers.PrimaryKeyRelatedField(queryset=CustomUser.objects.all(), source='staff', write_only=True)
+
+    class Meta:
+        model = Schedule
+        fields = ('id', 'staff', 'staff_id', 'title', 'start_time', 'end_time', 'tasks', 'is_recurring', 'recurrence_pattern')

@@ -1,7 +1,13 @@
 import os, sys
 from pathlib import Path
-from decouple import config
+from decouple import config # type: ignore
 from datetime import timedelta
+
+def str_to_bool(value):
+    """Convert string to boolean"""
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ('true', '1', 'yes', 'on')
 
 STAFF_ROLES_CHOICES = [
     ('SUPER_ADMIN', 'Super Admin'),
@@ -15,18 +21,6 @@ STAFF_ROLES_CHOICES = [
 # Base
 # ---------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
-# GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'  
-# GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'  
-GDAL_LIBRARY_PATH = '/usr/lib/aarch64-linux-gnu/libgdal.so'
-GEOS_LIBRARY_PATH = '/usr/lib/aarch64-linux-gnu/libgeos_c.so'
-# import platform
-
-# if platform.system() == "Darwin":  # macOS
-#     GEOS_LIBRARY_PATH = '/opt/homebrew/lib/libgeos_c.dylib'
-#     GDAL_LIBRARY_PATH = '/opt/homebrew/lib/libgdal.dylib'
-# else:  # Linux / Docker
-#     GEOS_LIBRARY_PATH = '/usr/lib/x86_64-linux-gnu/libgeos_c.so'
-#     GDAL_LIBRARY_PATH = '/usr/lib/x86_64-linux-gnu/libgdal.so'
 
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production!')
@@ -44,6 +38,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_filters',
 
     # Third-party apps
     'rest_framework',
@@ -60,20 +55,22 @@ INSTALLED_APPS = [
     'reporting',
     'menu', # New menu app
     'inventory', # New inventory app
-    'pos',
     'staff',
     'notifications',
     'kitchen',
     'chat',
+    'ai_assistant',  # AI Assistant app
     'firebase_admin', #  firebase_admin
+    'pos',  # Point of Sale app
+    'core',  # Core utilities app
 ]
 
 # ---------------------------
 # Firebase Admin SDK Initialization
 # ---------------------------
 import json
-import firebase_admin
-from firebase_admin import credentials
+import firebase_admin # type: ignore
+from firebase_admin import credentials # type: ignore
 
 FIREBASE_SERVICE_ACCOUNT_KEY = config('FIREBASE_SERVICE_ACCOUNT_KEY', default='{}')
 
@@ -184,6 +181,13 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # ---------------------------
+# Authentication Backend
+# ---------------------------
+AUTHENTICATION_BACKENDS = [
+    'accounts.backends.EmailBackend',
+]
+
+# ---------------------------
 # REST Framework / JWT
 # ---------------------------
 REST_FRAMEWORK = {
@@ -265,16 +269,14 @@ EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # ---------------------------
 
 # EMAIL Configuration for Production
+
+print(os.getenv('EMAIL_HOST_PASSWORD', ''), file=sys.stderr)
+print(os.getenv('EMAIL_HOST_USER', 'jarjuadama101@gmail.com'), file=sys.stderr)
+
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
 EMAIL_USE_TLS = True  # For secure connection
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "ankoteayoub@gmail.com")
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "jarjuadama101@gmail.com")
 EMAIL_HOST_PASSWORD =  os.getenv('EMAIL_HOST_PASSWORD', '')
-DEFAULT_FROM_EMAIL = os.getenv("EMAIL_HOST_USER", "ankoteayoub@gmail.com")
-
-# EMAIL_HOST_USER = 'put use email here'
-# EMAIL_HOST_PASSWORD = 'put password here'
-# How to generate password : go to 
-# https://myaccount.google.com/apppasswords?continue=https://myaccount.google.com/&pli=1&rapt=AEjHL4M1Onqr9B9F_jjj5MtH4YxLBet2EYxE2vdE3mltlTFeQRAxGSBbsrepaIfONygqGo3tweBl9cemkEWTtBKQ7DhmmmKP6SAjsnb8O7SX6FWrx_PAEk4
-DEFAULT_FROM_EMAIL = os.getenv("EMAIL_HOST_USER", "ankoteayoub@gmail.com")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "jarjuadama101@gmail.com")
