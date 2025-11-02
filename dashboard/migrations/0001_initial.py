@@ -71,7 +71,7 @@ class Migration(migrations.Migration):
             ],
             options={
                 'verbose_name_plural': 'Tasks',
-                'db_table': 'tasks',
+                'db_table': 'dashboard_tasks',
                 'ordering': ['due_date', 'priority'],
             },
         ),
