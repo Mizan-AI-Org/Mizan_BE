@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     'firebase_admin', #  firebase_admin
     'pos',  # Point of Sale app
     'core',  # Core utilities app
+    'checklists',  # Checklist management app
 ]
 
 # ---------------------------
@@ -294,9 +295,6 @@ else:
     DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=config('EMAIL_HOST_USER', default='no-reply@mizan.local'))
 
 # EMAIL Configuration for Production
-
-print(os.getenv('EMAIL_HOST_PASSWORD', ''), file=sys.stderr)
-print(os.getenv('EMAIL_HOST_USER', 'jarjuadama101@gmail.com'), file=sys.stderr)
 
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'

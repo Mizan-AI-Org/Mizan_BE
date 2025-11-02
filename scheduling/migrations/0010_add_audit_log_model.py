@@ -9,7 +9,7 @@ import django.utils.timezone
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('accounts', '0007_merge_20251028_1730'),
+        ('accounts', '0002_alter_restaurant_address'),
         ('contenttypes', '0002_remove_content_type_name'),
         ('scheduling', '0009_add_audit_and_template_version'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),

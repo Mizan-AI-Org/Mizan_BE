@@ -10,7 +10,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('accounts', '0007_merge_20251028_1730'),
+        ('accounts', '0002_alter_restaurant_address'),
         ('staff', '0001_initial'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
@@ -193,11 +193,7 @@ class Migration(migrations.Migration):
             name='updated_at',
             field=models.DateTimeField(auto_now=True),
         ),
-        migrations.AlterField(
-            model_name='schedule',
-            name='id',
-            field=models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False),
-        ),
+        # Removed altering Schedule.id from BigAutoField to UUIDField since 0001 now uses UUID
         migrations.AddIndex(
             model_name='schedule',
             index=models.Index(fields=['staff', 'start_time'], name='staff_sched_staff_i_ed28f9_idx'),
