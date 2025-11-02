@@ -30,7 +30,7 @@ class ChecklistTemplateSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChecklistTemplate
         fields = [
-            'id', 'name', 'description', 'template_type', 'version',
+            'id', 'name', 'description', 'category', 'version',
             'is_active', 'estimated_duration', 'requires_supervisor_approval',
             'created_by', 'created_at', 'updated_at', 'steps'
         ]
@@ -44,7 +44,7 @@ class ChecklistTemplateCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChecklistTemplate
         fields = [
-            'name', 'description', 'template_type', 'version',
+            'name', 'description', 'category', 'version',
             'estimated_duration', 'requires_supervisor_approval', 'steps'
         ]
     

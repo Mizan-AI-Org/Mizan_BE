@@ -1,4 +1,6 @@
 from rest_framework import serializers
+from django.utils import timezone
+from datetime import datetime
 from .models import Notification, DeviceToken, NotificationPreference, NotificationTemplate, NotificationLog
 
 
@@ -104,3 +106,84 @@ class TestNotificationSerializer(serializers.Serializer):
         child=serializers.ChoiceField(choices=['app', 'email', 'push', 'whatsapp']),
         default=['app']
     )
+
+
+class AnnouncementCreateSerializer(serializers.Serializer):
+    """Serializer for creating announcements to restaurant staff"""
+    title = serializers.CharField(max_length=200)
+    message = serializers.CharField(max_length=2000)
+    priority = serializers.ChoiceField(
+        choices=['LOW', 'MEDIUM', 'HIGH', 'URGENT'],
+        default='MEDIUM'
+    )
+    expires_at = serializers.DateTimeField(required=False, allow_null=True)
+    schedule_for = serializers.DateTimeField(required=False, allow_null=True)
+    # Optional targeting: either specific staff IDs or departments
+    recipients_staff_ids = serializers.ListField(
+        child=serializers.UUIDField(), required=False, allow_empty=True
+    )
+    recipients_departments = serializers.ListField(
+        child=serializers.CharField(max_length=100), required=False, allow_empty=True
+    )
+    
+    def validate_expires_at(self, value):
+        if value and value <= timezone.now():
+            raise serializers.ValidationError("Expiration date must be in the future")
+        return value
+    
+    def validate_schedule_for(self, value):
+        if value and value <= timezone.now():
+            raise serializers.ValidationError("Schedule date must be in the future")
+        return value
+    
+    def create_notifications(self, sender):
+        """Create announcement notifications for targeted recipients or all staff in sender's restaurant"""
+        from accounts.models import CustomUser, StaffProfile
+
+        # Determine target recipients
+        staff_ids = self.validated_data.get('recipients_staff_ids') or []
+        departments = self.validated_data.get('recipients_departments') or []
+
+        if staff_ids:
+            # Target specific staff within the same restaurant
+            staff_qs = CustomUser.objects.filter(
+                id__in=staff_ids,
+                restaurant=sender.restaurant,
+                is_active=True
+            )
+        elif departments:
+            # Target by department within the same restaurant
+            staff_qs = CustomUser.objects.filter(
+                profile__department__in=departments,
+                restaurant=sender.restaurant,
+                is_active=True
+            )
+        else:
+            # Default: all staff in the restaurant
+            staff_qs = CustomUser.objects.filter(
+                restaurant=sender.restaurant,
+                is_active=True
+            )
+
+        # Exclude the sender
+        staff_qs = staff_qs.exclude(id=sender.id)
+
+        notifications = []
+        for staff in staff_qs:
+            notification = Notification.objects.create(
+                recipient=staff,
+                sender=sender,
+                title=self.validated_data['title'],
+                message=self.validated_data['message'],
+                notification_type='ANNOUNCEMENT',
+                priority=self.validated_data['priority'],
+                expires_at=self.validated_data.get('expires_at'),
+                data={
+                    'announcement': True,
+                    'scheduled_for': self.validated_data.get('schedule_for').isoformat() if self.validated_data.get('schedule_for') else None,
+                    'targeted': bool(staff_ids or departments)
+                }
+            )
+            notifications.append(notification)
+
+        return notifications

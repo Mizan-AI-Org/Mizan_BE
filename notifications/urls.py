@@ -22,4 +22,7 @@ urlpatterns = [
     
     # Testing and utilities
     path('test/', views.send_test_notification, name='send-test-notification'),
+    
+    # Announcements
+    path('announcements/create/', views.create_announcement, name='create-announcement'),
 ]

@@ -5,12 +5,14 @@ from rest_framework.pagination import PageNumberPagination
 from django.utils import timezone
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
+from accounts.permissions import IsAdminOrSuperAdmin
 
 from .models import Notification, NotificationPreference, DeviceToken
 from .serializers import (
     NotificationSerializer, 
     NotificationPreferenceSerializer,
-    DeviceTokenSerializer
+    DeviceTokenSerializer,
+    AnnouncementCreateSerializer
 )
 from .services import notification_service
 
@@ -79,6 +81,54 @@ def mark_notification_read(request, notification_id):
             'message': 'Notification marked as read',
             'read_at': notification.read_at
         })
+        
+    except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([IsAdminOrSuperAdmin])
+def create_announcement(request):
+    """Create and send announcement to all restaurant staff"""
+    try:
+        serializer = AnnouncementCreateSerializer(data=request.data)
+        
+        if not serializer.is_valid():
+            return Response({
+                'success': False,
+                'errors': serializer.errors
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Create notifications for all staff
+        notifications = serializer.create_notifications(sender=request.user)
+        targeted = bool(
+            serializer.validated_data.get('recipients_staff_ids') or 
+            serializer.validated_data.get('recipients_departments')
+        )
+        
+        # Send via notification service for immediate delivery
+        for notification in notifications:
+            notification_service.send_custom_notification(
+                recipient=notification.recipient,
+                message=notification.message,
+                notification_type='ANNOUNCEMENT',
+                channels=['app']
+            )
+        
+        return Response({
+            'success': True,
+            'message': (
+                f"Announcement sent to {len(notifications)} targeted recipients"
+                if targeted else
+                f"Announcement sent to {len(notifications)} staff members"
+            ),
+            'notification_count': len(notifications),
+            'title': serializer.validated_data['title'],
+            'targeted': targeted
+        }, status=status.HTTP_201_CREATED)
         
     except Exception as e:
         return Response({

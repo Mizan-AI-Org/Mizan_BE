@@ -35,4 +35,6 @@ urlpatterns = [
     path('auth/me/', MeView.as_view(), name='me'),
     path('staff/invite/', InviteStaffView.as_view(), name='invite_staff'),
     path('staff/accept-invitation/', AcceptInvitationView.as_view(), name='accept_invitation'),
+    # Alias to align with frontend API client path
+    path('auth/accept-invitation/', AcceptInvitationView.as_view(), name='accept_invitation_auth'),
 ]

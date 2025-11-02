@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.db.models import Q
 from django.utils import timezone
+from datetime import timedelta
 
 from .models import CustomUser, StaffInvitation
 from .serializers import (
@@ -160,15 +161,79 @@ class InvitationViewSet(viewsets.ModelViewSet):
         
         return queryset.order_by('-created_at')
     
-    def perform_create(self, serializer):
-        """Create single invitation"""
-        invitation = serializer.save(
-            restaurant=self.request.user.restaurant,
-            invited_by=self.request.user
-        )
-        
-        # Send invitation email
-        UserManagementService._send_invitation_email(invitation)
+    def create(self, request, *args, **kwargs):
+        """Create single invitation and send email, returning JSON even on errors."""
+        try:
+            serializer = self.get_serializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+
+            # Validate restaurant context
+            user = request.user
+            restaurant = getattr(user, 'restaurant', None)
+            if not restaurant:
+                return Response(
+                    {'detail': 'No restaurant context for current user'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Prevent duplicate pending invitations
+            email = serializer.validated_data.get('email')
+            existing = StaffInvitation.objects.filter(
+                restaurant=restaurant,
+                email=email,
+                is_accepted=False,
+                expires_at__gt=timezone.now()
+            ).first()
+            if existing:
+                return Response(
+                    {'detail': f'Invitation already pending for {email}'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Generate secure token and expiry
+            import secrets
+            token = secrets.token_urlsafe(32)
+            expires_in_days = int(request.data.get('expires_in_days', 7))
+            expires_at = timezone.now() + timedelta(days=expires_in_days)
+
+            # Normalize extra_data from request for convenience
+            extra_data = serializer.validated_data.get('extra_data') or {}
+            # Allow top-level fields to be merged into extra_data if provided
+            for key in ('first_name', 'last_name', 'department', 'phone'):
+                if key in request.data and request.data.get(key) is not None:
+                    extra_data[key] = request.data.get(key)
+
+            # Save with server-side fields
+            invitation = serializer.save(
+                restaurant=restaurant,
+                invited_by=user,
+                token=token,
+                expires_at=expires_at,
+                extra_data=extra_data,
+            )
+
+            # Send invitation email (do not throw HTML errors)
+            email_ok = UserManagementService._send_invitation_email(invitation)
+            headers = self.get_success_headers(StaffInvitationSerializer(invitation).data)
+            if email_ok:
+                return Response(
+                    StaffInvitationSerializer(invitation).data,
+                    status=status.HTTP_201_CREATED,
+                    headers=headers
+                )
+            else:
+                # Invitation is created even if email fails; return 201 with a message
+                return Response(
+                    {
+                        'detail': 'Invitation created successfully, but email failed to send',
+                        'invitation': StaffInvitationSerializer(invitation).data,
+                    },
+                    status=status.HTTP_201_CREATED,
+                    headers=headers
+                )
+        except Exception as e:
+            logger.error(f"Invitation creation error: {str(e)}")
+            return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['post'])
     def bulk(self, request):
@@ -258,12 +323,8 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Attempt to send invitation email; returns None, log handled inside
-        try:
-            UserManagementService._send_invitation_email(invitation)
-            success = True
-        except Exception:
-            success = False
+        # Attempt to send invitation email and return status
+        success = UserManagementService._send_invitation_email(invitation)
         
         if success:
             return Response({'detail': 'Invitation email sent'})

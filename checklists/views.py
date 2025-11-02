@@ -11,6 +11,7 @@ from django.utils import timezone
 from django.db.models import Q, Count, Avg
 from django.db import transaction
 from django.core.files.base import ContentFile
+from datetime import datetime
 import base64
 import uuid
 import json
@@ -27,7 +28,9 @@ from .serializers import (
     ChecklistEvidenceSerializer, ChecklistActionSerializer,
     ChecklistSyncSerializer
 )
-from .services import ChecklistSyncService, ChecklistValidationService
+from .services import ChecklistSyncService, ChecklistValidationService, ChecklistNotificationService
+from accounts.permissions import IsAdminOrSuperAdmin
+from accounts.models import AuditLog, CustomUser
 from core.permissions import IsRestaurantOwnerOrManager
 from scheduling.models import ShiftTask
 from scheduling.task_templates import TaskTemplate
@@ -46,9 +49,11 @@ class ChecklistTemplateViewSet(viewsets.ModelViewSet):
     - POST /api/checklists/templates/{id}/duplicate/ - Duplicate template
     """
     serializer_class = ChecklistTemplateSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    # Admin-only access to manage templates via API
+    permission_classes = [IsAdminOrSuperAdmin]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['template_type', 'is_active']
+    # Use category (not template_type) per model fields
+    filterset_fields = ['category', 'is_active']
     search_fields = ['name', 'description']
     ordering_fields = ['name', 'created_at', 'updated_at']
     ordering = ['-created_at']
@@ -64,9 +69,51 @@ class ChecklistTemplateViewSet(viewsets.ModelViewSet):
         return ChecklistTemplateSerializer
     
     def perform_create(self, serializer):
-        serializer.save(
+        template = serializer.save(
             restaurant=self.request.user.restaurant,
             created_by=self.request.user
+        )
+        # Audit logging for template creation
+        self._audit(
+            action_type='CREATE',
+            entity=template,
+            description=f"Created checklist template '{template.name}'",
+            old_values={},
+            new_values=self.get_serializer(template).data
+        )
+
+    def perform_update(self, serializer):
+        # Capture old values before update
+        instance = self.get_object()
+        old_values = self.get_serializer(instance).data
+        template = serializer.save()
+        # Audit logging for template update
+        self._audit(
+            action_type='UPDATE',
+            entity=template,
+            description=f"Updated checklist template '{template.name}'",
+            old_values=old_values,
+            new_values=self.get_serializer(template).data
+        )
+
+    def perform_destroy(self, instance):
+        # Audit logging for template deletion
+        old_values = self.get_serializer(instance).data
+        name = instance.name
+        template_id = str(instance.id)
+        restaurant = instance.restaurant
+        instance.delete()
+        AuditLog.create_log(
+            restaurant=restaurant,
+            user=self.request.user,
+            action_type='DELETE',
+            entity_type='ChecklistTemplate',
+            description=f"Deleted checklist template '{name}'",
+            entity_id=template_id,
+            old_values=old_values,
+            new_values={},
+            ip_address=self._get_ip(),
+            user_agent=self.request.META.get('HTTP_USER_AGENT', '')
         )
     
     @action(detail=True, methods=['post'])
@@ -79,7 +126,7 @@ class ChecklistTemplateViewSet(viewsets.ModelViewSet):
             restaurant=template.restaurant,
             name=f"{template.name} (Copy)",
             description=template.description,
-            template_type=template.template_type,
+            category=template.category,
             estimated_duration=template.estimated_duration,
             requires_supervisor_approval=template.requires_supervisor_approval,
             created_by=request.user
@@ -107,7 +154,96 @@ class ChecklistTemplateViewSet(viewsets.ModelViewSet):
             )
         
         serializer = self.get_serializer(new_template)
+        # Audit log for duplication
+        self._audit(
+            action_type='CREATE',
+            entity=new_template,
+            description=f"Duplicated checklist template '{template.name}' -> '{new_template.name}'",
+            old_values={},
+            new_values=serializer.data
+        )
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminOrSuperAdmin])
+    def assign(self, request, pk=None):
+        """Assign this template to a staff member (admin-only).
+
+        Expects JSON body: { "user_id": "<uuid>", "due_date": "<iso8601 optional>" }
+        Creates a ChecklistExecution for the specified user and sends a notification.
+        """
+        template = self.get_object()
+        user_id = request.data.get('user_id')
+        due_date_str = request.data.get('due_date')
+
+        if not user_id:
+            return Response({ 'error': 'user_id is required' }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            assignee = CustomUser.objects.get(id=user_id, restaurant=request.user.restaurant)
+        except CustomUser.DoesNotExist:
+            return Response({ 'error': 'User not found in your restaurant' }, status=status.HTTP_404_NOT_FOUND)
+
+        # Create execution
+        with transaction.atomic():
+            parsed_due = None
+            if due_date_str:
+                try:
+                    parsed_due = datetime.fromisoformat(due_date_str)
+                    if timezone.is_naive(parsed_due):
+                        parsed_due = timezone.make_aware(parsed_due)
+                except Exception:
+                    return Response({ 'error': 'Invalid due_date format. Use ISO 8601.' }, status=status.HTTP_400_BAD_REQUEST)
+            execution = ChecklistExecution.objects.create(
+                template=template,
+                assigned_to=assignee,
+                due_date=parsed_due,
+                status='NOT_STARTED'
+            )
+            # Pre-create step responses
+            for step in template.steps.all():
+                ChecklistStepResponse.objects.create(execution=execution, step=step)
+
+        # Send notification
+        notifier = ChecklistNotificationService()
+        notifier.send_assignment_notification(execution)
+
+        # Audit log for assignment (as template-related operational action)
+        AuditLog.create_log(
+            restaurant=request.user.restaurant,
+            user=request.user,
+            action_type='OTHER',
+            entity_type='ChecklistTemplate',
+            entity_id=str(template.id),
+            description=f"Assigned template '{template.name}' to {assignee.email}",
+            old_values={},
+            new_values={'execution_id': str(execution.id), 'assigned_to': str(assignee.id), 'due_date': due_date_str},
+            ip_address=self._get_ip(),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')
+        )
+
+        exec_serializer = ChecklistExecutionSerializer(execution, context={'request': request})
+        return Response(exec_serializer.data, status=status.HTTP_201_CREATED)
+
+    def _audit(self, action_type: str, entity, description: str, old_values=None, new_values=None):
+        """Helper to create audit logs consistently"""
+        AuditLog.create_log(
+            restaurant=self.request.user.restaurant,
+            user=self.request.user,
+            action_type=action_type,
+            entity_type='ChecklistTemplate',
+            entity_id=str(entity.id),
+            description=description,
+            old_values=old_values or {},
+            new_values=new_values or {},
+            ip_address=self._get_ip(),
+            user_agent=self.request.META.get('HTTP_USER_AGENT', '')
+        )
+
+    def _get_ip(self):
+        forwarded = self.request.META.get('HTTP_X_FORWARDED_FOR')
+        if forwarded:
+            return forwarded.split(',')[0].strip()
+        return self.request.META.get('REMOTE_ADDR')
     
     @action(detail=True, methods=['get'])
     def usage_stats(self, request, pk=None):
@@ -151,7 +287,7 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
     serializer_class = ChecklistExecutionSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['status', 'template__template_type', 'assigned_to']
+    filterset_fields = ['status', 'template__category', 'assigned_to']
     search_fields = ['template__name', 'completion_notes']
     ordering_fields = ['created_at', 'due_date', 'progress_percentage']
     ordering = ['-created_at']

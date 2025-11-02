@@ -1,9 +1,13 @@
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
+from django.core.exceptions import ValidationError
 import uuid
+import re
 from django.contrib.auth.hashers import make_password, check_password
 from django.conf import settings
+from django.utils import timezone
+from datetime import timedelta
 
 class CustomUserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
@@ -50,7 +54,7 @@ class CustomUserManager(BaseUserManager):
 class Restaurant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
-    address = models.CharField(max_length=255)
+    address = models.CharField(max_length=255, blank=True, null=True)
     phone = models.CharField(max_length=20, blank=True, null=True)
     email = models.EmailField(unique=True)
     latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
@@ -102,6 +106,12 @@ class CustomUser(AbstractUser):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
+    # Security fields for account lockout
+    failed_login_attempts = models.IntegerField(default=0)
+    account_locked_until = models.DateTimeField(null=True, blank=True)
+    last_failed_login = models.DateTimeField(null=True, blank=True)
+    last_successful_login = models.DateTimeField(null=True, blank=True)
+    
     # Remove username and use email instead
     username = None
     email = models.EmailField(unique=True)
@@ -118,10 +128,89 @@ class CustomUser(AbstractUser):
         return f"{self.get_full_name()} - {self.restaurant.name}" if self.restaurant else self.get_full_name()
         
     def set_pin(self, raw_pin):
-        self.pin_code = make_password(raw_pin)
+        """Set a 4-digit PIN for staff users with validation."""
+        if not self.is_staff_role():
+            raise ValidationError("Only staff members can have PIN codes.")
+        
+        # Validate PIN format
+        if not re.match(r'^\d{4}$', str(raw_pin)):
+            raise ValidationError("PIN must be exactly 4 digits.")
+        
+        self.pin_code = make_password(str(raw_pin))
         
     def check_pin(self, raw_pin):
-        return check_password(raw_pin, self.pin_code)
+        """Check PIN with account lockout protection."""
+        if self.is_account_locked():
+            return False
+            
+        if not self.pin_code:
+            return False
+            
+        is_valid = check_password(str(raw_pin), self.pin_code)
+        
+        if is_valid:
+            self.reset_failed_attempts()
+            self.last_successful_login = timezone.now()
+            self.save(update_fields=['failed_login_attempts', 'account_locked_until', 'last_successful_login'])
+        else:
+            self.increment_failed_attempts()
+            
+        return is_valid
+    
+    def is_staff_role(self):
+        """Check if user has a staff role (not admin/owner)."""
+        admin_roles = ['SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER']
+        return self.role not in admin_roles
+    
+    def is_admin_role(self):
+        """Check if user has an admin role."""
+        admin_roles = ['SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER']
+        return self.role in admin_roles
+    
+    def is_account_locked(self):
+        """Check if account is currently locked."""
+        if not self.account_locked_until:
+            return False
+        return timezone.now() < self.account_locked_until
+    
+    def increment_failed_attempts(self):
+        """Increment failed login attempts and lock account if necessary."""
+        self.failed_login_attempts += 1
+        self.last_failed_login = timezone.now()
+        
+        # Lock account after 5 failed attempts
+        if self.failed_login_attempts >= 5:
+            # Lock for 30 minutes
+            self.account_locked_until = timezone.now() + timedelta(minutes=30)
+            
+        self.save(update_fields=['failed_login_attempts', 'last_failed_login', 'account_locked_until'])
+    
+    def reset_failed_attempts(self):
+        """Reset failed login attempts after successful login."""
+        self.failed_login_attempts = 0
+        self.account_locked_until = None
+        
+    def validate_password_complexity(self, password):
+        """Validate password complexity for admin users."""
+        if not self.is_admin_role():
+            return True
+            
+        if len(password) < 8:
+            raise ValidationError("Password must be at least 8 characters long.")
+        
+        if not re.search(r'[A-Z]', password):
+            raise ValidationError("Password must contain at least one uppercase letter.")
+        
+        if not re.search(r'[a-z]', password):
+            raise ValidationError("Password must contain at least one lowercase letter.")
+        
+        if not re.search(r'\d', password):
+            raise ValidationError("Password must contain at least one digit.")
+        
+        if not re.search(r'[!@#$%^&*(),.?":{}|<>]', password):
+            raise ValidationError("Password must contain at least one special character.")
+        
+        return True
 
 class StaffInvitation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -293,7 +382,14 @@ class AuditLog(models.Model):
         ('UPDATE', 'Updated'),
         ('DELETE', 'Deleted'),
         ('LOGIN', 'Login'),
+        ('LOGIN_FAILED', 'Login Failed'),
+        ('LOGIN_PIN', 'PIN Login'),
+        ('LOGIN_PIN_FAILED', 'PIN Login Failed'),
         ('LOGOUT', 'Logout'),
+        ('ACCOUNT_LOCKED', 'Account Locked'),
+        ('ACCOUNT_UNLOCKED', 'Account Unlocked'),
+        ('PASSWORD_CHANGED', 'Password Changed'),
+        ('PIN_CHANGED', 'PIN Changed'),
         ('PERMISSION_CHANGE', 'Permission Changed'),
         ('ORDER_ACTION', 'Order Action'),
         ('INVENTORY_ACTION', 'Inventory Action'),
@@ -319,6 +415,24 @@ class AuditLog(models.Model):
     
     def __str__(self):
         return f"{self.get_action_type_display()} by {self.user.email if self.user else 'Unknown'}"
+    
+    @classmethod
+    def create_log(cls, restaurant, user, action_type, entity_type, description, 
+                   entity_id=None, old_values=None, new_values=None, 
+                   ip_address=None, user_agent=None):
+        """Create an audit log entry."""
+        return cls.objects.create(
+            restaurant=restaurant,
+            user=user,
+            action_type=action_type,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            description=description,
+            old_values=old_values or {},
+            new_values=new_values or {},
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
 
 
 class StaffProfile(models.Model):

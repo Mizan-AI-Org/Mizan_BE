@@ -376,27 +376,35 @@ class UserManagementService:
     
     @staticmethod
     def _send_invitation_email(invitation):
-        """Send invitation email to user"""
+        """Send invitation email to user. Returns True on success, False on failure."""
         try:
+            # Use the React route that reads token from query params
+            token_value = getattr(invitation, 'invitation_token', getattr(invitation, 'token', ''))
+            invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token_value}"
             context = {
                 'invitation': invitation,
-                'acceptance_link': f"{settings.FRONTEND_URL}/auth/accept-invitation/{getattr(invitation, 'invitation_token', getattr(invitation, 'token', ''))}",
+                'invite_link': invite_link,
                 'expires_at': invitation.expires_at.strftime('%Y-%m-%d %H:%M:%S'),
                 'restaurant_name': invitation.restaurant.name,
+                'year': timezone.now().year,
             }
-            
-            html_message = render_to_string('emails/invitation.html', context)
-            
+
+            # Render template and send mail within the same try block so any
+            # template errors are caught and surfaced as a graceful failure
+            html_message = render_to_string('emails/staff_invite.html', context)
+
             send_mail(
                 subject=f"You're invited to join {invitation.restaurant.name}",
-                message=f"You've been invited to join {invitation.restaurant.name}",
+                message=f"You've been invited to join {invitation.restaurant.name}. Use this link: {invite_link}",
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[invitation.email],
                 html_message=html_message,
                 fail_silently=False,
             )
+            return True
         except Exception as e:
             logger.error(f"Failed to send invitation email: {str(e)}")
+            return False
 
 
 class RoleManagementService:

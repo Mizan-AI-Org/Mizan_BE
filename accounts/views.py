@@ -7,7 +7,7 @@ from django.shortcuts import get_object_or_404
 from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer, UserSerializer
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
-from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile
+from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile, AuditLog
 from django.utils import timezone
 from django.core.files.base import ContentFile
 import base64
@@ -32,32 +32,68 @@ class IsManagerOrAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role in ['ADMIN', 'SUPER_ADMIN']
 
+def get_client_ip(request):
+    """Get client IP address from request."""
+    x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded_for:
+        ip = x_forwarded_for.split(',')[0]
+    else:
+        ip = request.META.get('REMOTE_ADDR')
+    return ip
+
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def pin_login(request):
     serializer = PinLoginSerializer(data=request.data)
+    ip_address = get_client_ip(request)
+    user_agent = request.META.get('HTTP_USER_AGENT', '')
     
     if serializer.is_valid():
         user = serializer.validated_data['user']
-        image_data = serializer.validated_data.get('image_data')
+        image_data = request.data.get('image_data')  # Get from request.data instead of validated_data
+        
+        # Log successful PIN login
+        AuditLog.create_log(
+            restaurant=user.restaurant,
+            user=user,
+            action_type='LOGIN_PIN',
+            entity_type='USER',
+            entity_id=user.id,
+            description=f'Successful PIN login for user {user.email}',
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
         
         if image_data:
-            # Decode base64 image data
-            format, imgstr = image_data.split(';base64,') # format looks like: data:image/png
-            ext = format.split('/')[-1]
-            
-            data = ContentFile(base64.b64decode(imgstr), name=f'{user.id}_clock_in.{ext}')
-            
-            # Save the image (you might want to link this to a ClockEvent or UserProfile)
-            # For now, let's just save it to a temporary location or a user-specific folder
-            image_path = os.path.join(settings.MEDIA_ROOT, 'clock_in_photos', data.name)
-            os.makedirs(os.path.dirname(image_path), exist_ok=True)
-            with open(image_path, 'wb+') as destination:
-                destination.write(data.read())
-            
-            # You can also save the image path to the user's profile or a clock event model
-            # For example: user.profile.clock_in_photo = image_path
-            # user.profile.save()
+            try:
+                # Decode base64 image data
+                format, imgstr = image_data.split(';base64,') # format looks like: data:image/png
+                ext = format.split('/')[-1]
+                
+                data = ContentFile(base64.b64decode(imgstr), name=f'{user.id}_clock_in.{ext}')
+                
+                # Save the image (you might want to link this to a ClockEvent or UserProfile)
+                # For now, let's just save it to a temporary location or a user-specific folder
+                image_path = os.path.join(settings.MEDIA_ROOT, 'clock_in_photos', data.name)
+                os.makedirs(os.path.dirname(image_path), exist_ok=True)
+                with open(image_path, 'wb+') as destination:
+                    destination.write(data.read())
+                
+                # You can also save the image path to the user's profile or a clock event model
+                # For example: user.profile.clock_in_photo = image_path
+                # user.profile.save()
+            except Exception as e:
+                # Log image processing error but don't fail the login
+                AuditLog.create_log(
+                    restaurant=user.restaurant,
+                    user=user,
+                    action_type='ERROR',
+                    entity_type='USER',
+                    entity_id=user.id,
+                    description=f'Failed to process clock-in image: {str(e)}',
+                    ip_address=ip_address,
+                    user_agent=user_agent
+                )
             
         # Generate JWT tokens
         refresh = RefreshToken.for_user(user)
@@ -65,8 +101,32 @@ def pin_login(request):
         return Response({
             'refresh': str(refresh),
             'access': str(refresh.access_token),
-            'user': CustomUserSerializer(user).data # Changed UserSerializer to CustomUserSerializer
+            'user': CustomUserSerializer(user).data
         })
+    else:
+        # Log failed PIN login attempt
+        pin_code = request.data.get('pin_code', '')
+        email = request.data.get('email', '')
+        
+        # Try to find user for logging (without revealing if user exists)
+        user_for_log = None
+        if email:
+            try:
+                user_for_log = CustomUser.objects.get(email=email)
+            except CustomUser.DoesNotExist:
+                pass
+        
+        # Log failed attempt
+        AuditLog.create_log(
+            restaurant=user_for_log.restaurant if user_for_log else None,
+            user=user_for_log,
+            action_type='LOGIN_PIN_FAILED',
+            entity_type='USER',
+            entity_id=user_for_log.id if user_for_log else None,
+            description=f'Failed PIN login attempt for {"email: " + email if email else "PIN only login"}',
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
     
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -149,18 +209,109 @@ class LoginView(APIView):
     def post(self, request):
         email = request.data.get('email')
         password = request.data.get('password')
+        ip_address = get_client_ip(request)
+        user_agent = request.META.get('HTTP_USER_AGENT', '')
 
-        user = authenticate(email=email, password=password)
+        if not email or not password:
+            return Response(
+                {'error': 'Email and password are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-        if user:
-            refresh = RefreshToken.for_user(user)
+        try:
+            user = CustomUser.objects.get(email=email, is_active=True)
+            
+            # Check if account is locked
+            if user.is_account_locked():
+                AuditLog.create_log(
+                    restaurant=user.restaurant,
+                    user=user,
+                    action_type='LOGIN_FAILED',
+                    entity_type='USER',
+                    entity_id=user.id,
+                    description=f'Login attempt on locked account for {email}',
+                    ip_address=ip_address,
+                    user_agent=user_agent
+                )
+                return Response(
+                    {'error': 'Account is temporarily locked due to multiple failed attempts. Please try again later.'},
+                    status=status.HTTP_423_LOCKED
+                )
+            
+            # Check if user is admin (should use password, not PIN)
+            if not user.is_admin_role():
+                AuditLog.create_log(
+                    restaurant=user.restaurant,
+                    user=user,
+                    action_type='LOGIN_FAILED',
+                    entity_type='USER',
+                    entity_id=user.id,
+                    description=f'Password login attempted for non-admin user {email}',
+                    ip_address=ip_address,
+                    user_agent=user_agent
+                )
+                return Response(
+                    {'error': 'Password authentication is only available for admin users. Staff should use PIN login.'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            
+        except CustomUser.DoesNotExist:
+            # Log failed attempt for non-existent user
+            AuditLog.create_log(
+                restaurant=None,
+                user=None,
+                action_type='LOGIN_FAILED',
+                entity_type='USER',
+                description=f'Login attempt for non-existent user {email}',
+                ip_address=ip_address,
+                user_agent=user_agent
+            )
+            return Response(
+                {'error': 'Invalid credentials'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        # Authenticate user
+        authenticated_user = authenticate(email=email, password=password)
+
+        if authenticated_user:
+            # Reset failed attempts on successful login
+            authenticated_user.reset_failed_attempts()
+            
+            # Log successful login
+            AuditLog.create_log(
+                restaurant=authenticated_user.restaurant,
+                user=authenticated_user,
+                action_type='LOGIN',
+                entity_type='USER',
+                entity_id=authenticated_user.id,
+                description=f'Successful password login for user {email}',
+                ip_address=ip_address,
+                user_agent=user_agent
+            )
+            
+            refresh = RefreshToken.for_user(authenticated_user)
             return Response({
-                'user': CustomUserSerializer(user).data,
+                'user': CustomUserSerializer(authenticated_user).data,
                 'tokens': {
                     'refresh': str(refresh),
                     'access': str(refresh.access_token),
                 }
             })
+        else:
+            # Increment failed attempts and log
+            user.increment_failed_attempts()
+            
+            AuditLog.create_log(
+                restaurant=user.restaurant,
+                user=user,
+                action_type='LOGIN_FAILED',
+                entity_type='USER',
+                entity_id=user.id,
+                description=f'Failed password login for user {email}',
+                ip_address=ip_address,
+                user_agent=user_agent
+            )
 
         return Response(
             {'error': 'Invalid credentials'},
