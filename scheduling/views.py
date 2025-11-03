@@ -162,7 +162,8 @@ class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         schedule_id = self.kwargs.get('schedule_pk')
         schedule = WeeklySchedule.objects.get(id=schedule_id, restaurant=self.request.user.restaurant)
-        serializer.save(schedule=schedule, restaurant=self.request.user.restaurant)
+        # AssignedShift model does not have a restaurant field; restaurant comes via schedule
+        serializer.save(schedule=schedule)
 
 class AssignedShiftRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = AssignedShiftSerializer

@@ -24,7 +24,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production!')
-DEBUG = config('DEBUG', default=True, cast=bool)
+DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
 # ---------------------------
@@ -271,7 +271,7 @@ EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # Security settings (production)
 # ---------------------------
 # Default to local dev URL; can be overridden via environment
-FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:8080')
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:8081')
 
 # ---------------------------
 # Email Configuration
@@ -279,27 +279,17 @@ FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:8080')
 # Use a reliable local SMTP sink (Mailhog) in development, SMTP in production
 if DEBUG:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    EMAIL_HOST = config('DEV_EMAIL_HOST', default='localhost')
-    EMAIL_PORT = int(config('DEV_EMAIL_PORT', default='1025'))
+    EMAIL_HOST = os.getenv('DEV_EMAIL_HOST', 'localhost')
+    EMAIL_PORT = int(os.getenv('DEV_EMAIL_PORT', '1025'))
     EMAIL_USE_TLS = False
-    EMAIL_HOST_USER = config('DEV_EMAIL_USER', default='')
-    EMAIL_HOST_PASSWORD = config('DEV_EMAIL_PASSWORD', default='')
-    DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='no-reply@mizan.local')
+    EMAIL_HOST_USER = os.getenv('DEV_EMAIL_USER', '')
+    EMAIL_HOST_PASSWORD = os.getenv('DEV_EMAIL_PASSWORD', '')
+    DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'no-reply@mizan.local')
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-    EMAIL_PORT = int(config('EMAIL_PORT', default='587'))
+    EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
+    EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
     EMAIL_USE_TLS = True
-    EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
-    EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-    DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=config('EMAIL_HOST_USER', default='no-reply@mizan.local'))
-
-# EMAIL Configuration for Production
-
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True  # For secure connection
-EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "jarjuadama101@gmail.com")
-EMAIL_HOST_PASSWORD =  os.getenv('EMAIL_HOST_PASSWORD', '')
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "jarjuadama101@gmail.com")
+    EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+    EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+    DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', os.getenv('EMAIL_HOST_USER', 'no-reply@mizan.local'))

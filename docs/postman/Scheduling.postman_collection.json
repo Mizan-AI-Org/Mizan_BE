@@ -1,0 +1,239 @@
+{
+  "info": {
+    "_postman_id": "7c2f4d4e-1f35-4e1c-9d1c-6d8f70b7a111",
+    "name": "Mizan Scheduling E2E",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "End-to-end scheduling test suite: auth → setup → generate → verify."
+  },
+  "item": [
+    {
+      "name": "Auth / Login (Admin)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": { "raw": "{{baseUrl}}/accounts/auth/login/", "host": ["{{baseUrl}}"], "path": ["accounts","auth","login",""] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{adminEmail}}\",\n  \"password\": \"{{adminPassword}}\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Login 200', function () { pm.response.to.be.success; });",
+              "var json = pm.response.json();",
+              "pm.environment.set('accessToken', json.tokens && json.tokens.access ? json.tokens.access : '');",
+              "pm.environment.set('refreshToken', json.tokens && json.tokens.refresh ? json.tokens.refresh : '');"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auth / Me",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": { "raw": "{{baseUrl}}/accounts/auth/me/", "host": ["{{baseUrl}}"], "path": ["accounts","auth","me",""] }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Me 200', function () { pm.response.to.be.success; });",
+              "var json = pm.response.json();",
+              "pm.environment.set('userId', json.id || '');",
+              "pm.environment.set('restaurantId', json.restaurant || '');"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Scheduling / Templates / Create",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": { "raw": "{{baseUrl}}/scheduling/templates/", "host": ["{{baseUrl}}"], "path": ["scheduling","templates",""] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Lunch Template {{$timestamp}}\",\n  \"description\": \"Test template\",\n  \"is_active\": true\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Template created', function () { pm.response.to.be.success; });",
+              "var json = pm.response.json();",
+              "pm.environment.set('templateId', json.id || '');"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Scheduling / Template Shifts / Add",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": { "raw": "{{baseUrl}}/scheduling/templates/{{templateId}}/shifts/", "host": ["{{baseUrl}}"], "path": ["scheduling","templates","{{templateId}}","shifts",""] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"role\": \"WAITER\",\n  \"day_of_week\": 0,\n  \"start_time\": \"10:00:00\",\n  \"end_time\": \"16:00:00\",\n  \"required_staff\": 1\n}"
+        }
+      }
+    },
+    {
+      "name": "Scheduling / Weekly Schedules v2 / Create",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": { "raw": "{{baseUrl}}/scheduling/weekly-schedules-v2/", "host": ["{{baseUrl}}"], "path": ["scheduling","weekly-schedules-v2",""] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"week_start\": \"{{weekStart}}\",\n  \"week_end\": \"{{weekEnd}}\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Schedule created or already exists', function () { pm.expect(pm.response.code).to.be.oneOf([200,201,400]); });",
+              "var json = {}; try { json = pm.response.json(); } catch (e) {}",
+              "if (json.id) { pm.environment.set('scheduleId', json.id); }"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Accounts / Invite Staff (WAITER)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": { "raw": "{{baseUrl}}/accounts/staff/invite/", "host": ["{{baseUrl}}"], "path": ["accounts","staff","invite",""] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{waiterEmail}}\",\n  \"role\": \"WAITER\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Invitation created', function () { pm.response.to.be.success; });",
+              "var json = pm.response.json();",
+              "pm.environment.set('inviteToken', json.token || '');"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Accounts / Accept Invitation (Public)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "url": { "raw": "{{baseUrl}}/accounts/staff/accept-invitation/", "host": ["{{baseUrl}}"], "path": ["accounts","staff","accept-invitation",""] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"{{inviteToken}}\",\n  \"first_name\": \"Waiter\",\n  \"last_name\": \"One\",\n  \"pin_code\": \"1234\"\n}"
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('Invitation accepted', function () { pm.response.to.be.success; });",
+              "var json = pm.response.json();",
+              "pm.environment.set('waiterId', json.user && json.user.id ? json.user.id : '');"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Scheduling / Generate From Template",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": { "raw": "{{baseUrl}}/scheduling/weekly-schedules-v2/{{scheduleId}}/generate_from_template/", "host": ["{{baseUrl}}"], "path": ["scheduling","weekly-schedules-v2","{{scheduleId}}","generate_from_template",""] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"template_id\": \"{{templateId}}\",\n  \"week_start\": \"{{weekStart}}\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Scheduling / Assigned Shifts v2 / List",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/scheduling/assigned-shifts-v2/?schedule_id={{scheduleId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["scheduling","assigned-shifts-v2",""],
+          "query": [ {"key":"schedule_id","value":"{{scheduleId}}"} ]
+        }
+      }
+    },
+    {
+      "name": "Scheduling / Assigned Shifts v2 / Create (Manual)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": { "raw": "{{baseUrl}}/scheduling/assigned-shifts-v2/", "host": ["{{baseUrl}}"], "path": ["scheduling","assigned-shifts-v2",""] },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"schedule\": \"{{scheduleId}}\",\n  \"staff\": \"{{waiterId}}\",\n  \"shift_date\": \"{{weekStart}}\",\n  \"start_time\": \"12:00:00\",\n  \"end_time\": \"18:00:00\",\n  \"break_duration\": \"00:30:00\",\n  \"role\": \"WAITER\",\n  \"notes\": \"Manual test shift\"\n}"
+        }
+      }
+    },
+    {
+      "name": "Scheduling / Weekly Schedules v2 / Publish",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+        ],
+        "url": { "raw": "{{baseUrl}}/scheduling/weekly-schedules-v2/{{scheduleId}}/publish/", "host": ["{{baseUrl}}"], "path": ["scheduling","weekly-schedules-v2","{{scheduleId}}","publish",""] }
+      }
+    }
+  ]
+}
