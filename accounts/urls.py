@@ -3,8 +3,8 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     CustomTokenObtainPairView, CustomTokenRefreshView, RegisterView, VerifyEmailView, PasswordResetRequestView,
     PasswordResetConfirmView, RestaurantDetailView, RestaurantUpdateView, StaffInvitationListView, 
-    StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView, StaffUsersListView,
-    LoginView, MeView, InviteStaffView, AcceptInvitationView, pin_login
+    StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView,
+    LoginView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
 from .views_invitations import InvitationViewSet, UserManagementViewSet
@@ -35,6 +35,5 @@ urlpatterns = [
     path('auth/me/', MeView.as_view(), name='me'),
     path('staff/invite/', InviteStaffView.as_view(), name='invite_staff'),
     path('staff/accept-invitation/', AcceptInvitationView.as_view(), name='accept_invitation'),
-    # Alias to align with frontend API client path
-    path('auth/accept-invitation/', AcceptInvitationView.as_view(), name='accept_invitation_auth'),
+    path('staff/login/', StaffPinLoginView.as_view(), name='pin_login'),
 ]
