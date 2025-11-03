@@ -7,11 +7,26 @@ from .views import (
     StaffOrderListAPIView, TableListCreateAPIView, TableDetailAPIView,
     TableAssignOrderAPIView, TableClearOrderAPIView, CategoryDetailAPIView,
     ProductDetailAPIView, TablesNeedingCleaningListAPIView, MarkTableCleanAPIView, RestaurantOrderListAPIView,
-    ScheduleViewSet
+    ScheduleViewSet, StaffProfileViewSet, ScheduleChangeViewSet, 
+    ScheduleNotificationViewSet, StaffAvailabilityViewSet, PerformanceMetricViewSet
+)
+from .views_safety import (
+    StandardOperatingProcedureViewSet, SafetyChecklistViewSet, ScheduleTaskViewSet,
+    SafetyConcernReportViewSet, SafetyRecognitionViewSet
 )
 
 router = DefaultRouter()
 router.register(r'schedules', ScheduleViewSet)
+router.register(r'profiles', StaffProfileViewSet)
+router.register(r'schedule-changes', ScheduleChangeViewSet)
+router.register(r'notifications', ScheduleNotificationViewSet)
+router.register(r'availability', StaffAvailabilityViewSet)
+router.register(r'performance', PerformanceMetricViewSet)
+router.register(r'sops', StandardOperatingProcedureViewSet, basename='sop')
+router.register(r'safety-checklists', SafetyChecklistViewSet, basename='safety-checklist')
+router.register(r'schedule-tasks', ScheduleTaskViewSet, basename='schedule-task')
+router.register(r'safety-concerns', SafetyConcernReportViewSet, basename='safety-concern')
+router.register(r'safety-recognitions', SafetyRecognitionViewSet, basename='safety-recognition')
 
 urlpatterns = [
     path('create/', views.StaffCreateView.as_view(), name='staff-create'),

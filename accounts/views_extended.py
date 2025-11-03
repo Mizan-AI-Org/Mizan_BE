@@ -72,17 +72,30 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
             # Update geolocation
             latitude = request.data.get('latitude')
             longitude = request.data.get('longitude')
-            radius = request.data.get('radius', 500)
+            radius = request.data.get('radius', 100)  # Default to 100m (max in 5-100m range)
             geofence_enabled = request.data.get('geofence_enabled', True)
             geofence_polygon = request.data.get('geofence_polygon', [])
-            
+
+            # Permanent lock: once coordinates are set, only SUPER_ADMIN can change them
+            if (
+                restaurant.latitude is not None and restaurant.longitude is not None
+                and request.user.role != 'SUPER_ADMIN'
+            ):
+                return Response(
+                    {
+                        'error': 'Location locked',
+                        'message': 'Restaurant coordinates are locked. Contact a SUPER_ADMIN to update.'
+                    },
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
             restaurant.latitude = latitude
             restaurant.longitude = longitude
             restaurant.radius = radius
             restaurant.geofence_enabled = geofence_enabled
             restaurant.geofence_polygon = geofence_polygon
             restaurant.save()
-            
+
             serializer = RestaurantGeolocationSerializer(restaurant)
             return Response(serializer.data)
     

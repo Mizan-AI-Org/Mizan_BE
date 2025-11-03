@@ -18,14 +18,22 @@ from .views import (
     TimesheetViewSet,
     TimesheetEntryViewSet,
 )
+from .task_views import TaskTemplateViewSet, TaskViewSet
+from .template_views import ScheduleTemplateViewSet, TemplateVersionViewSet
+from .audit_views import AuditLogViewSet
 
 router = DefaultRouter()
 router.register(r'weekly-schedules-v2', WeeklyScheduleViewSet, basename='weekly-schedule-v2')
 router.register(r'assigned-shifts-v2', AssignedShiftViewSet, basename='assigned-shift-v2')
 router.register(r'task-categories', TaskCategoryViewSet, basename='task-category')
 router.register(r'shift-tasks', ShiftTaskViewSet, basename='shift-task')
+router.register(r'task-templates', TaskTemplateViewSet, basename='task-template')
+router.register(r'tasks', TaskViewSet, basename='task')
 router.register(r'timesheets', TimesheetViewSet, basename='timesheet')
 router.register(r'timesheet-entries', TimesheetEntryViewSet, basename='timesheet-entry')
+router.register(r'schedule-templates-v2', ScheduleTemplateViewSet, basename='schedule-template-v2')
+router.register(r'template-versions', TemplateVersionViewSet, basename='template-version')
+router.register(r'audit-logs', AuditLogViewSet, basename='audit-log')
 
 urlpatterns = [
     # Schedule Templates

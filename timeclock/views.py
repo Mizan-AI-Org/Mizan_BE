@@ -153,11 +153,14 @@ def web_clock_in(request):
             float(longitude)
         )
         
-        # Check if within allowed distance (e.g., 100 meters)
-        if distance > 100:
+        # Check if within allowed distance using restaurant geofence radius
+        radius = float(restaurant.radius) if restaurant.radius else 100
+        # Clamp radius to safe range (5m - 100m)
+        radius = max(5.0, min(100.0, radius))
+        if distance > radius:
             return Response({
                 'error': 'Location verification failed',
-                'message': f'You are {distance:.0f}m away from the restaurant. Please be within 100m to clock in.',
+                'message': f'You are {distance:.0f}m away from the restaurant. Please be within {radius:.0f}m to clock in.',
                 'distance': distance,
                 'within_range': False
             }, status=status.HTTP_400_BAD_REQUEST)
@@ -304,7 +307,7 @@ def restaurant_location(request):
             'address': restaurant.address,
             'latitude': float(restaurant.latitude),
             'longitude': float(restaurant.longitude),
-            'geofence_radius': 100  # meters
+            'geofence_radius': float(restaurant.radius) if restaurant.radius else 100  # meters (5-100m range)
         }
     })
 
@@ -336,8 +339,11 @@ def verify_location(request):
         float(longitude)
     )
     
-    within_range = distance <= 100  # 100 meter radius
-    
+    # Use restaurant geofence radius with safe clamp
+    radius = float(restaurant.radius) if restaurant.radius else 100
+    radius = max(5.0, min(100.0, radius))
+    within_range = distance <= radius
+
     return Response({
         'within_range': within_range,
         'distance': round(distance, 2),
@@ -542,8 +548,10 @@ def staff_dashboard_data(request):
             'shiftsThisWeek': session_count,
             'earningsThisWeek': earnings_this_week
         },
-        'geofence_radius': 100,  # meters
-        'is_on_break': bool(last_event and last_event.event_type == 'break_start' and not current_break_start) # Simplified check for active break
+        'geofence_radius': float(user.restaurant.radius) if user.restaurant and user.restaurant.radius else 100,  # meters (5-100m range)
+        'is_on_break': bool(last_event and last_event.event_type == 'break_start' and not current_break_start), # Simplified check for active break
+        'account_status': 'active' if getattr(user, 'is_active', True) else 'inactive',
+        'is_active': bool(getattr(user, 'is_active', True))
     })
 
 @api_view(['GET'])

@@ -18,9 +18,9 @@ from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.conf import settings
 
-from .models import Restaurant, CustomUser
-from .models_rbac import (
-    Role, Permission, RolePermission, UserInvitation, 
+from .models import (
+    Restaurant, CustomUser, StaffInvitation, StaffProfile,
+    Role, Permission, RolePermission, UserInvitation,
     UserRole, AuditLog
 )
 
@@ -29,6 +29,149 @@ logger = logging.getLogger(__name__)
 
 class UserManagementService:
     """Service for managing users, invitations, and role assignments"""
+    
+    @staticmethod
+    def bulk_invite_from_csv(csv_content, restaurant, invited_by, expires_in_days=7):
+        """
+        Process CSV content and create StaffInvitation entries.
+        Accepts columns: email, first_name/firstname, last_name/lastname, role,
+        department (optional), phone (optional).
+
+        Returns dict: { success, failed, errors, invitations }
+        """
+        reader = csv.DictReader(io.StringIO(csv_content))
+        results = { 'success': 0, 'failed': 0, 'errors': [], 'invitations': [] }
+
+        for idx, row in enumerate(reader, start=2):  # start=2 accounts for header line
+            try:
+                email = (row.get('email') or '').strip()
+                if not email or '@' not in email:
+                    results['failed'] += 1
+                    results['errors'].append(f"Row {idx}: Invalid email '{email}'")
+                    continue
+
+                role_value = (row.get('role') or '').strip()
+                if not role_value:
+                    results['failed'] += 1
+                    results['errors'].append(f"Row {idx}: Missing role for {email}")
+                    continue
+
+                # Normalize name fields
+                first_name = (row.get('first_name') or row.get('firstname') or '').strip()
+                last_name = (row.get('last_name') or row.get('lastname') or '').strip()
+
+                department = (row.get('department') or '').strip()
+                phone = (row.get('phone') or row.get('phonenumber') or '').strip()
+
+                # Check if pending invitation already exists
+                existing_invite = StaffInvitation.objects.filter(
+                    restaurant=restaurant,
+                    email=email,
+                    is_accepted=False,
+                    expires_at__gt=timezone.now()
+                ).first()
+
+                if existing_invite:
+                    results['failed'] += 1
+                    results['errors'].append(f"Row {idx}: Invitation already pending for {email}")
+                    continue
+
+                # Create invitation
+                token = secrets.token_urlsafe(32)
+                expires_at = timezone.now() + timedelta(days=expires_in_days)
+
+                invitation = StaffInvitation.objects.create(
+                    email=email,
+                    role=role_value,
+                    restaurant=restaurant,
+                    invited_by=invited_by,
+                    token=token,
+                    expires_at=expires_at,
+                    extra_data={
+                        'first_name': first_name,
+                        'last_name': last_name,
+                        'department': department,
+                        'phone': phone,
+                    }
+                )
+
+                # Send invitation email
+                try:
+                    UserManagementService._send_invitation_email(invitation)
+                except Exception as e:
+                    # Do not fail the invitation if email sending fails
+                    results['errors'].append(f"Row {idx}: Email send failed for {email} - {str(e)}")
+
+                results['success'] += 1
+                results['invitations'].append(invitation)
+
+            except Exception as e:
+                results['failed'] += 1
+                results['errors'].append(f"Row {idx}: {str(e)}")
+
+        return results
+
+    @staticmethod
+    def bulk_invite_from_list(invitations, restaurant, invited_by, expires_in_days=7):
+        """
+        Process JSON list of invitations with the same fields as CSV.
+        """
+        results = { 'success': 0, 'failed': 0, 'errors': [], 'invitations': [] }
+        for idx, item in enumerate(invitations, start=1):
+            try:
+                email = (item.get('email') or '').strip()
+                role_value = (item.get('role') or '').strip()
+                if not email or '@' not in email:
+                    results['failed'] += 1
+                    results['errors'].append(f"Item {idx}: Invalid email '{email}'")
+                    continue
+                if not role_value:
+                    results['failed'] += 1
+                    results['errors'].append(f"Item {idx}: Missing role for {email}")
+                    continue
+
+                first_name = (item.get('first_name') or item.get('firstname') or '').strip()
+                last_name = (item.get('last_name') or item.get('lastname') or '').strip()
+                department = (item.get('department') or '').strip()
+                phone = (item.get('phone') or item.get('phonenumber') or '').strip()
+
+                existing_invite = StaffInvitation.objects.filter(
+                    restaurant=restaurant,
+                    email=email,
+                    is_accepted=False,
+                    expires_at__gt=timezone.now()
+                ).first()
+                if existing_invite:
+                    results['failed'] += 1
+                    results['errors'].append(f"Item {idx}: Invitation already pending for {email}")
+                    continue
+
+                token = secrets.token_urlsafe(32)
+                expires_at = timezone.now() + timedelta(days=expires_in_days)
+                invitation = StaffInvitation.objects.create(
+                    email=email,
+                    role=role_value,
+                    restaurant=restaurant,
+                    invited_by=invited_by,
+                    token=token,
+                    expires_at=expires_at,
+                    extra_data={
+                        'first_name': first_name,
+                        'last_name': last_name,
+                        'department': department,
+                        'phone': phone,
+                    }
+                )
+                try:
+                    UserManagementService._send_invitation_email(invitation)
+                except Exception as e:
+                    results['errors'].append(f"Item {idx}: Email send failed for {email} - {str(e)}")
+                results['success'] += 1
+                results['invitations'].append(invitation)
+            except Exception as e:
+                results['failed'] += 1
+                results['errors'].append(f"Item {idx}: {str(e)}")
+        return results
     
     @staticmethod
     def bulk_invite_users(restaurant, csv_file, invited_by, role=None, expires_in_days=7):
@@ -184,94 +327,85 @@ class UserManagementService:
             raise
     
     @staticmethod
-    def accept_invitation(invitation_token, password, username=None):
+    def accept_invitation(token, password, first_name, last_name):
         """
-        Accept invitation and create user account
-        
-        Returns: (success: bool, user: CustomUser | None, error: str | None)
+        Accept StaffInvitation and create user account (used by InvitationViewSet).
+        Returns tuple: (user, error)
         """
         try:
-            invitation = UserInvitation.objects.get(
-                invitation_token=invitation_token,
-                status='PENDING'
-            )
-            
+            invitation = StaffInvitation.objects.get(token=token, is_accepted=False)
             # Check expiration
-            if invitation.is_expired():
-                invitation.status = 'EXPIRED'
-                invitation.save()
-                return False, None, "Invitation has expired"
-            
+            if invitation.expires_at < timezone.now():
+                return None, "Invitation has expired"
+
             with transaction.atomic():
-                # Create user
-                email = invitation.email
                 user = CustomUser.objects.create_user(
-                    email=email,
-                    username=username or email,
+                    email=invitation.email,
                     password=password,
-                    first_name=invitation.first_name or '',
-                    last_name=invitation.last_name or '',
+                    first_name=first_name or '',
+                    last_name=last_name or '',
                     is_verified=True,
-                    is_active=True
-                )
-                
-                # Assign role
-                if invitation.role:
-                    UserRole.objects.create(
-                        user=user,
-                        restaurant=invitation.restaurant,
-                        role=invitation.role,
-                        is_primary=True,
-                        assigned_by=invitation.invited_by
-                    )
-                
-                # Mark invitation as accepted
-                invitation.status = 'ACCEPTED'
-                invitation.accepted_at = timezone.now()
-                invitation.accepted_by = user
-                invitation.save()
-                
-                # Log audit
-                AuditLog.objects.create(
+                    is_active=True,
+                    role=invitation.role,
                     restaurant=invitation.restaurant,
-                    user=user,
-                    action_type='CREATE',
-                    entity_type='CustomUser',
-                    entity_id=str(user.id),
-                    description=f"User registered via invitation",
                 )
-                
-                return True, user, None
-        
-        except UserInvitation.DoesNotExist:
-            return False, None, "Invalid or expired invitation token"
+
+                # Set phone if provided in extra_data
+                phone = (invitation.extra_data or {}).get('phone')
+                if phone:
+                    user.phone = phone
+                    user.save(update_fields=['phone'])
+
+                # Create/update staff profile with department
+                department = (invitation.extra_data or {}).get('department')
+                if department:
+                    StaffProfile.objects.update_or_create(
+                        user=user,
+                        defaults={'department': department}
+                    )
+
+                invitation.is_accepted = True
+                invitation.save(update_fields=['is_accepted'])
+
+                return user, None
+        except StaffInvitation.DoesNotExist:
+            return None, "Invalid invitation token"
         except Exception as e:
             logger.error(f"Accept invitation error: {str(e)}")
-            return False, None, str(e)
+            return None, str(e)
     
     @staticmethod
     def _send_invitation_email(invitation):
-        """Send invitation email to user"""
+        """Send invitation email to user. Returns True on success, False on failure."""
         try:
+            # Use the React route that reads token from query params
+            token_value = getattr(invitation, 'invitation_token', getattr(invitation, 'token', ''))
+            invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token_value}"
             context = {
                 'invitation': invitation,
+                'invite_link': invite_link,
                 'acceptance_link': f"{settings.FRONTEND_URL}/staff/accept-invitation/{invitation.invitation_token}",
                 'expires_at': invitation.expires_at.strftime('%Y-%m-%d %H:%M:%S'),
                 'restaurant_name': invitation.restaurant.name,
+                'year': timezone.now().year,
             }
-            
-            html_message = render_to_string('emails/invitation.html', context)
-            
+
+            # Render template and send mail within the same try block so any
+            # template errors are caught and surfaced as a graceful failure
+            html_message = render_to_string('emails/staff_invite.html', context)
+
             send_mail(
                 subject=f"You're invited to join {invitation.restaurant.name}",
-                message=f"You've been invited to join {invitation.restaurant.name}",
+                message=f"You've been invited to join {invitation.restaurant.name}. Use this link: {invite_link}",
                 from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[invitation.email],
                 html_message=html_message,
                 fail_silently=False,
             )
+            return True
         except Exception as e:
             logger.error(f"Failed to send invitation email: {str(e)}")
+            return False
 
 
 class RoleManagementService:

@@ -270,14 +270,17 @@ class SchedulingService:
         from django.template.loader import render_to_string
         from django.core.mail import send_mail
         from django.conf import settings
+        from channels.layers import get_channel_layer
+        from asgiref.sync import async_to_sync
         
         try:
             # Create in-app notification
             message = f"You have been assigned a shift on {shift.shift_date} from {shift.start_time} to {shift.end_time}"
-            Notification.objects.create(
+            notification = Notification.objects.create(
                 recipient=shift.staff,
                 message=message,
-                notification_type='SHIFT_UPDATE'
+                notification_type='SHIFT_ASSIGNED',
+                related_shift_id=shift.id
             )
             
             # Send email notification
@@ -299,6 +302,22 @@ class SchedulingService:
                 html_message=html_message,
                 fail_silently=True,
             )
+
+            # Broadcast websocket notification to user's group
+            channel_layer = get_channel_layer()
+            group_name = f'user_{shift.staff.id}_notifications'
+            event = {
+                'type': 'send_notification',
+                'notification': {
+                    'id': str(notification.id),
+                    'message': notification.message,
+                    'notification_type': notification.notification_type,
+                    'created_at': notification.created_at.isoformat(),
+                    'is_read': notification.is_read,
+                    'related_shift_id': str(shift.id),
+                }
+            }
+            async_to_sync(channel_layer.group_send)(group_name, event)
         except Exception as e:
             print(f"Error notifying shift assignment: {e}")
     
@@ -311,14 +330,17 @@ class SchedulingService:
         from django.template.loader import render_to_string
         from django.core.mail import send_mail
         from django.conf import settings
+        from channels.layers import get_channel_layer
+        from asgiref.sync import async_to_sync
         
         try:
             # Create in-app notification
             message = f"Your shift on {shift.shift_date} from {shift.start_time} to {shift.end_time} has been cancelled"
-            Notification.objects.create(
+            notification = Notification.objects.create(
                 recipient=shift.staff,
                 message=message,
-                notification_type='SHIFT_UPDATE'
+                notification_type='SHIFT_CANCELLED',
+                related_shift_id=shift.id
             )
             
             # Send email notification
@@ -338,5 +360,21 @@ class SchedulingService:
                 html_message=html_message,
                 fail_silently=True,
             )
+
+            # Broadcast websocket notification to user's group
+            channel_layer = get_channel_layer()
+            group_name = f'user_{shift.staff.id}_notifications'
+            event = {
+                'type': 'send_notification',
+                'notification': {
+                    'id': str(notification.id),
+                    'message': notification.message,
+                    'notification_type': notification.notification_type,
+                    'created_at': notification.created_at.isoformat(),
+                    'is_read': notification.is_read,
+                    'related_shift_id': str(shift.id),
+                }
+            }
+            async_to_sync(channel_layer.group_send)(group_name, event)
         except Exception as e:
             print(f"Error notifying shift cancellation: {e}")

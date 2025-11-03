@@ -3,12 +3,15 @@ from .models import (
     ScheduleTemplate, TemplateShift, WeeklySchedule, AssignedShift,
     ShiftSwapRequest, TaskCategory, ShiftTask
 )
+from .admin_audit import add_audit_info_to_admin
 
 @admin.register(ScheduleTemplate)
+@add_audit_info_to_admin
 class ScheduleTemplateAdmin(admin.ModelAdmin):
-    list_display = ['name', 'restaurant', 'is_active', 'created_at']
-    list_filter = ['is_active', 'restaurant']
-    search_fields = ['name', 'restaurant__name']
+    list_display = ['name', 'restaurant', 'is_active', 'created_at', 'updated_at']
+    list_filter = ['is_active', 'restaurant', 'created_at']
+    search_fields = ['name', 'description']
+    readonly_fields = ['id', 'created_at', 'updated_at']
 
 @admin.register(TemplateShift)
 class TemplateShiftAdmin(admin.ModelAdmin):
@@ -17,6 +20,7 @@ class TemplateShiftAdmin(admin.ModelAdmin):
     search_fields = ['template__name', 'role']
 
 @admin.register(WeeklySchedule)
+@add_audit_info_to_admin
 class WeeklyScheduleAdmin(admin.ModelAdmin):
     list_display = ['restaurant', 'week_start', 'week_end', 'is_published', 'created_at']
     list_filter = ['is_published', 'restaurant']
@@ -41,8 +45,9 @@ class TaskCategoryAdmin(admin.ModelAdmin):
     search_fields = ['name', 'restaurant__name']
 
 @admin.register(ShiftTask)
+@add_audit_info_to_admin
 class ShiftTaskAdmin(admin.ModelAdmin):
-    list_display = ['title', 'shift', 'status', 'priority', 'assigned_to', 'created_at']
-    list_filter = ['status', 'priority', 'shift__schedule__restaurant']
-    search_fields = ['title', 'description', 'assigned_to__email']
-    readonly_fields = ['created_at', 'updated_at', 'completed_at']
+    list_display = ['title', 'shift', 'priority', 'status', 'assigned_to', 'created_at']
+    list_filter = ['priority', 'status', 'category', 'created_at']
+    search_fields = ['title', 'description', 'shift__staff__username']
+    readonly_fields = ['id', 'created_at', 'updated_at', 'completed_at']

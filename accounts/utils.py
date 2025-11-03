@@ -42,7 +42,7 @@ def validate_clockin_location(restaurant, user_lat, user_lon):
         restaurant.longitude,
         user_lat,
         user_lon,
-        restaurant.geo_fence_radius
+        float(restaurant.radius) if restaurant.radius else 100
     )
     
     if is_within:

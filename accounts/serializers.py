@@ -2,6 +2,12 @@ from rest_framework import serializers
 from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile
 from django.contrib.auth import authenticate
 
+class StaffProfileSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StaffProfile
+        fields = '__all__'
+        read_only_fields = ['user']
+
 class RestaurantSerializer(serializers.ModelSerializer):
     class Meta:
         model = Restaurant
@@ -9,17 +15,20 @@ class RestaurantSerializer(serializers.ModelSerializer):
 
 class CustomUserSerializer(serializers.ModelSerializer):
     restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
+    profile = StaffProfileSerializer(read_only=True)
+    
     class Meta:
         model = CustomUser
-        fields = ['id', 'email', 'first_name', 'last_name', 'role', 'phone', 'restaurant', 'restaurant_name', 'is_verified', 'created_at', 'updated_at']
+        fields = ['id', 'email', 'first_name', 'last_name', 'role', 'phone', 'restaurant', 'restaurant_name', 'is_verified', 'created_at', 'updated_at', 'profile']
         read_only_fields = ['id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name']
 
 
 class StaffInvitationSerializer(serializers.ModelSerializer):
     class Meta:
         model = StaffInvitation
-        fields = ['id', 'email', 'role', 'restaurant', 'invited_by', 'token', 'is_accepted', 'created_at', 'expires_at']
-        read_only_fields = ['id', 'token', 'is_accepted', 'created_at', 'expires_at']
+        fields = ['id', 'email', 'role', 'restaurant', 'invited_by', 'token', 'is_accepted', 'created_at', 'expires_at', 'extra_data']
+        # restaurant and invited_by are set server-side in the ViewSet; mark them read-only
+        read_only_fields = ['id', 'token', 'is_accepted', 'created_at', 'expires_at', 'restaurant', 'invited_by']
 
 
 class StaffProfileSerializer(serializers.ModelSerializer):
@@ -30,8 +39,15 @@ class StaffProfileSerializer(serializers.ModelSerializer):
 
 
 class PinLoginSerializer(serializers.Serializer):
-    pin_code = serializers.CharField(max_length=6)
+    pin_code = serializers.CharField(max_length=4, min_length=4)
     email = serializers.EmailField(required=False, allow_blank=True)
+
+    def validate_pin_code(self, value):
+        """Validate PIN format - must be exactly 4 digits."""
+        import re
+        if not re.match(r'^\d{4}$', value):
+            raise serializers.ValidationError("PIN must be exactly 4 digits.")
+        return value
 
     def validate(self, data):
         email = data.get('email')
@@ -40,12 +56,47 @@ class PinLoginSerializer(serializers.Serializer):
         if not pin_code:
             raise serializers.ValidationError("PIN code is required.")
 
-        # Authenticate by pin code only
-        user = CustomUser.objects.filter(pin_code__isnull=False, is_active=True).first()
-        if user and user.check_pin(pin_code):
-            data['user'] = user
+        # If email is provided, authenticate by email + PIN
+        # If email is not provided, authenticate by PIN only (for staff)
+        if email:
+            try:
+                user = CustomUser.objects.get(email=email, is_active=True)
+                
+                # Check if account is locked
+                if user.is_account_locked():
+                    raise serializers.ValidationError("Account is temporarily locked due to multiple failed attempts. Please try again later.")
+                
+                # Check if user is staff (should have PIN)
+                if not user.is_staff_role():
+                    raise serializers.ValidationError("PIN authentication is only available for staff members.")
+                
+                if user.check_pin(pin_code):
+                    data['user'] = user
+                else:
+                    raise serializers.ValidationError("Invalid PIN code.")
+            except CustomUser.DoesNotExist:
+                raise serializers.ValidationError("User not found or inactive.")
         else:
-            raise serializers.ValidationError("Invalid PIN code or inactive user.")
+            # Authenticate by PIN only (for staff login)
+            users_with_pin = CustomUser.objects.filter(
+                pin_code__isnull=False, 
+                is_active=True,
+                role__in=['CHEF', 'WAITER', 'CLEANER', 'CASHIER', 'KITCHEN_STAFF', 'DELIVERY']
+            )
+            
+            authenticated_user = None
+            for user in users_with_pin:
+                if user.is_account_locked():
+                    continue  # Skip locked accounts
+                    
+                if user.check_pin(pin_code):
+                    authenticated_user = user
+                    break
+            
+            if authenticated_user:
+                data['user'] = authenticated_user
+            else:
+                raise serializers.ValidationError("Invalid PIN code or account locked.")
 
         return data
 
