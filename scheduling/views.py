@@ -27,7 +27,7 @@ from accounts.views import IsAdmin, IsSuperAdmin, IsManagerOrAdmin
 
 class ScheduleTemplateListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = ScheduleTemplateSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def get_queryset(self):
         return ScheduleTemplate.objects.filter(restaurant=self.request.user.restaurant).order_by('name')
@@ -37,7 +37,7 @@ class ScheduleTemplateListCreateAPIView(generics.ListCreateAPIView):
 
 class ScheduleTemplateRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = ScheduleTemplateSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     lookup_field = 'pk'
 
     def get_queryset(self):
@@ -45,7 +45,7 @@ class ScheduleTemplateRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
 
 class TemplateShiftListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = TemplateShiftSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def get_queryset(self):
         template_id = self.kwargs.get('template_pk')
@@ -58,7 +58,7 @@ class TemplateShiftListCreateAPIView(generics.ListCreateAPIView):
 
 class TemplateShiftRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = TemplateShiftSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     lookup_field = 'pk'
 
     def get_queryset(self):
@@ -67,7 +67,7 @@ class TemplateShiftRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
 
 class WeeklyScheduleListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = WeeklyScheduleSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def get_queryset(self):
         return WeeklySchedule.objects.filter(restaurant=self.request.user.restaurant).order_by('-week_start')
@@ -77,7 +77,7 @@ class WeeklyScheduleListCreateAPIView(generics.ListCreateAPIView):
 
 class WeeklyScheduleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = WeeklyScheduleSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     lookup_field = 'pk'
 
     def get_queryset(self):
@@ -87,7 +87,7 @@ class WeeklyScheduleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
 class WeeklyScheduleViewSet(viewsets.ModelViewSet):
     """ViewSet for weekly schedules with analytics endpoints"""
     serializer_class = WeeklyScheduleSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     
     def get_queryset(self):
         return WeeklySchedule.objects.filter(restaurant=self.request.user.restaurant)
