@@ -1,13 +1,14 @@
 from rest_framework import serializers
 from django.utils import timezone
 from datetime import datetime
-from .models import Notification, DeviceToken, NotificationPreference, NotificationTemplate, NotificationLog
+from .models import Notification, DeviceToken, NotificationPreference, NotificationTemplate, NotificationLog, NotificationAttachment
 
 
 class NotificationSerializer(serializers.ModelSerializer):
     sender_name = serializers.CharField(source='sender.get_full_name', read_only=True)
     is_read = serializers.SerializerMethodField()
     time_ago = serializers.SerializerMethodField()
+    attachments = serializers.SerializerMethodField()
     
     class Meta:
         model = Notification
@@ -16,6 +17,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             'notification_type', 'priority', 'data', 'is_read', 'read_at', 
             'channels_sent', 'delivery_status', 'related_shift_id', 
             'related_task_id', 'expires_at', 'created_at', 'time_ago'
+            , 'attachments'
         ]
         read_only_fields = [
             'id', 'recipient', 'sender', 'sender_name', 'channels_sent', 
@@ -42,6 +44,32 @@ class NotificationSerializer(serializers.ModelSerializer):
             return f"{minutes} minute{'s' if minutes > 1 else ''} ago"
         else:
             return "Just now"
+
+    def get_attachments(self, obj):
+        items = []
+        for att in obj.attachments.all():
+            items.append({
+                'name': att.original_name or (att.file.name if att.file else ''),
+                'url': att.file.url if att.file else '',
+                'content_type': att.content_type,
+                'size': att.file_size,
+                'uploaded_at': att.uploaded_at,
+            })
+        return items
+
+class NotificationAttachmentSerializer(serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = NotificationAttachment
+        fields = ['id', 'original_name', 'content_type', 'file_size', 'uploaded_at', 'url']
+        read_only_fields = ['id', 'uploaded_at', 'url']
+
+    def get_url(self, obj):
+        try:
+            return obj.file.url
+        except Exception:
+            return ''
 
 
 class DeviceTokenSerializer(serializers.ModelSerializer):
@@ -118,6 +146,10 @@ class AnnouncementCreateSerializer(serializers.Serializer):
     )
     expires_at = serializers.DateTimeField(required=False, allow_null=True)
     schedule_for = serializers.DateTimeField(required=False, allow_null=True)
+    # Categorization / tags
+    tags = serializers.ListField(
+        child=serializers.CharField(max_length=50), required=False, allow_empty=True
+    )
     # Optional targeting: either specific staff IDs or departments
     recipients_staff_ids = serializers.ListField(
         child=serializers.UUIDField(), required=False, allow_empty=True
@@ -181,7 +213,8 @@ class AnnouncementCreateSerializer(serializers.Serializer):
                 data={
                     'announcement': True,
                     'scheduled_for': self.validated_data.get('schedule_for').isoformat() if self.validated_data.get('schedule_for') else None,
-                    'targeted': bool(staff_ids or departments)
+                    'targeted': bool(staff_ids or departments),
+                    'tags': self.validated_data.get('tags', [])
                 }
             )
             notifications.append(notification)

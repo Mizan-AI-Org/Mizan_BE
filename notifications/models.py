@@ -242,3 +242,27 @@ class NotificationLog(models.Model):
     
     def __str__(self):
         return f"{self.channel} notification to {self.recipient_address} - {self.status}"
+
+
+class NotificationAttachment(models.Model):
+    """File attachments associated with a notification (e.g., announcement documents)"""
+    notification = models.ForeignKey(
+        Notification,
+        on_delete=models.CASCADE,
+        related_name='attachments'
+    )
+    file = models.FileField(upload_to='notification_attachments/')
+    original_name = models.CharField(max_length=255, blank=True)
+    content_type = models.CharField(max_length=100, blank=True)
+    file_size = models.PositiveIntegerField(default=0)
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'notification_attachments'
+        ordering = ['-uploaded_at']
+        indexes = [
+            models.Index(fields=['notification']),
+        ]
+
+    def __str__(self):
+        return self.original_name or (self.file.name if self.file else 'Attachment')

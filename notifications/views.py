@@ -1,13 +1,15 @@
 from rest_framework import generics, status, permissions
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
-from accounts.permissions import IsAdminOrSuperAdmin
+from accounts.permissions import IsAdminOrManager
+from rest_framework.parsers import MultiPartParser, FormParser
 
-from .models import Notification, NotificationPreference, DeviceToken
+from .models import Notification, NotificationPreference, DeviceToken, NotificationAttachment
 from .serializers import (
     NotificationSerializer, 
     NotificationPreferenceSerializer,
@@ -90,7 +92,8 @@ def mark_notification_read(request, notification_id):
 
 
 @api_view(['POST'])
-@permission_classes([IsAdminOrSuperAdmin])
+@permission_classes([IsAdminOrManager])
+@parser_classes([MultiPartParser, FormParser])
 def create_announcement(request):
     """Create and send announcement to all restaurant staff"""
     try:
@@ -102,21 +105,45 @@ def create_announcement(request):
                 'errors': serializer.errors
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Create notifications for all staff
-        notifications = serializer.create_notifications(sender=request.user)
+        # Create notifications for all staff inside a transaction
+        with transaction.atomic():
+            notifications = serializer.create_notifications(sender=request.user)
+            # Handle attachments if provided
+            files = request.FILES.getlist('attachments')
+            if files:
+                for notification in notifications:
+                    for f in files:
+                        att = NotificationAttachment(
+                            notification=notification,
+                            file=f,
+                            original_name=getattr(f, 'name', ''),
+                            content_type=getattr(f, 'content_type', ''),
+                            file_size=getattr(f, 'size', 0),
+                        )
+                        att.save()
         targeted = bool(
             serializer.validated_data.get('recipients_staff_ids') or 
             serializer.validated_data.get('recipients_departments')
         )
-        
-        # Send via notification service for immediate delivery
-        for notification in notifications:
-            notification_service.send_custom_notification(
-                recipient=notification.recipient,
-                message=notification.message,
-                notification_type='ANNOUNCEMENT',
-                channels=['app']
-            )
+
+        # Handle scheduling: if schedule_for is set in the future, mark as scheduled and do not send now
+        schedule_for = serializer.validated_data.get('schedule_for')
+        if schedule_for and schedule_for > timezone.now():
+            for notification in notifications:
+                notification.delivery_status = {
+                    'status': 'SCHEDULED',
+                    'scheduled_for': schedule_for.isoformat(),
+                }
+                notification.save(update_fields=['delivery_status'])
+        else:
+            # Send via notification service for immediate delivery
+            for notification in notifications:
+                notification_service.send_custom_notification(
+                    recipient=notification.recipient,
+                    message=notification.message,
+                    notification_type='ANNOUNCEMENT',
+                    channels=['app']
+                )
         
         return Response({
             'success': True,
