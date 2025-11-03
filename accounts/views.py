@@ -10,15 +10,13 @@ from django.contrib.auth import authenticate
 from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile, AuditLog
 from django.utils import timezone
 from django.core.files.base import ContentFile
-import base64
-import os
+import base64, os, sys
 from django.conf import settings
 from django.contrib.auth.models import UserManager
 from django.utils.crypto import get_random_string
 from django.core.mail import send_mail
 from django.utils.html import strip_tags
 from django.template.loader import render_to_string
-from rest_framework import generics
 
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
@@ -449,6 +447,7 @@ class AcceptInvitationView(APIView):
         pin_code = data.get('pin_code')  # <-- This is now the required field
 
         # Build an error dictionary
+        print(data, file=sys.stderr)
         errors = {}
         if not token:
             errors['token'] = 'This field is required.'
@@ -458,7 +457,8 @@ class AcceptInvitationView(APIView):
             errors['last_name'] = 'This field is required.'
         if not pin_code:
             errors['pin_code'] = 'This field is required.' # <-- Changed from 'password'
-
+        if pin_code and (len(pin_code) < 4 or len(pin_code) > 8 or not pin_code.isdigit()):
+            errors['pin_code'] = 'PIN code must be 4 to 8 digits long.'
         if errors:
             return Response(errors, status=status.HTTP_400_BAD_REQUEST)
 

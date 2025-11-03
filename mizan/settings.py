@@ -24,7 +24,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production!')
-DEBUG = config('DEBUG', default=True, cast=bool)
+# DEBUG = config('DEBUG', default=True, cast=bool)
+DEBUG = True
 ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
 # ---------------------------
@@ -292,10 +293,6 @@ else:
     DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=config('EMAIL_HOST_USER', default='no-reply@mizan.local'))
 
 # EMAIL Configuration for Production
-
-print(os.getenv('EMAIL_HOST_PASSWORD', ''), file=sys.stderr)
-print(os.getenv('EMAIL_HOST_USER', 'jarjuadama101@gmail.com'), file=sys.stderr)
-
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = 'smtp.gmail.com'
 EMAIL_PORT = 587
