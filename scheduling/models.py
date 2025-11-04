@@ -526,7 +526,7 @@ class TemplateVersion(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     activated_at = models.DateTimeField(null=True, blank=True)
     archived_at = models.DateTimeField(null=True, blank=True)
-    
+    is_current = models.BooleanField(default=False)
     # Store template data as JSON for version history
     template_data = models.JSONField(default=dict, help_text="Snapshot of template configuration")
     shifts_data = models.JSONField(default=list, help_text="Snapshot of template shifts")
