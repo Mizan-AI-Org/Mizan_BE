@@ -110,7 +110,6 @@ class AssignedShift(models.Model):
 
     class Meta:
         db_table = 'assigned_shifts'
-        unique_together = ['schedule', 'staff', 'shift_date']
         ordering = ['shift_date', 'start_time']
         indexes = [
             models.Index(fields=['staff', 'shift_date']),
