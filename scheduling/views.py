@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.utils import timezone
 from django.db.models import Q
+from django.db import IntegrityError
 from datetime import datetime, timedelta
 
 from .models import (
@@ -75,6 +76,19 @@ class WeeklyScheduleListCreateAPIView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         serializer.save(restaurant=self.request.user.restaurant)
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            self.perform_create(serializer)
+        except IntegrityError:
+            return Response(
+                {"detail": "A weekly schedule for this restaurant and week_start already exists."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
 class WeeklyScheduleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = WeeklyScheduleSerializer
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
@@ -94,6 +108,19 @@ class WeeklyScheduleViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         serializer.save(restaurant=self.request.user.restaurant)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            self.perform_create(serializer)
+        except IntegrityError:
+            return Response(
+                {"detail": "A weekly schedule for this restaurant and week_start already exists."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
     
     @action(detail=True, methods=['get'])
     def coverage(self, request, pk=None):
@@ -164,6 +191,43 @@ class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
         schedule = WeeklySchedule.objects.get(id=schedule_id, restaurant=self.request.user.restaurant)
         # AssignedShift model does not have a restaurant field; restaurant comes via schedule
         serializer.save(schedule=schedule)
+
+    def create(self, request, *args, **kwargs):
+        """Create assigned shift under a schedule, with friendly duplicate/validation errors."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Pre-check uniqueness to avoid DB 500: schedule+staff+shift_date must be unique
+        try:
+            schedule_id = self.kwargs.get('schedule_pk')
+            staff_id = serializer.validated_data.get('staff').id if serializer.validated_data.get('staff') else None
+            shift_date = serializer.validated_data.get('shift_date')
+            if schedule_id and staff_id and shift_date:
+                exists = AssignedShift.objects.filter(
+                    schedule__id=schedule_id,
+                    schedule__restaurant=request.user.restaurant,
+                    staff__id=staff_id,
+                    shift_date=shift_date,
+                ).exists()
+                if exists:
+                    return Response(
+                        {"detail": "This staff already has a shift on this date for this schedule."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+        except Exception:
+            # Ignore pre-check errors; we'll still try to create and catch IntegrityError below
+            pass
+
+        try:
+            self.perform_create(serializer)
+        except IntegrityError:
+            return Response(
+                {"detail": "This staff already has a shift on this date for this schedule."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
 class AssignedShiftRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = AssignedShiftSerializer
