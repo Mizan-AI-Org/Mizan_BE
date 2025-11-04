@@ -4,6 +4,7 @@ from rest_framework.decorators import action
 from django.utils import timezone
 from django.db.models import Q
 from django.db import IntegrityError
+from django.core.exceptions import ValidationError
 from datetime import datetime, timedelta
 
 from .models import (
@@ -225,6 +226,12 @@ class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
                 {"detail": "This staff already has a shift on this date for this schedule."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except ValidationError as ve:
+            # Surface model.clean() validation messages (e.g., overlaps)
+            return Response({"detail": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            # Catch-all to avoid 500s and expose the error during testing
+            return Response({"detail": f"Shift creation failed: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
 
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
