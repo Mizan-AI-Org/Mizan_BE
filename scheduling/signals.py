@@ -226,10 +226,10 @@ def log_assigned_shift_save(sender, instance, created, **kwargs):
             user=user,
             shift=instance,
             action=AuditActionType.ASSIGN,
-            description=f"Assigned shift to {instance.employee.get_full_name() if instance.employee else 'Unknown'}",
+            description=f"Assigned shift to {instance.staff.get_full_name() if instance.staff else 'Unknown'}",
             metadata={
-                'employee_id': instance.employee.id if instance.employee else None,
-                'employee_name': instance.employee.get_full_name() if instance.employee else None,
+                'staff_id': instance.staff.id if instance.staff else None,
+                'staff_name': instance.staff.get_full_name() if instance.staff else None,
                 'shift_date': instance.shift_date.isoformat(),
                 'start_time': instance.start_time.isoformat() if instance.start_time else None,
                 'end_time': instance.end_time.isoformat() if instance.end_time else None,
@@ -240,13 +240,13 @@ def log_assigned_shift_save(sender, instance, created, **kwargs):
     else:
         old_values, new_values = AuditSignalMixin.get_model_changes(sender, instance, **kwargs)
         if old_values or new_values:
-            # Check if employee was changed (reassignment)
-            if new_values and 'employee' in new_values:
+            # Check if staff was changed (reassignment)
+            if new_values and 'staff' in new_values:
                 AuditTrailService.log_shift_activity(
                     user=user,
                     shift=instance,
                     action=AuditActionType.TASK_REASSIGN,
-                    description=f"Reassigned shift from {old_values.get('employee', 'Unknown')} to {new_values.get('employee', 'Unknown')}",
+                    description=f"Reassigned shift from {old_values.get('staff', 'Unknown')} to {new_values.get('staff', 'Unknown')}",
                     old_values=old_values,
                     new_values=new_values,
                     severity=AuditSeverity.MEDIUM,
@@ -257,7 +257,7 @@ def log_assigned_shift_save(sender, instance, created, **kwargs):
                     user=user,
                     shift=instance,
                     action=AuditActionType.UPDATE,
-                    description=f"Updated assigned shift for {instance.employee.get_full_name() if instance.employee else 'Unknown'}",
+                    description=f"Updated assigned shift for {instance.staff.get_full_name() if instance.staff else 'Unknown'}",
                     old_values=old_values,
                     new_values=new_values,
                     request=request
@@ -273,11 +273,11 @@ def log_assigned_shift_delete(sender, instance, **kwargs):
         user=user,
         shift=instance,
         action=AuditActionType.UNASSIGN,
-        description=f"Removed shift assignment for {instance.employee.get_full_name() if instance.employee else 'Unknown'}",
+        description=f"Removed shift assignment for {instance.staff.get_full_name() if instance.staff else 'Unknown'}",
         severity=AuditSeverity.MEDIUM,
         metadata={
-            'employee_id': instance.employee.id if instance.employee else None,
-            'employee_name': instance.employee.get_full_name() if instance.employee else None,
+            'staff_id': instance.staff.id if instance.staff else None,
+            'staff_name': instance.staff.get_full_name() if instance.staff else None,
             'shift_date': instance.shift_date.isoformat(),
             'role': instance.role
         },
@@ -301,7 +301,7 @@ def log_shift_task_save(sender, instance, created, **kwargs):
                 'task_title': instance.title,
                 'priority': instance.priority,
                 'assigned_to': instance.assigned_to.get_full_name() if instance.assigned_to else None,
-                'due_time': instance.due_time.isoformat() if instance.due_time else None,
+                'due_time': None,
                 'estimated_duration': instance.estimated_duration
             },
             request=request
