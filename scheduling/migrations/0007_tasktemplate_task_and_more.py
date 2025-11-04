@@ -10,8 +10,9 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('accounts', '0007_merge_20251028_1730'),
-        ('scheduling', '0006_timesheet_timesheetentry_and_more'),
+        # Adjusted to align with available migrations in this branch
+        ('accounts', '0002_alter_restaurant_address'),
+        ('scheduling', '0001_initial'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

@@ -75,7 +75,7 @@ class Task(models.Model):
     class Meta:
         verbose_name_plural = "Tasks"
         ordering = ['due_date', 'priority']
-        db_table = 'tasks'
+        db_table = 'dashboard_tasks'
 
     def __str__(self):
         return f"Task: {self.title} ({self.status}) for {self.restaurant.name}"

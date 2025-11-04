@@ -159,7 +159,8 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
         model = AssignedShift
         fields = ['id', 'schedule', 'staff', 'staff_name', 'shift_date', 'start_time', 
                  'end_time', 'break_duration', 'role', 'notes', 'color', 'created_at', 'updated_at', 'tasks']
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        # schedule comes from the nested URL (or explicitly in v2); clients of the nested endpoint shouldn't send it
+        read_only_fields = ['id', 'created_at', 'updated_at', 'schedule']
     
     def validate_break_duration(self, value):
         """Validate break duration is non-negative"""
@@ -199,6 +200,30 @@ class WeeklyScheduleSerializer(serializers.ModelSerializer):
     class Meta:
         model = WeeklySchedule
         fields = '__all__'
+        # Restaurant is injected server-side in views.perform_create; clients shouldn't send it
+        read_only_fields = ['restaurant']
+
+    def validate(self, data):
+        # Optional: ensure week_start is a Monday
+        week_start = data.get('week_start')
+        if week_start is not None and hasattr(week_start, 'weekday') and week_start.weekday() != 0:
+            raise serializers.ValidationError({
+                'week_start': 'week_start must be a Monday (weekday=0).'
+            })
+
+        # Friendly pre-check for uniqueness to avoid DB 500s
+        request = self.context.get('request')
+        if request and hasattr(request, 'user') and getattr(request.user, 'restaurant', None) and week_start is not None:
+            from .models import WeeklySchedule
+            exists = WeeklySchedule.objects.filter(
+                restaurant=request.user.restaurant,
+                week_start=week_start
+            ).exists()
+            if exists:
+                raise serializers.ValidationError({
+                    'week_start': 'A weekly schedule for this week already exists.'
+                })
+        return data
 
 class ShiftSwapRequestSerializer(serializers.ModelSerializer):
     shift_to_swap_details = AssignedShiftSerializer(source='shift_to_swap', read_only=True)
