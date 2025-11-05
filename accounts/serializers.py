@@ -157,3 +157,11 @@ class UpdateUserRoleSerializer(serializers.Serializer):
         ('CLEANER', 'Cleaner'),
         ('CASHIER', 'Cashier'),
     ])
+
+class StaffSerializer(serializers.ModelSerializer):
+    profile = StaffProfileSerializer(read_only=True)
+
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'email', 'first_name', 'last_name', 'role', 'phone', 'is_active', 'created_at', 'updated_at', 'profile']
+        read_only_fields = ['id', 'created_at', 'updated_at']

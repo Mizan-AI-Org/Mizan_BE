@@ -4,7 +4,8 @@ from .views import (
     CustomTokenObtainPairView, CustomTokenRefreshView, RegisterView, VerifyEmailView, PasswordResetRequestView,
     PasswordResetConfirmView, RestaurantDetailView, RestaurantUpdateView, StaffInvitationListView, 
     StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView,
-    LoginView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView, pin_login
+    LoginView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView, pin_login,
+    StaffListView
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
 from .views_invitations import InvitationViewSet, UserManagementViewSet

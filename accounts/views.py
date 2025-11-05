@@ -1,10 +1,10 @@
-from rest_framework import status, permissions
+from rest_framework import status, permissions, generics
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.shortcuts import get_object_or_404
-from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer, UserSerializer
+from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer, StaffSerializer
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
 from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile, AuditLog
@@ -626,10 +626,24 @@ class ResendVerificationEmailView(APIView):
     def post(self, request):
         return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
 
+class StaffListAPIView(generics.ListAPIView):
+    """
+    Lists all *active* staff members for the manager's restaurant.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
+    serializer_class = StaffSerializer
 
-class StaffListAPIView(StaffListView):
-    pass
-
+    def get_queryset(self):
+        """
+        This method is automatically called to get the list of objects.
+        """
+        user = self.request.user
+        
+        return CustomUser.objects.filter(
+            restaurant=user.restaurant,
+            is_active=True,
+            ).exclude(role='SUPER_ADMIN').order_by('first_name', 'last_name')
+            
     
 class StaffPinLoginView(APIView):
     permission_classes = [permissions.AllowAny]
