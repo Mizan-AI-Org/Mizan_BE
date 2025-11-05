@@ -3,6 +3,8 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from django.utils import timezone
 from django.db.models import Q
+from django.db import IntegrityError
+from django.core.exceptions import ValidationError
 from datetime import datetime, timedelta
 
 from .models import (
@@ -27,7 +29,7 @@ from accounts.views import IsAdmin, IsSuperAdmin, IsManagerOrAdmin
 
 class ScheduleTemplateListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = ScheduleTemplateSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def get_queryset(self):
         return ScheduleTemplate.objects.filter(restaurant=self.request.user.restaurant).order_by('name')
@@ -37,7 +39,7 @@ class ScheduleTemplateListCreateAPIView(generics.ListCreateAPIView):
 
 class ScheduleTemplateRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = ScheduleTemplateSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     lookup_field = 'pk'
 
     def get_queryset(self):
@@ -45,7 +47,7 @@ class ScheduleTemplateRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
 
 class TemplateShiftListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = TemplateShiftSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def get_queryset(self):
         template_id = self.kwargs.get('template_pk')
@@ -58,7 +60,7 @@ class TemplateShiftListCreateAPIView(generics.ListCreateAPIView):
 
 class TemplateShiftRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = TemplateShiftSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     lookup_field = 'pk'
 
     def get_queryset(self):
@@ -67,7 +69,7 @@ class TemplateShiftRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
 
 class WeeklyScheduleListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = WeeklyScheduleSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def get_queryset(self):
         return WeeklySchedule.objects.filter(restaurant=self.request.user.restaurant).order_by('-week_start')
@@ -75,9 +77,22 @@ class WeeklyScheduleListCreateAPIView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         serializer.save(restaurant=self.request.user.restaurant)
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            self.perform_create(serializer)
+        except IntegrityError:
+            return Response(
+                {"detail": "A weekly schedule for this restaurant and week_start already exists."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
 class WeeklyScheduleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = WeeklyScheduleSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     lookup_field = 'pk'
 
     def get_queryset(self):
@@ -87,13 +102,26 @@ class WeeklyScheduleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
 class WeeklyScheduleViewSet(viewsets.ModelViewSet):
     """ViewSet for weekly schedules with analytics endpoints"""
     serializer_class = WeeklyScheduleSerializer
-    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     
     def get_queryset(self):
         return WeeklySchedule.objects.filter(restaurant=self.request.user.restaurant)
     
     def perform_create(self, serializer):
         serializer.save(restaurant=self.request.user.restaurant)
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            self.perform_create(serializer)
+        except IntegrityError:
+            return Response(
+                {"detail": "A weekly schedule for this restaurant and week_start already exists."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
     
     @action(detail=True, methods=['get'])
     def coverage(self, request, pk=None):
@@ -162,7 +190,31 @@ class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         schedule_id = self.kwargs.get('schedule_pk')
         schedule = WeeklySchedule.objects.get(id=schedule_id, restaurant=self.request.user.restaurant)
-        serializer.save(schedule=schedule, restaurant=self.request.user.restaurant)
+        # AssignedShift model does not have a restaurant field; restaurant comes via schedule
+        serializer.save(schedule=schedule)
+
+    def create(self, request, *args, **kwargs):
+        """Create assigned shift under a schedule, with friendly duplicate/validation errors."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Note: We no longer block multiple same-day shifts for the same staff.
+        # Overlap prevention is enforced in AssignedShift.clean() and via detect_conflicts.
+
+        try:
+            self.perform_create(serializer)
+        except IntegrityError:
+            # If any DB integrity error occurs, surface a friendly message
+            return Response({"detail": "Shift creation violated a database constraint."}, status=status.HTTP_400_BAD_REQUEST)
+        except ValidationError as ve:
+            # Surface model.clean() validation messages (e.g., overlaps)
+            return Response({"detail": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            # Catch-all to avoid 500s and expose the error during testing
+            return Response({"detail": f"Shift creation failed: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
 class AssignedShiftRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = AssignedShiftSerializer
