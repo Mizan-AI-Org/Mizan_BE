@@ -46,10 +46,55 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
             )
         
         restaurant = request.user.restaurant
+        old_name = restaurant.name
         serializer = RestaurantSettingsSerializer(restaurant, data=request.data, partial=True)
         
         if serializer.is_valid():
             serializer.save()
+
+            # If name changed, log audit and broadcast
+            new_name = serializer.instance.name
+            updated_fields = list(request.data.keys())
+            if 'name' in updated_fields and new_name != old_name:
+                try:
+                    from .models import AuditLog
+                    from .views import get_client_ip
+                    ip_address = get_client_ip(request)
+                    user_agent = request.META.get('HTTP_USER_AGENT', '')
+                    AuditLog.create_log(
+                        restaurant=restaurant,
+                        user=request.user,
+                        action_type='UPDATE',
+                        entity_type='RESTAURANT',
+                        entity_id=str(restaurant.id),
+                        description='Restaurant name updated',
+                        old_values={'name': old_name},
+                        new_values={'name': new_name},
+                        ip_address=ip_address,
+                        user_agent=user_agent,
+                    )
+
+                    # Broadcast WS update to restaurant group
+                    from channels.layers import get_channel_layer
+                    from asgiref.sync import async_to_sync
+                    from django.utils import timezone
+                    channel_layer = get_channel_layer()
+                    group_name = f'restaurant_settings_{str(restaurant.id)}'
+                    event = {
+                        'type': 'settings_update',
+                        'payload': {
+                            'restaurant_id': str(restaurant.id),
+                            'updated_fields': updated_fields,
+                            'restaurant': {
+                                'id': str(restaurant.id),
+                                'name': new_name,
+                            },
+                            'timestamp': timezone.now().isoformat(),
+                        }
+                    }
+                    async_to_sync(channel_layer.group_send)(group_name, event)
+                except Exception:
+                    pass
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     

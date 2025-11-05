@@ -130,11 +130,8 @@ def web_clock_in(request):
             'error': 'Geolocation data required',
             'message': 'Please enable location services to clock in'
         }, status=status.HTTP_400_BAD_REQUEST)
-    if not photo:
-        return Response({
-            'error': 'Photo required',
-            'message': 'Please provide a photo to clock in'
-        }, status=status.HTTP_400_BAD_REQUEST)
+    # Photo is optional for web clock-in; if provided, it will be saved.
+    # Geofence enforcement remains mandatory.
     # Check if user is already clocked in
     last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
     if last_event and last_event.event_type == 'in':

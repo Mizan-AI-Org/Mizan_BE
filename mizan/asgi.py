@@ -14,6 +14,8 @@ application = ProtocolTypeRouter({
             path('ws/notifications/', include('notifications.routing')),
             path('ws/kitchen/', include('kitchen.routing')),
             path('ws/chat/', include('chat.routing')),
+            # Restaurant settings updates (real-time broadcasting)
+            path('ws/settings/', include('accounts.routing')),
         ])
     ),
 })

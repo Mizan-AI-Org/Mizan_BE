@@ -1,4 +1,48 @@
+########################################
+# Python / Django backend .gitignore
+########################################
+
+# Python bytecode
 __pycache__/
 *.py[cod]
 **/migrations/
 !**/migrations/__init__.py
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+.envs/
+
+# Environment & secrets
+.env
+.env.*
+*.pem
+
+# Django
+db.sqlite3
+media/
+staticfiles/
+logs/
+*.log
+
+# Tests / coverage / caches
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+# Node (if present in backend)
+node_modules/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Localization compiled files
+locale/**/*.mo

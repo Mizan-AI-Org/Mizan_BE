@@ -29,6 +29,7 @@ class TenantContextMiddleware(MiddlewareMixin):
             '/api/auth/login',
             '/api/auth/register',
             '/api/auth/refresh',
+            '/api/auth/pin-login',
             '/api/invitations/accept',
             '/admin/',
             '/api/docs/',
