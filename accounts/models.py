@@ -2,8 +2,7 @@ from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
-import uuid
-import re
+import uuid, re
 from django.contrib.auth.hashers import make_password, check_password
 from django.conf import settings
 from django.utils import timezone
@@ -397,7 +396,7 @@ class AuditLog(models.Model):
     )
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='audit_logs')
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='audit_logs', null=True, blank=True)
     user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='audit_logs')
     action_type = models.CharField(max_length=50, choices=ACTION_TYPES)
     entity_type = models.CharField(max_length=100)
@@ -496,3 +495,4 @@ class AIAssistantConfig(models.Model):
     
     def __str__(self):
         return f"AI Config - {self.restaurant.name}"
+    

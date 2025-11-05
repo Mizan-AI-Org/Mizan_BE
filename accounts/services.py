@@ -338,6 +338,14 @@ class UserManagementService:
             if invitation.expires_at < timezone.now():
                 return None, "Invitation has expired"
 
+            # Guard against existing accounts for the same email to avoid
+            # database IntegrityError and aborted transaction states
+            if CustomUser.objects.filter(email=invitation.email).exists():
+                return (
+                    None,
+                    "An account with this email already exists. Please log in instead or contact your admin."
+                )
+
             with transaction.atomic():
                 user = CustomUser.objects.create_user(
                     email=invitation.email,

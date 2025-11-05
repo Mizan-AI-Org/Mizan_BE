@@ -4,7 +4,7 @@ from .views import (
     CustomTokenObtainPairView, CustomTokenRefreshView, RegisterView, VerifyEmailView, PasswordResetRequestView,
     PasswordResetConfirmView, RestaurantDetailView, RestaurantUpdateView, StaffInvitationListView, 
     StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView,
-    LoginView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView
+    LoginView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView, pin_login
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
 from .views_invitations import InvitationViewSet, UserManagementViewSet
@@ -29,6 +29,7 @@ urlpatterns = [
     path('staff/invitations/', StaffInvitationListView.as_view(), name='staff_invitations'),
     path('staff/profile/<uuid:pk>/update/', StaffProfileUpdateView.as_view(), name='staff_profile_update'),
     path('staff/', StaffListAPIView.as_view(), name='staff_list'),
+    # path('staff/users/', StaffUsersListView.as_view(), name='staff_users_list'),
     path('auth/login/', LoginView.as_view(), name='login'),
     # Use class-based view for PIN login (public endpoint)
     path('auth/pin-login/', StaffPinLoginView.as_view(), name='pin_login'),

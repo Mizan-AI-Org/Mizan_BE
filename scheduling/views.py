@@ -198,34 +198,14 @@ class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        # Pre-check uniqueness to avoid DB 500: schedule+staff+shift_date must be unique
-        try:
-            schedule_id = self.kwargs.get('schedule_pk')
-            staff_id = serializer.validated_data.get('staff').id if serializer.validated_data.get('staff') else None
-            shift_date = serializer.validated_data.get('shift_date')
-            if schedule_id and staff_id and shift_date:
-                exists = AssignedShift.objects.filter(
-                    schedule__id=schedule_id,
-                    schedule__restaurant=request.user.restaurant,
-                    staff__id=staff_id,
-                    shift_date=shift_date,
-                ).exists()
-                if exists:
-                    return Response(
-                        {"detail": "This staff already has a shift on this date for this schedule."},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-        except Exception:
-            # Ignore pre-check errors; we'll still try to create and catch IntegrityError below
-            pass
+        # Note: We no longer block multiple same-day shifts for the same staff.
+        # Overlap prevention is enforced in AssignedShift.clean() and via detect_conflicts.
 
         try:
             self.perform_create(serializer)
         except IntegrityError:
-            return Response(
-                {"detail": "This staff already has a shift on this date for this schedule."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            # If any DB integrity error occurs, surface a friendly message
+            return Response({"detail": "Shift creation violated a database constraint."}, status=status.HTTP_400_BAD_REQUEST)
         except ValidationError as ve:
             # Surface model.clean() validation messages (e.g., overlaps)
             return Response({"detail": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
