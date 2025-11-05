@@ -10,7 +10,6 @@ asttokens==3.0.0
 astunparse==1.6.3
 async-lru==2.0.4
 attrs==25.1.0
-audioop-lts==0.2.1
 babel==2.17.0
 banal==1.0.6
 beautifulsoup4==4.13.3
@@ -23,11 +22,7 @@ certifi==2025.4.26
 cffi==1.17.1
 cfgv==3.4.0
 channels==4.3.1
-<<<<<<< HEAD
-channels-redis==4.2.0
-=======
-channels_redis==4.3.0
->>>>>>> origin/dev
+channels-redis==4.3.0
 charset-normalizer==3.4.1
 click==8.3.0
 coloredlogs==15.0.1

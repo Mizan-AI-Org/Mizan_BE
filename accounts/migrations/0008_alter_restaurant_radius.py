@@ -7,9 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        # Adjusted to point to the last present migration since the referenced merge migration
-        # ('accounts', '0007_merge_20251028_1730') does not exist in this branch.
-        ('accounts', '0002_alter_restaurant_address'),
+        ('accounts', '0001_initial'),
     ]
 
     operations = [
