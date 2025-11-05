@@ -397,7 +397,7 @@ class AuditLog(models.Model):
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='audit_logs', null=True, blank=True)
-    user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='audit_logs') 
+    user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='audit_logs')
     action_type = models.CharField(max_length=50, choices=ACTION_TYPES)
     entity_type = models.CharField(max_length=100)
     entity_id = models.CharField(max_length=100, blank=True, null=True)
@@ -409,7 +409,7 @@ class AuditLog(models.Model):
     timestamp = models.DateTimeField(auto_now_add=True)
     
     class Meta:
-        db_table = 'user_audit_logs'
+        db_table = 'audit_logs'
         ordering = ['-timestamp']
     
     def __str__(self):

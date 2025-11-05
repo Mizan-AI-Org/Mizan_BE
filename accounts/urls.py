@@ -32,7 +32,8 @@ urlpatterns = [
     path('staff/', StaffListAPIView.as_view(), name='staff_list'),
     # path('staff/users/', StaffUsersListView.as_view(), name='staff_users_list'),
     path('auth/login/', LoginView.as_view(), name='login'),
-    path('auth/pin-login/', pin_login, name='pin_login'),
+    # Use class-based view for PIN login (public endpoint)
+    path('auth/pin-login/', StaffPinLoginView.as_view(), name='pin_login'),
     path('auth/me/', MeView.as_view(), name='me'),
     path('staff/invite/', InviteStaffView.as_view(), name='invite_staff'),
     path('staff/accept-invitation/', AcceptInvitationView.as_view(), name='accept_invitation'),
