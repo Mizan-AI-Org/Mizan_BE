@@ -9,7 +9,7 @@ from django.shortcuts import get_object_or_404
 from accounts.permissions import IsAdminOrManager
 from rest_framework.parsers import MultiPartParser, FormParser
 
-from .models import Notification, NotificationPreference, DeviceToken, NotificationAttachment
+from .models import Notification, NotificationPreference, DeviceToken, NotificationAttachment, NotificationIssue
 from .serializers import (
     NotificationSerializer, 
     NotificationPreferenceSerializer,
@@ -136,13 +136,22 @@ def create_announcement(request):
                 }
                 notification.save(update_fields=['delivery_status'])
         else:
-            # Send via notification service for immediate delivery
+            # Send via notification service for immediate delivery with multi-channel support
+            # Channels can be provided as list in request.data['channels']
+            channels = request.data.get('channels', ['app'])
+            override = bool(request.data.get('override_preferences', False))
+            # If override, include more channels by default
+            if override and 'sms' not in channels:
+                channels = list(set(channels + ['email', 'push', 'sms']))
             for notification in notifications:
                 notification_service.send_custom_notification(
                     recipient=notification.recipient,
                     message=notification.message,
                     notification_type='ANNOUNCEMENT',
-                    channels=['app']
+                    channels=channels,
+                    sender=request.user,
+                    title=serializer.validated_data.get('title', 'Announcement'),
+                    override_preferences=override
                 )
         
         return Response({
@@ -162,6 +171,77 @@ def create_announcement(request):
             'success': False,
             'error': str(e)
         }, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def acknowledge_announcement(request, notification_id):
+    """Explicit acknowledgement endpoint; marks as read and returns status"""
+    try:
+        notification = get_object_or_404(
+            Notification,
+            id=notification_id,
+            recipient=request.user,
+            notification_type='ANNOUNCEMENT'
+        )
+        if not notification.read_at:
+            notification.mark_as_read()
+        return Response({
+            'success': True,
+            'acknowledged_at': notification.read_at,
+        })
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def report_delivery_issue(request):
+    """Staff can report undelivered announcements or issues"""
+    try:
+        description = request.data.get('description')
+        notification_id = request.data.get('notification_id')
+        if not description:
+            return Response({'success': False, 'error': 'description is required'}, status=status.HTTP_400_BAD_REQUEST)
+        notification = None
+        if notification_id:
+            try:
+                notification = Notification.objects.get(id=notification_id, recipient=request.user)
+            except Notification.DoesNotExist:
+                notification = None
+        issue = NotificationIssue.objects.create(
+            reporter=request.user,
+            notification=notification,
+            description=description
+        )
+        return Response({'success': True, 'issue_id': issue.id})
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([IsAdminOrManager])
+def health_check_notifications(request):
+    """Run basic configuration health checks for notification delivery"""
+    try:
+        checks = {}
+        # Email
+        from django.conf import settings as dj_settings
+        checks['email_configured'] = bool(getattr(dj_settings, 'EMAIL_BACKEND', '')) and bool(getattr(dj_settings, 'DEFAULT_FROM_EMAIL', ''))
+        # Firebase
+        import firebase_admin
+        checks['firebase_initialized'] = bool(firebase_admin._apps)
+        # WhatsApp
+        checks['whatsapp_configured'] = bool(getattr(dj_settings, 'WHATSAPP_ACCESS_TOKEN', None)) and bool(getattr(dj_settings, 'WHATSAPP_PHONE_NUMBER_ID', None))
+        # SMS/Twilio
+        checks['twilio_configured'] = bool(getattr(dj_settings, 'TWILIO_ACCOUNT_SID', None)) and bool(getattr(dj_settings, 'TWILIO_AUTH_TOKEN', None)) and bool(getattr(dj_settings, 'TWILIO_FROM_NUMBER', None))
+        # Device tokens count
+        checks['device_tokens_count'] = DeviceToken.objects.count()
+        # Staff preferences sanity: count users with announcement disabled
+        checks['announcement_disabled_count'] = NotificationPreference.objects.filter(announcement_notifications=False).count()
+        return Response({'success': True, 'checks': checks})
+    except Exception as e:
+        return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['POST'])

@@ -6,7 +6,7 @@ from django.template.loader import render_to_string
 from django.core.mail import send_mail
 from channels.layers import get_channel_layer
 from asgiref.sync import async_to_sync
-from .models import Notification, DeviceToken
+from .models import Notification, DeviceToken, NotificationLog
 import firebase_admin
 from firebase_admin import messaging
 import logging
@@ -103,15 +103,29 @@ class NotificationService:
             }
         }
     
-    def _send_in_app_notification(self, notification_data):
-        """Send in-app notification via WebSocket"""
+    def _send_in_app_notification(self, notification_data, existing_notification=None):
+        """Send in-app notification via WebSocket and log delivery attempt"""
         try:
-            # Create database notification
-            notification = Notification.objects.create(
+            # Use existing notification if provided; otherwise create one
+            notification = existing_notification or Notification.objects.create(
                 recipient=notification_data['recipient'],
                 message=notification_data['message'],
-                notification_type=notification_data['notification_type']
+                notification_type=notification_data['notification_type'],
+                title=notification_data.get('title', 'Notification'),
+                sender=notification_data.get('sender')
             )
+
+            # Create a delivery log entry for app channel
+            try:
+                NotificationLog.objects.create(
+                    notification=notification,
+                    channel='app',
+                    recipient_address=str(notification.recipient.id),
+                    status='SENT'
+                )
+            except Exception:
+                # Avoid breaking delivery on log failures
+                logger.warning("Failed to create NotificationLog for app channel")
             
             # Send WebSocket notification
             # Match consumer group naming: user_<id>_notifications
@@ -130,11 +144,11 @@ class NotificationService:
             }
             
             async_to_sync(self.channel_layer.group_send)(group_name, message_data)
-            return True
+            return True, notification
             
         except Exception as e:
             logger.error(f"Failed to send in-app notification: {str(e)}")
-            return False
+            return False, existing_notification
     
     def _send_whatsapp_notification(self, notification_data):
         """Send WhatsApp notification using WhatsApp Business API"""
@@ -180,9 +194,31 @@ class NotificationService:
             
             if response.status_code == 200:
                 logger.info(f"WhatsApp notification sent successfully to {phone}")
+                # Log delivery
+                try:
+                    NotificationLog.objects.create(
+                        notification=notification_data.get('notification'),
+                        channel='whatsapp',
+                        recipient_address=phone,
+                        status='SENT',
+                        response_data={'status_code': response.status_code}
+                    )
+                except Exception:
+                    logger.warning("Failed to create NotificationLog for WhatsApp")
                 return True
             else:
                 logger.error(f"WhatsApp API error: {response.status_code} - {response.text}")
+                try:
+                    NotificationLog.objects.create(
+                        notification=notification_data.get('notification'),
+                        channel='whatsapp',
+                        recipient_address=phone,
+                        status='FAILED',
+                        error_message=response.text,
+                        response_data={'status_code': response.status_code}
+                    )
+                except Exception:
+                    logger.warning("Failed to create failure NotificationLog for WhatsApp")
                 return False
                 
         except Exception as e:
@@ -240,8 +276,18 @@ class NotificationService:
             
             if response.success_count > 0:
                 logger.info(f"Push notification sent to {response.success_count} devices")
+                try:
+                    NotificationLog.objects.create(
+                        notification=notification_data.get('notification'),
+                        channel='push',
+                        recipient_address=';'.join([t.token for t in device_tokens]),
+                        status='SENT',
+                        response_data={'success_count': response.success_count, 'failure_count': response.failure_count}
+                    )
+                except Exception:
+                    logger.warning("Failed to create NotificationLog for push channel")
                 return True
-            
+
             return False
             
         except Exception as e:
@@ -275,12 +321,100 @@ class NotificationService:
                 html_message=html_message,
                 fail_silently=False
             )
-            
+
             logger.info(f"Email notification sent to {recipient.email}")
+            try:
+                NotificationLog.objects.create(
+                    notification=notification_data.get('notification'),
+                    channel='email',
+                    recipient_address=recipient.email,
+                    status='SENT'
+                )
+            except Exception:
+                logger.warning("Failed to create NotificationLog for email channel")
             return True
             
         except Exception as e:
             logger.error(f"Failed to send email notification: {str(e)}")
+            try:
+                NotificationLog.objects.create(
+                    notification=notification_data.get('notification'),
+                    channel='email',
+                    recipient_address=getattr(notification_data.get('recipient'), 'email', ''),
+                    status='FAILED',
+                    error_message=str(e)
+                )
+            except Exception:
+                logger.warning("Failed to create failure NotificationLog for email channel")
+            return False
+
+    def _send_sms_notification(self, notification_data):
+        """Send SMS notification using Twilio if configured"""
+        try:
+            recipient = notification_data['recipient']
+            phone = getattr(recipient, 'phone_number', None)
+            if not phone:
+                return False
+
+            # Basic phone normalization (US default)
+            digits = ''.join(filter(str.isdigit, phone))
+            if not digits:
+                return False
+            if not digits.startswith('1') and len(digits) == 10:
+                digits = '1' + digits
+            to_phone = f'+{digits}'
+
+            # Twilio settings
+            account_sid = getattr(settings, 'TWILIO_ACCOUNT_SID', None)
+            auth_token = getattr(settings, 'TWILIO_AUTH_TOKEN', None)
+            from_number = getattr(settings, 'TWILIO_FROM_NUMBER', None)
+
+            if not (account_sid and auth_token and from_number):
+                logger.warning("Twilio SMS settings not configured; skipping SMS send")
+                try:
+                    NotificationLog.objects.create(
+                        notification=notification_data.get('notification'),
+                        channel='sms',
+                        recipient_address=to_phone,
+                        status='FAILED',
+                        error_message='Twilio not configured'
+                    )
+                except Exception:
+                    pass
+                return False
+
+            # Defer import to avoid hard dependency if not configured
+            from twilio.rest import Client
+            client = Client(account_sid, auth_token)
+            resp = client.messages.create(
+                body=notification_data['message'][:160],
+                from_=from_number,
+                to=to_phone
+            )
+            try:
+                NotificationLog.objects.create(
+                    notification=notification_data.get('notification'),
+                    channel='sms',
+                    recipient_address=to_phone,
+                    status='SENT',
+                    external_id=getattr(resp, 'sid', ''),
+                    response_data={'status': getattr(resp, 'status', '')}
+                )
+            except Exception:
+                logger.warning("Failed to create NotificationLog for SMS channel")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send SMS notification: {str(e)}")
+            try:
+                NotificationLog.objects.create(
+                    notification=notification_data.get('notification'),
+                    channel='sms',
+                    recipient_address=getattr(notification_data.get('recipient'), 'phone_number', ''),
+                    status='FAILED',
+                    error_message=str(e)
+                )
+            except Exception:
+                pass
             return False
     
     def _should_send_whatsapp(self, user):
@@ -308,22 +442,34 @@ class NotificationService:
         
         return results
     
-    def send_custom_notification(self, recipient, message, notification_type='OTHER', channels=None):
+    def send_custom_notification(self, recipient, message, notification_type='OTHER', channels=None, sender=None, title='Notification', override_preferences=False):
         """Send custom notification through specified channels"""
         if channels is None:
             channels = ['app']  # Default to in-app only
-        
+
+        # Create base notification upfront to ensure consistent logging and state updates
+        base_notification = Notification.objects.create(
+            recipient=recipient,
+            message=message,
+            notification_type=notification_type,
+            title=title,
+            sender=sender
+        )
+
         notification_data = {
             'recipient': recipient,
             'message': message,
             'notification_type': notification_type,
-            'title': 'Notification'
+            'title': title,
+            'sender': sender,
+            'notification': base_notification
         }
         
         channels_used = []
         
         if 'app' in channels:
-            if self._send_in_app_notification(notification_data):
+            sent, _ = self._send_in_app_notification(notification_data, existing_notification=base_notification)
+            if sent:
                 channels_used.append('app')
         
         if 'whatsapp' in channels and self._should_send_whatsapp(recipient):
@@ -334,9 +480,29 @@ class NotificationService:
             if self._send_push_notification(notification_data):
                 channels_used.append('push')
         
-        if 'email' in channels and self._should_send_email(recipient):
+        if 'email' in channels and (override_preferences or self._should_send_email(recipient)):
             if self._send_email_notification(notification_data):
                 channels_used.append('email')
+
+        # Optional SMS channel based on user preference
+        user_prefs = getattr(recipient, 'notification_preferences', None)
+        sms_enabled = override_preferences
+        try:
+            sms_enabled = sms_enabled or bool(getattr(user_prefs, 'sms_enabled', False))
+        except Exception:
+            sms_enabled = sms_enabled or False
+        if 'sms' in channels and sms_enabled:
+            if self._send_sms_notification(notification_data):
+                channels_used.append('sms')
+
+        # Update notification record with channels sent and basic delivery status
+        try:
+            base_notification.channels_sent = channels_used
+            status_map = {ch: {'status': 'SENT', 'timestamp': timezone.now().isoformat()} for ch in channels_used}
+            base_notification.delivery_status = status_map
+            base_notification.save(update_fields=['channels_sent', 'delivery_status'])
+        except Exception:
+            logger.warning("Failed to update notification delivery status")
         
         return len(channels_used) > 0, channels_used
 

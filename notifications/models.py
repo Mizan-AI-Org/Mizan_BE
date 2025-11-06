@@ -266,3 +266,30 @@ class NotificationAttachment(models.Model):
 
     def __str__(self):
         return self.original_name or (self.file.name if self.file else 'Attachment')
+
+
+class NotificationIssue(models.Model):
+    """Reports from staff about undelivered or problematic announcements"""
+    STATUS_CHOICES = (
+        ('OPEN', 'Open'),
+        ('INVESTIGATING', 'Investigating'),
+        ('RESOLVED', 'Resolved'),
+    )
+
+    reporter = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='notification_issues')
+    notification = models.ForeignKey(Notification, on_delete=models.SET_NULL, null=True, blank=True, related_name='issues')
+    description = models.TextField()
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='OPEN')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'notification_issues'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        return f"Issue by {self.reporter.email} - {self.status}"

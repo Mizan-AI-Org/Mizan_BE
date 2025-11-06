@@ -12,6 +12,8 @@ __pycache__/
 # Virtual environments
 venv/
 .venv/
+.venv312/
+.venv
 .envs/
 
 # Environment & secrets
@@ -20,11 +22,17 @@ venv/
 *.pem
 
 # Django
+.db.sqlite3/
 db.sqlite3
+db.sqlite3-journal
+local_settings.py
+settings_local.py
 media/
 staticfiles/
 logs/
 *.log
+.reset_db.sh/
+reset_db.sh
 
 # Tests / coverage / caches
 .coverage

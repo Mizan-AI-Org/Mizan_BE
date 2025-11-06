@@ -49,9 +49,21 @@ class NotificationSerializer(serializers.ModelSerializer):
     def get_attachments(self, obj):
         items = []
         for att in obj.attachments.all():
+            # Safely resolve file URL; accessing FieldFile.url can raise if missing
+            try:
+                url = att.file.url
+            except Exception:
+                url = ''
+
+            # Prefer original_name; fall back to file name if available
+            try:
+                file_name = getattr(att.file, 'name', '')
+            except Exception:
+                file_name = ''
+
             items.append({
-                'name': att.original_name or (att.file.name if att.file else ''),
-                'url': att.file.url if att.file else '',
+                'name': att.original_name or file_name,
+                'url': url,
                 'content_type': att.content_type,
                 'size': att.file_size,
                 'uploaded_at': att.uploaded_at,

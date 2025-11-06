@@ -353,6 +353,8 @@ class SafetyRecognitionViewSet(viewsets.ModelViewSet):
                 {"error": "Restaurant not found"},
                 status=status.HTTP_400_BAD_REQUEST
             )
+class StaffProfileViewSet(viewsets.ModelViewSet):
+    """
     API endpoint for staff profiles
     """
     queryset = StaffProfile.objects.all()

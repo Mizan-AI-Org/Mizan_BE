@@ -21,6 +21,7 @@ from .views import (
 from .task_views import TaskTemplateViewSet, TaskViewSet
 from .template_views import ScheduleTemplateViewSet, TemplateVersionViewSet
 from .audit_views import AuditLogViewSet
+from .views_enhanced import CalendarAPIViewSet
 
 router = DefaultRouter()
 router.register(r'weekly-schedules-v2', WeeklyScheduleViewSet, basename='weekly-schedule-v2')
@@ -34,6 +35,7 @@ router.register(r'timesheet-entries', TimesheetEntryViewSet, basename='timesheet
 router.register(r'schedule-templates-v2', ScheduleTemplateViewSet, basename='schedule-template-v2')
 router.register(r'template-versions', TemplateVersionViewSet, basename='template-version')
 router.register(r'audit-logs', AuditLogViewSet, basename='audit-log')
+router.register(r'calendar', CalendarAPIViewSet, basename='calendar')
 
 urlpatterns = [
     # Schedule Templates
