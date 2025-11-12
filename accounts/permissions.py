@@ -20,4 +20,4 @@ class IsSameRestaurant(permissions.BasePermission):
 
 class IsAdminOrManager(permissions.BasePermission):
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role in ['SUPER_ADMIN', 'ADMIN', 'MANAGER']
+        return request.user.is_authenticated and request.user.role in ['SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER']

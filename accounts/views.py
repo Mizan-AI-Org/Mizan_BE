@@ -1,13 +1,13 @@
-from rest_framework import status, permissions
+from rest_framework import status, permissions, generics
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.shortcuts import get_object_or_404
-from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer, UserSerializer
+from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer, StaffSerializer
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
-from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile, AuditLog
+from .models import CustomUser, Restaurant, UserInvitation, StaffProfile, AuditLog
 from django.utils import timezone
 from django.core.files.base import ContentFile
 import base64, os, sys
@@ -404,18 +404,18 @@ class InviteStaffView(APIView):
         if CustomUser.objects.filter(email=email).exists():
             return Response({'error': 'User with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if StaffInvitation.objects.filter(email=email, is_accepted=False, expires_at__gt=timezone.now()).exists():
+        if UserInvitation.objects.filter(email=email, is_accepted=False, expires_at__gt=timezone.now()).exists():
             return Response({'error': 'A pending invitation already exists for this email.'}, status=status.HTTP_400_BAD_REQUEST)
 
         token = get_random_string(64)
         expires_at = timezone.now() + timezone.timedelta(days=7)
 
-        invitation = StaffInvitation.objects.create(
+        invitation = UserInvitation.objects.create(
             email=email,
             role=role,
             invited_by=request.user,
             restaurant=request.user.restaurant,
-            token=token,
+            invitation_token=token,
             expires_at=expires_at
         )
 
@@ -463,8 +463,8 @@ class AcceptInvitationView(APIView):
             return Response(errors, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            invitation = StaffInvitation.objects.get(
-                token=token,
+            invitation = UserInvitation.objects.get(
+                invitation_token=token,
                 is_accepted=False,
                 expires_at__gt=timezone.now()
             )
@@ -507,7 +507,7 @@ class AcceptInvitationView(APIView):
                 }
             }, status=status.HTTP_201_CREATED)
 
-        except StaffInvitation.DoesNotExist:
+        except UserInvitation.DoesNotExist:
             return Response(
                 {'error': 'Invalid or expired invitation'},
                 status=status.HTTP_400_BAD_REQUEST
@@ -517,7 +517,7 @@ class StaffListView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def get_queryset(self):
-        return StaffInvitation.objects.filter(restaurant=self.request.user.restaurant).order_by('-created_at')
+        return UserInvitation.objects.filter(restaurant=self.request.user.restaurant).order_by('-created_at')
 
 class StaffProfileUpdateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -590,9 +590,55 @@ class RestaurantUpdateView(APIView):
     
     def put(self, request):
         restaurant = request.user.restaurant
+        old_name = restaurant.name
         serializer = RestaurantSerializer(restaurant, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
+
+            # If name changed, log audit and broadcast update
+            new_name = serializer.instance.name
+            updated_fields = list(request.data.keys())
+            if 'name' in updated_fields and new_name != old_name:
+                try:
+                    ip_address = get_client_ip(request)
+                    user_agent = request.META.get('HTTP_USER_AGENT', '')
+                    AuditLog.create_log(
+                        restaurant=restaurant,
+                        user=request.user,
+                        action_type='UPDATE',
+                        entity_type='RESTAURANT',
+                        entity_id=str(restaurant.id),
+                        description='Restaurant name updated',
+                        old_values={'name': old_name},
+                        new_values={'name': new_name},
+                        ip_address=ip_address,
+                        user_agent=user_agent,
+                    )
+
+                    # Broadcast settings update to restaurant group
+                    from channels.layers import get_channel_layer
+                    from asgiref.sync import async_to_sync
+                    from django.utils import timezone
+
+                    channel_layer = get_channel_layer()
+                    group_name = f'restaurant_settings_{str(restaurant.id)}'
+                    event = {
+                        'type': 'settings_update',
+                        'payload': {
+                            'restaurant_id': str(restaurant.id),
+                            'updated_fields': updated_fields,
+                            'restaurant': {
+                                'id': str(restaurant.id),
+                                'name': new_name,
+                            },
+                            'timestamp': timezone.now().isoformat(),
+                        }
+                    }
+                    async_to_sync(channel_layer.group_send)(group_name, event)
+                except Exception:
+                    # Avoid breaking API flow on broadcast/audit errors
+                    pass
+
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -615,7 +661,7 @@ class StaffInvitationListView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     
     def get(self, request):
-        invitations = StaffInvitation.objects.filter(restaurant=request.user.restaurant)
+        invitations = UserInvitation.objects.filter(restaurant=request.user.restaurant)
         serializer = StaffInvitationSerializer(invitations, many=True)
         return Response(serializer.data)
 
@@ -626,10 +672,24 @@ class ResendVerificationEmailView(APIView):
     def post(self, request):
         return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
 
+class StaffListAPIView(generics.ListAPIView):
+    """
+    Lists all *active* staff members for the manager's restaurant.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
+    serializer_class = StaffSerializer
 
-class StaffListAPIView(StaffListView):
-    pass
-
+    def get_queryset(self):
+        """
+        This method is automatically called to get the list of objects.
+        """
+        user = self.request.user
+        
+        return CustomUser.objects.filter(
+            restaurant=user.restaurant,
+            is_active=True,
+            ).exclude(role='SUPER_ADMIN').order_by('first_name', 'last_name')
+            
     
 class StaffPinLoginView(APIView):
     permission_classes = [permissions.AllowAny]

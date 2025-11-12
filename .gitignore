@@ -1,4 +1,54 @@
+########################################
+# Python / Django backend .gitignore
+########################################
+
+# Python bytecode
 __pycache__/
 *.py[cod]
-**/migrations/
-!**/migrations/__init__.py
+# Track Django migration files to ensure consistent schema across environments
+# (previously migrations were ignored, causing NodeNotFoundError during migrate)
+# If you need to ignore generated artifacts, keep __pycache__/ and *.py[cod] rules above.
+*.pyo
+
+# Virtual environments
+
+.envs/
+
+# Environment & secrets
+.env
+.env.*
+*.pem
+
+# Django
+.db.sqlite3/
+db.sqlite3
+db.sqlite3-journal
+local_settings.py
+settings_local.py
+media/
+staticfiles/
+logs/
+*.log
+.reset_db.sh/
+reset_db.sh
+
+# Tests / coverage / caches
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.cache/
+
+# Node (if present in backend)
+node_modules/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Localization compiled files
+locale/**/*.mo

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import POSIntegration, AIAssistantConfig, Restaurant, StaffProfile
+from .models import POSIntegration, Restaurant, StaffProfile
 
 
 class POSIntegrationSerializer(serializers.ModelSerializer):
@@ -20,22 +20,7 @@ class POSIntegrationSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
-class AIAssistantConfigSerializer(serializers.ModelSerializer):
-    restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
     
-    class Meta:
-        model = AIAssistantConfig
-        fields = [
-            'id',
-            'restaurant',
-            'restaurant_name',
-            'enabled',
-            'ai_provider',
-            'features_enabled',
-            'created_at',
-            'updated_at'
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'api_key']
 
 
 class RestaurantGeolocationSerializer(serializers.ModelSerializer):
@@ -72,7 +57,7 @@ class RestaurantGeolocationSerializer(serializers.ModelSerializer):
 class RestaurantSettingsSerializer(serializers.ModelSerializer):
     """Comprehensive restaurant settings serializer"""
     pos_integration = POSIntegrationSerializer(read_only=True)
-    ai_config = AIAssistantConfigSerializer(read_only=True)
+    geolocation_locked = serializers.SerializerMethodField()
     
     class Meta:
         model = Restaurant
@@ -87,6 +72,7 @@ class RestaurantSettingsSerializer(serializers.ModelSerializer):
             'radius',
             'geofence_enabled',
             'geofence_polygon',
+            'geolocation_locked',
             'timezone',
             'currency',
             'language',
@@ -98,8 +84,7 @@ class RestaurantSettingsSerializer(serializers.ModelSerializer):
             'pos_provider',
             'pos_merchant_id',
             'pos_is_connected',
-            'pos_integration',
-            'ai_config'
+            'pos_integration'
         ]
     
     def validate_radius(self, value):
@@ -110,6 +95,16 @@ class RestaurantSettingsSerializer(serializers.ModelSerializer):
                     "Geofence radius must be between 5 and 100 meters."
                 )
         return value
+
+    def get_geolocation_locked(self, obj):
+        """Return True if coordinates are set and non-SUPER_ADMIN cannot change."""
+        has_coords = obj.latitude is not None and obj.longitude is not None
+        request = self.context.get('request') if hasattr(self, 'context') else None
+        user_role = getattr(getattr(request, 'user', None), 'role', None)
+        # Locked for everyone except SUPER_ADMIN when coordinates exist
+        if has_coords and user_role != 'SUPER_ADMIN':
+            return True
+        return False
 
 
 class StaffProfileExtendedSerializer(serializers.ModelSerializer):

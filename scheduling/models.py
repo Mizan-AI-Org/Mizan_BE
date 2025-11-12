@@ -546,4 +546,5 @@ class TemplateVersion(models.Model):
 # Ensure task template models are registered with Django
 # This import loads models defined in scheduling/task_templates.py without circular imports
 from . import task_templates  # noqa: F401
+from . import process_models  # noqa: F401
     

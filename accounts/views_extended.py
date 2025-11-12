@@ -4,10 +4,9 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 import requests
-from .models import POSIntegration, AIAssistantConfig, Restaurant, StaffProfile
+from .models import POSIntegration, Restaurant, StaffProfile
 from .serializers_extended import (
     POSIntegrationSerializer,
-    AIAssistantConfigSerializer,
     RestaurantSettingsSerializer,
     RestaurantGeolocationSerializer,
     StaffProfileExtendedSerializer
@@ -19,10 +18,137 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
     Complete restaurant settings management
     - Geolocation with perimeter
     - POS Integration
-    - AI Assistant configuration
     - Notifications
     """
     permission_classes = [IsAuthenticated]
+
+    @action(detail=False, methods=['get', 'put'])
+    def unified(self, request):
+        """Unified settings endpoint (GET/PUT) for admins/managers only"""
+        user = request.user
+        if not user.restaurant:
+            return Response({'error': 'No restaurant associated'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Restrict to admin roles only
+        if not user.is_admin_role():
+            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        restaurant = user.restaurant
+
+        if request.method == 'GET':
+            serializer = RestaurantSettingsSerializer(restaurant, context={'request': request})
+            data = serializer.data
+            # Include AI config nested (already present) and schema version for optimistic locking
+            # Use updated_at timestamp as a simple version marker
+            try:
+                version = int(restaurant.updated_at.timestamp()) if restaurant.updated_at else 0
+            except Exception:
+                version = 0
+            data['settings_schema_version'] = version
+            # Provide legacy alias if frontend expects it
+            data['settingsVersion'] = version
+            # Provide phone_restaurant alias for compatibility
+            data['phone_restaurant'] = data.get('phone')
+            return Response(data)
+
+        # PUT
+        payload = request.data or {}
+        # Optimistic locking: require matching schema version
+        client_version = payload.get('settings_schema_version', payload.get('settingsVersion'))
+        try:
+            current_version = int(restaurant.updated_at.timestamp()) if restaurant.updated_at else 0
+        except Exception:
+            current_version = 0
+        if client_version is not None and int(client_version) != current_version:
+            return Response({'detail': 'Settings version conflict'}, status=status.HTTP_409_CONFLICT)
+
+        # Update general settings
+        general_fields = {
+            'name': payload.get('name', restaurant.name),
+            'address': payload.get('address', restaurant.address),
+            # Frontend may send phone_restaurant
+            'phone': payload.get('phone', payload.get('phone_restaurant', restaurant.phone)),
+            'email': payload.get('email', restaurant.email),
+            'timezone': payload.get('timezone', restaurant.timezone),
+            'currency': payload.get('currency', restaurant.currency),
+            'language': payload.get('language', restaurant.language),
+            'operating_hours': payload.get('operating_hours', restaurant.operating_hours),
+            'automatic_clock_out': payload.get('automatic_clock_out', restaurant.automatic_clock_out),
+            'break_duration': payload.get('break_duration', restaurant.break_duration),
+            'email_notifications': payload.get('email_notifications', restaurant.email_notifications),
+            'push_notifications': payload.get('push_notifications', restaurant.push_notifications),
+        }
+
+        old_name = restaurant.name
+
+        # Update POS settings if provided
+        if 'pos_provider' in payload or 'pos_merchant_id' in payload or 'pos_api_key' in payload:
+            restaurant.pos_provider = payload.get('pos_provider', restaurant.pos_provider)
+            restaurant.pos_merchant_id = payload.get('pos_merchant_id', restaurant.pos_merchant_id)
+            # Store API key without exposing it in GET response
+            restaurant.pos_api_key = payload.get('pos_api_key', restaurant.pos_api_key)
+
+
+        # Save general fields via serializer to enforce validations (e.g., radius rules)
+        serializer = RestaurantSettingsSerializer(restaurant, data=general_fields, partial=True, context={'request': request})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+
+        # If name changed, log audit and broadcast like update_my_restaurant
+        new_name = serializer.instance.name
+        updated_fields = list(payload.keys())
+        if 'name' in updated_fields and new_name != old_name:
+            try:
+                from .models import AuditLog
+                from .views import get_client_ip
+                ip_address = get_client_ip(request)
+                user_agent = request.META.get('HTTP_USER_AGENT', '')
+                AuditLog.create_log(
+                    restaurant=restaurant,
+                    user=request.user,
+                    action_type='UPDATE',
+                    entity_type='RESTAURANT',
+                    entity_id=str(restaurant.id),
+                    description='Restaurant name updated',
+                    old_values={'name': old_name},
+                    new_values={'name': new_name},
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+
+                # Broadcast WS update to restaurant group
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+                from django.utils import timezone as dj_tz
+                channel_layer = get_channel_layer()
+                group_name = f'restaurant_settings_{str(restaurant.id)}'
+                event = {
+                    'type': 'settings_update',
+                    'payload': {
+                        'restaurant_id': str(restaurant.id),
+                        'updated_fields': updated_fields,
+                        'restaurant': {
+                            'id': str(restaurant.id),
+                            'name': new_name,
+                        },
+                        'timestamp': dj_tz.now().isoformat(),
+                    }
+                }
+                async_to_sync(channel_layer.group_send)(group_name, event)
+            except Exception:
+                pass
+
+        # Respond with updated settings including new version
+        out = RestaurantSettingsSerializer(serializer.instance, context={'request': request}).data
+        try:
+            version = int(serializer.instance.updated_at.timestamp()) if serializer.instance.updated_at else 0
+        except Exception:
+            version = 0
+        out['settings_schema_version'] = version
+        out['settingsVersion'] = version
+        out['phone_restaurant'] = out.get('phone')
+        return Response(out)
     
     @action(detail=False, methods=['get'])
     def my_restaurant(self, request):
@@ -46,10 +172,55 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
             )
         
         restaurant = request.user.restaurant
+        old_name = restaurant.name
         serializer = RestaurantSettingsSerializer(restaurant, data=request.data, partial=True)
         
         if serializer.is_valid():
             serializer.save()
+
+            # If name changed, log audit and broadcast
+            new_name = serializer.instance.name
+            updated_fields = list(request.data.keys())
+            if 'name' in updated_fields and new_name != old_name:
+                try:
+                    from .models import AuditLog
+                    from .views import get_client_ip
+                    ip_address = get_client_ip(request)
+                    user_agent = request.META.get('HTTP_USER_AGENT', '')
+                    AuditLog.create_log(
+                        restaurant=restaurant,
+                        user=request.user,
+                        action_type='UPDATE',
+                        entity_type='RESTAURANT',
+                        entity_id=str(restaurant.id),
+                        description='Restaurant name updated',
+                        old_values={'name': old_name},
+                        new_values={'name': new_name},
+                        ip_address=ip_address,
+                        user_agent=user_agent,
+                    )
+
+                    # Broadcast WS update to restaurant group
+                    from channels.layers import get_channel_layer
+                    from asgiref.sync import async_to_sync
+                    from django.utils import timezone
+                    channel_layer = get_channel_layer()
+                    group_name = f'restaurant_settings_{str(restaurant.id)}'
+                    event = {
+                        'type': 'settings_update',
+                        'payload': {
+                            'restaurant_id': str(restaurant.id),
+                            'updated_fields': updated_fields,
+                            'restaurant': {
+                                'id': str(restaurant.id),
+                                'name': new_name,
+                            },
+                            'timestamp': timezone.now().isoformat(),
+                        }
+                    }
+                    async_to_sync(channel_layer.group_send)(group_name, event)
+                except Exception:
+                    pass
             return Response(serializer.data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
@@ -232,40 +403,7 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                 'error': str(e)
             }, status=status.HTTP_400_BAD_REQUEST)
     
-    @action(detail=False, methods=['get', 'post'])
-    def ai_assistant_config(self, request):
-        """Get/update AI Assistant configuration"""
-        if not request.user.restaurant:
-            return Response(
-                {'error': 'No restaurant associated'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        restaurant = request.user.restaurant
-        
-        if request.method == 'GET':
-            try:
-                ai_config = AIAssistantConfig.objects.get(restaurant=restaurant)
-            except AIAssistantConfig.DoesNotExist:
-                ai_config = AIAssistantConfig.objects.create(restaurant=restaurant)
-            
-            serializer = AIAssistantConfigSerializer(ai_config)
-            return Response(serializer.data)
-        
-        elif request.method == 'POST':
-            # Update AI config
-            enabled = request.data.get('enabled', True)
-            ai_provider = request.data.get('ai_provider', 'GROQ')
-            features_enabled = request.data.get('features_enabled', {})
-            
-            ai_config, _ = AIAssistantConfig.objects.get_or_create(restaurant=restaurant)
-            ai_config.enabled = enabled
-            ai_config.ai_provider = ai_provider
-            ai_config.features_enabled = features_enabled
-            ai_config.save()
-            
-            serializer = AIAssistantConfigSerializer(ai_config)
-            return Response(serializer.data)
+    
 
 
 class StaffLocationViewSet(viewsets.ViewSet):

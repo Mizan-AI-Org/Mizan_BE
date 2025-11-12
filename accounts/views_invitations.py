@@ -8,6 +8,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.db.models import Q
 from django.utils import timezone
 from datetime import timedelta
+import sys
 
 from .models import CustomUser, StaffInvitation
 from .serializers import (
@@ -234,7 +235,6 @@ class InvitationViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.error(f"Invitation creation error: {str(e)}")
             return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    
     @action(detail=False, methods=['post'])
     def bulk(self, request):
         """
@@ -243,39 +243,52 @@ class InvitationViewSet(viewsets.ModelViewSet):
         CSV Format: email,role,first_name,last_name
         JSON Format: [{"email": "user@example.com", "role": "WAITER"}, ...]
         """
-        serializer = BulkInviteSerializer(data=request.data)
-        
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        invite_type = serializer.validated_data['type']
-        
-        if invite_type == 'csv':
-            csv_content = serializer.validated_data['csv_content']
-            results = UserManagementService.bulk_invite_from_csv(
-                csv_content=csv_content,
-                restaurant=request.user.restaurant,
-                invited_by=request.user
+        import traceback, sys
+
+        try:
+            print(f"\n\n📥 REQUEST DATA: {request.data}\n\n", file=sys.stderr)
+            serializer = BulkInviteSerializer(data=request.data)
+            
+            if not serializer.is_valid():
+                print(f"❌ Serializer errors: {serializer.errors}\n", file=sys.stderr)
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            
+            invite_type = serializer.validated_data['type']
+            
+            if invite_type == 'csv':
+                csv_content = serializer.validated_data['csv_content']
+                results = UserManagementService.bulk_invite_from_csv(
+                    csv_content=csv_content,
+                    restaurant=request.user.restaurant,
+                    invited_by=request.user
+                )
+            else:  # json
+                invitations = serializer.validated_data['invitations']
+                results = UserManagementService.bulk_invite_from_list(
+                    invitations=invitations,
+                    restaurant=request.user.restaurant,
+                    invited_by=request.user
+                )
+            
+            return Response({
+                'detail': f"Processed {results['success'] + results['failed']} invitations",
+                'success': results['success'],
+                'failed': results['failed'],
+                'errors': results['errors'],
+                'invitations': [
+                    StaffInvitationSerializer(inv).data
+                    for inv in results['invitations']
+                ]
+            }, status=status.HTTP_201_CREATED if results['success'] > 0 else status.HTTP_400_BAD_REQUEST)
+
+        except Exception as e:
+            print("\n\n❌ BULK INVITE ERROR ❌", file=sys.stderr)
+            print(traceback.format_exc(), file=sys.stderr)
+            return Response(
+                {"detail": str(e)},
+                status=status.HTTP_400_BAD_REQUEST
             )
-        else:  # json
-            invitations = serializer.validated_data['invitations']
-            results = UserManagementService.bulk_invite_from_list(
-                invitations=invitations,
-                restaurant=request.user.restaurant,
-                invited_by=request.user
-            )
-        
-        return Response({
-            'detail': f"Processed {results['success'] + results['failed']} invitations",
-            'success': results['success'],
-            'failed': results['failed'],
-            'errors': results['errors'],
-            'invitations': [
-                StaffInvitationSerializer(inv).data
-                for inv in results['invitations']
-            ]
-        }, status=status.HTTP_201_CREATED if results['success'] > 0 else status.HTTP_400_BAD_REQUEST)
-    
+
     @action(detail=False, methods=['post'], permission_classes=[AllowAny])
     def accept(self, request):
         """

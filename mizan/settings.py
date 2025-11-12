@@ -46,8 +46,10 @@ INSTALLED_APPS = [
     'corsheaders',
     'channels',
     'drf_spectacular',  # Optional: for API schema and docs
+    'notifications.apps.NotificationsConfig',
 
     # Local apps
+    'attendance', # Attendance module app
     'accounts',
     'dashboard',
     'scheduling',
@@ -56,10 +58,10 @@ INSTALLED_APPS = [
     'menu', # New menu app
     'inventory', # New inventory app
     'staff',
-    'notifications',
+    # 'notifications',
     'kitchen',
     'chat',
-    'ai_assistant',  # AI Assistant app
+    # 'ai_assistant',  # AI Assistant app (removed)
     'firebase_admin', #  firebase_admin
     'pos',  # Point of Sale app
     'core',  # Core utilities app
@@ -248,13 +250,14 @@ CORS_ALLOW_HEADERS = [
 # Channels (WebSockets)
 # ---------------------------
 CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {
-            "hosts": [('127.0.0.1', 6379)],
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("redis", 6379)],  # ✅ use the docker service name here
         },
     },
 }
+
 
 # ---------------------------
 # Custom user model
@@ -278,13 +281,15 @@ FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:8081')
 # ---------------------------
 # Use a reliable local SMTP sink (Mailhog) in development, SMTP in production
 if DEBUG:
+    print("Using development email settings", file=sys.stderr)
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    EMAIL_HOST = os.getenv('DEV_EMAIL_HOST', 'localhost')
+    EMAIL_HOST = os.getenv('DEV_EMAIL_HOST', 'smtp.gmail.com')
     EMAIL_PORT = int(os.getenv('DEV_EMAIL_PORT', '1025'))
-    EMAIL_USE_TLS = False
+    EMAIL_USE_TLS = True
     EMAIL_HOST_USER = os.getenv('DEV_EMAIL_USER', '')
     EMAIL_HOST_PASSWORD = os.getenv('DEV_EMAIL_PASSWORD', '')
     DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'no-reply@mizan.local')
+    print("DEV_EMAIL_USER:", EMAIL_HOST, file=sys.stderr)  
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
     EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
@@ -293,3 +298,13 @@ else:
     EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
     EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
     DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=config('EMAIL_HOST_USER', default='no-reply@mizan.local'))
+
+
+# # EMAIL Configuration for Production
+# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+# EMAIL_HOST = 'smtp.gmail.com'
+# EMAIL_PORT = 587
+# EMAIL_USE_TLS = True  # For secure connection
+# EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "jarjuadama101@gmail.com")
+# EMAIL_HOST_PASSWORD =  os.getenv('EMAIL_HOST_PASSWORD', '')
+# DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "jarjuadama101@gmail.com")
