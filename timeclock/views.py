@@ -135,7 +135,7 @@ def web_clock_in(request):
         }, status=status.HTTP_400_BAD_REQUEST)
     # Enforce GPS accuracy <= 10m when provided
     try:
-        if accuracy is not None and float(accuracy) > 50:
+        if accuracy is not None and float(accuracy) > 100:
             ip_address = get_client_ip(request)
             user_agent = request.META.get('HTTP_USER_AGENT', '')
             AuditLog.create_log(

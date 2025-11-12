@@ -42,6 +42,7 @@ urlpatterns = [
     path('api/pos/', include('pos.urls')),
     path('', include('checklists.urls')),  # Checklist management URLs
     path('api/', include(router.urls)),
+    path('api/attendance/', include('attendance.urls')),  # Attendance module URLs
 
 
     # SWAGGER URLS
