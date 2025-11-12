@@ -25,4 +25,9 @@ urlpatterns = [
     
     # Announcements
     path('announcements/create/', views.create_announcement, name='create-announcement'),
+    path('announcements/<uuid:notification_id>/ack/', views.acknowledge_announcement, name='acknowledge-announcement'),
+    path('announcements/report-issue/', views.report_delivery_issue, name='report-delivery-issue'),
+
+    # Health checks
+    path('health-check/', views.health_check_notifications, name='health-check-notifications'),
 ]

@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from django.db import models
 from django.utils import timezone
 from datetime import datetime
 from .models import Notification, DeviceToken, NotificationPreference, NotificationTemplate, NotificationLog, NotificationAttachment
@@ -48,9 +49,21 @@ class NotificationSerializer(serializers.ModelSerializer):
     def get_attachments(self, obj):
         items = []
         for att in obj.attachments.all():
+            # Safely resolve file URL; accessing FieldFile.url can raise if missing
+            try:
+                url = att.file.url
+            except Exception:
+                url = ''
+
+            # Prefer original_name; fall back to file name if available
+            try:
+                file_name = getattr(att.file, 'name', '')
+            except Exception:
+                file_name = ''
+
             items.append({
-                'name': att.original_name or (att.file.name if att.file else ''),
-                'url': att.file.url if att.file else '',
+                'name': att.original_name or file_name,
+                'url': url,
                 'content_type': att.content_type,
                 'size': att.file_size,
                 'uploaded_at': att.uploaded_at,
@@ -157,6 +170,13 @@ class AnnouncementCreateSerializer(serializers.Serializer):
     recipients_departments = serializers.ListField(
         child=serializers.CharField(max_length=100), required=False, allow_empty=True
     )
+    # Optional targeting by staff position (role) and assigned shifts
+    recipients_roles = serializers.ListField(
+        child=serializers.CharField(max_length=100), required=False, allow_empty=True
+    )
+    recipients_shift_ids = serializers.ListField(
+        child=serializers.UUIDField(), required=False, allow_empty=True
+    )
     
     def validate_expires_at(self, value):
         if value and value <= timezone.now():
@@ -171,31 +191,47 @@ class AnnouncementCreateSerializer(serializers.Serializer):
     def create_notifications(self, sender):
         """Create announcement notifications for targeted recipients or all staff in sender's restaurant"""
         from accounts.models import CustomUser, StaffProfile
+        from scheduling.models import AssignedShift
 
         # Determine target recipients
         staff_ids = self.validated_data.get('recipients_staff_ids') or []
         departments = self.validated_data.get('recipients_departments') or []
+        roles = self.validated_data.get('recipients_roles') or []
+        shift_ids = self.validated_data.get('recipients_shift_ids') or []
+
+        # Build a unified queryset of recipients within the same restaurant
+        staff_qs = CustomUser.objects.filter(
+            restaurant=sender.restaurant,
+            is_active=True
+        )
+
+        targeted = False
+        filters = models.Q()
 
         if staff_ids:
-            # Target specific staff within the same restaurant
-            staff_qs = CustomUser.objects.filter(
-                id__in=staff_ids,
-                restaurant=sender.restaurant,
-                is_active=True
-            )
-        elif departments:
-            # Target by department within the same restaurant
-            staff_qs = CustomUser.objects.filter(
-                profile__department__in=departments,
-                restaurant=sender.restaurant,
-                is_active=True
-            )
-        else:
-            # Default: all staff in the restaurant
-            staff_qs = CustomUser.objects.filter(
-                restaurant=sender.restaurant,
-                is_active=True
-            )
+            targeted = True
+            filters |= models.Q(id__in=staff_ids)
+
+        if departments:
+            targeted = True
+            filters |= models.Q(profile__department__in=departments)
+
+        if roles:
+            # Use StaffProfile.position as role indicator for targeting
+            targeted = True
+            filters |= models.Q(profile__position__in=roles)
+
+        if shift_ids:
+            targeted = True
+            target_staff_from_shifts = AssignedShift.objects.filter(
+                id__in=shift_ids,
+                schedule__restaurant=sender.restaurant
+            ).values_list('staff_id', flat=True)
+            filters |= models.Q(id__in=list(target_staff_from_shifts))
+
+        if targeted:
+            staff_qs = staff_qs.filter(filters)
+        # else keep default all staff in restaurant
 
         # Exclude the sender
         staff_qs = staff_qs.exclude(id=sender.id)
@@ -213,8 +249,14 @@ class AnnouncementCreateSerializer(serializers.Serializer):
                 data={
                     'announcement': True,
                     'scheduled_for': self.validated_data.get('schedule_for').isoformat() if self.validated_data.get('schedule_for') else None,
-                    'targeted': bool(staff_ids or departments),
-                    'tags': self.validated_data.get('tags', [])
+                    'targeted': bool(staff_ids or departments or roles or shift_ids),
+                    'tags': self.validated_data.get('tags', []),
+                    'targeting': {
+                        'staff_ids': staff_ids,
+                        'departments': departments,
+                        'roles': roles,
+                        'shift_ids': shift_ids,
+                    }
                 }
             )
             notifications.append(notification)

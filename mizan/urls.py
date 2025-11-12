@@ -37,6 +37,7 @@ urlpatterns = [
     path('api/reporting/', include('reporting.urls')),
     path('api/timeclock/', include('timeclock.urls')),
     path('api/scheduling/', include('scheduling.urls')),
+    path('api/staff/', include('staff.urls')),
     path('api/notifications/', include('notifications.urls')),
     path('api/pos/', include('pos.urls')),
     path('', include('checklists.urls')),  # Checklist management URLs
