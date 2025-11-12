@@ -1,6 +1,7 @@
 from rest_framework import serializers
-from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile
+from .models import CustomUser, Restaurant, UserInvitation, StaffProfile
 from django.contrib.auth import authenticate
+import sys
 
 class StaffProfileSerializer(serializers.ModelSerializer):
     class Meta:
@@ -25,10 +26,10 @@ class CustomUserSerializer(serializers.ModelSerializer):
 
 class StaffInvitationSerializer(serializers.ModelSerializer):
     class Meta:
-        model = StaffInvitation
-        fields = ['id', 'email', 'role', 'restaurant', 'invited_by', 'token', 'is_accepted', 'created_at', 'expires_at', 'extra_data']
+        model = UserInvitation
+        fields = ['id', 'email', 'role', 'restaurant', 'invited_by', 'invitation_token', 'is_accepted', 'created_at', 'expires_at']
         # restaurant and invited_by are set server-side in the ViewSet; mark them read-only
-        read_only_fields = ['id', 'token', 'is_accepted', 'created_at', 'expires_at', 'restaurant', 'invited_by']
+        read_only_fields = ['id', 'invitation_token', 'is_accepted', 'created_at', 'expires_at', 'restaurant', 'invited_by']
 
 
 class StaffProfileSerializer(serializers.ModelSerializer):
@@ -157,3 +158,11 @@ class UpdateUserRoleSerializer(serializers.Serializer):
         ('CLEANER', 'Cleaner'),
         ('CASHIER', 'Cashier'),
     ])
+
+class StaffSerializer(serializers.ModelSerializer):
+    profile = StaffProfileSerializer(read_only=True)
+
+    class Meta:
+        model = CustomUser
+        fields = ['id', 'email', 'first_name', 'last_name', 'role', 'phone', 'is_active', 'created_at', 'updated_at', 'profile']
+        read_only_fields = ['id', 'created_at', 'updated_at']

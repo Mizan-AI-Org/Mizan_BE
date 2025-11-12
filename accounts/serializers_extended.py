@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import POSIntegration, AIAssistantConfig, Restaurant, StaffProfile
+from .models import POSIntegration, Restaurant, StaffProfile
 
 
 class POSIntegrationSerializer(serializers.ModelSerializer):
@@ -20,22 +20,7 @@ class POSIntegrationSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at']
 
 
-class AIAssistantConfigSerializer(serializers.ModelSerializer):
-    restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
     
-    class Meta:
-        model = AIAssistantConfig
-        fields = [
-            'id',
-            'restaurant',
-            'restaurant_name',
-            'enabled',
-            'ai_provider',
-            'features_enabled',
-            'created_at',
-            'updated_at'
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'api_key']
 
 
 class RestaurantGeolocationSerializer(serializers.ModelSerializer):
@@ -72,7 +57,6 @@ class RestaurantGeolocationSerializer(serializers.ModelSerializer):
 class RestaurantSettingsSerializer(serializers.ModelSerializer):
     """Comprehensive restaurant settings serializer"""
     pos_integration = POSIntegrationSerializer(read_only=True)
-    ai_config = AIAssistantConfigSerializer(read_only=True)
     geolocation_locked = serializers.SerializerMethodField()
     
     class Meta:
@@ -100,8 +84,7 @@ class RestaurantSettingsSerializer(serializers.ModelSerializer):
             'pos_provider',
             'pos_merchant_id',
             'pos_is_connected',
-            'pos_integration',
-            'ai_config'
+            'pos_integration'
         ]
     
     def validate_radius(self, value):
