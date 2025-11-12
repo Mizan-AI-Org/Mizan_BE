@@ -46,8 +46,10 @@ INSTALLED_APPS = [
     'corsheaders',
     'channels',
     'drf_spectacular',  # Optional: for API schema and docs
+    'notifications.apps.NotificationsConfig',
 
     # Local apps
+    'attendance', # Attendance module app
     'accounts',
     'dashboard',
     'scheduling',
@@ -56,14 +58,14 @@ INSTALLED_APPS = [
     'menu', # New menu app
     'inventory', # New inventory app
     'staff',
-    'notifications',
+    # 'notifications',
     'kitchen',
     'chat',
     'ai_assistant',  # AI Assistant app
     'firebase_admin', #  firebase_admin
     'pos',  # Point of Sale app
     'core',  # Core utilities app
-    'checklists',  # Checklist management app
+    'checklists',  # Checklist management app,
 ]
 
 # ---------------------------
@@ -248,13 +250,14 @@ CORS_ALLOW_HEADERS = [
 # Channels (WebSockets)
 # ---------------------------
 CHANNEL_LAYERS = {
-    'default': {
-        'BACKEND': 'channels_redis.core.RedisChannelLayer',
-        'CONFIG': {
-            "hosts": [('127.0.0.1', 6379)],
+    "default": {
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {
+            "hosts": [("redis", 6379)],  # ✅ use the docker service name here
         },
     },
 }
+
 
 # ---------------------------
 # Custom user model
