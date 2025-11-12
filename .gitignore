@@ -5,8 +5,9 @@
 # Python bytecode
 __pycache__/
 *.py[cod]
-**/migrations/
-!**/migrations/__init__.py
+# Track Django migration files to ensure consistent schema across environments
+# (previously migrations were ignored, causing NodeNotFoundError during migrate)
+# If you need to ignore generated artifacts, keep __pycache__/ and *.py[cod] rules above.
 *.pyo
 
 # Virtual environments
