@@ -7,7 +7,7 @@ from django.shortcuts import get_object_or_404
 from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer, StaffSerializer
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
-from .models import CustomUser, Restaurant, StaffInvitation, StaffProfile, AuditLog
+from .models import CustomUser, Restaurant, UserInvitation, StaffProfile, AuditLog
 from django.utils import timezone
 from django.core.files.base import ContentFile
 import base64, os, sys
@@ -404,18 +404,18 @@ class InviteStaffView(APIView):
         if CustomUser.objects.filter(email=email).exists():
             return Response({'error': 'User with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if StaffInvitation.objects.filter(email=email, is_accepted=False, expires_at__gt=timezone.now()).exists():
+        if UserInvitation.objects.filter(email=email, is_accepted=False, expires_at__gt=timezone.now()).exists():
             return Response({'error': 'A pending invitation already exists for this email.'}, status=status.HTTP_400_BAD_REQUEST)
 
         token = get_random_string(64)
         expires_at = timezone.now() + timezone.timedelta(days=7)
 
-        invitation = StaffInvitation.objects.create(
+        invitation = UserInvitation.objects.create(
             email=email,
             role=role,
             invited_by=request.user,
             restaurant=request.user.restaurant,
-            token=token,
+            invitation_token=token,
             expires_at=expires_at
         )
 
@@ -463,8 +463,8 @@ class AcceptInvitationView(APIView):
             return Response(errors, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            invitation = StaffInvitation.objects.get(
-                token=token,
+            invitation = UserInvitation.objects.get(
+                invitation_token=token,
                 is_accepted=False,
                 expires_at__gt=timezone.now()
             )
@@ -507,7 +507,7 @@ class AcceptInvitationView(APIView):
                 }
             }, status=status.HTTP_201_CREATED)
 
-        except StaffInvitation.DoesNotExist:
+        except UserInvitation.DoesNotExist:
             return Response(
                 {'error': 'Invalid or expired invitation'},
                 status=status.HTTP_400_BAD_REQUEST
@@ -517,7 +517,7 @@ class StaffListView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def get_queryset(self):
-        return StaffInvitation.objects.filter(restaurant=self.request.user.restaurant).order_by('-created_at')
+        return UserInvitation.objects.filter(restaurant=self.request.user.restaurant).order_by('-created_at')
 
 class StaffProfileUpdateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -615,7 +615,7 @@ class StaffInvitationListView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     
     def get(self, request):
-        invitations = StaffInvitation.objects.filter(restaurant=request.user.restaurant)
+        invitations = UserInvitation.objects.filter(restaurant=request.user.restaurant)
         serializer = StaffInvitationSerializer(invitations, many=True)
         return Response(serializer.data)
 

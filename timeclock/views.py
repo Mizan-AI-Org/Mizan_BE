@@ -17,6 +17,7 @@ from django.core.files.base import ContentFile  # <--- ADD THIS IMPORT
 def clock_in(request):
     serializer = ClockInSerializer(data=request.data)
     
+    print("\n\nRequest Data:", request.data, "\n\n", file=sys.stderr)
     if serializer.is_valid():
         user = serializer.validated_data['user']
         latitude = serializer.validated_data['latitude']
@@ -113,6 +114,7 @@ from django.core.files.base import ContentFile  # <--- ADD THIS IMPORT
 def web_clock_in(request):
     """Clock-in for React frontend with geolocation"""
     # print(request.data, file=sys.stderr),
+
     user = request.user
     
     # Get geolocation data from request
@@ -318,7 +320,6 @@ def verify_location(request):
     user = request.user
     latitude = request.data.get('latitude')
     longitude = request.data.get('longitude')
-    
     if not latitude or not longitude:
         return Response({
             'error': 'Location data required',

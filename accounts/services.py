@@ -7,8 +7,7 @@ Handles:
 - Permission management
 - RBAC operations
 """
-import csv
-import io
+import csv, io, sys
 import logging
 import secrets
 from datetime import timedelta
@@ -19,7 +18,7 @@ from django.template.loader import render_to_string
 from django.conf import settings
 
 from .models import (
-    Restaurant, CustomUser, StaffInvitation, StaffProfile,
+    Restaurant, CustomUser, StaffProfile,
     Role, Permission, RolePermission, UserInvitation,
     UserRole, AuditLog
 )
@@ -29,32 +28,29 @@ logger = logging.getLogger(__name__)
 
 class UserManagementService:
     """Service for managing users, invitations, and role assignments"""
-    
     @staticmethod
     def bulk_invite_from_csv(csv_content, restaurant, invited_by, expires_in_days=7):
         """
-        Process CSV content and create StaffInvitation entries.
+        Process CSV content and create StaffInvitation/UserInvitation entries.
         Accepts columns: email, first_name/firstname, last_name/lastname, role,
         department (optional), phone (optional).
 
         Returns dict: { success, failed, errors, invitations }
         """
+    
         reader = csv.DictReader(io.StringIO(csv_content))
         results = { 'success': 0, 'failed': 0, 'errors': [], 'invitations': [] }
 
         for idx, row in enumerate(reader, start=2):  # start=2 accounts for header line
             try:
-                email = (row.get('email') or '').strip()
+                email = (row.get('email') or '').strip()    
                 if not email or '@' not in email:
                     results['failed'] += 1
                     results['errors'].append(f"Row {idx}: Invalid email '{email}'")
                     continue
 
                 role_value = (row.get('role') or '').strip()
-                if not role_value:
-                    results['failed'] += 1
-                    results['errors'].append(f"Row {idx}: Missing role for {email}")
-                    continue
+                # skipping role validation / conversion
 
                 # Normalize name fields
                 first_name = (row.get('first_name') or row.get('firstname') or '').strip()
@@ -64,12 +60,21 @@ class UserManagementService:
                 phone = (row.get('phone') or row.get('phonenumber') or '').strip()
 
                 # Check if pending invitation already exists
-                existing_invite = StaffInvitation.objects.filter(
-                    restaurant=restaurant,
-                    email=email,
-                    is_accepted=False,
-                    expires_at__gt=timezone.now()
-                ).first()
+                print(f"Row {idx}: checking existing invitation for {email}", file=sys.stderr)
+                try:
+                    existing_invite = UserInvitation.objects.filter(
+                        restaurant=restaurant,
+                        email=email,
+                        is_accepted=False,  # you said you added this field
+                        expires_at__gt=timezone.now()
+                    ).first()
+                except Exception as e:
+                    import traceback
+                    results['failed'] += 1
+                    results['errors'].append(f"Row {idx}: DB query failed for {email} - {str(e)}")
+                    print(f"❌ ERROR in DB query (row {idx}): {e}", file=sys.stderr)
+                    print(traceback.format_exc(), file=sys.stderr)
+                    continue  # skip this row
 
                 if existing_invite:
                     results['failed'] += 1
@@ -77,37 +82,47 @@ class UserManagementService:
                     continue
 
                 # Create invitation
-                token = secrets.token_urlsafe(32)
-                expires_at = timezone.now() + timedelta(days=expires_in_days)
-
-                invitation = StaffInvitation.objects.create(
-                    email=email,
-                    role=role_value,
-                    restaurant=restaurant,
-                    invited_by=invited_by,
-                    token=token,
-                    expires_at=expires_at,
-                    extra_data={
-                        'first_name': first_name,
-                        'last_name': last_name,
-                        'department': department,
-                        'phone': phone,
-                    }
-                )
-
-                # Send invitation email
                 try:
-                    UserManagementService._send_invitation_email(invitation)
-                except Exception as e:
-                    # Do not fail the invitation if email sending fails
-                    results['errors'].append(f"Row {idx}: Email send failed for {email} - {str(e)}")
+                    token = secrets.token_urlsafe(32)
+                    expires_at = timezone.now() + timedelta(days=expires_in_days)
+                    
+                    invitation = UserInvitation.objects.create(
+                        email=email,
+                        role=role_value,  # skipped role conversion
+                        restaurant=restaurant,
+                        invited_by=invited_by,
+                        invitation_token=token,
+                        expires_at=expires_at,
+                        is_accepted=False,
+                        first_name= first_name,
+                        last_name= last_name,
+                        # department= department,
+                        # phone= phone,
+                        
+                    )
+                    print(f"Row {idx}: invitation created for {email}", file=sys.stderr)
 
-                results['success'] += 1
-                results['invitations'].append(invitation)
+                    # Send invitation email
+                    try:
+                        UserManagementService._send_invitation_email(invitation)
+                    except Exception as e:
+                        results['errors'].append(f"Row {idx}: Email send failed for {email} - {str(e)}")
+                        print(f"❌ Email send failed (row {idx}): {e}", file=sys.stderr)
+
+                    results['success'] += 1
+                    results['invitations'].append(invitation)
+
+                except Exception as e:
+                    results['failed'] += 1
+                    results['errors'].append(f"Row {idx}: Creation failed for {email} - {str(e)}")
+                    print(f"❌ Creation failed (row {idx}): {e}", file=sys.stderr)
 
             except Exception as e:
                 results['failed'] += 1
-                results['errors'].append(f"Row {idx}: {str(e)}")
+                results['errors'].append(f"Row {idx}: Unexpected error for {email} - {str(e)}")
+                import traceback
+                print(f"❌ Unexpected error (row {idx}): {e}", file=sys.stderr)
+                print(traceback.format_exc(), file=sys.stderr)
 
         return results
 
@@ -135,7 +150,7 @@ class UserManagementService:
                 department = (item.get('department') or '').strip()
                 phone = (item.get('phone') or item.get('phonenumber') or '').strip()
 
-                existing_invite = StaffInvitation.objects.filter(
+                existing_invite = UserInvitation.objects.filter(
                     restaurant=restaurant,
                     email=email,
                     is_accepted=False,
@@ -148,19 +163,17 @@ class UserManagementService:
 
                 token = secrets.token_urlsafe(32)
                 expires_at = timezone.now() + timedelta(days=expires_in_days)
-                invitation = StaffInvitation.objects.create(
+                invitation = UserInvitation.objects.create(
                     email=email,
                     role=role_value,
                     restaurant=restaurant,
                     invited_by=invited_by,
-                    token=token,
+                    invitation_token=token,
                     expires_at=expires_at,
-                    extra_data={
-                        'first_name': first_name,
-                        'last_name': last_name,
-                        'department': department,
-                        'phone': phone,
-                    }
+                    first_name= first_name,
+                    last_name= last_name,
+                    # department= department,
+                    # phone= phone,
                 )
                 try:
                     UserManagementService._send_invitation_email(invitation)
@@ -333,7 +346,7 @@ class UserManagementService:
         Returns tuple: (user, error)
         """
         try:
-            invitation = StaffInvitation.objects.get(token=token, is_accepted=False)
+            invitation = UserInvitation.objects.get(token=token, is_accepted=False)
             # Check expiration
             if invitation.expires_at < timezone.now():
                 return None, "Invitation has expired"
@@ -376,7 +389,7 @@ class UserManagementService:
                 invitation.save(update_fields=['is_accepted'])
 
                 return user, None
-        except StaffInvitation.DoesNotExist:
+        except UserInvitation.DoesNotExist:
             return None, "Invalid invitation token"
         except Exception as e:
             logger.error(f"Accept invitation error: {str(e)}")
