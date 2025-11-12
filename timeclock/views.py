@@ -4,6 +4,8 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from notifications.utils import send_realtime_notification
+from core.crypto import encrypt_json
+import uuid
 
 from accounts.utils import calculate_distance
 from .models import ClockEvent
@@ -113,244 +115,260 @@ from django.core.files.base import ContentFile  # <--- ADD THIS IMPORT
 @permission_classes([permissions.IsAuthenticated])
 def web_clock_in(request):
     """Clock-in for React frontend with geolocation"""
-    # print(request.data, file=sys.stderr),
-    user = request.user
-    
-    # Get geolocation data from request
-    latitude = request.data.get('latitude')
-    longitude = request.data.get('longitude')
-    accuracy = request.data.get('accuracy')
-    photo = request.data.get('photo_url') 
-    # --- Get new photo and device_id data ---
-    photo_data = request.data.get('photo')
-    client_device_id = request.data.get('device_id') 
-
-    # Validate required geolocation data
-    if not latitude or not longitude:
-        return Response({
-            'error': 'Geolocation data required',
-            'message': 'Please enable location services to clock in'
-        }, status=status.HTTP_400_BAD_REQUEST)
-    # Enforce GPS accuracy <= 10m when provided
     try:
-        if accuracy is not None and float(accuracy) > 10:
+        user = request.user
+
+        # Get geolocation and photo data from request
+        latitude = request.data.get('latitude')
+        longitude = request.data.get('longitude')
+        accuracy = request.data.get('accuracy')
+        photo_url_provided = request.data.get('photo_url')
+        photo_data = request.data.get('photo')  # data URL (e.g. image/jpeg;base64,...)
+        client_device_id = request.data.get('device_id')
+
+        # Validate required geolocation data
+        if not latitude or not longitude:
+            return Response({
+                'error': 'Geolocation data required',
+                'message': 'Please enable location services to clock in'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Log weak accuracy (no rejection)
+        try:
+            if accuracy is not None and float(accuracy) > 10:
+                try:
+                    ip_address = get_client_ip(request)
+                    user_agent = request.META.get('HTTP_USER_AGENT', '')
+                    AuditLog.create_log(
+                        restaurant=request.user.restaurant,
+                        user=request.user,
+                        action_type='OTHER',
+                        entity_type='CLOCK_EVENT',
+                        entity_id=None,
+                        description=f'Weak GPS accuracy on web clock-in: {accuracy}m',
+                        old_values={},
+                        new_values={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy},
+                        ip_address=ip_address,
+                        user_agent=user_agent,
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Check if user is already clocked in
+        last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+        if last_event and last_event.event_type == 'in':
+            return Response({
+                'error': 'Already clocked in',
+                'last_clock_in': last_event.timestamp.isoformat()
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Verify geofence if restaurant has location
+        restaurant = user.restaurant
+        if restaurant.latitude and restaurant.longitude:
+            distance = calculate_distance(
+                float(restaurant.latitude),
+                float(restaurant.longitude),
+                float(latitude),
+                float(longitude)
+            )
+            radius = float(restaurant.radius) if restaurant.radius else 100
+            radius = max(5.0, min(100.0, radius))
+            if distance > radius:
+                try:
+                    ip_address = get_client_ip(request)
+                    user_agent = request.META.get('HTTP_USER_AGENT', '')
+                    AuditLog.create_log(
+                        restaurant=request.user.restaurant,
+                        user=request.user,
+                        action_type='OTHER',
+                        entity_type='CLOCK_EVENT',
+                        entity_id=None,
+                        description=f'Web clock-in rejected: outside geofence (distance {distance:.2f}m, radius {radius:.2f}m)',
+                        old_values={},
+                        new_values={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy, 'distance': distance, 'radius': radius},
+                        ip_address=ip_address,
+                        user_agent=user_agent,
+                    )
+                except Exception:
+                    pass
+                return Response({
+                    'error': 'Location verification failed',
+                    'message': f'You are {distance:.0f}m away from the restaurant. Please be within {radius:.0f}m to clock in.',
+                    'distance': distance,
+                    'within_range': False
+                }, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            distance = None
+
+        # Resolve device id
+        device_id = client_device_id or request.META.get('HTTP_USER_AGENT', '')
+
+        # Prepare photo (optional)
+        photo_file = None
+        if photo_data:
+            try:
+                fmt, imgstr = photo_data.split(';base64,')
+                ext = fmt.split('/')[-1]
+                file_name = f"{user.id}_{uuid.uuid4()}.{ext}"
+                photo_file = ContentFile(base64.b64decode(imgstr), name=file_name)
+            except Exception:
+                # If photo parsing fails, continue without photo
+                photo_file = None
+
+        # Create clock-in event (photo optional now)
+        # Build encrypted location payload to satisfy NOT NULL DB constraint
+        loc_token = encrypt_json({
+            'lat': float(latitude),
+            'lon': float(longitude),
+            'acc': float(accuracy) if accuracy is not None else None,
+            'ts': timezone.now().isoformat(),
+        })
+
+        clock_event = ClockEvent.objects.create(
+            staff=user,
+            event_type='in',
+            latitude=latitude,
+            longitude=longitude,
+            device_id=device_id,
+            notes=(
+                f"Web clock-in | GPS Accuracy: {accuracy}m" if accuracy else "Web clock-in"
+            ) + (f" | photo_url_provided" if photo_url_provided and not photo_file else ""),
+            photo=photo_file,
+            location_encrypted=loc_token,
+        )
+
+        response_data = {
+            'session_id': str(clock_event.id),
+            'clock_in_time': clock_event.timestamp.isoformat(),
+            'location_verified': True,
+            'distance_from_restaurant': f"{distance:.0f}m" if distance else "Unknown",
+            'message': 'Clocked in successfully with location verification',
+            'photo_url': (
+                getattr(clock_event.photo, 'url', None) if clock_event.photo else (photo_url_provided or None)
+            )
+        }
+
+        # Audit success
+        try:
             ip_address = get_client_ip(request)
             user_agent = request.META.get('HTTP_USER_AGENT', '')
             AuditLog.create_log(
                 restaurant=request.user.restaurant,
                 user=request.user,
-                action_type='OTHER',
+                action_type='CREATE',
                 entity_type='CLOCK_EVENT',
-                entity_id=None,
-                description=f'Web clock-in rejected due to weak GPS accuracy: {accuracy}m',
+                entity_id=str(clock_event.id),
+                description='Web clock-in successful',
                 old_values={},
-                new_values={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy},
+                new_values={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy, 'distance': distance},
                 ip_address=ip_address,
                 user_agent=user_agent,
             )
-            return Response({
-                'error': 'GPS accuracy too weak',
-                'message': 'Please move to open area or enable precise location (<=10m).',
-            }, status=status.HTTP_400_BAD_REQUEST)
-    except Exception:
-        pass
-    # Photo is optional for web clock-in; if provided, it will be saved.
-    # Geofence enforcement remains mandatory.
-    # Check if user is already clocked in
-    last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
-    if last_event and last_event.event_type == 'in':
+        except Exception:
+            pass
+
+        return Response(response_data)
+    except Exception as e:
+        # Ensure JSON error response on unexpected server-side exceptions
         return Response({
-            'error': 'Already clocked in',
-            'last_clock_in': last_event.timestamp.isoformat()
-        }, status=status.HTTP_400_BAD_REQUEST)
-    
-    # Verify location is within restaurant premises
-    restaurant = user.restaurant
-    if restaurant.latitude and restaurant.longitude:
-        distance = calculate_distance(
-            float(restaurant.latitude),
-            float(restaurant.longitude),
-            float(latitude),
-            float(longitude)
-        )
-        
-        # Check if within allowed distance using restaurant geofence radius
-        radius = float(restaurant.radius) if restaurant.radius else 100
-        # Clamp radius to safe range (5m - 100m)
-        radius = max(5.0, min(100.0, radius))
-        if distance > radius:
-            try:
-                ip_address = get_client_ip(request)
-                user_agent = request.META.get('HTTP_USER_AGENT', '')
-                AuditLog.create_log(
-                    restaurant=request.user.restaurant,
-                    user=request.user,
-                    action_type='OTHER',
-                    entity_type='CLOCK_EVENT',
-                    entity_id=None,
-                    description=f'Web clock-in rejected: outside geofence (distance {distance:.2f}m, radius {radius:.2f}m)',
-                    old_values={},
-                    new_values={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy, 'distance': distance, 'radius': radius},
-                    ip_address=ip_address,
-                    user_agent=user_agent,
-                )
-            except Exception:
-                pass
-            return Response({
-                'error': 'Location verification failed',
-                'message': f'You are {distance:.0f}m away from the restaurant. Please be within {radius:.0f}m to clock in.',
-                'distance': distance,
-                'within_range': False
-            }, status=status.HTTP_400_BAD_REQUEST)
-    else:
-        # Restaurant location not set, allow clock-in with warning
-        distance = None
-    
-    # Use client_device_id if provided, otherwise fall back to User-Agent
-    device_id = client_device_id or request.META.get('HTTP_USER_AGENT', '')
-    
-    # Create clock in event (without photo first)
-    clock_event = ClockEvent.objects.create(
-        staff=user,
-        event_type='in',
-        latitude=latitude,
-        longitude=longitude,
-        device_id=device_id,  # <--- UPDATED THIS
-        notes=f"Web clock-in | GPS Accuracy: {accuracy}m" if accuracy else "Web clock-in",
-        photo=photo  
-    )
-
-    # --- Handle and save the photo ---
-    if photo_data:
-        try:
-            # Split the base64 string (e.g., "data:image/png;base64,iVBOR...")
-            format, imgstr = photo_data.split(';base64,') 
-            ext = format.split('/')[-1] # e.g., "png"
-            
-            # Create a unique name for the file
-            file_name = f"{user.id}_{clock_event.id}.{ext}"
-            
-            # Decode the string and create a Django ContentFile
-            data = ContentFile(base64.b64decode(imgstr), name=file_name)
-            
-            # Save the file to the 'photo' field
-            clock_event.photo.save(file_name, data, save=True)
-            
-        except Exception as e:
-            # Handle error if base64 is malformed
-            clock_event.notes += f" | Photo failed to save: {str(e)}"
-            clock_event.save()
-
-    
-    response_data = {
-        'session_id': str(clock_event.id),
-        'clock_in_time': clock_event.timestamp.isoformat(),
-        'location_verified': True,
-        'distance_from_restaurant': f"{distance:.0f}m" if distance else "Unknown",
-        'message': 'Clocked in successfully with location verification',
-        'photo_url': clock_event.photo.url if clock_event.photo else None # <--- ADDED
-    }
-    # Audit success
-    try:
-        ip_address = get_client_ip(request)
-        user_agent = request.META.get('HTTP_USER_AGENT', '')
-        AuditLog.create_log(
-            restaurant=request.user.restaurant,
-            user=request.user,
-            action_type='CREATE',
-            entity_type='CLOCK_EVENT',
-            entity_id=str(clock_event.id),
-            description='Web clock-in successful',
-            old_values={},
-            new_values={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy, 'distance': distance},
-            ip_address=ip_address,
-            user_agent=user_agent,
-        )
-    except Exception:
-        pass
-    
-    return Response(response_data)
+            'error': 'Internal server error',
+            'message': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def web_clock_out(request):
     """Clock-out for React frontend with optional geolocation"""
-    user = request.user
-    
-    # Get optional geolocation data
-    latitude = request.data.get('latitude')
-    longitude = request.data.get('longitude')
-    accuracy = request.data.get('accuracy')
-    # Enforce GPS accuracy <= 10m when provided
     try:
-        if accuracy is not None and float(accuracy) > 10:
+        user = request.user
+
+        # Get optional geolocation data
+        latitude = request.data.get('latitude')
+        longitude = request.data.get('longitude')
+        accuracy = request.data.get('accuracy')
+
+        # Log weak accuracy but do not reject
+        try:
+            if accuracy is not None and float(accuracy) > 10:
+                try:
+                    ip_address = get_client_ip(request)
+                    user_agent = request.META.get('HTTP_USER_AGENT', '')
+                    AuditLog.create_log(
+                        restaurant=request.user.restaurant,
+                        user=request.user,
+                        action_type='OTHER',
+                        entity_type='CLOCK_EVENT',
+                        entity_id=None,
+                        description=f'Weak GPS accuracy on web clock-out: {accuracy}m',
+                        old_values={},
+                        new_values={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy},
+                        ip_address=ip_address,
+                        user_agent=user_agent,
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Check if user is clocked in
+        last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+        if not last_event or last_event.event_type != 'in':
+            return Response({'error': 'Not clocked in'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Create clock-out event
+        loc_token = encrypt_json({
+            'lat': float(latitude) if latitude is not None else None,
+            'lon': float(longitude) if longitude is not None else None,
+            'acc': float(accuracy) if accuracy is not None else None,
+            'ts': timezone.now().isoformat(),
+        })
+
+        clock_event = ClockEvent.objects.create(
+            staff=user,
+            event_type='out',
+            latitude=latitude,
+            longitude=longitude,
+            device_id=request.META.get('HTTP_USER_AGENT', ''),
+            notes=f"Web clock-out | GPS Accuracy: {accuracy}m" if accuracy else "Web clock-out",
+            location_encrypted=loc_token,
+        )
+
+        # Calculate session duration
+        duration = clock_event.timestamp - last_event.timestamp
+        total_hours = duration.total_seconds() / 3600
+
+        response_data = {
+            'session_id': str(clock_event.id),
+            'clock_out_time': clock_event.timestamp.isoformat(),
+            'total_hours': round(total_hours, 2),
+            'location_verified': bool(latitude and longitude),
+            'message': 'Clocked out successfully'
+        }
+
+        # Audit success
+        try:
             ip_address = get_client_ip(request)
             user_agent = request.META.get('HTTP_USER_AGENT', '')
             AuditLog.create_log(
                 restaurant=request.user.restaurant,
                 user=request.user,
-                action_type='OTHER',
+                action_type='CREATE',
                 entity_type='CLOCK_EVENT',
-                entity_id=None,
-                description=f'Web clock-out rejected due to weak GPS accuracy: {accuracy}m',
+                entity_id=str(clock_event.id),
+                description='Web clock-out successful',
                 old_values={},
                 new_values={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy},
                 ip_address=ip_address,
                 user_agent=user_agent,
             )
-            return Response({
-                'error': 'GPS accuracy too weak',
-                'message': 'Please move to open area or enable precise location (<=10m).',
-            }, status=status.HTTP_400_BAD_REQUEST)
-    except Exception:
-        pass
-    
-    # Check if user is clocked in
-    last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
-    if not last_event or last_event.event_type != 'in':
-        return Response({'error': 'Not clocked in'}, status=status.HTTP_400_BAD_REQUEST)
-    
-    # Create clock out event with optional geolocation
-    clock_event = ClockEvent.objects.create(
-        staff=user,
-        event_type='out',
-        latitude=latitude,
-        longitude=longitude,
-        device_id=request.META.get('HTTP_USER_AGENT', ''),
-        notes=f"Web clock-out | GPS Accuracy: {accuracy}m" if accuracy else "Web clock-out"
-    )
-    
-    # Calculate session duration
-    duration = clock_event.timestamp - last_event.timestamp
-    total_hours = duration.total_seconds() / 3600
-    
-    response_data = {
-        'session_id': str(clock_event.id),
-        'clock_out_time': clock_event.timestamp.isoformat(),
-        'total_hours': round(total_hours, 2),
-        'location_verified': bool(latitude and longitude),
-        'message': 'Clocked out successfully'
-    }
-    # Audit success
-    try:
-        ip_address = get_client_ip(request)
-        user_agent = request.META.get('HTTP_USER_AGENT', '')
-        AuditLog.create_log(
-            restaurant=request.user.restaurant,
-            user=request.user,
-            action_type='CREATE',
-            entity_type='CLOCK_EVENT',
-            entity_id=str(clock_event.id),
-            description='Web clock-out successful',
-            old_values={},
-            new_values={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy},
-            ip_address=ip_address,
-            user_agent=user_agent,
-        )
-    except Exception:
-        pass
-    
-    return Response(response_data)
+        except Exception:
+            pass
+
+        return Response(response_data)
+    except Exception as e:
+        return Response({'error': 'Internal server error', 'message': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
@@ -682,8 +700,8 @@ def staff_dashboard_data(request):
         'current_break_duration_minutes': round(total_break_seconds / 60, 2),
         'todaysShift': todays_shift_data,
         'restaurant_location': {
-            'latitude': float(user.restaurant.latitude) if user.restaurant.latitude else None,
-            'longitude': float(user.restaurant.longitude) if user.restaurant.longitude else None
+            'latitude': float(user.restaurant.latitude) if getattr(user, 'restaurant', None) and user.restaurant.latitude else None,
+            'longitude': float(user.restaurant.longitude) if getattr(user, 'restaurant', None) and user.restaurant.longitude else None
         },
         'stats': {
             'hoursThisWeek': round(weekly_hours, 2),

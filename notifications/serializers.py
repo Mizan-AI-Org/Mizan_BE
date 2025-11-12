@@ -6,7 +6,7 @@ from .models import Notification, DeviceToken, NotificationPreference, Notificat
 
 
 class NotificationSerializer(serializers.ModelSerializer):
-    sender_name = serializers.CharField(source='sender.get_full_name', read_only=True)
+    sender_name = serializers.SerializerMethodField()
     is_read = serializers.SerializerMethodField()
     time_ago = serializers.SerializerMethodField()
     attachments = serializers.SerializerMethodField()
@@ -24,6 +24,24 @@ class NotificationSerializer(serializers.ModelSerializer):
             'id', 'recipient', 'sender', 'sender_name', 'channels_sent', 
             'delivery_status', 'created_at', 'time_ago'
         ]
+    
+    def get_sender_name(self, obj):
+        try:
+            if obj.sender:
+                # Prefer get_full_name when available
+                get_full_name = getattr(obj.sender, 'get_full_name', None)
+                if callable(get_full_name):
+                    full = get_full_name()
+                    if full:
+                        return full
+                # Fallbacks
+                for attr in ('full_name', 'name', 'email', 'username'):
+                    val = getattr(obj.sender, attr, None)
+                    if val:
+                        return str(val)
+        except Exception:
+            pass
+        return 'System'
     
     def get_is_read(self, obj):
         return obj.read_at is not None

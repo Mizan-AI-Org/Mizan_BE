@@ -33,7 +33,15 @@ class NotificationListView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = Notification.objects.filter(recipient=user).order_by('-created_at')
+        # Be defensive: eagerly load related sender/recipient and attachments
+        # to avoid lazy-loading surprises that can bubble up during serialization
+        queryset = (
+            Notification.objects
+            .filter(recipient=user)
+            .select_related('recipient', 'sender')
+            .prefetch_related('attachments')
+            .order_by('-created_at')
+        )
         
         # Filter by read status
         is_read = self.request.query_params.get('is_read')
@@ -62,6 +70,22 @@ class NotificationListView(generics.ListAPIView):
             queryset = queryset.filter(created_at__date__lte=date_to)
         
         return queryset
+
+    def list(self, request, *args, **kwargs):
+        """Ensure the endpoint never 500s; return an empty, paginated payload on error."""
+        try:
+            return super().list(request, *args, **kwargs)
+        except Exception as e:
+            # We deliberately avoid exposing internals to the client. This preserves
+            # dashboard stability if a bad row or attachment causes a serialization error.
+            return Response({
+                'count': 0,
+                'next': None,
+                'previous': None,
+                'results': [],
+                'success': False,
+                'error': 'notifications_unavailable'
+            }, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])

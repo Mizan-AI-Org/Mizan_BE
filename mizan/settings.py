@@ -64,6 +64,7 @@ INSTALLED_APPS = [
     'pos',  # Point of Sale app
     'core',  # Core utilities app
     'checklists',  # Checklist management app
+    'attendance',  # Attendance & Shift Feedback app
 ]
 
 # ---------------------------

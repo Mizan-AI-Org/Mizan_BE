@@ -6,6 +6,7 @@ from django.db.models import Q
 from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 from datetime import datetime, timedelta
+import logging
 
 from .models import (
     ScheduleTemplate, TemplateShift, WeeklySchedule, AssignedShift, 
@@ -25,6 +26,9 @@ from .serializers import (
 from .services import SchedulingService
 from .task_assignment_service import TaskAssignmentService
 from accounts.views import IsAdmin, IsSuperAdmin, IsManagerOrAdmin
+
+# Module logger
+logger = logging.getLogger(__name__)
 
 
 class ScheduleTemplateListCreateAPIView(generics.ListCreateAPIView):
@@ -448,7 +452,32 @@ class ShiftTaskViewSet(viewsets.ModelViewSet):
         return queryset.order_by('-priority', 'created_at')
 
     def perform_create(self, serializer):
-        serializer.save(created_by=self.request.user)
+        # Log incoming payload essentials for observability
+        try:
+            payload = {
+                'title': self.request.data.get('title'),
+                'shift': self.request.data.get('shift'),
+                'assigned_to': self.request.data.get('assigned_to'),
+                'priority': self.request.data.get('priority'),
+                'category': self.request.data.get('category'),
+            }
+            logger.info("Creating ShiftTask payload=%s user=%s", payload, self.request.user.id)
+        except Exception:
+            # Avoid blocking creation on logging issues
+            pass
+
+        instance = serializer.save(created_by=self.request.user)
+
+        try:
+            logger.info(
+                "ShiftTask created id=%s shift=%s assigned_to=%s priority=%s",
+                getattr(instance, 'id', None),
+                getattr(instance, 'shift_id', None),
+                getattr(getattr(instance, 'assigned_to', None), 'id', None),
+                getattr(instance, 'priority', None),
+            )
+        except Exception:
+            pass
 
     @action(detail=True, methods=['post'])
     def mark_completed(self, request, pk=None):
@@ -623,10 +652,22 @@ class ShiftTaskViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def my_tasks(self, request):
         """Get tasks assigned to the current user"""
+        try:
+            logger.info(
+                "Fetching my_tasks for user=%s restaurant=%s",
+                request.user.id,
+                getattr(request.user, 'restaurant_id', None)
+            )
+        except Exception:
+            pass
         tasks = ShiftTask.objects.filter(
             assigned_to=request.user,
             shift__schedule__restaurant=request.user.restaurant
         ).order_by('-priority', 'created_at')
+        try:
+            logger.info("my_tasks count=%s for user=%s", tasks.count(), request.user.id)
+        except Exception:
+            pass
         
         serializer = self.get_serializer(tasks, many=True)
         return Response(serializer.data)

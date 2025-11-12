@@ -29,7 +29,7 @@ from .serializers import (
     ChecklistSyncSerializer
 )
 from .services import ChecklistSyncService, ChecklistValidationService, ChecklistNotificationService
-from accounts.permissions import IsAdminOrSuperAdmin
+from accounts.permissions import IsAdminOrSuperAdmin, IsAdminOrManager
 from accounts.models import AuditLog, CustomUser
 from core.permissions import IsRestaurantOwnerOrManager
 from scheduling.models import ShiftTask
@@ -49,8 +49,8 @@ class ChecklistTemplateViewSet(viewsets.ModelViewSet):
     - POST /api/checklists/templates/{id}/duplicate/ - Duplicate template
     """
     serializer_class = ChecklistTemplateSerializer
-    # Admin-only access to manage templates via API
-    permission_classes = [IsAdminOrSuperAdmin]
+    # Allow managers to read and create templates for operational use
+    permission_classes = [IsAdminOrManager]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     # Use category (not template_type) per model fields
     filterset_fields = ['category', 'is_active']
@@ -164,7 +164,7 @@ class ChecklistTemplateViewSet(viewsets.ModelViewSet):
         )
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
-    @action(detail=True, methods=['post'], permission_classes=[IsAdminOrSuperAdmin])
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminOrManager])
     def assign(self, request, pk=None):
         """Assign this template to a staff member (admin-only).
 
@@ -335,30 +335,31 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
 
         try:
             task = ShiftTask.objects.select_related(
-                'assigned_to', 'shift__schedule__restaurant', 'task_template'
+                'assigned_to', 'shift__schedule__restaurant', 'category'
             ).get(id=task_id)
         except ShiftTask.DoesNotExist:
             return Response({'error': 'Task not found'}, status=status.HTTP_404_NOT_FOUND)
 
         # Secure authentication and authorization checks
         user = request.user
-        if task.assigned_to_id != user.id:
+        restaurant = getattr(task.shift.schedule, 'restaurant', None)
+        user_restaurant = getattr(user, 'restaurant', None)
+
+        # Validate restaurant ownership without assignment expressions (for broader Python compatibility)
+        if not restaurant or not user_restaurant or restaurant.id != user_restaurant.id:
             return Response(
-                {'error': 'You can only open checklists for your assigned tasks'},
+                {'error': 'Task does not belong to your restaurant'},
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        restaurant = getattr(task.shift.schedule, 'restaurant', None)
-        user_restaurant = getattr(user, 'restaurant', None)
-        # Validate restaurant ownership without assignment expressions (for broader Python compatibility)
-        if not restaurant or not user_restaurant:
+        # Allow the assigned staff to ensure their own checklist.
+        # Also allow managers/admins/owners of the same restaurant to ensure checklists
+        # on behalf of the assigned staff.
+        is_assigned_staff = (task.assigned_to_id == user.id)
+        is_manager_or_admin = (getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER'])
+        if not (is_assigned_staff or is_manager_or_admin):
             return Response(
-                {'error': 'Task does not belong to your restaurant'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        if restaurant.id != user_restaurant.id:
-            return Response(
-                {'error': 'Task does not belong to your restaurant'},
+                {'error': 'You do not have permission to open checklists for this task'},
                 status=status.HTTP_403_FORBIDDEN
             )
 
@@ -370,23 +371,23 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(existing)
             return Response(serializer.data)
 
-        # Find an active checklist template: prefer direct link via task_template
+        # Find an active checklist template by category (ShiftTask has no direct task_template link)
         template = None
-        if task.task_template_id:
+        category_name = getattr(getattr(task, 'category', None), 'name', None)
+        if category_name:
+            # Prefer templates explicitly tagged with the same category
             template = ChecklistTemplate.objects.filter(
                 restaurant=user_restaurant,
-                task_template_id=task.task_template_id,
-                is_active=True
+                is_active=True,
+                category=category_name
             ).prefetch_related('steps').first()
 
-        # Fallback: match by category if available on template/task
-        if not template:
-            task_category = getattr(getattr(task, 'task_template', None), 'template_type', None)
-            if task_category:
+            # If not found, try templates linked via TaskTemplate where template_type matches category
+            if not template:
                 template = ChecklistTemplate.objects.filter(
                     restaurant=user_restaurant,
-                    category=task_category,
-                    is_active=True
+                    is_active=True,
+                    task_template__template_type=category_name
                 ).prefetch_related('steps').first()
 
         if not template:
@@ -396,12 +397,14 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
 
         # Create new execution and pre-create step responses
         with transaction.atomic():
+            # Always assign the execution to the task's assignee (staff member)
             execution = ChecklistExecution.objects.create(
                 template=template,
-                assigned_to=user,
+                assigned_to=task.assigned_to,
                 assigned_shift=getattr(task, 'assigned_shift', None) or getattr(task, 'shift', None),
                 task=task,
-                status='NOT_STARTED'
+                status='NOT_STARTED',
+                due_date=getattr(task, 'due_date', None)
             )
 
             # Pre-create step responses
