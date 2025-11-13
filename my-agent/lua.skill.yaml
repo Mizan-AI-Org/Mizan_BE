@@ -1,0 +1,202 @@
+agent:
+  agentId: baseAgent_agent_1762796132079_ob3ln5fkl
+  orgId: c1234bab-fcdf-4a0f-966e-d09d1971e04f
+  persona: >-
+    Meet Mizan AI, your refined and elegant restaurant assistant. Mizan AI is
+    designed to embody the sophisticated charm of a high-end culinary
+    establishment, effortlessly merging intelligence with a touch of warmth to
+    elevate your dining experience. As an expert aid in the Food & Beverage
+    industry, Mizan AI is more than just a digital assistant—it\'s your
+    knowledgeable dining companion, ready to enhance every interaction with its
+    finely tuned insights on gastronomy.
+
+
+    With an air of sophistication and intelligence, Mizan AI speaks with
+    eloquence and grace, ensuring that every conversation feels both enriching
+    and engaging. Whether you\'re inquiring about the chef\'s specials or need
+    guidance on wine pairings, Mizan AI responds with clarity and precision,
+    always maintaining a tone that reflects the elegant atmosphere of your
+    dining environment.
+
+
+    Mizan AI primarily caters to customers who appreciate the finer things in
+    life, often speaking to adults who enjoy a lifestyle centered around gourmet
+    experiences and culinary exploration. These are patrons who value quality
+    and are keen to savor each moment, making Mizan AI their ideal partner in
+    navigating the intricate world of fine dining.
+
+
+    The sales approach of Mizan AI is both consultative and confident. It guides
+    customers with assurance, offering recommendations and insights that elevate
+    their dining decisions without overwhelming them. If you\'re looking for the
+    perfect dish to suit a special occasion or seeking to explore new flavors,
+    Mizan AI seamlessly integrates upselling techniques with genuine
+    recommendations, ensuring that every suggestion enhances your dining
+    pleasure.
+
+
+    When it comes to communication, Mizan AI strikes a balance between formality
+    and warmth. It is efficient in delivering information but always with a
+    courteous and inviting demeanor. This approach ensures that each interaction
+    leaves you feeling both informed and valued, adding a touch of elegance to
+    the dining experience that leaves a lasting impression.
+  welcomeMessage: ''
+skills:
+  - name: user-skill
+    skillId: f7b6fdd7-912a-4627-80a5-edaf8b9f1be1
+    version: 1.0.0
+  - name: product-skill
+    skillId: 5f0b6252-6804-4cf4-b1a1-f1628b41a9ab
+    version: 1.0.0
+  - name: basket-skill
+    skillId: 3cb231f9-412e-4ac7-b67e-c8c83d39d214
+    version: 1.0.0
+webhooks:
+  - name: dining-experience-events
+    version: 3.0.0
+    webhookId: 7b22cb17-06a4-450f-b527-bfcb9d876c95
+  - name: kitchen-coordination
+    version: 2.0.0
+    webhookId: 8c33dc28-17b5-561g-c638-cgdc0a987d06
+  - name: staff-management-events
+    version: 2.0.0
+    webhookId: 9d44ed39-28c6-672h-d749-dhed1ba098e7
+  - name: forecasting-events
+    version: 1.0.0
+    webhookId: 0e55fe4a-39d7-783i-e85a-eife2cb1a8f8
+  - name: user-events-dev
+    version: 1.0.0
+    webhookId: 6443d036-7c24-4e2e-9c3a-9f5df9d90ac2
+jobs:
+  - jobId: 100b555b-4d19-4130-a879-92b5fbb594d3
+    name: restaurant-health-check
+    schedule:
+      seconds: 300
+      type: interval
+    version: 3.0.0
+  - jobId: 200c666c-5e20-5241-b980-a3c6gcc705e4
+    name: menu-update-sync
+    schedule:
+      seconds: 3600
+      type: interval
+    version: 2.0.0
+  - jobId: 300d777d-6f31-6352-ca91-b4d7hdd816f5
+    name: guest-preference-analysis
+    schedule:
+      seconds: 86400
+      type: interval
+    version: 2.0.0
+  - jobId: 400e888e-7f42-7463-dba2-c5e8iee927g6
+    name: auto-staff-scheduler
+    schedule:
+      seconds: 604800
+    version: 1.0.0
+  - jobId: 500f999f-8g53-8574-ecb3-d6f9jff038h7
+    name: performance-analytics
+    schedule:
+      seconds: 7200
+      type: interval
+    version: 2.0.0
+  - jobId: 600g000g-9h64-9685-fdc4-e7g0kgg149i8
+    name: sales-forecast-generator
+    schedule:
+      seconds: 43200
+      type: interval
+    version: 1.0.0
+  - jobId: 700h111h-0i75-0796-ged5-f8h1lhh25aj9
+    name: inventory-procurement-optimizer
+    schedule:
+      seconds: 21600
+      type: interval
+    version: 1.0.0
+  - jobId: bc2d3a91-401d-453c-8c3f-ba02ab331d7c
+    name: health-check-dev
+    schedule:
+      seconds: 300
+      type: interval
+    version: 1.0.0
+  - jobId: 91d01b00-162d-4e56-94b9-3bcde2e13e3c
+    name: agent-verification-dev
+    schedule:
+      seconds: 900
+      type: interval
+    version: 1.0.0
+preprocessors:
+  - capabilities:
+      - menu-item-recognition
+      - dietary-restriction-detection
+      - occasion-understanding
+      - preference-inference
+      - allergy-flagging
+    description: >-
+      Understands dining-related intents, dietary needs, and culinary
+      preferences
+    name: dining-intent-recognition
+    preprocessorId: preprocessor_239a74d6-2582-4146-9d5e-5d3ac6d9d317
+    version: 3.0.0
+  - capabilities:
+      - guest-history-retrieval
+      - preference-application
+      - context-aware-processing
+    description: Enhances requests with guest history, preferences, and current context
+    name: guest-context-enrichment
+    preprocessorId: preprocessor_34ab85e7-3693-5257-ae6f-6e4bd7a0e428
+    version: 2.0.0
+  - capabilities:
+      - workload-assessment
+      - skill-gap-analysis
+      - urgency-calculation
+      - resource-allocation
+    description: Analyzes current staff workload and optimizes task distribution
+    name: staff-workload-analyzer
+    preprocessorId: preprocessor_45bc96f8-47a4-6368-bf7g-7f5cc8b1f539
+    version: 2.0.0
+  - capabilities:
+      - historical-data-aggregation
+      - external-factor-integration
+      - confidence-level-calculation
+      - scenario-modeling
+    description: Processes forecasting requests and gathers relevant data sources
+    name: forecasting-request-processor
+    preprocessorId: preprocessor_56cd07g9-58b5-7479-cg8h-8g6dd2c26a4h
+    version: 1.0.0
+postprocessors:
+  - capabilities:
+      - personalized-recommendations
+      - anticipatory-suggestions
+      - tone-matching
+      - cultural-appropriateness
+    description: >-
+      Tailors responses with personal touches, recommendations, and anticipatory
+      service
+    name: personalized-response-crafting
+    postprocessorId: postprocessor_5bb893a9-d2ee-4514-aefc-0eb080957fcf
+    version: 3.0.0
+  - capabilities:
+      - surprise-and-delight
+      - complementary-offers
+      - memorable-touches
+    description: Adds delightful touches and surprise elements to enhance dining experience
+    name: experience-enhancement
+    postprocessorId: postprocessor_6cc9a4ba-3eff-6625-bfgd-1fc191a068eg
+    version: 2.0.0
+  - capabilities:
+      - task-prioritization
+      - skill-based-assignment
+      - efficiency-optimization
+      - load-balancing
+    description: Optimizes and assigns staff tasks based on real-time restaurant conditions
+    name: staff-task-optimizer
+    postprocessorId: postprocessor_7dda5bcb-4fgg-7736-cgh1-2gd2a2b179fh
+    version: 2.0.0
+  - capabilities:
+      - data-visualization
+      - actionable-insights
+      - risk-assessment
+      - recommendation-prioritization
+    description: >-
+      Formats and presents forecasts and inventory recommendations in actionable
+      formats
+    name: forecast-presentation
+    postprocessorId: postprocessor_8eeb6cdc-5ghh-8847-dhi2-3he3b3c28agi
+    version: 1.0.0

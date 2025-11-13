@@ -10,8 +10,9 @@ import base64
 import uuid
 
 from .task_templates import TaskTemplate, Task
-from .models import TaskCategory
-from .serializers import TaskTemplateSerializer, TaskCategorySerializer, TaskSerializer
+from .models import TaskCategory, ShiftTask
+from .serializers import TaskTemplateSerializer, TaskCategorySerializer, TaskSerializer, CombinedTaskItemSerializer
+from .recurrence_service import RecurrenceService
 
 class TaskTemplateViewSet(viewsets.ModelViewSet):
     """
@@ -92,6 +93,39 @@ class TaskTemplateViewSet(viewsets.ModelViewSet):
         
         serializer = TaskSerializer(tasks, many=True)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'])
+    def run_recurring(self, request):
+        """Trigger recurrence generation for active templates.
+
+        Optional body:
+        - frequency: Restrict to a specific frequency (e.g., DAILY)
+        - date: YYYY-MM-DD override for testing
+        - restaurant_id: limit to restaurant
+        """
+        frequency = request.data.get('frequency')
+        date = request.data.get('date')
+        restaurant_id = request.data.get('restaurant_id')
+
+        date_obj = None
+        if date:
+            try:
+                from django.utils import timezone
+                date_obj = timezone.datetime.strptime(date, '%Y-%m-%d').date()
+            except Exception:
+                return Response({'detail': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        restaurant = getattr(request.user, 'restaurant', None)
+        # Allow superusers/admins to override restaurant
+        if restaurant_id and getattr(request.user, 'role', '') in ['ADMIN']:
+            from accounts.models import Restaurant
+            try:
+                restaurant = Restaurant.objects.get(id=restaurant_id)
+            except Restaurant.DoesNotExist:
+                return Response({'detail': 'Restaurant not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        results = RecurrenceService.generate(date=date_obj, frequency=frequency, restaurant=restaurant, request=request)
+        return Response(results, status=status.HTTP_200_OK)
 
 
 class TaskCategoryViewSet(viewsets.ModelViewSet):
@@ -365,6 +399,147 @@ class TaskViewSet(viewsets.ModelViewSet):
             'in_progress': tasks.filter(status='IN_PROGRESS').count(),
             'todo': tasks.filter(status='TODO').count()
         })
+
+    @action(detail=False, methods=['get'], url_path='my_combined')
+    def my_combined(self, request):
+        """Return a unified list of tasks assigned to the current user.
+
+        Combines direct template tasks (`Task`) and shift-linked tasks (`ShiftTask`).
+        Supports filters: status, priority, due_from, due_to, ordering.
+        """
+        user = request.user
+        restaurant = getattr(user, 'restaurant', None)
+
+        # Query params
+        status_filter = request.query_params.get('status')
+        priority_filter = request.query_params.get('priority')
+        due_from = request.query_params.get('due_from')
+        due_to = request.query_params.get('due_to')
+        ordering = request.query_params.get('ordering', 'due_date')
+        page_size = int(request.query_params.get('page_size', 200))
+
+        # Shift tasks assigned to user
+        shift_tasks_qs = ShiftTask.objects.filter(
+            assigned_to=user,
+            shift__schedule__restaurant=restaurant
+        ).select_related('shift', 'category', 'created_by')
+
+        # Apply filters to ShiftTask
+        if status_filter:
+            shift_tasks_qs = shift_tasks_qs.filter(status=status_filter)
+        if priority_filter:
+            shift_tasks_qs = shift_tasks_qs.filter(priority=priority_filter)
+        # Due date for a shift task is approximated by the shift date
+        if due_from:
+            try:
+                shift_tasks_qs = shift_tasks_qs.filter(shift__shift_date__gte=due_from)
+            except Exception:
+                pass
+        if due_to:
+            try:
+                shift_tasks_qs = shift_tasks_qs.filter(shift__shift_date__lte=due_to)
+            except Exception:
+                pass
+
+        # Direct/template tasks assigned to user
+        template_tasks_qs = Task.objects.filter(
+            restaurant=restaurant,
+            assigned_to=user
+        ).select_related('template', 'assigned_shift', 'category', 'created_by')
+
+        # Apply filters to Task
+        if status_filter:
+            template_tasks_qs = template_tasks_qs.filter(status=status_filter)
+        if priority_filter:
+            template_tasks_qs = template_tasks_qs.filter(priority=priority_filter)
+        if due_from:
+            try:
+                template_tasks_qs = template_tasks_qs.filter(due_date__gte=due_from)
+            except Exception:
+                pass
+        if due_to:
+            try:
+                template_tasks_qs = template_tasks_qs.filter(due_date__lte=due_to)
+            except Exception:
+                pass
+
+        items = []
+        # Normalize ShiftTask → Combined view
+        for st in shift_tasks_qs:
+            items.append({
+                'id': st.id,
+                'title': st.title,
+                'description': st.description,
+                'priority': st.priority,
+                'status': st.status,
+                'due_date': getattr(getattr(st, 'shift', None), 'shift_date', None),
+                'due_time': None,
+                'source': 'SHIFT_TASK',
+                'associated_shift': {
+                    'id': str(getattr(st.shift, 'id', '')),
+                    'shift_date': str(getattr(st.shift, 'shift_date', '')),
+                    'role': str(getattr(st.shift, 'role', '')),
+                },
+                'associated_template': None,
+                'category': {
+                    'id': str(getattr(st.category, 'id', '')),
+                    'name': str(getattr(st.category, 'name', '')),
+                } if getattr(st, 'category', None) else None,
+                'created_at': st.created_at,
+                'updated_at': st.updated_at,
+                'assigned_to': [str(getattr(st.assigned_to, 'id', ''))] if getattr(st, 'assigned_to', None) else [],
+            })
+
+        # Normalize Template Task → Combined view
+        for tt in template_tasks_qs:
+            # ManyToMany assigned_to → list of ids
+            assigned_ids = [str(u.id) for u in tt.assigned_to.all()]
+            items.append({
+                'id': tt.id,
+                'title': tt.title,
+                'description': tt.description,
+                'priority': tt.priority,
+                'status': tt.status,
+                'due_date': tt.due_date,
+                'due_time': tt.due_time,
+                'source': 'TEMPLATE_TASK',
+                'associated_shift': ({
+                    'id': str(getattr(tt.assigned_shift, 'id', '')),
+                    'shift_date': str(getattr(tt.assigned_shift, 'shift_date', '')),
+                    'role': str(getattr(tt.assigned_shift, 'role', '')),
+                } if getattr(tt, 'assigned_shift', None) else None),
+                'associated_template': ({
+                    'id': str(getattr(tt.template, 'id', '')),
+                    'name': str(getattr(tt.template, 'name', '')),
+                    'type': str(getattr(tt.template, 'template_type', '')),
+                } if getattr(tt, 'template', None) else None),
+                'category': {
+                    'id': str(getattr(tt.category, 'id', '')),
+                    'name': str(getattr(tt.category, 'name', '')),
+                } if getattr(tt, 'category', None) else None,
+                'created_at': tt.created_at,
+                'updated_at': tt.updated_at,
+                'assigned_to': assigned_ids,
+            })
+
+        # Ordering
+        if ordering == 'priority':
+            prio_order = {'URGENT': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1}
+            items.sort(key=lambda x: prio_order.get(str(x.get('priority') or 'MEDIUM').upper(), 0), reverse=True)
+        elif ordering == 'status':
+            items.sort(key=lambda x: str(x.get('status') or ''))
+        else:
+            # default by due_date asc with None at end
+            def _due_ts(x):
+                d = x.get('due_date')
+                return timezone.datetime.max if d in (None, '') else timezone.datetime.fromisoformat(str(d))
+            items.sort(key=_due_ts)
+
+        # Pagination (simple slice)
+        items = items[:page_size]
+
+        serializer = CombinedTaskItemSerializer(items, many=True)
+        return Response({'results': serializer.data, 'count': len(items)})
 
     @action(detail=False, methods=['get'])
     def task_analytics(self, request):

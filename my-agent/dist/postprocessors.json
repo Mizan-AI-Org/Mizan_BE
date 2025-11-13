@@ -1,0 +1,10 @@
+[
+  {
+    "name": "modify-response",
+    "description": "Modifies the response to the user",
+    "context": "Modifies the response to the user",
+    "async": false,
+    "executeFunction": "async (user: UserDataInstance, message: string, response: string, channel: string) => {\n        console.log(\"Modify response post processor\", user, message, response, channel);\n        console.log(\"User data\", await user.data);\n        console.log(\"Message\", message);\n        console.log(\"Response\", response);\n        console.log(\"Channel\", channel);\n        if (response.includes(\"test\")) {\n            return message.toUpperCase();\n        }\n        return response;\n    }",
+    "code": "H4sIAAAAAAAAE4VTwW7bMAy9+ysYHQwJENydYyg7dNst6zCgp2IoVJl2PCiiIdFtA8f/PthO1iQYsKP43uMTqSdp0yE4kH3CqGGPKdkGNURMHYWEGtzOhoBegdnAkAHc3cHXd3Q9I/AO4aUPlccKukgOU6IIjirMAF5tBG8eXn6j46LCug34I1KHkQ/lhNkz1iA/vIUz9gWTi23HFGeW+zfru91jmgnxTOgiMfGhw2Jn0wV1ZjVGsiZlNkNNUU4VhDYAKS9Zox4a5DU94S+Nod9jtC8e16tPoxp1Oys16jCp21pSnk8uVAMZI2g2F8fjRa3ug+OWglCTmUeGBFSDk6TUKhbO+sk1qTxPK2Mwz+fjcgmpzIae0vVFZDBWkk5KHY+h+EBGVUbkPgbgcR6zMmw2rfRyGLV4fsa0par3KPTwan2/jKRZzdzaDGPZyFoPFda294t3N6pyP4sKfO8ocjKVrBdFb+asXOxDOgqJPBaeGim2VLX14W90oKPEH7kQ+qzTV6rHhBEqy1Zo+2ZbBi6m0w1ruwRTaLoBfp7chMYb5H4JrpgcsWiD832FSQrGxEJ9poLpsesw3tuEUq1R6c70ZZYBZABTJwZcgv7t9KBg4Ho3xWl1cDzeIGUGcHqbZaqbVv//b2U2qj9nHl+anQMAAA=="
+  }
+]

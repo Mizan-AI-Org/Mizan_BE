@@ -61,11 +61,11 @@ INSTALLED_APPS = [
     # 'notifications',
     'kitchen',
     'chat',
-    'ai_assistant',  # AI Assistant app
+    # 'ai_assistant',  # AI Assistant app (removed)
     'firebase_admin', #  firebase_admin
     'pos',  # Point of Sale app
     'core',  # Core utilities app
-    'checklists',  # Checklist management app,
+    'checklists',  # Checklist management app
 ]
 
 # ---------------------------

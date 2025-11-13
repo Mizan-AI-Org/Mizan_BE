@@ -1,0 +1,123 @@
+{
+  "name": "lua-skill",
+  "version": "1.0.1-beta.0",
+  "skillId": "",
+  "description": "",
+  "context": "",
+  "tools": [
+    {
+      "name": "get_user_data",
+      "className": "GetUserDataTool",
+      "description": "Get the user data for a given user id",
+      "filePath": "tools/GetUserDataTool.js"
+    },
+    {
+      "name": "update_user_data",
+      "className": "UpdateUserDataTool",
+      "description": "Update the user data for a given user id",
+      "filePath": "tools/UpdateUserDataTool.js"
+    },
+    {
+      "name": "write_poem",
+      "className": "WritePoemTool",
+      "description": "Write a poem about a given topic",
+      "filePath": "tools/WritePoemTool.js"
+    },
+    {
+      "name": "create-job-to-notify-user",
+      "className": "CreateInlineJobTool",
+      "description": "Create a new job to notify the user",
+      "filePath": "tools/CreateInlineJobTool.js"
+    },
+    {
+      "name": "search_products",
+      "className": "SearchProductsTool",
+      "description": "Search for products",
+      "filePath": "tools/SearchProductsTool.js"
+    },
+    {
+      "name": "create_product",
+      "className": "CreateProductTool",
+      "description": "Create a new product",
+      "filePath": "tools/CreateProductTool.js"
+    },
+    {
+      "name": "update_product",
+      "className": "UpdateProductTool",
+      "description": "Update an existing product",
+      "filePath": "tools/UpdateProductTool.js"
+    },
+    {
+      "name": "get_all_products",
+      "className": "GetAllProductsTool",
+      "description": "Get all products",
+      "filePath": "tools/GetAllProductsTool.js"
+    },
+    {
+      "name": "get_product_by_id",
+      "className": "GetProductByIdTool",
+      "description": "Get a product by its unique identifier",
+      "filePath": "tools/GetProductByIdTool.js"
+    },
+    {
+      "name": "delete_product",
+      "className": "DeleteProductTool",
+      "description": "Delete an existing product",
+      "filePath": "tools/DeleteProductTool.js"
+    },
+    {
+      "name": "create_basket",
+      "className": "CreateBasketTool",
+      "description": "Create a new basket",
+      "filePath": "tools/CreateBasketTool.js"
+    },
+    {
+      "name": "get_basket_by_id",
+      "className": "GetBasketByIdTool",
+      "description": "Get a basket by id",
+      "filePath": "tools/GetBasketByIdTool.js"
+    },
+    {
+      "name": "update_basket_status",
+      "className": "UpdateBasketStatusTool",
+      "description": "Update the status of a basket",
+      "filePath": "tools/UpdateBasketStatusTool.js"
+    },
+    {
+      "name": "update_basket_metadata",
+      "className": "UpdateBasketMetadataTool",
+      "description": "Update the metadata of a basket",
+      "filePath": "tools/UpdateBasketMetadataTool.js"
+    },
+    {
+      "name": "checkout_basket",
+      "className": "CheckoutBasketTool",
+      "description": "Check out a basket",
+      "filePath": "tools/CheckoutBasketTool.js"
+    },
+    {
+      "name": "get_baskets",
+      "className": "GetBasketsTool",
+      "description": "Get all baskets",
+      "filePath": "tools/GetBasketsTool.js"
+    },
+    {
+      "name": "add_item_to_basket",
+      "className": "AddItemToBasketTool",
+      "description": "Add an item to a basket",
+      "filePath": "tools/AddItemToBasketTool.js"
+    },
+    {
+      "name": "remove_item_from_basket",
+      "className": "RemoveItemFromBasketTool",
+      "description": "Remove an item from a basket",
+      "filePath": "tools/RemoveItemFromBasketTool.js"
+    },
+    {
+      "name": "clear_basket",
+      "className": "ClearBasketTool",
+      "description": "Clear a basket",
+      "filePath": "tools/ClearBasketTool.js"
+    }
+  ]
+}

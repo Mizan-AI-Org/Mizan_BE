@@ -123,6 +123,42 @@ class TaskTemplateSerializer(serializers.ModelSerializer):
         # Ensure server sets these so clients don't need to send them
         read_only_fields = ['id', 'restaurant', 'created_by', 'created_at', 'updated_at']
 
+    def validate_frequency(self, value):
+        """Normalize frequency to match backend choices (uppercase keys).
+
+        Accepts common variants like 'daily', 'Daily', etc., and maps them
+        to the canonical choice values: 'DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY',
+        'ANNUALLY', 'CUSTOM'.
+        """
+        if not value:
+            return 'DAILY'
+        normalized = str(value).strip().upper()
+        mapping = {
+            'DAILY': 'DAILY',
+            'WEEKLY': 'WEEKLY',
+            'MONTHLY': 'MONTHLY',
+            'QUARTERLY': 'QUARTERLY',
+            'ANNUALLY': 'ANNUALLY',
+            'YEARLY': 'ANNUALLY',  # common alias
+            'CUSTOM': 'CUSTOM',
+        }
+        # Also accept display-form values
+        display_mapping = {
+            'DAILY': 'DAILY',
+            'WEEKLY': 'WEEKLY',
+            'MONTHLY': 'MONTHLY',
+            'QUARTERLY': 'QUARTERLY',
+            'ANNUALLY': 'ANNUALLY',
+            'CUSTOM': 'CUSTOM',
+        }
+        # If normalized is already a key, return mapped
+        if normalized in mapping:
+            return mapping[normalized]
+        # If someone passed the display value capitalized, accept it
+        if normalized in display_mapping:
+            return display_mapping[normalized]
+        raise serializers.ValidationError("Invalid frequency. Must be one of DAILY, WEEKLY, MONTHLY, QUARTERLY, ANNUALLY, CUSTOM.")
+
     def create(self, validated_data):
         # Inject restaurant and created_by from request context
         request = self.context.get('request')
@@ -161,6 +197,26 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
                  'end_time', 'break_duration', 'role', 'notes', 'color', 'created_at', 'updated_at', 'tasks']
         # schedule comes from the nested URL (or explicitly in v2); clients of the nested endpoint shouldn't send it
         read_only_fields = ['id', 'created_at', 'updated_at', 'schedule']
+
+
+# Unified view item for both ShiftTask and Template Task
+class CombinedTaskItemSerializer(serializers.Serializer):
+    id = serializers.UUIDField()
+    title = serializers.CharField()
+    description = serializers.CharField(allow_blank=True, allow_null=True, required=False)
+    priority = serializers.CharField()
+    status = serializers.CharField()
+    due_date = serializers.DateField(allow_null=True, required=False)
+    due_time = serializers.TimeField(allow_null=True, required=False)
+    source = serializers.ChoiceField(choices=["SHIFT_TASK", "TEMPLATE_TASK"])
+    # Minimal association details to avoid heavy nested serialization
+    associated_shift = serializers.DictField(child=serializers.CharField(), required=False, allow_null=True)
+    associated_template = serializers.DictField(child=serializers.CharField(), required=False, allow_null=True)
+    category = serializers.DictField(child=serializers.CharField(), required=False, allow_null=True)
+    created_at = serializers.DateTimeField(required=False)
+    updated_at = serializers.DateTimeField(required=False)
+    # Assigned to is normalized to a list of user id strings
+    assigned_to = serializers.ListField(child=serializers.CharField(), required=False)
     
     def validate_break_duration(self, value):
         """Validate break duration is non-negative"""

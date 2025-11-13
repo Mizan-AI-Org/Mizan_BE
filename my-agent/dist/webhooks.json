@@ -1,0 +1,75 @@
+[
+  {
+    "name": "user-events-dev",
+    "version": "1.0.0",
+    "description": "Receives user events from external systems",
+    "context": "This webhook handles user registration, profile updates, and deletion events. \" +\n           \"It validates the incoming data, stores events in the database, and can trigger follow-up actions.",
+    "querySchema": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "headerSchema": {
+      "type": "object",
+      "properties": {
+        "x-api-key": {
+          "type": "string"
+        },
+        "content-type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "x-api-key"
+      ],
+      "additionalProperties": false
+    },
+    "bodySchema": {
+      "type": "object",
+      "properties": {
+        "eventType": {
+          "type": "string",
+          "enum": [
+            "signup",
+            "update",
+            "delete"
+          ]
+        },
+        "userId": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "name": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": {}
+        },
+        "timestamp": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "eventType",
+        "userId",
+        "email",
+        "timestamp"
+      ],
+      "additionalProperties": false
+    },
+    "execute": "async ({ query, headers, body }) => {\n    console.log(`📥 Received ${body.eventType} event for user:`, body.email);\n    console.log(`📍 Source:`, query?.source || 'unknown');\n\n    // Security: Validate API key (in production, use env variable)\n    const expectedKey = process.env.WEBHOOK_API_KEY || 'your-secret-key';\n    if (headers['x-api-key'] !== expectedKey) {\n      throw new Error('Invalid API key');\n    }\n\n    // Store the event in custom data collection\n    const eventData = {\n      ...body,\n      source: query?.source,\n      receivedAt: new Date().toISOString(),\n      processed: false\n    };\n\n    const result = await Data.create('user-events', eventData, \n      `${body.eventType} ${body.email} ${body.name || ''}`\n    );\n\n    console.log('✅ Event stored successfully:', result.id);\n\n    // Return success response\n    return {\n      success: true,\n      eventId: result.id,\n      userId: body.userId,\n      timestamp: new Date().toISOString()\n    };\n  }",
+    "executeFunction": "async ({ query, headers, body }) => {\n    console.log(`📥 Received ${body.eventType} event for user:`, body.email);\n    console.log(`📍 Source:`, query?.source || 'unknown');\n\n    // Security: Validate API key (in production, use env variable)\n    const expectedKey = process.env.WEBHOOK_API_KEY || 'your-secret-key';\n    if (headers['x-api-key'] !== expectedKey) {\n      throw new Error('Invalid API key');\n    }\n\n    // Store the event in custom data collection\n    const eventData = {\n      ...body,\n      source: query?.source,\n      receivedAt: new Date().toISOString(),\n      processed: false\n    };\n\n    const result = await Data.create('user-events', eventData, \n      `${body.eventType} ${body.email} ${body.name || ''}`\n    );\n\n    console.log('✅ Event stored successfully:', result.id);\n\n    // Return success response\n    return {\n      success: true,\n      eventId: result.id,\n      userId: body.userId,\n      timestamp: new Date().toISOString()\n    };\n  }",
+    "code": "H4sIAAAAAAAAE3VUYW/bNhD97l9xFgaDBBg1HVYMkMEM2eJuRrE5aAYMQ1YkNHWKtUikSp7kGJL+e0HK7tKs/STq7h3v8fHxmPIHo4F9bNEdBOxQ5ei8gK3NDxzkBfQzgBnAq1ewekLdEgLtELatySvMYY/bnbWPoG2OM4BOObBys/0XNaU5FqXBa2cbdHRYhpw65R6QNntzyl2h165syLqIKr+O+kPV6COgOgEaZ8nSocF0p/wzaER1kqHwXF70hXUsRAhKA55bhoJE/4CU+Vv6INC0NTq1rTCbn498FG2sFCR0qC4L5heL0MUW4KVMbGyeDMOzWNEaTaU1CQ/NKiQwYAsomed8XqVaVRVDYfhiYeZS0mIRSJiJBOPywt+aL4kwLRXzwnA+DDr9LzPypUNqnQEc4zEbifKiZZb1o0ju7tD/bvO2wkT0nara6UgCecTmsh+XHctFn2Oh2mrqXY98WceiFJ8a68jLhuVTxVpGg7A+GiRDcXRI5kWwSEZjkEhb422FaWUf2P0/bf/67Q+rNyO8R41lhzl811OKHRr689DgCHEJhXXQenTZvaAUa1VWXDzfKJk2+uVqhBvbOo1ZIhhKadqq+qmzZQ7nGaY+pvgwJK15NHZvEr4M8mvZOKvR+xRNl/61+vm3zebd3eX1+u7d6u9hSA62dWcetUM6e8RDsgzXfJs8nammjIEPcyk1p52zezC4h5Vz1rFkbTpVlTlcXq8hwKZuRvZpmpKY2GTfYCncUZBLysKWV4qQ8ZTs+mZzQ640D4yLI23Ms/nrUTip9qqkAFWpdhgqkqDaWRTRJ8KI+xfyxt+g57Q0qsZhSJLx/rN1Xsj8/Y/nb2AVL8WTdZiDb3UgUbRVdcgS4dIy56I/RrP5uYjt1nkWMiLwWecZpdNCUFmjJ1U33zzlOIparpezz8PlV6Q4WPA4ZE7vCQpnazjacgaROZ1Qb08gCV/6Nz3aG4bhRWb5v3G2L2kHtHOI4LFRThFC+NRI6DwwYwmUgenR8xnAUcPpXl4w+focXc5G/gmtU0HIaQUAAA=="
+  }
+]
