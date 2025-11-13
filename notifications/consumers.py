@@ -1,6 +1,6 @@
 # notifications/consumers.py
 
-import json
+import json, sys
 from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
@@ -36,7 +36,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         Called when WebSocket is connecting.
         """
         from django.conf import settings  # safe to import here
-
+        print("WebSocket connection attempt", file=sys.stderr)
         query_params = parse_qs(self.scope["query_string"].decode())
         token = query_params.get("token", [None])[0]
 
@@ -63,9 +63,17 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         # Not handling messages from client side
         pass
 
+
     async def send_notification(self, event):
         notification_data = event["notification"]
         await self.send(text_data=json.dumps({
             "type": "notification_message",
             "notification": notification_data,
         }, default=str))
+
+    # REQUIRED FIX
+    async def notification_message(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "notification_message",
+            "notification": event.get("message")
+        }))

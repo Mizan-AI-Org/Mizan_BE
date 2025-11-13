@@ -32,8 +32,8 @@ class TemplateShift(models.Model):
     role = models.CharField(max_length=20, choices=settings.STAFF_ROLES_CHOICES)
     day_of_week = models.IntegerField(choices=[(0, 'Monday'), (1, 'Tuesday'), (2, 'Wednesday'),
                                               (3, 'Thursday'), (4, 'Friday'), (5, 'Saturday'), (6, 'Sunday')])
-    start_time = models.TimeField()
-    end_time = models.TimeField()
+    start_time = models.DateTimeField(null=True, blank=True)
+    end_time =models.DateTimeField(null=True, blank=True)
     required_staff = models.IntegerField(default=1)
     
     class Meta:
@@ -70,8 +70,8 @@ class AssignedShift(models.Model):
     schedule = models.ForeignKey(WeeklySchedule, on_delete=models.CASCADE, related_name='assigned_shifts')
     staff = models.ForeignKey('accounts.CustomUser', on_delete=models.CASCADE, related_name='assigned_shifts')
     shift_date = models.DateField()
-    start_time = models.TimeField()
-    end_time = models.TimeField()
+    start_time = models.DateTimeField(null=True, blank=True)
+    end_time = models.DateTimeField(null=True, blank=True)
     break_duration = models.DurationField(default=timezone.timedelta(minutes=30))
     role = models.CharField(max_length=20, choices=settings.STAFF_ROLES_CHOICES)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='SCHEDULED')

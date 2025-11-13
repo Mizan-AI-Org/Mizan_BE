@@ -8,7 +8,7 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from accounts.permissions import IsAdminOrManager
 from rest_framework.parsers import MultiPartParser, FormParser
-
+import sys
 from .models import Notification, NotificationPreference, DeviceToken, NotificationAttachment, NotificationIssue
 from .serializers import (
     NotificationSerializer, 
@@ -96,6 +96,7 @@ def mark_notification_read(request, notification_id):
 @parser_classes([MultiPartParser, FormParser])
 def create_announcement(request):
     """Create and send announcement to all restaurant staff"""
+    print("Creating announcement...", file=sys.stderr)
     try:
         serializer = AnnouncementCreateSerializer(data=request.data)
         
@@ -135,6 +136,7 @@ def create_announcement(request):
                     'scheduled_for': schedule_for.isoformat(),
                 }
                 notification.save(update_fields=['delivery_status'])
+            print("Announcement scheduled for future delivery.", file=sys.stderr)
         else:
             # Send via notification service for immediate delivery with multi-channel support
             # Channels can be provided as list in request.data['channels']
@@ -144,15 +146,13 @@ def create_announcement(request):
             if override and 'sms' not in channels:
                 channels = list(set(channels + ['email', 'push', 'sms']))
             for notification in notifications:
-                notification_service.send_custom_notification(
-                    recipient=notification.recipient,
-                    message=notification.message,
-                    notification_type='ANNOUNCEMENT',
-                    channels=channels,
-                    sender=request.user,
-                    title=serializer.validated_data.get('title', 'Announcement'),
-                    override_preferences=override
+               notification_service.send_custom_notification(
+                recipient=notification.recipient,
+                notification=notification,            # <── Use existing object
+                channels=channels,
+                override_preferences=override
                 )
+            print("Announcement sent via notification service..", file=sys.stderr)
         
         return Response({
             'success': True,
@@ -573,4 +573,3 @@ class NotificationListView(generics.ListAPIView):
             queryset = queryset.filter(created_at__date__lte=date_to)
         
         return queryset
-    
