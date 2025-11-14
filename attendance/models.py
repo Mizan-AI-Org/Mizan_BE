@@ -6,13 +6,13 @@ from django.db import models
 class ShiftReview(models.Model):
     """Feedback submitted by staff immediately after clock-out.
 
-    Links to `scheduling.AssignedShift` to keep referential integrity and
-    allows managers to aggregate by staff, date, and rating.
+    Uses a session identifier (timeclock ClockEvent UUID) rather than a scheduled shift id
+    so reviews attach to actual worked sessions. Previously this field was named `shift_id`.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    # Store the shift identifier directly to avoid hard dependency on scheduling app
-    shift_id = models.UUIDField()
+    # Store the clock session identifier (timeclock.ClockEvent id). Previously named 'shift_id'.
+    session_id = models.UUIDField()
     staff = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -45,7 +45,7 @@ class ShiftReview(models.Model):
         ]
 
     def __str__(self):
-        return f"Review {self.id} by {self.staff_id} for shift {self.shift_id}"
+        return f"Review {self.id} by {self.staff_id} for session {self.session_id}"
 
 
 class ReviewLike(models.Model):

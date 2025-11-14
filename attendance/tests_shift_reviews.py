@@ -27,7 +27,7 @@ class ShiftReviewIntegrationTests(APITestCase):
     def test_submit_and_list_shift_reviews(self):
         self.client.force_authenticate(user=self.staff)
         payload = {
-            "shift_id": str(uuid4()),
+            "session_id": str(uuid4()),
             "rating": 5,
             "tags": ["busy", "night"],
             "comments": "Great shift",
@@ -51,12 +51,12 @@ class ShiftReviewIntegrationTests(APITestCase):
         first = items[0]
         self.assertEqual(first.get("rating"), 5)
         self.assertEqual(first.get("staff"), str(self.staff.id))
-        self.assertEqual(first.get("shift_id"), payload["shift_id"])
+        self.assertEqual(first.get("session_id"), payload["session_id"])
 
     def test_stats_include_orphaned_reviews(self):
         # Create an orphaned review (restaurant=None) for staff of this restaurant
         ShiftReview.objects.create(
-            shift_id=uuid4(),
+            session_id=uuid4(),
             staff=self.staff,
             rating=4,
             tags=["calm"],
@@ -66,7 +66,16 @@ class ShiftReviewIntegrationTests(APITestCase):
             restaurant=None,
         )
 
-        self.client.force_authenticate(user=self.staff)
+        # Stats require admin/manager role; create a manager user
+        manager = CustomUser.objects.create_user(
+            email="manager@test.local",
+            password="pass123",
+            first_name="Mgr",
+            last_name="User",
+            role="MANAGER",
+            restaurant=self.restaurant,
+        )
+        self.client.force_authenticate(user=manager)
         stats_resp = self.client.get("/api/attendance/shift-reviews/stats/")
         self.assertEqual(stats_resp.status_code, status.HTTP_200_OK)
         stats = stats_resp.json()
