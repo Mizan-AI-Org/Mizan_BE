@@ -164,7 +164,7 @@ def create_announcement(request):
         else:
             # Send via notification service for immediate delivery with multi-channel support
             # Channels can be provided as list in request.data['channels']
-            channels = request.data.get('channels', ['app'])
+            channels = request.data.get('channels', ['app', 'whatsapp'])
             override = bool(request.data.get('override_preferences', False))
             # If override, include more channels by default
             if override and 'sms' not in channels:

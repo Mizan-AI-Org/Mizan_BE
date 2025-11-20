@@ -13,7 +13,7 @@ try:
     # Optional import; only used to derive restaurant when user has none
     from scheduling.models import AssignedShift
 except Exception:  # pragma: no cover
-    AssignedShift = None  # type: ignore
+    AssignedShift = None  # type: igxnore
 
 logger = logging.getLogger(__name__)
 from .serializers import ShiftReviewSerializer

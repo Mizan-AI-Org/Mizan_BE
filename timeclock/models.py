@@ -20,7 +20,6 @@ class ClockEvent(models.Model):
     notes = models.TextField(blank=True)
     # Align model with existing DB column to prevent NOT NULL insert failures
     location_encrypted = models.TextField(db_column='location_encrypted')
-    
     class Meta:
         ordering = ['-timestamp']
     

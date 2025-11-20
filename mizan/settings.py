@@ -300,6 +300,9 @@ else:
     DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=config('EMAIL_HOST_USER', default='no-reply@mizan.local'))
 
 
+WHATSAPP_ACCESS_TOKEN = os.getenv('WHATSAPP_ACCESS_TOKEN', 'EAAcJkGF80TQBP1lLIlif23afZBQZAYNrtTZAYaLcf5hY0IZAqqXqPDC17EbcecxotQ27QiYWSEegJ1lxpAkr4ikHjfOOcxsz42DyabFlBU1De91WCXZB0VFsMECG8IRbuhhQmpVQqayrDR3O7RZBHmaeHjaZARZAnp2lXhV7eZC4xjtKAzqcldjqzRhGZAB249d3s1jeT9dX0nzLyyCZCLczCT9JwRkzCxoxkNeDIpZC6X7ADQ7K4TsOZCVYwxkLudY3jbH0tvLsHR4ZC87NYrZAPt9ZAKBrPO6DrQZDZD')
+WHATSAPP_PHONE_NUMBER_ID= os.getenv('WHATSAPP_PHONE_NUMBER_ID', '')
+WHATSAPP_API_VERSION= os.getenv('WHATSAPP_API_VERSION', 'v22.0')
 # # EMAIL Configuration for Production
 # EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 # EMAIL_HOST = 'smtp.gmail.com'
