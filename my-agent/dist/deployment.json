@@ -6,64 +6,22 @@
   "context": "",
   "tools": [
     {
-      "name": "get_user_data",
-      "className": "GetUserDataTool",
-      "description": "Get the user data for a given user id",
-      "filePath": "tools/GetUserDataTool.js"
+      "name": "inventory_manager",
+      "className": "InventoryTool",
+      "description": "Manage restaurant inventory, check stock levels, and track waste.",
+      "filePath": "tools/InventoryTool.js"
     },
     {
-      "name": "update_user_data",
-      "className": "UpdateUserDataTool",
-      "description": "Update the user data for a given user id",
-      "filePath": "tools/UpdateUserDataTool.js"
+      "name": "schedule_optimizer",
+      "className": "ScheduleOptimizerTool",
+      "description": "Optimize staff schedules based on predicted demand and staff availability.",
+      "filePath": "tools/ScheduleOptimizerTool.js"
     },
     {
-      "name": "write_poem",
-      "className": "WritePoemTool",
-      "description": "Write a poem about a given topic",
-      "filePath": "tools/WritePoemTool.js"
-    },
-    {
-      "name": "create-job-to-notify-user",
-      "className": "CreateInlineJobTool",
-      "description": "Create a new job to notify the user",
-      "filePath": "tools/CreateInlineJobTool.js"
-    },
-    {
-      "name": "search_products",
-      "className": "SearchProductsTool",
-      "description": "Search for products",
-      "filePath": "tools/SearchProductsTool.js"
-    },
-    {
-      "name": "create_product",
-      "className": "CreateProductTool",
-      "description": "Create a new product",
-      "filePath": "tools/CreateProductTool.js"
-    },
-    {
-      "name": "update_product",
-      "className": "UpdateProductTool",
-      "description": "Update an existing product",
-      "filePath": "tools/UpdateProductTool.js"
-    },
-    {
-      "name": "get_all_products",
-      "className": "GetAllProductsTool",
-      "description": "Get all products",
-      "filePath": "tools/GetAllProductsTool.js"
-    },
-    {
-      "name": "get_product_by_id",
-      "className": "GetProductByIdTool",
-      "description": "Get a product by its unique identifier",
-      "filePath": "tools/GetProductByIdTool.js"
-    },
-    {
-      "name": "delete_product",
-      "className": "DeleteProductTool",
-      "description": "Delete an existing product",
-      "filePath": "tools/DeleteProductTool.js"
+      "name": "demand_forecast",
+      "className": "DemandForecastTool",
+      "description": "Predict sales and customer footfall based on historical data, events, and weather.",
+      "filePath": "tools/DemandForecastTool.js"
     }
   ]
 }

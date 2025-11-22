@@ -10,15 +10,10 @@ class ShiftReviewSerializer(serializers.ModelSerializer):
     'likes_count' is an annotated field from the list view.
     """
     
-    # staff is read_only=True because it comes from request.user
     staff = serializers.PrimaryKeyRelatedField(read_only=True)
-    
-    # likes_count is a read-only annotation
     likes_count = serializers.IntegerField(read_only=True, required=False)
-    
-    # completed_at is read_only=True because it's calculated
-    # from 'completed_at_iso' in the view
     completed_at = serializers.DateTimeField(read_only=True)
+    session_id = serializers.UUIDField(required=False)
 
     class Meta:
         model = ShiftReview
@@ -46,11 +41,21 @@ class ShiftReviewSerializer(serializers.ModelSerializer):
         ]
 
     def validate_session_id(self, value):
-        # Placeholder: ensure a ClockEvent with this id exists if referential FK added later.
-        # from timeclock.models import ClockEvent
-        # if not ClockEvent.objects.filter(id=value).exists():
-        #     raise serializers.ValidationError("Session not found.")
         return value
+
+    def validate_rating(self, value):
+        if not isinstance(value, int):
+            raise serializers.ValidationError('Rating must be an integer')
+        if value < 1 or value > 5:
+            raise serializers.ValidationError('Rating must be between 1 and 5')
+        return value
+
+    def validate_tags(self, value):
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError('Tags must be a list')
+        return [str(v) for v in value]
     
     
 class ReviewLikeSerializer(serializers.ModelSerializer):
