@@ -334,8 +334,21 @@ class CalendarAPIViewSet(viewsets.ViewSet):
         
         events = []
         for shift in shifts:
-            start_datetime = datetime.combine(shift.shift_date, shift.start_time)
-            end_datetime = datetime.combine(shift.shift_date, shift.end_time)
+            try:
+                if isinstance(shift.start_time, datetime):
+                    start_datetime = shift.start_time
+                else:
+                    start_datetime = timezone.datetime.combine(shift.shift_date, shift.start_time)
+                if isinstance(shift.end_time, datetime):
+                    end_datetime = shift.end_time
+                else:
+                    end_datetime = timezone.datetime.combine(shift.shift_date, shift.end_time)
+            except Exception:
+                start_datetime = datetime.combine(shift.shift_date, getattr(shift.start_time, 'time', shift.start_time))
+                end_datetime = datetime.combine(shift.shift_date, getattr(shift.end_time, 'time', shift.end_time))
+
+            if end_datetime < start_datetime:
+                end_datetime += timezone.timedelta(days=1)
             
             # Get tasks for this shift
             tasks = ShiftTask.objects.filter(shift=shift)

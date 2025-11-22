@@ -292,37 +292,58 @@ class ChecklistSyncService:
                 step=step,
                 defaults={
                     'is_completed': False,
-                    'response_value': '',
+                    'text_response': '',
                     'notes': '',
                     'completed_at': None
                 }
             )
             
-            # Check for conflicts if not created
-            if not created:
-                client_version = response_data.get('sync_version', 0)
-                if client_version < response.sync_version:
-                    conflicts.append({
-                        'type': 'step_response_conflict',
-                        'step_id': step_id,
-                        'message': 'Step response has been modified by another user'
-                    })
-                    return {'synced_items': synced_items, 'conflicts': conflicts}
-            
-            # Apply updates
-            allowed_fields = [
-                'is_completed', 'response_value', 'notes', 'measurement_value',
-                'signature_data', 'completed_at'
-            ]
-            
-            for field in allowed_fields:
-                if field in response_data:
-                    if field == 'completed_at' and response_data[field]:
-                        setattr(response, field, datetime.fromisoformat(response_data[field]))
-                    else:
-                        setattr(response, field, response_data[field])
-            
-            response.sync_version += 1
+            # Apply updates from client payload
+            incoming_status = str(response_data.get('status', '')).upper()
+            if incoming_status in {'COMPLETED', 'SKIPPED', 'FAILED'}:
+                response.status = incoming_status
+                response.is_completed = incoming_status in {'COMPLETED', 'SKIPPED'}
+
+            if 'is_completed' in response_data:
+                try:
+                    response.is_completed = bool(response_data['is_completed'])
+                except Exception:
+                    pass
+
+            if 'response' in response_data:
+                val = str(response_data['response']).upper()
+                response.text_response = val
+                if val in {'YES', 'NO'}:
+                    response.boolean_response = (val == 'YES')
+
+            if 'text_response' in response_data:
+                response.text_response = str(response_data['text_response'])
+
+            if 'measurement_value' in response_data:
+                response.measurement_value = response_data['measurement_value']
+
+            if 'notes' in response_data:
+                response.notes = response_data['notes']
+
+            if 'signature_data' in response_data:
+                response.signature_data = response_data['signature_data']
+
+            ts = response_data.get('responded_at') or response_data.get('completed_at')
+            if ts:
+                try:
+                    response.completed_at = datetime.fromisoformat(str(ts))
+                    if not response.started_at:
+                        response.started_at = response.completed_at
+                except Exception:
+                    pass
+
+            for dt_field in ['started_at', 'completed_at']:
+                if dt_field in response_data and response_data[dt_field]:
+                    try:
+                        setattr(response, dt_field, datetime.fromisoformat(str(response_data[dt_field])))
+                    except Exception:
+                        pass
+
             response.save()
             
             synced_items.append({
@@ -391,16 +412,6 @@ class ChecklistSyncService:
             try:
                 action = ChecklistAction.objects.get(id=action_id, execution=execution)
                 
-                # Check for conflicts
-                client_version = action_data.get('sync_version', 0)
-                if client_version < action.sync_version:
-                    conflicts.append({
-                        'type': 'action_conflict',
-                        'action_id': action_id,
-                        'message': 'Action has been modified by another user'
-                    })
-                    return {'synced_items': synced_items, 'conflicts': conflicts}
-                
                 # Apply updates
                 allowed_fields = ['status', 'resolution_notes', 'resolved_at']
                 for field in allowed_fields:
@@ -409,8 +420,6 @@ class ChecklistSyncService:
                             setattr(action, field, datetime.fromisoformat(action_data[field]))
                         else:
                             setattr(action, field, action_data[field])
-                
-                action.sync_version += 1
                 action.save()
                 
                 synced_items.append({

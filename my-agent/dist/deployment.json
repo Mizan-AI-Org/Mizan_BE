@@ -64,60 +64,6 @@
       "className": "DeleteProductTool",
       "description": "Delete an existing product",
       "filePath": "tools/DeleteProductTool.js"
-    },
-    {
-      "name": "create_basket",
-      "className": "CreateBasketTool",
-      "description": "Create a new basket",
-      "filePath": "tools/CreateBasketTool.js"
-    },
-    {
-      "name": "get_basket_by_id",
-      "className": "GetBasketByIdTool",
-      "description": "Get a basket by id",
-      "filePath": "tools/GetBasketByIdTool.js"
-    },
-    {
-      "name": "update_basket_status",
-      "className": "UpdateBasketStatusTool",
-      "description": "Update the status of a basket",
-      "filePath": "tools/UpdateBasketStatusTool.js"
-    },
-    {
-      "name": "update_basket_metadata",
-      "className": "UpdateBasketMetadataTool",
-      "description": "Update the metadata of a basket",
-      "filePath": "tools/UpdateBasketMetadataTool.js"
-    },
-    {
-      "name": "checkout_basket",
-      "className": "CheckoutBasketTool",
-      "description": "Check out a basket",
-      "filePath": "tools/CheckoutBasketTool.js"
-    },
-    {
-      "name": "get_baskets",
-      "className": "GetBasketsTool",
-      "description": "Get all baskets",
-      "filePath": "tools/GetBasketsTool.js"
-    },
-    {
-      "name": "add_item_to_basket",
-      "className": "AddItemToBasketTool",
-      "description": "Add an item to a basket",
-      "filePath": "tools/AddItemToBasketTool.js"
-    },
-    {
-      "name": "remove_item_from_basket",
-      "className": "RemoveItemFromBasketTool",
-      "description": "Remove an item from a basket",
-      "filePath": "tools/RemoveItemFromBasketTool.js"
-    },
-    {
-      "name": "clear_basket",
-      "className": "ClearBasketTool",
-      "description": "Clear a basket",
-      "filePath": "tools/ClearBasketTool.js"
     }
   ]
 }

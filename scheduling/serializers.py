@@ -190,11 +190,18 @@ class TaskSerializer(serializers.ModelSerializer):
 class AssignedShiftSerializer(serializers.ModelSerializer):
     staff_name = serializers.CharField(source='staff.__str__', read_only=True)
     tasks = ShiftTaskSerializer(many=True, read_only=True)
+    task_templates_details = TaskTemplateSerializer(source='task_templates', many=True, read_only=True)
+    task_templates = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=TaskTemplate.objects.all(),
+        required=False
+    )
     
     class Meta:
         model = AssignedShift
         fields = ['id', 'schedule', 'staff', 'staff_name', 'shift_date', 'start_time', 
-                 'end_time', 'break_duration', 'role', 'notes', 'color', 'created_at', 'updated_at', 'tasks']
+                 'end_time', 'break_duration', 'role', 'notes', 'color', 'created_at', 'updated_at', 
+                 'tasks', 'task_templates', 'task_templates_details']
         # schedule comes from the nested URL (or explicitly in v2); clients of the nested endpoint shouldn't send it
         read_only_fields = ['id', 'created_at', 'updated_at', 'schedule']
 

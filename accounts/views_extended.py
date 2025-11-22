@@ -4,9 +4,10 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 import requests
-from .models import POSIntegration, Restaurant, StaffProfile
+from .models import POSIntegration, AIAssistantConfig, Restaurant, StaffProfile
 from .serializers_extended import (
     POSIntegrationSerializer,
+    AIAssistantConfigSerializer,
     RestaurantSettingsSerializer,
     RestaurantGeolocationSerializer,
     StaffProfileExtendedSerializer
@@ -18,6 +19,7 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
     Complete restaurant settings management
     - Geolocation with perimeter
     - POS Integration
+    - AI Assistant configuration
     - Notifications
     """
     permission_classes = [IsAuthenticated]
@@ -88,6 +90,22 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
             # Store API key without exposing it in GET response
             restaurant.pos_api_key = payload.get('pos_api_key', restaurant.pos_api_key)
 
+        # Update AI settings if provided
+        ai_enabled = payload.get('ai_enabled')
+        ai_provider = payload.get('ai_provider')
+        ai_features_enabled = payload.get('ai_features_enabled')
+        if any(v is not None for v in [ai_enabled, ai_provider, ai_features_enabled]):
+            try:
+                ai_config = AIAssistantConfig.objects.get(restaurant=restaurant)
+            except AIAssistantConfig.DoesNotExist:
+                ai_config = AIAssistantConfig.objects.create(restaurant=restaurant)
+            if ai_enabled is not None:
+                ai_config.enabled = bool(ai_enabled)
+            if ai_provider is not None:
+                ai_config.ai_provider = ai_provider
+            if ai_features_enabled is not None:
+                ai_config.features_enabled = ai_features_enabled
+            ai_config.save()
 
         # Save general fields via serializer to enforce validations (e.g., radius rules)
         serializer = RestaurantSettingsSerializer(restaurant, data=general_fields, partial=True, context={'request': request})
@@ -403,7 +421,40 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                 'error': str(e)
             }, status=status.HTTP_400_BAD_REQUEST)
     
-    
+    @action(detail=False, methods=['get', 'post'])
+    def ai_assistant_config(self, request):
+        """Get/update AI Assistant configuration"""
+        if not request.user.restaurant:
+            return Response(
+                {'error': 'No restaurant associated'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        restaurant = request.user.restaurant
+        
+        if request.method == 'GET':
+            try:
+                ai_config = AIAssistantConfig.objects.get(restaurant=restaurant)
+            except AIAssistantConfig.DoesNotExist:
+                ai_config = AIAssistantConfig.objects.create(restaurant=restaurant)
+            
+            serializer = AIAssistantConfigSerializer(ai_config)
+            return Response(serializer.data)
+        
+        elif request.method == 'POST':
+            # Update AI config
+            enabled = request.data.get('enabled', True)
+            ai_provider = request.data.get('ai_provider', 'GROQ')
+            features_enabled = request.data.get('features_enabled', {})
+            
+            ai_config, _ = AIAssistantConfig.objects.get_or_create(restaurant=restaurant)
+            ai_config.enabled = enabled
+            ai_config.ai_provider = ai_provider
+            ai_config.features_enabled = features_enabled
+            ai_config.save()
+            
+            serializer = AIAssistantConfigSerializer(ai_config)
+            return Response(serializer.data)
 
 
 class StaffLocationViewSet(viewsets.ViewSet):

@@ -1,50 +1,6 @@
-# 🤖 Lua AI Agent Template
+# 🤖  AI Agent 
 
-Welcome to your Lua AI Agent! This is a fully-featured template to help you build, test, and deploy intelligent AI agents with custom tools, webhooks, scheduled jobs, and message processors.
-
-## 🎯 What You've Got
-
-This template includes **everything you need** to create a production-ready AI agent:
-
-- ✅ **LuaAgent Configuration** - Unified agent setup with persona and welcome message
-- ✅ **Example Skills & Tools** - 30+ pre-built tools demonstrating best practices
-- ✅ **Webhooks** - HTTP endpoints for external integrations
-- ✅ **Scheduled Jobs** - Automated background tasks
-- ✅ **Message Processors** - Pre/post-process conversations
-- ✅ **Type Safety** - Full TypeScript support with Zod validation
-- ✅ **Testing Suite** - Local testing before deployment
-- ✅ **CI/CD Ready** - Batch deployment commands
-
----
-
-## 🚀 Quick Start
-
-**New to Lua?** Start here:
-
-```bash
-# 1. Test your tools locally
-lua test
-
-# 2. Chat with your agent (sandbox mode)
-lua chat
-
-# 3. Deploy to production
-lua push all --force --auto-deploy
-```
-
-👉 **[Read the Full Quick Start Guide →](QUICKSTART.md)**
-
----
-
-## 📦 What's Inside
-
-### Core Files
-
-| File | Purpose |
-|------|---------|
-| `src/index.ts` | **Main file** - LuaAgent configuration |
-| `lua.skill.yaml` | Agent metadata and component registry |
-| `.env` | Environment variables (API keys, secrets) |
+Welcome to our AI Agent! This is a fully-featured  AI agents with custom tools, webhooks, scheduled jobs, and message processors. It's designed to handle various tasks efficiently.
 
 ### Directory Structure
 
@@ -77,22 +33,57 @@ src/
 
 Your agent is configured in `src/index.ts`:
 
-```typescript
-export const agent = new LuaAgent({
-  name: 'your-agent-name',
-  persona: 'Your agent personality and behavior...',
-  welcomeMessage: 'First message users see',
+## Staff Management Events (staff-management-events.ts)
+Purpose: Optimizes workforce operations and task distribution
+Events Handled:
+
+clock_in/out - Roster management
+break_start/end - Availability tracking
+table_assigned/transferred - Workload distribution
+section_assigned - Zone management
+task_assigned/completed - Task tracking
+alert_triggered - Staff communications
+performance_logged - Metrics tracking
+tip_reported - Financial tracking
+incident_reported - Manager escalation
+
+## Key Features:
+
+Real-time workload scoring (0-100)
+Automatic workload balancing
+Performance metrics tracking
+Manager attention flags
+
+
+## Forecasting Events (forecasting-events.ts)
+Purpose: Predictive analytics for demand, inventory, and staffing
+Events Handled:
+
+forecast_generated - Covers, revenue, peak hours predictions
+trend_detected - Identify up/down trends with drivers
+anomaly_detected - Flag unusual patterns
+reorder_alert - Inventory replenishment warnings
+capacity_warning - High demand alerts
+demand_spike - Surge preparation
+inventory_optimization - Cost reduction recommendations
+staffing_recommendation - Optimal scheduling
+seasonal_pattern - Long-term planning insights
+forecast_accuracy_check - Model validation
+
+## Key Features:
+
+Confidence scoring (0-100%)
+Action prioritization (low/medium/high/critical)
+Actionable recommendations
+Cost savings calculations
+External factor integration (weather, events, holidays)
   
+
   skills: [
-    generalSkill,      // Weather, posts, utils
-    userSkill,         // User data management
-    productSkill,      // Product operations
-    basketSkill,       // Shopping cart
-    orderSkill,        // Order processing
-    customDataSkill,   // Custom data storage
-    paymentSkill       // Payment processing
+    staffManagementSkill,
+    forecastingSkill,
+    // ... other skills
   ],
-  
   webhooks: [
     // paymentWebhook,  // Uncomment to enable
   ],
@@ -108,39 +99,8 @@ export const agent = new LuaAgent({
   postProcessors: [
     // responseModifierProcessor,  // Uncomment to enable
   ]
-});
-```
+;
 
----
-
-## 🛠️ Example Tools Included
-
-### General Purpose
-- **get_weather** - Fetch weather data from external API
-- **create_post** - Create posts with external service
-- **create_inline_job** - Demonstrates dynamic job creation
-
-### User Management
-- **get_user_data** - Retrieve user information
-- **update_user_data** - Update user profiles
-
-### E-commerce
-- **search_products** - Search product catalog
-- **create_product** - Add new products
-- **update_product** - Modify existing products
-- **delete_product** - Remove products
-- **create_basket** - Create shopping cart
-- **add_item_to_basket** - Add products to cart
-- **checkout_basket** - Complete purchase
-- **create_order** - Place orders
-- **update_order_status** - Track order progress
-
-### Advanced Examples
-- **smart_basket_tool** - Complex state management with AI-powered recommendations
-- **game_score_tracker** - Multi-player game tracking with leaderboards
-- **create_payment_link** - Stripe integration for payments
-
----
 
 ## 🎓 Learning Path
 
