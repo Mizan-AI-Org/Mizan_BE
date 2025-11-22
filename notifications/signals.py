@@ -264,19 +264,19 @@ def send_compliance_alerts():
         logger.error(f"Failed to send compliance alerts: {str(e)}")
 
 
-@receiver(post_save, sender=Notification)
-def send_realtime_notification(sender, instance, created, **kwargs):
-    if created:  # only for new notifications
-        channel_layer = get_channel_layer()
-        data = NotificationSerializer(instance).data
+# @receiver(post_save, sender=Notification)
+# def send_realtime_notification(sender, instance, created, **kwargs):
+#     if created:  # only for new notifications
+#         channel_layer = get_channel_layer()
+#         data = NotificationSerializer(instance).data
         
-        # Group name = user_<id>_notifications (as used in NotificationConsumer)
-        group_name = f'user_{instance.recipient.id}_notifications'
+#         # Group name = user_<id>_notifications (as used in NotificationConsumer)
+#         group_name = f'user_{instance.recipient.id}_notifications'
         
-        async_to_sync(channel_layer.group_send)(
-            group_name,
-            {
-                'type': 'send_notification',
-                'notification': data
-            }
-        )
+#         async_to_sync(channel_layer.group_send)(
+#             group_name,
+#             {
+#                 'type': 'send_notification',
+#                 'notification': data
+#             }
+#         )

@@ -94,7 +94,7 @@ class ShiftReviewListCreateAPIView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         # staff is the authenticated user by default
         user = self.request.user
-        shift = self.request.data.get("shift_id")
+        session = self.request.data.get("session_id") or self.request.data.get("shift_id")  # backward compat
         completed_at_iso = self.request.data.get("completed_at_iso")
         try:
             # Support both ISO strings with 'Z' and offset-aware times
@@ -111,14 +111,8 @@ class ShiftReviewListCreateAPIView(generics.ListCreateAPIView):
             extra["hours_decimal"] = hours_decimal
 
         restaurant_obj = getattr(user, "restaurant", None)
-        if restaurant_obj is None and AssignedShift and shift:
-            try:
-                assigned = AssignedShift.objects.select_related("schedule").filter(id=shift).first()
-                if assigned and getattr(assigned, "schedule", None):
-                    restaurant_obj = getattr(assigned.schedule, "restaurant", None)
-            except Exception:
-                # Derivation failed; keep restaurant as None
-                pass
+        # Previously attempted to derive restaurant from a scheduled shift id. Now session_id
+        # refers to a timeclock ClockEvent; derivation from scheduling is skipped.
 
         # Final fallback: try user's primary role mapping to derive restaurant
         if restaurant_obj is None:
@@ -143,7 +137,7 @@ class ShiftReviewListCreateAPIView(generics.ListCreateAPIView):
 
         instance = serializer.save(
             staff=user,
-            shift_id=shift,
+            session_id=session,
             completed_at=completed_at,
             restaurant=restaurant_obj,
             **extra,
@@ -156,7 +150,7 @@ class ShiftReviewListCreateAPIView(generics.ListCreateAPIView):
                     "review_id": str(getattr(instance, "id", "")),
                     "staff_id": str(getattr(user, "id", "")),
                     "restaurant_id": getattr(restaurant_obj, "id", None),
-                    "shift_id": shift,
+                    "session_id": session,
                     "rating": self.request.data.get("rating"),
                     "tags": self.request.data.get("tags"),
                     "hours_decimal": self.request.data.get("hours_decimal"),

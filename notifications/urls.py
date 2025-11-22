@@ -7,8 +7,9 @@ urlpatterns = [
     # Notification CRUD operations
     path('', views.NotificationListView.as_view(), name='notification-list'),
     path('stats/', views.notification_stats, name='notification-stats'),
-    path('<int:notification_id>/read/', views.mark_notification_read, name='mark-notification-read'),
-    path('<int:notification_id>/delete/', views.delete_notification, name='delete-notification'),
+    path('<uuid:notification_id>/read/', views.mark_notification_read, name='mark-notification-read'),
+    path('<uuid:notification_id>/delete/', views.delete_notification, name='delete-notification'),
+
     path('mark-all-read/', views.mark_all_notifications_read, name='mark-all-notifications-read'),
     path('bulk-actions/', views.bulk_notification_actions, name='bulk-notification-actions'),
     

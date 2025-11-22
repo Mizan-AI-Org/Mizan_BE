@@ -194,8 +194,8 @@ class StaffAvailability(models.Model):
         help_text="For recurring availability patterns"
     )
     specific_date = models.DateField(null=True, blank=True, help_text="For specific date requests")
-    start_time = models.TimeField(null=True, blank=True)
-    end_time = models.TimeField(null=True, blank=True)
+    start_time = models.DateTimeField(null=True, blank=True)
+    end_time = models.DateTimeField(null=True, blank=True)
     start_datetime = models.DateTimeField(null=True, blank=True, help_text="For specific datetime requests")
     end_datetime = models.DateTimeField(null=True, blank=True, help_text="For specific datetime requests")
     

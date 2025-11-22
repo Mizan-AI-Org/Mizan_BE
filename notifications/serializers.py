@@ -2,8 +2,38 @@ from rest_framework import serializers
 from django.db import models
 from django.utils import timezone
 from datetime import datetime
-from .models import Notification, DeviceToken, NotificationPreference, NotificationTemplate, NotificationLog, NotificationAttachment
+import uuid
 
+from .models import (
+    Notification,
+    DeviceToken,
+    NotificationPreference,
+    NotificationTemplate,
+    NotificationLog,
+    NotificationAttachment
+)
+
+# -----------------------------------------
+# SAFE JSON SERIALIZATION (UUID + DATETIME)
+# -----------------------------------------
+import uuid
+from datetime import datetime
+
+def to_json_safe(value):
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [to_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {k: to_json_safe(v) for k, v in value.items()}
+    return value
+
+
+# -----------------------------------------
+# SERIALIZERS
+# -----------------------------------------
 
 class NotificationSerializer(serializers.ModelSerializer):
     sender_name = serializers.SerializerMethodField()
@@ -14,14 +44,14 @@ class NotificationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Notification
         fields = [
-            'id', 'recipient', 'sender', 'sender_name', 'title', 'message', 
-            'notification_type', 'priority', 'data', 'is_read', 'read_at', 
-            'channels_sent', 'delivery_status', 'related_shift_id', 
-            'related_task_id', 'expires_at', 'created_at', 'time_ago'
-            , 'attachments'
+            'id', 'recipient', 'sender', 'sender_name', 'title', 'message',
+            'notification_type', 'priority', 'data', 'is_read', 'read_at',
+            'channels_sent', 'delivery_status', 'related_shift_id',
+            'related_task_id', 'expires_at', 'created_at', 'time_ago',
+            'attachments'
         ]
         read_only_fields = [
-            'id', 'recipient', 'sender', 'sender_name', 'channels_sent', 
+            'id', 'recipient', 'sender', 'sender_name', 'channels_sent',
             'delivery_status', 'created_at', 'time_ago'
         ]
     
@@ -47,9 +77,6 @@ class NotificationSerializer(serializers.ModelSerializer):
         return obj.read_at is not None
     
     def get_time_ago(self, obj):
-        from django.utils import timezone
-        from datetime import timedelta
-        
         now = timezone.now()
         diff = now - obj.created_at
         
@@ -67,18 +94,14 @@ class NotificationSerializer(serializers.ModelSerializer):
     def get_attachments(self, obj):
         items = []
         for att in obj.attachments.all():
-            # Safely resolve file URL; accessing FieldFile.url can raise if missing
             try:
                 url = att.file.url
             except Exception:
                 url = ''
-
-            # Prefer original_name; fall back to file name if available
             try:
                 file_name = getattr(att.file, 'name', '')
             except Exception:
                 file_name = ''
-
             items.append({
                 'name': att.original_name or file_name,
                 'url': url,
@@ -87,6 +110,12 @@ class NotificationSerializer(serializers.ModelSerializer):
                 'uploaded_at': att.uploaded_at,
             })
         return items
+    def to_representation(self, instance):
+        rep = super().to_representation(instance)
+        # Convert any UUID/datetime nested in the representation
+        return to_json_safe(rep)
+
+
 
 class NotificationAttachmentSerializer(serializers.ModelSerializer):
     url = serializers.SerializerMethodField()
@@ -107,7 +136,7 @@ class DeviceTokenSerializer(serializers.ModelSerializer):
     class Meta:
         model = DeviceToken
         fields = [
-            'id', 'user', 'token', 'device_type', 'device_name', 
+            'id', 'user', 'token', 'device_type', 'device_name',
             'is_active', 'last_used', 'created_at'
         ]
         read_only_fields = ['id', 'user', 'created_at']
@@ -150,7 +179,6 @@ class NotificationLogSerializer(serializers.ModelSerializer):
 
 
 class BulkNotificationSerializer(serializers.Serializer):
-    """Serializer for bulk notification operations"""
     action = serializers.ChoiceField(choices=['mark_read', 'delete'])
     notification_ids = serializers.ListField(
         child=serializers.IntegerField(),
@@ -159,7 +187,6 @@ class BulkNotificationSerializer(serializers.Serializer):
 
 
 class TestNotificationSerializer(serializers.Serializer):
-    """Serializer for sending test notifications"""
     message = serializers.CharField(max_length=500, default="This is a test notification")
     channels = serializers.ListField(
         child=serializers.ChoiceField(choices=['app', 'email', 'push', 'whatsapp']),
@@ -167,8 +194,11 @@ class TestNotificationSerializer(serializers.Serializer):
     )
 
 
+# ---------------------------------------------------
+# ANNOUNCEMENT SERIALIZER (WITH FIXED UUID HANDLING)
+# ---------------------------------------------------
+
 class AnnouncementCreateSerializer(serializers.Serializer):
-    """Serializer for creating announcements to restaurant staff"""
     title = serializers.CharField(max_length=200)
     message = serializers.CharField(max_length=2000)
     priority = serializers.ChoiceField(
@@ -177,23 +207,32 @@ class AnnouncementCreateSerializer(serializers.Serializer):
     )
     expires_at = serializers.DateTimeField(required=False, allow_null=True)
     schedule_for = serializers.DateTimeField(required=False, allow_null=True)
-    # Categorization / tags
+
     tags = serializers.ListField(
-        child=serializers.CharField(max_length=50), required=False, allow_empty=True
+        child=serializers.CharField(max_length=50),
+        required=False,
+        allow_empty=True
     )
-    # Optional targeting: either specific staff IDs or departments
+
     recipients_staff_ids = serializers.ListField(
-        child=serializers.UUIDField(), required=False, allow_empty=True
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True
     )
     recipients_departments = serializers.ListField(
-        child=serializers.CharField(max_length=100), required=False, allow_empty=True
+        child=serializers.CharField(max_length=100),
+        required=False,
+        allow_empty=True
     )
-    # Optional targeting by staff position (role) and assigned shifts
     recipients_roles = serializers.ListField(
-        child=serializers.CharField(max_length=100), required=False, allow_empty=True
+        child=serializers.CharField(max_length=100),
+        required=False,
+        allow_empty=True
     )
     recipients_shift_ids = serializers.ListField(
-        child=serializers.UUIDField(), required=False, allow_empty=True
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True
     )
     
     def validate_expires_at(self, value):
@@ -207,17 +246,14 @@ class AnnouncementCreateSerializer(serializers.Serializer):
         return value
     
     def create_notifications(self, sender):
-        """Create announcement notifications for targeted recipients or all staff in sender's restaurant"""
         from accounts.models import CustomUser, StaffProfile
         from scheduling.models import AssignedShift
 
-        # Determine target recipients
         staff_ids = self.validated_data.get('recipients_staff_ids') or []
         departments = self.validated_data.get('recipients_departments') or []
         roles = self.validated_data.get('recipients_roles') or []
         shift_ids = self.validated_data.get('recipients_shift_ids') or []
 
-        # Build a unified queryset of recipients within the same restaurant
         staff_qs = CustomUser.objects.filter(
             restaurant=sender.restaurant,
             is_active=True
@@ -235,27 +271,44 @@ class AnnouncementCreateSerializer(serializers.Serializer):
             filters |= models.Q(profile__department__in=departments)
 
         if roles:
-            # Use StaffProfile.position as role indicator for targeting
             targeted = True
             filters |= models.Q(profile__position__in=roles)
 
         if shift_ids:
             targeted = True
-            target_staff_from_shifts = AssignedShift.objects.filter(
+            target_staff = AssignedShift.objects.filter(
                 id__in=shift_ids,
                 schedule__restaurant=sender.restaurant
             ).values_list('staff_id', flat=True)
-            filters |= models.Q(id__in=list(target_staff_from_shifts))
+
+            filters |= models.Q(id__in=list(target_staff))
 
         if targeted:
             staff_qs = staff_qs.filter(filters)
-        # else keep default all staff in restaurant
 
-        # Exclude the sender
         staff_qs = staff_qs.exclude(id=sender.id)
 
         notifications = []
+
         for staff in staff_qs:
+            raw_data = {
+                'announcement': True,
+                'scheduled_for': (
+                    self.validated_data.get('schedule_for').isoformat()
+                    if self.validated_data.get('schedule_for') else None
+                ),
+                'targeted': targeted,
+                'tags': self.validated_data.get('tags', []),
+                'targeting': {
+                    'staff_ids': staff_ids,
+                    'departments': departments,
+                    'roles': roles,
+                    'shift_ids': shift_ids,
+                }
+            }
+
+            safe_data = to_json_safe(raw_data)
+
             notification = Notification.objects.create(
                 recipient=staff,
                 sender=sender,
@@ -264,19 +317,9 @@ class AnnouncementCreateSerializer(serializers.Serializer):
                 notification_type='ANNOUNCEMENT',
                 priority=self.validated_data['priority'],
                 expires_at=self.validated_data.get('expires_at'),
-                data={
-                    'announcement': True,
-                    'scheduled_for': self.validated_data.get('schedule_for').isoformat() if self.validated_data.get('schedule_for') else None,
-                    'targeted': bool(staff_ids or departments or roles or shift_ids),
-                    'tags': self.validated_data.get('tags', []),
-                    'targeting': {
-                        'staff_ids': staff_ids,
-                        'departments': departments,
-                        'roles': roles,
-                        'shift_ids': shift_ids,
-                    }
-                }
+                data=safe_data
             )
+
             notifications.append(notification)
 
         return notifications

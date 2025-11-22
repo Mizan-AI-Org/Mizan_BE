@@ -27,8 +27,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 # Copy the backend source code
 COPY ./ ./
 
-# Command to wait for DB and start Django
 CMD ["sh", "-c", "until nc -z db 5432; do echo '⏳ Waiting for database...'; sleep 2; done && \
-                    python3 manage.py makemigrations && \
-                    python3 manage.py migrate && \
-                    python3 manage.py runserver 0.0.0.0:8000"]
+    python3 manage.py makemigrations && \
+    python3 manage.py migrate && \
+    daphne -b 0.0.0.0 -p 8000 mizan.asgi:application"]

@@ -190,7 +190,7 @@ class Task(models.Model):
     
     # Timing fields
     due_date = models.DateField(null=True, blank=True)
-    due_time = models.TimeField(null=True, blank=True)
+    due_time = models.DateTimeField(null=True, blank=True)
     estimated_duration = models.DurationField(null=True, blank=True)
     
     # Completion tracking

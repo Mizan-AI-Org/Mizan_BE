@@ -24,7 +24,7 @@ class ShiftReviewSerializer(serializers.ModelSerializer):
         model = ShiftReview
         fields = [
             'id',
-            'shift_id',
+            'session_id',
             'staff',
             'rating',
             'tags',
@@ -45,11 +45,11 @@ class ShiftReviewSerializer(serializers.ModelSerializer):
             'updated_at'
         ]
 
-    def validate_shift_id(self, value):
-        # You can add validation here to ensure the shift exists
-        # e.g., from scheduling.models import AssignedShift
-        # if not AssignedShift.objects.filter(id=value).exists():
-        #     raise serializers.ValidationError("Shift not found.")
+    def validate_session_id(self, value):
+        # Placeholder: ensure a ClockEvent with this id exists if referential FK added later.
+        # from timeclock.models import ClockEvent
+        # if not ClockEvent.objects.filter(id=value).exists():
+        #     raise serializers.ValidationError("Session not found.")
         return value
     
     
