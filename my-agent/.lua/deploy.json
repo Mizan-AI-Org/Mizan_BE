@@ -1,0 +1,106 @@
+{
+  "skills": [
+    {
+      "name": "restaurant-ops",
+      "version": "1.0.9",
+      "description": "Guest experience, inventory, and kitchen coordination",
+      "context": "Manage inventory, waste tracking, baskets, orders, and payments",
+      "tools": [
+        {
+          "name": "inventory_manager",
+          "description": "Manage restaurant inventory, check stock levels, and track waste.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "check_stock",
+                  "log_waste",
+                  "get_alerts"
+                ]
+              },
+              "item": {
+                "type": "string"
+              },
+              "quantity": {
+                "type": "number"
+              },
+              "unit": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          "execute": "H4sIAAAAAAAAE4VV227cNhB991eMiXRBAoTiFMiLFrRRuEVh1IkDx0UfDGPNlUYyuxS54cXrjax/L0jtta2Rl12IM3Pm8MyF0q9NBVSZZQwMxDn0JwAnAO/fw28vWMWAEJ4Q5tHUGmsI1mqobI0nAM/SgRI387+xCkWNjTL4xdklurCeJlvc2loMNyuztf2KvnJqGazLXt3/e32WHfrs0G4dls4GG9ZLLJ6kP3DNXpWgniMT531jHU0nAZQBZIp6HnjfYijxPjxwNLFDJ+cay9OzgQ1c50geuEnRqqE4maQstgEUgticnLy+Hpw10VRBWUNYSqYxgATbQEeRsdO2qKTW1HPJJhN5KkSYTBIJOZKgTJzjvTwmQo2IFLlk7PXVFHvLwKYOQ3QG/JCvWQsvzjVVtB84mc3Qf7J11Eh4/yx1HK/EPcu+jeiHaUUb3tfYyKjH3HZg0y4HFfiytC54UdNmjHDC4beoHFLy3daEcSsqLb3vjexQEGWe0QTr1rNOGtmiI9N6U0xljSCf8ik49EFGJ02qwCaCQ/WE1QJ8sNUCND6j9hykqSE4WS1gJX3AgkxzH36tnrCTwhXfi1F92susd5mOkjr0nmS8WcYjnGjbzjIG4aTFMJMaXfDkgXEVsMtxPjhlWsoKm+lKTRn/FqUJKqyzg4ndHN2xQzQqvBU9sKnM04PjoFDkgfWpG4wIp8JErSeT3NcX+ZeSvTJXNWHls1U1nHH5Q+80DISV5E+zMHZl4HZnIdv+MBe0ssZbjYW2LX28v9pKf2etftgMszItNNbBu14OQN/1ZmCPjGMxyiuEOJL1ovdBhuhL4mNVofeE7zmVcpQWi/THq+gcmjBGluTDx0VL+Bg+y+Uuyc0fhHfovWyxfPyaG2HkMkIMoDz42DSqUmgCyJBpFo9DeUhwX+kf0dvlurZti3VOtC34kD5ScYc0uHsK0o+tuFOpeOQOK9t1aGqZe5BcWuNVjQ4c1rFKki4dLnNEeFIeEhLM1/Dh7Ccw+BJghbgoyPE1Dpr0oj+iPZ6W932Wl9zZTgaLnvCNjJe3V3dXl79c78Uko5hz1HYFPy/aAm7RusRQdR3WSgbU64IMfAN5Lbv5Du765q83kD4eIvnYtugD1gUZHoZyJz06Z90BwJV5llrVMN6UDOxt18/2cFVU1oQkVmOjqQv4olF6BDQ+OoS1jSAdgh4rqUxBhmGYnuzeqt8x5HdqfJ/SzoLG2Q42K+4EEr4PkIbhMpsFHG/BYrMk4fX135ajUfqvfbpjcelQBsxrDQ8ez0RqxyB9XBkfpKkQBBhc7UlRlrA2Ey1XUh27F9tFM77W05PhH3+Wh9y+BwAA"
+        }
+      ],
+      "skillId": "ff8fafe5-ff0e-4944-8653-9576ad97a502"
+    },
+    {
+      "name": "staff-orchestrator",
+      "version": "1.0.9",
+      "description": "Staff scheduling and task orchestration",
+      "context": "Create tasks, optimize schedules, and manage staff workflows",
+      "tools": [
+        {
+          "name": "schedule_optimizer",
+          "description": "Optimize staff schedules based on predicted demand and staff availability.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "week_start": {
+                "type": "string",
+                "description": "Start date of the week (YYYY-MM-DD)"
+              },
+              "department": {
+                "type": "string",
+                "enum": [
+                  "kitchen",
+                  "service",
+                  "all"
+                ]
+              }
+            },
+            "required": [
+              "week_start"
+            ],
+            "additionalProperties": false
+          },
+          "execute": "H4sIAAAAAAAAE4VVTW8bNxC9+1eMCUMgAWaV8wq0D3FbBIWTIh8HwzAsipyVWHHJLT9sy+v97wVXK8lJA/QgAeK8mXnUvDeUcecUUOO6nBiIS+jPAM4A5nP47RlVTghpg7DKTlvUkLy3oLzGM4BHGcCJz6u/UaVKY2Mc/hV8hyHtFiXWHmJrTJ+f3CF2jVEF0yUfRpT/NeqTbDGOgO4A6IJPPu06rDYyvoGOqI2ggUcmLvvGB1pOEIyDyBwNHHm/xlTHO7zn6HKLQa4s1ufvBzbw9ZjJkZuSbRoaZ7PSxTcQhSB+bE5eX9+cNdmpZLwjrDSzmECCb8DTyNh5VylpLQ1cstlMnguBs1khIfckKBOX8U7+SIQa0dLIJWOvr6Y6RQa2CJhycBCG8ZpKBHG5po72AycPDxhvvM4WCe8fpc37K/HARuxW9MNiQ7e819jIbPe988AW7ZhU4XPnQ4pC0e0+I4mA/2QTkJIXrwnjWSgrY+ydbFGQqDZYEh98l0xrXjCQhZ6mabwT5PN0DjHJpoEDPsJKRtTgHXQBtVEJNWhspdNQPnu0fJTGypWxJu0qshgV+VVtsJUiVS/Vfg60f0LcPsQkQ6rLcUzBuDVl1Z7ICin5WoKgZcIylKLekgP09vb29t3Nzbvra0YY19jJkFp0+zrlP6d3ZGuS2qAjnEQMj0Yh4URaS+5Z5cdLSkvZwBZytA3uHUIjR9YXGRiB58Jla2czLIK+Gr8pCRiTzEG69FETVj96o+E9l/+LLi4grCbf3db5JwdfjhGyMA09N/u2WuDVZJIt7iJFVpNSl/DmbYscMVyRLmBEl0hNWhOjcWvC7VtUCtKk+CvcpMU+JplyrAmG4APhLcYo11gvP3k4UQflXcLnBI3PTldwjau8ruFP3EVxd9Hr4Z7D94hBXPTNwOHb2FVc9HZYDsMkeuVd9BYr69d0efd1ktNBZeGb9/Z+WlPGraHxAS56OQC96M3AlowfqcasFMZI+IlgLU/MD6XhoGw9Fht14xu46GN10t1wbLTkxkWz3qRY35GPTgUcdT6JaNK1d/B7MFruAB/RFZ46IyQP+NzhaIXkczAxgXGNzc8V4eQL6qxQwyTCU6Ub70olm53anFy1MTH5YJS0YP0TpCCbxqiK3POjZXOw9XKTUhfr+bw1L9JV0syPDp2Xf2z+0z2XwzAszo7vwR+YRjft34CyF6AJvoVpjZzBOK8EZSwfxrCAHzdNNS0ieH39OfLL4f4Xtziy+RCwOLzsD3zzUBVyRyblx0cXk3QKQYDDpxM5ykqtSWjySZof4dXB2/uXcXE2/Av6Do1+KgcAAA=="
+        }
+      ],
+      "skillId": "f8f28466-4864-4f0c-be40-9fd977c487e7"
+    },
+    {
+      "name": "predictive-analyst",
+      "version": "1.0.9",
+      "description": "Sales forecasting and demand signals",
+      "context": "Use these tools to fetch weather, product signals, and generate demand forecasts",
+      "tools": [
+        {
+          "name": "demand_forecast",
+          "description": "Predict sales and customer footfall based on historical data, events, and weather.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "date": {
+                "type": "string",
+                "description": "Date to forecast (YYYY-MM-DD)"
+              }
+            },
+            "required": [
+              "date"
+            ],
+            "additionalProperties": false
+          },
+          "execute": "H4sIAAAAAAAAE4VVYU/kNhD9zq8YrNPKlkwucK1UZRVOV+B6J5U7VKgqRBE3xJOse469tZ1lIeS/V0524ehV6pdE9rzxvPG8GWO4txVwbZddFFAeQr8DsAPw+jWcrKnqIkFcENx2VhlSEJ0zUDlFOwAr9KDLz7d/URUzRbW2dObdkny8nyeb29oaip/v7NZ2TKHyehmdH1Hdf6M+YUthBNRbwNK76OL9krIFhm+gI6oquZcoysO+dp6nHQJtAYXmXpLsG4oFXtG1JNu15PHWULGbD2KQZvSUJEPy1jXH2SxFcTVgWTI3BmePj9/s1Z2tonaWiRTMUIQIroaOoxC7dVahMdzLKGazuFuWNJslEnEiwUV5iFfxJREeSsdRRiEeH0P2bBnE3FPsvAU/jGm2pS8PDde8HyS7uaFw6lRniMl+haabUpJejNim7Id5xRvZK6qxM1NsO4h5OzpltF46H0PZ8mbyUKWnvzvtibMHp5iQtqwMhtBbbKlkilq06qZ2nioMkc3VppTa2ZKdeVK6ihDQUAC0CqouRNeSh9q5WKMxcIuBFDgLCx2i87pCAwojSqAV2Rjk6HdHGBfkMzYfZXleLajFUmUP2VQM3iuMVKSNEL22DRfZROWWODvGpFkHW5rALy8vL/dOT/eOjwUTg5jjqHma5M1RkuhTDUNJu6XtjJnNKKnx7fjlzFOI2Hm08aNiolg5rSCX8X/RScJMFOx3+9W6Owu/PVnYtqrhLa+cDc5QZlzDv1wdj1f8fkP9wjlzvelDbZuUErzq4wD8VR8G8UXI6SYwSz/5HLqIcpt+0dN6SVUkdePTJXdUsP0fZZ7ncPrumMkna+VW5EOxf5DLJeHXm4XrfCiu2P6bIs/39n8o3uRMsoM8rQ4Oijxn14OssYpuhP3qUjE/OKMV3hdwohW8M3vvdfTAP+hmAZN6YBtPMMn+mApdwHln7b2Eg5/+XP+cHwG/IO+xIgiEY+JuGXWrHyavC9d5HSKcEwZnCxhP56foPX6lagHa1qZbC3YtPVWubckqTBJNLM88LdET0Dp6hAtstE1zoknaTQLMmGQnNnSeoO6MgRCxrsd7V9pa8hDIr3RFGbseRNGHiLELBSPvnWeypRCwoYJ9cvBcDKicjbSOULvOqgzODGEgoCnMvesgMTKuaUiBthkbhmG+8zSGf0njZUGb0ZvaEWrvWth07w6k80OEJJaj0VzCywbPNv0Pj4//tnyvt+9B8ycqR55Sc01lfH4cErMnGmnx0YaItiIowdLdMzMu0lkb7eMd6pfwbNuS02s03xn+AWeUKUueBgAA"
+        }
+      ],
+      "skillId": "80c230d3-38e7-4020-9e74-2df61f48c520"
+    }
+  ]
+}

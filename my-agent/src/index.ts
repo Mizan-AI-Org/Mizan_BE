@@ -1,8 +1,7 @@
 import { LuaAgent } from "lua-cli";
-import ApiService from "./services/ApiService";
-import GetWeatherService from "./services/GetWeather";
 import forecastingWebhook from "./webhooks/forcastingWebhook";
 import staffManagementWebhook from "./webhooks/staffManagementWebhook";
+import { tenantContextPreprocessor } from "./preprocessors/TenantContextPreprocessor";
 
 import { restaurantOpsSkill } from "./skills/restaurant-ops.skill";
 import { staffOrchestratorSkill } from "./skills/staff-orchestrator.skill";
@@ -52,8 +51,7 @@ Your core capabilities include:
 
     // Request Preprocessing Pipeline
     preProcessors: [
-
-
+        tenantContextPreprocessor
     ],
     // Response Postprocessing Pipeline
     postProcessors: [

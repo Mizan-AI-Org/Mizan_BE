@@ -9,32 +9,43 @@ export default class InventoryTool implements LuaTool {
         action: z.enum(["check_stock", "log_waste", "get_alerts"]),
         item: z.string().optional(),
         quantity: z.number().optional(),
-        unit: z.string().optional(),
-        restaurantId: z.string().describe("The ID of the restaurant tenant"),
+        unit: z.string().optional()
     });
 
-    async execute(input: z.infer<typeof this.inputSchema>) {
+    async execute(input: z.infer<typeof this.inputSchema>, context?: any) {
+        const restaurantId = context?.get ? context.get("restaurantId") : undefined;
+        const restaurantName = context?.get ? context.get("restaurantName") : "Unknown Restaurant";
+
+        if (!restaurantId) {
+            return { status: "error", message: "No restaurant context found. Please ensure you are logged in." };
+        }
+
+        console.log(`[InventoryTool] Executing for ${restaurantName} (${restaurantId})`);
+
         // Simulated logic for demonstration
         if (input.action === "check_stock") {
             return {
                 status: "success",
+                restaurant: restaurantName,
                 item: input.item,
                 current_stock: "15kg",
                 status_level: "OK",
-                message: `Stock for ${input.item} is sufficient.`
+                message: `Stock for ${input.item} is sufficient at ${restaurantName}.`
             };
         }
 
         if (input.action === "log_waste") {
             return {
                 status: "success",
-                message: `Logged ${input.quantity}${input.unit} of ${input.item} as waste.`,
+                restaurant: restaurantName,
+                message: `Logged ${input.quantity}${input.unit} of ${input.item} as waste for ${restaurantName}.`,
                 recommendation: "Consider reducing prep for this item by 10% next week."
             };
         }
 
         if (input.action === "get_alerts") {
             return {
+                restaurant: restaurantName,
                 alerts: [
                     { item: "Tomatoes", level: "CRITICAL", message: "Stock below 2kg. Reorder immediately." },
                     { item: "Lamb", level: "LOW", message: "Stock below 5kg. Reorder suggested." }

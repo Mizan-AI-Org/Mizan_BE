@@ -113,6 +113,7 @@ class SafetyConcernReport(models.Model):
         ('RESOLVED', 'Resolved'),
         ('DISMISSED', 'Dismissed'),
     ], default='REPORTED')
+    photo = models.ImageField(upload_to='safety_concerns/', null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     resolved_at = models.DateTimeField(null=True, blank=True)

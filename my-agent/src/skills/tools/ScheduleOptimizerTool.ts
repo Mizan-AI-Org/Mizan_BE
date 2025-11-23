@@ -7,20 +7,39 @@ export default class ScheduleOptimizerTool implements LuaTool {
 
     inputSchema = z.object({
         week_start: z.string().describe("Start date of the week (YYYY-MM-DD)"),
-        restaurantId: z.string().describe("The ID of the restaurant tenant"),
         department: z.enum(["kitchen", "service", "all"]).optional(),
     });
 
-    async execute(input: z.infer<typeof this.inputSchema>) {
+    async execute(input: z.infer<typeof this.inputSchema>, context?: any) {
+        const restaurantId = context?.get ? context.get("restaurantId") : undefined;
+        const restaurantName = context?.get ? context.get("restaurantName") : "Unknown Restaurant";
+
+        if (!restaurantId) {
+            // DEBUG: Inspect context to see what's actually there
+            const keys = context ? Object.keys(context) : "null";
+            // Check if context has a 'user' property directly
+            const userProp = context?.user ? "present" : "missing";
+            // Check if context has a 'traits' property directly
+            const traitsProp = context?.traits ? "present" : "missing";
+
+            return {
+                status: "error",
+                message: `No restaurant context found. Debug: Keys=[${keys}], User=${userProp}, Traits=${traitsProp}`
+            };
+        }
+
+        console.log(`[ScheduleOptimizerTool] Executing for ${restaurantName} (${restaurantId})`);
+
         // Simulated logic
         return {
             status: "success",
-            message: `Schedule optimized for week of ${input.week_start}`,
+            restaurant: restaurantName,
+            message: `Schedule optimized for week of ${input.week_start} for ${restaurantName}`,
             insights: [
                 "Increased kitchen staff on Friday evening due to expected tourist influx.",
                 "Reduced service staff on Monday lunch based on historical low traffic."
             ],
-            schedule_url: `https://mizan.ai/schedules/${input.restaurantId}/${input.week_start}`
+            schedule_url: `https://mizan.ai/schedules/${restaurantId}/${input.week_start}`
         };
     }
 }

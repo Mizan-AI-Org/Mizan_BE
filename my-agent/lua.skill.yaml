@@ -25,14 +25,15 @@ agent:
     -   **Supplier**: Receives orders and provides delivery updates.
   welcomeMessage: ''
 skills:
-  - name: user-skill
-    skillId: f7b6fdd7-912a-4627-80a5-edaf8b9f1be1
-    version: 1.0.1
-  - name: order-skill
-    skillId: 6f1c7363-842b-453c-9d4e-a07e9b8c1d5e
-    version: 1.0.0
-  - name: table-service-skill
-    skillId: 7d2d8474-953d-464d-ad5f-b18faa9e2e6f
+  - name: restaurant-ops
+    version: 1.0.10
+    skillId: ff8fafe5-ff0e-4944-8653-9576ad97a502
+  - name: staff-orchestrator
+    version: 1.0.10
+    skillId: f8f28466-4864-4f0c-be40-9fd977c487e7
+  - name: predictive-analyst
+    version: 1.0.10
+    skillId: 80c230d3-38e7-4020-9e74-2df61f48c520
 webhooks:
   - name: dining-experience-events
     version: 3.0.0

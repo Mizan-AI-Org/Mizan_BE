@@ -122,6 +122,7 @@ class SafetyConcernReport(models.Model):
         ],
         default='REPORTED'
     )
+    photo = models.ImageField(upload_to='safety_concerns/', null=True, blank=True)
     resolution_notes = models.TextField(blank=True)
     resolved_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='resolved_safety_reports')
     resolved_at = models.DateTimeField(null=True, blank=True)
