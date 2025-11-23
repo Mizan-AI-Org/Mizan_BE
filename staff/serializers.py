@@ -114,7 +114,7 @@ class SafetyConcernReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = SafetyConcernReport
         fields = '__all__'
-        read_only_fields = ('created_at', 'updated_at')
+        read_only_fields = ('created_at', 'updated_at', 'restaurant', 'reporter')
         
     def create(self, validated_data):
         # Handle anonymous reports

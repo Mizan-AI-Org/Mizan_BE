@@ -1,4 +1,4 @@
-import { ChatMessage, PostProcessor, UserDataInstance } from "lua-cli";
+ import { ChatMessage, PostProcessor, UserDataInstance } from "lua-cli";
 
 
 const modifyResponsePostProcessor = new PostProcessor({

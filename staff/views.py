@@ -1,4 +1,5 @@
 from rest_framework import viewsets, status, filters
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -230,6 +231,7 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
     queryset = SafetyConcernReport.objects.all()
     serializer_class = SafetyConcernReportSerializer
     permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['title', 'description', 'location']
     ordering_fields = ['severity', 'status', 'created_at']
@@ -261,8 +263,28 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         """Create a new safety concern report"""
-        # Set restaurant from the current user
-        serializer.save(restaurant=self.request.user.restaurant)
+        user = self.request.user
+        from accounts.models import Restaurant
+        from rest_framework import serializers as drf_serializers
+        restaurant = getattr(user, 'restaurant', None) or Restaurant.objects.first()
+        if not restaurant:
+            raise drf_serializers.ValidationError("Restaurant not found for current user")
+        if getattr(user, 'restaurant', None) is None and restaurant:
+            user.restaurant = restaurant
+            try:
+                user.save(update_fields=['restaurant'])
+            except Exception:
+                pass
+
+        sev = (serializer.validated_data.get('severity') or 'MEDIUM').upper()
+        if sev == 'INVESTIGATING':
+            sev = 'MEDIUM'
+
+        stat = (serializer.validated_data.get('status') or 'REPORTED').upper()
+        if stat == 'INVESTIGATING':
+            stat = 'UNDER_REVIEW'
+
+        serializer.save(restaurant=restaurant, severity=sev, status=stat)
     
     @action(detail=True, methods=['post'])
     def update_status(self, request, pk=None):

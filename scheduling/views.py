@@ -349,6 +349,94 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
         shift.status = 'COMPLETED'
         shift.save()
         return Response({'detail': 'Shift marked as completed', 'shift': self.get_serializer(shift).data})
+    
+    @action(detail=True, methods=['get'])
+    def task_templates(self, request, pk=None):
+        """Get all task templates assigned to this shift"""
+        from .task_templates import TaskTemplate
+        from .serializers import TaskTemplateSerializer
+        
+        shift = self.get_object()
+        templates = shift.task_templates.all()
+        serializer = TaskTemplateSerializer(templates, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'], permission_classes=[permissions.IsAuthenticated])
+    def my_shift_templates(self, request):
+        """Get all task templates assigned to current user's current and upcoming shifts"""
+        from .task_templates import TaskTemplate
+        from .serializers import TaskTemplateSerializer
+        
+        user = request.user
+        today = timezone.now().date()
+        
+        # Get current and upcoming shifts for this user
+        shifts = AssignedShift.objects.filter(
+            staff=user,
+            shift_date__gte=today
+        ).prefetch_related('task_templates')
+        
+        # Collect all unique templates with shift context
+        templates_data = []
+        seen_template_ids = set()
+        
+        # Import ChecklistExecution locally to avoid circular imports
+        try:
+            from checklists.models import ChecklistExecution
+        except ImportError:
+            ChecklistExecution = None
+        
+        for shift in shifts:
+            for template in shift.task_templates.all():
+                # We allow the same template to appear multiple times if it's on different shifts
+                # But for the same shift, it should be unique (handled by set logic if needed, but here we iterate shifts)
+                # Actually, if we want to show it per shift, we shouldn't dedup by template ID globally, but per shift?
+                # The previous logic deduped globally: "if template.id not in seen_template_ids".
+                # This means if I have the same template on Monday and Tuesday, I only see it once?
+                # That seems wrong if the user wants to see "Assigned Checklists" for all upcoming shifts.
+                # But the user said "only show template/s assigned... when they have their shifts scheduled".
+                # If I have a shift today and tomorrow with the same template, I should probably see both?
+                # Or maybe just the "next" one?
+                # For now, I will keep the dedup logic but maybe scope it? 
+                # Wait, the previous logic was:
+                # if template.id not in seen_template_ids: ... seen_template_ids.add(template.id)
+                # This hides the template for the 2nd shift.
+                # I should probably remove this dedup if I want to show all assignments.
+                # But let's stick to the plan: Link execution.
+                
+                # Construct a unique key for the view: template_id + shift_id
+                unique_key = f"{template.id}_{shift.id}"
+                if unique_key in seen_template_ids:
+                    continue
+                
+                template_dict = TaskTemplateSerializer(template).data
+                template_dict['shift_id'] = str(shift.id)
+                template_dict['shift_date'] = shift.shift_date
+                template_dict['shift_role'] = shift.role
+                
+                # Find associated ChecklistTemplate
+                # We use the reverse relation 'checklist_templates'
+                checklist_template = template.checklist_templates.filter(is_active=True).first()
+                if checklist_template:
+                    template_dict['checklist_template_id'] = str(checklist_template.id)
+                
+                # Check for existing execution
+                if ChecklistExecution:
+                    execution = ChecklistExecution.objects.filter(
+                        template__task_template=template,
+                        assigned_shift=shift,
+                        assigned_to=user
+                    ).first()
+                    
+                    if execution:
+                        template_dict['execution_id'] = str(execution.id)
+                        template_dict['execution_status'] = execution.status
+                        template_dict['execution_progress'] = execution.progress_percentage
+                
+                templates_data.append(template_dict)
+                seen_template_ids.add(unique_key)
+        
+        return Response(templates_data)
 
 class ShiftSwapRequestListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = ShiftSwapRequestSerializer

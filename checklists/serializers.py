@@ -130,28 +130,38 @@ class ChecklistExecutionSerializer(serializers.ModelSerializer):
 class ChecklistExecutionCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating checklist executions"""
     template_id = serializers.UUIDField()
+    assigned_shift = serializers.UUIDField(required=False)
     
     class Meta:
         model = ChecklistExecution
-        fields = ['template_id', 'due_date', 'completion_notes']
+        fields = ['template_id', 'due_date', 'completion_notes', 'assigned_shift']
     
     def create(self, validated_data):
         template_id = validated_data.pop('template_id')
+        assigned_shift_id = validated_data.pop('assigned_shift', None)
         template = ChecklistTemplate.objects.get(id=template_id)
-        
+
+        assigned_shift_obj = None
+        if assigned_shift_id:
+            try:
+                from scheduling.models import AssignedShift
+                assigned_shift_obj = AssignedShift.objects.get(id=assigned_shift_id)
+            except Exception:
+                assigned_shift_obj = None
+
         execution = ChecklistExecution.objects.create(
             template=template,
             assigned_to=self.context['request'].user,
+            assigned_shift=assigned_shift_obj,
             **validated_data
         )
-        
-        # Create step responses for all template steps
+
         for step in template.steps.all():
             ChecklistStepResponse.objects.create(
                 execution=execution,
                 step=step
             )
-        
+
         return execution
 
 
@@ -205,6 +215,11 @@ class ChecklistSyncSerializer(serializers.Serializer):
         required=False
     )
     evidence_items = serializers.ListField(
+        child=serializers.DictField(),
+        required=False
+    )
+    # Accept 'evidence' alias used by some clients
+    evidence = serializers.ListField(
         child=serializers.DictField(),
         required=False
     )

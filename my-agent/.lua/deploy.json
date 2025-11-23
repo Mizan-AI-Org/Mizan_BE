@@ -1,458 +1,106 @@
 {
   "skills": [
     {
-      "name": "user-skill",
-      "version": "1.0.0",
-      "description": "User management skill",
-      "context": "User management skill",
+      "name": "restaurant-ops",
+      "version": "1.0.9",
+      "description": "Guest experience, inventory, and kitchen coordination",
+      "context": "Manage inventory, waste tracking, baskets, orders, and payments",
       "tools": [
         {
-          "name": "get_user_data",
-          "description": "Get the user data for a given user id",
-          "inputSchema": {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE6VWTW/bOBC9+1cwOhgkllFzlkADRbNbpEA/gN1gD0EQUNJIViCRXnIUx1X43wuSltd2nDRALpbFITXvPQ7nUdqNKglt1WpARsSCjDNCZoR8+ED+fIRyQCC4BFIMquqgIqh1R0pdwYyQB2lIK74X91BiWkHdKvhh9AoMbnIf66dYA/h9rabYJdjStCvUJsyqTs/6JnuwYUIzTVgZjRo3K0iX0u5NDbOWgkoOTCzGWhvqR5C0igBrqeTIxwYwgxu85aCGHowsOsjOLhxzvA4rOfKVX93WFOZzn0XXBIRIdEiePD3tjdWDKrHVKmE+WQdIFNE1qSgwdtakpew6Krli87k6EwLncw9CRRCUiQXcqEMgdCV6Clwx9vS0Sv+POJYbwMEoIl2guRFSLGra0tHx5O4O7FddDR0kfHyQ3RApccnC3EKMLl/Sgo+fDEiEK9W1Cr7o4h+tu4Bj4J8Bry2YS4lyN2r49aqSCM8Cmv9rWoQfGvrdWOlY3gcMKTyutEErNrSIAKww8N/QGqDJT10ljBtRdtLaUckeRNIA3g0WzF0lUSZ5ta2LViuRfAYMdefjxMdJrQ2RpGkfQMXRtkryULZ/l0vopbDpzzRuFh0dy0utLJqhRG0oG50MdQ6xpCmw0e8aCrmWLRLP1NcfneQe7VCWYG12dsF7sFY2kCXXOywG0LTwAFXC/XuGqX9wTyvD1D+4X4GpbMA5x/UB7yGo+yL1KP572AdM+wMBmB+waFrVUJbqkEx2lAWkPqaGvgBzEHPsvUKSKIeAoFCUJsgyjcgGeFyLqZUPQBn/jfhRvirxwpYHwq59dd6tNPRHkoayJZL4EJGFHnAnJupVW74sZQgfSOdY/kyC6YwGHh+v0gYUGIlAT2X2G1vrrtPrVjUxf5bwm9H3lyxBeMSE+98M0hB0t8w5PhwwLcOBPr/XxTnqc6WxrTfnvi6OiMeDTyRRsCb3uiCoSZy9q6+XuU/av439/q7d6yKLYnzRhU0j2m0ZJntozxWsE76HOEu+HaHjtlyCby/ZViCtSkj4Nv1HzDyzS/95/5MqvabsjwvmeA8ow0HY8YB0+89NyzMaydB7XezMz3cu/YqtqTfZmvmdrQ1vsrVKUDy0NRltTVPkcrI1ecLW+rCSS16+w9astzUTbG2Itobcsvncngkh53MPwu7bmj2ytVIoCtx6WytP2hpGW2sFikVP9au2hmx7HxhdXtGGjxXUcuhi7vq5D7W0iSseRdxmFIvQrUBMHceXmG+BAtOpXiZkvu3pDtJONzT5ug0mXLJtu4LUgqroiXMrd3V2+1ozC+egDY2M1+Ixn81ISIrT2fprux1EkENm6ZY4eXo6iuQzQg6a0dGnQqHnM9/XnXP5xXxOj0Q7dVc4viWcuB8c3gwcC2ziNXKy8nh19E2M1Eb3ZJtxx9ov/BTCb+ebHiE7rUjEMfVCVU2q7GDtMPiXK2VRqhKICF1zB4uyZ+ruT0+njhiv0vnM/QIp++zVWwsAAA=="
-        },
-        {
-          "name": "update_user_data",
-          "description": "Update the user data for a given user id",
+          "name": "inventory_manager",
+          "description": "Manage restaurant inventory, check stock levels, and track waste.",
           "inputSchema": {
             "type": "object",
             "properties": {
-              "data": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "age": {
-                    "type": "number"
-                  }
-                },
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "data"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE6VWTW/bOBC9+1cwOhgkllFzlkADRbNbpEA/gN1gD0EQUNJIViCRXnIUx1X43wuSltd2nDRALpbFITXvPQ7nUdqNKglt1WpARsSCjDNCZoR8+ED+fIRyQCC4BFIMquqgIqh1R0pdwYyQB2lIK74X91BiWkHdKvhh9AoMbnIf66dYA/h9rabYJdjStCvUJsyqTs/6JnuwYUIzTVgZjRo3K0iX0u5NDbOWgkoOTCzGWhvqR5C0igBrqeTIxwYwgxu85aCGHowsOsjOLhxzvA4rOfKVX93WFOZzn0XXBIRIdEiePD3tjdWDKrHVKmE+WQdIFNE1qSgwdtakpew6Krli87k6EwLncw9CRRCUiQXcqEMgdCV6Clwx9vS0Sv+POJYbwMEoIl2guRFSLGra0tHx5O4O7FddDR0kfHyQ3RApccnC3EKMLl/Sgo+fDEiEK9W1Cr7o4h+tu4Bj4J8Bry2YS4lyN2r49aqSCM8Cmv9rWoQfGvrdWOlY3gcMKTyutEErNrSIAKww8N/QGqDJT10ljBtRdtLaUckeRNIA3g0WzF0lUSZ5ta2LViuRfAYMdefjxMdJrQ2RpGkfQMXRtkryULZ/l0vopbDpzzRuFh0dy0utLJqhRG0oG50MdQ6xpCmw0e8aCrmWLRLP1NcfneQe7VCWYG12dsF7sFY2kCXXOywG0LTwAFXC/XuGqX9wTyvD1D+4X4GpbMA5x/UB7yGo+yL1KP572AdM+wMBmB+waFrVUJbqkEx2lAWkPqaGvgBzEHPsvUKSKIeAoFCUJsgyjcgGeFyLqZUPQBn/jfhRvirxwpYHwq59dd6tNPRHkoayJZL4EJGFHnAnJupVW74sZQgfSOdY/kyC6YwGHh+v0gYUGIlAT2X2G1vrrtPrVjUxf5bwm9H3lyxBeMSE+98M0hB0t8w5PhwwLcOBPr/XxTnqc6WxrTfnvi6OiMeDTyRRsCb3uiCoSZy9q6+XuU/av439/q7d6yKLYnzRhU0j2m0ZJntozxWsE76HOEu+HaHjtlyCby/ZViCtSkj4Nv1HzDyzS/95/5MqvabsjwvmeA8ow0HY8YB0+89NyzMaydB7XezMz3cu/YqtqTfZmvmdrQ1vsrVKUDy0NRltTVPkcrI1ecLW+rCSS16+w9astzUTbG2Itobcsvncngkh53MPwu7bmj2ytVIoCtx6WytP2hpGW2sFikVP9au2hmx7HxhdXtGGjxXUcuhi7vq5D7W0iSseRdxmFIvQrUBMHceXmG+BAtOpXiZkvu3pDtJONzT5ug0mXLJtu4LUgqroiXMrd3V2+1ozC+egDY2M1+Ixn81ISIrT2fprux1EkENm6ZY4eXo6iuQzQg6a0dGnQqHnM9/XnXP5xXxOj0Q7dVc4viWcuB8c3gwcC2ziNXKy8nh19E2M1Eb3ZJtxx9ov/BTCb+ebPkdyWpQIZWqHqpqE2SHbwfAvV8qiVCUQERrnDhllzwTen55OTTHepvOZ+wX+pW3XXgsAAA=="
-        },
-        {
-          "name": "write_poem",
-          "description": "Write a poem about a given topic",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "topic": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "topic"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE6VWTW/bOBC9+1cwOhgkllFzlkADRbNbpEA/gN1gD0EQUNJIViCRXnIUx1X43wuSltd2nDRALpbFITXvPQ7nUdqNKglt1WpARsSCjDNCZoR8+ED+fIRyQCC4BFIMquqgIqh1R0pdwYyQB2lIK74X91BiWkHdKvhh9AoMbnIf66dYA/h9rabYJdjStCvUJsyqTs/6JnuwYUIzTVgZjRo3K0iX0u5NDbOWgkoOTCzGWhvqR5C0igBrqeTIxwYwgxu85aCGHowsOsjOLhxzvA4rOfKVX93WFOZzn0XXBIRIdEiePD3tjdWDKrHVKmE+WQdIFNE1qSgwdtakpew6Krli87k6EwLncw9CRRCUiQXcqEMgdCV6Clwx9vS0Sv+POJYbwMEoIl2guRFSLGra0tHx5O4O7FddDR0kfHyQ3RApccnC3EKMLl/Sgo+fDEiEK9W1Cr7o4h+tu4Bj4J8Bry2YS4lyN2r49aqSCM8Cmv9rWoQfGvrdWOlY3gcMKTyutEErNrSIAKww8N/QGqDJT10ljBtRdtLaUckeRNIA3g0WzF0lUSZ5ta2LViuRfAYMdefjxMdJrQ2RpGkfQMXRtkryULZ/l0vopbDpzzRuFh0dy0utLJqhRG0oG50MdQ6xpCmw0e8aCrmWLRLP1NcfneQe7VCWYG12dsF7sFY2kCXXOywG0LTwAFXC/XuGqX9wTyvD1D+4X4GpbMA5x/UB7yGo+yL1KP572AdM+wMBmB+waFrVUJbqkEx2lAWkPqaGvgBzEHPsvUKSKIeAoFCUJsgyjcgGeFyLqZUPQBn/jfhRvirxwpYHwq59dd6tNPRHkoayJZL4EJGFHnAnJupVW74sZQgfSOdY/kyC6YwGHh+v0gYUGIlAT2X2G1vrrtPrVjUxf5bwm9H3lyxBeMSE+98M0hB0t8w5PhwwLcOBPr/XxTnqc6WxrTfnvi6OiMeDTyRRsCb3uiCoSZy9q6+XuU/av439/q7d6yKLYnzRhU0j2m0ZJntozxWsE76HOEu+HaHjtlyCby/ZViCtSkj4Nv1HzDyzS/95/5MqvabsjwvmeA8ow0HY8YB0+89NyzMaydB7XezMz3cu/YqtqTfZmvmdrQ1vsrVKUDy0NRltTVPkcrI1ecLW+rCSS16+w9astzUTbG2Itobcsvncngkh53MPwu7bmj2ytVIoCtx6WytP2hpGW2sFikVP9au2hmx7HxhdXtGGjxXUcuhi7vq5D7W0iSseRdxmFIvQrUBMHceXmG+BAtOpXiZkvu3pDtJONzT5ug0mXLJtu4LUgqroiXMrd3V2+1ozC+egDY2M1+Ixn81ISIrT2fprux1EkENm6ZY4eXo6iuQzQg6a0dGnQqHnM9/XnXP5xXxOj0Q7dVc4viWcuB8c3gwcC2ziNXKy8nh19E2M1Eb3ZJtxx9ov/BTCb+ebHqQ9rUdEMXVCVU2a7EDtEPiXK2VRqhKICD1zB4qyZ9ruT0+nfhgv0vnM/QIxGsm9WQsAAA=="
-        },
-        {
-          "name": "create-job-to-notify-user",
-          "description": "Create a new job to notify the user",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "message": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "message"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE6VWTW/bOBC9+1cwOhgkllFzlkADRbNbpEA/gN1gD0EQUNJIViCRXnIUx1X43wuSltd2nDRALpbFITXvPQ7nUdqNKglt1WpARsSCjDNCZoR8+ED+fIRyQCC4BFIMquqgIqh1R0pdwYyQB2lIK74X91BiWkHdKvhh9AoMbnIf66dYA/h9rabYJdjStCvUJsyqTs/6JnuwYUIzTVgZjRo3K0iX0u5NDbOWgkoOTCzGWhvqR5C0igBrqeTIxwYwgxu85aCGHowsOsjOLhxzvA4rOfKVX93WFOZzn0XXBIRIdEiePD3tjdWDKrHVKmE+WQdIFNE1qSgwdtakpew6Krli87k6EwLncw9CRRCUiQXcqEMgdCV6Clwx9vS0Sv+POJYbwMEoIl2guRFSLGra0tHx5O4O7FddDR0kfHyQ3RApccnC3EKMLl/Sgo+fDEiEK9W1Cr7o4h+tu4Bj4J8Bry2YS4lyN2r49aqSCM8Cmv9rWoQfGvrdWOlY3gcMKTyutEErNrSIAKww8N/QGqDJT10ljBtRdtLaUckeRNIA3g0WzF0lUSZ5ta2LViuRfAYMdefjxMdJrQ2RpGkfQMXRtkryULZ/l0vopbDpzzRuFh0dy0utLJqhRG0oG50MdQ6xpCmw0e8aCrmWLRLP1NcfneQe7VCWYG12dsF7sFY2kCXXOywG0LTwAFXC/XuGqX9wTyvD1D+4X4GpbMA5x/UB7yGo+yL1KP572AdM+wMBmB+waFrVUJbqkEx2lAWkPqaGvgBzEHPsvUKSKIeAoFCUJsgyjcgGeFyLqZUPQBn/jfhRvirxwpYHwq59dd6tNPRHkoayJZL4EJGFHnAnJupVW74sZQgfSOdY/kyC6YwGHh+v0gYUGIlAT2X2G1vrrtPrVjUxf5bwm9H3lyxBeMSE+98M0hB0t8w5PhwwLcOBPr/XxTnqc6WxrTfnvi6OiMeDTyRRsCb3uiCoSZy9q6+XuU/av439/q7d6yKLYnzRhU0j2m0ZJntozxWsE76HOEu+HaHjtlyCby/ZViCtSkj4Nv1HzDyzS/95/5MqvabsjwvmeA8ow0HY8YB0+89NyzMaydB7XezMz3cu/YqtqTfZmvmdrQ1vsrVKUDy0NRltTVPkcrI1ecLW+rCSS16+w9astzUTbG2Itobcsvncngkh53MPwu7bmj2ytVIoCtx6WytP2hpGW2sFikVP9au2hmx7HxhdXtGGjxXUcuhi7vq5D7W0iSseRdxmFIvQrUBMHceXmG+BAtOpXiZkvu3pDtJONzT5ug0mXLJtu4LUgqroiXMrd3V2+1ozC+egDY2M1+Ixn81ISIrT2fprux1EkENm6ZY4eXo6iuQzQg6a0dGnQqHnM9/XnXP5xXxOj0Q7dVc4viWcuB8c3gwcC2ziNXKy8nh19E2M1Eb3ZJtxx9ov/BTCb+ebnkB7WpWIZeqHqpqU2UHb4fAvV8qiVCUQETrnDhplzxTen55OXTFep/OZ+wXKfD9mXwsAAA=="
-        }
-      ],
-      "skillId": "f7b6fdd7-912a-4627-80a5-edaf8b9f1be1"
-    },
-    {
-      "name": "product-skill",
-      "version": "1.0.0",
-      "description": "Product management skill",
-      "context": "Product management skill",
-      "tools": [
-        {
-          "name": "search_products",
-          "description": "Search for products",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "query": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "query"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE7VXbW/bNhD+nl/BGIVAwqxqpY2XWWWCrumKAN06NM0nw3Bp6WyzkEmFopI4sv77QOrFVhwP2YB9Mai7E+95nhOPZ56tZYSwkGluCGLnqDhC6AihN2/QpweIcgPILAHNchknECOjVIIiFcMRQndco5h9nf2EyPgxzIWEv7RKQZt1aH03jW8B5uu9bHyXkEVapEZpFzV9PupPvoLMBfxsAlKtjDLrFPwlz3ZCXdQVw4YCYefFXGlsLQIJiYDE2FBBiwWYEYzFhILMV6D5LIHR8aAkJf3i3qSCKvu2mGPwPJtFzREw1lMueW+z2bHNcxkZoWSP2GQJGMSRmqMpBkKOf/oRTxJsKCeex48ZE55nQfAKBCbsHMa8CwQrdoOBckI2G+VvPSUJNZhcS2RKR/ORGXb+Bce4KGlvOoXsDxXnCfRocceTvKJEDXGxt6wowyt8S4uPGrixxYnzyHxXKnEo5vQSEti339HPYD4kSW3PWsfCOmrrb+uruHWs6TVwHS333nigN2n8TOplScKVQ+7DQ6q0ydgjvq1ga6bhNhcacO9Rxb3KKNl4EjZiGzYIzfuT02HY7xsi/TTPlhib/snpkPhGXRst5AIHQ+JniYgAB4SETcnQta02G5CiEhbLsRlDfzCZ9KtV0K5O2tXbyaTfe92rn9619tOOfdjaf+nYz1r7rx17sJN0mzXYpg3ebpfbpMHpZGJpflH3oD/yDDAprUSzrW5SxTCK9Do1qkdoyiTcoxshzdkHrfkaW51oxFI/Abkwy602K9zIgqLzxv06GHoexgM68zWXsVr9LpLkei0jglO7zYDQtBY6olGfBcMKz/0hPBkrqo1ubq4uR/f+9qHcQrmsDiUp7FY8NMxsNkUZ2vIrZup3Li4w5vZJLghjMk+SizslYjQY8foQEnJxscIkFHOsaj7vgyExS63ukZXlk9ZK4943tx+arQ1kqIpDqzwzaAbonKFg2Kv2GA8nzP54welm+I6q8Zl9Ppt4w7eb4OSMArEdRDCx2QyoeD/YbEQ/GJ5DnXsn8TcuF1Bl/2G5u9xIWyt6VYhy9KoQ/eC0RCJDKje2v8zy+Rw0mqlcxtkP0p6HnA3C/H1gj0NOYCz6uQWVT5reAWW9uMaKlK3E3xuJa2+2UwnPOwbPOzYXu0ZMRk1ZXIUT9t0dzgcWJTzLCslXwHqZawXTtO4FvTCuG75QkvWqRoHmSqNthLt9rqMlrDjT/qNf9Vxc3Oag1yNryaozTUoSRkpmRueRURqTouTuAoPqrsLQsuH3XBjUdCS/QoXBd3uSsqSLDuoFmClPkkOwP9senyQvwJzyBTjIMl/NQGPiK7cHTzChiVgJc8hbkvCFZBZgMPg2EwXf7WkJzTuEItfzGz5P6FQXAuLuS2xDDlKqAka7NpukUxm6k6DrSLWIupKU/8S1ZVkxwIXv++DXGKiIR06qsqTLDt/cXTQH+Fa3EOISwYPIjJCL/8ZaxF1q/5sKeL/i9sbFrRC+iAnxK9JdiZw2672Pu/ZOZ+upiJ/7uhtF0GyNhMlQLsVtDkjEII2YC9CHpXoiy0uKuyUkYgv4rgM4doPJgWJWU8u/K+aLER4W3gleAcOkLMOB5+EnM8z+oLU/Yj0zXD0zVj0zUO2PUiUJj9pp3dbQTurVhG61RHOtVqjGdoSQa5zIvvjRuRnqwrczPM8Tgzabp559NPtBYQul6S4ybvRtkbUw7MOVzAyXESDm+lCLDBO7V6f17Yb7TdGqPy3hUfk36c59hMUMAAA="
-        },
-        {
-          "name": "create_product",
-          "description": "Create a new product",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "product": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "description": {
-                    "type": "string"
-                  },
-                  "price": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "name",
-                  "description",
-                  "price"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "product"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE7VXbW/bNhD+nl/BGIVAwqxqpY2XWWWCrumKAN06NM0nw3Bp6WyzkEmFopI4sv77QOrFVhwP2YB9Mai7E+95nhOPZ56tZYSwkGluCGLnqDhC6AihN2/QpweIcgPILAHNchknECOjVIIiFcMRQndco5h9nf2EyPgxzIWEv7RKQZt1aH03jW8B5uu9bHyXkEVapEZpFzV9PupPvoLMBfxsAlKtjDLrFPwlz3ZCXdQVw4YCYefFXGlsLQIJiYDE2FBBiwWYEYzFhILMV6D5LIHR8aAkJf3i3qSCKvu2mGPwPJtFzREw1lMueW+z2bHNcxkZoWSP2GQJGMSRmqMpBkKOf/oRTxJsKCeex48ZE55nQfAKBCbsHMa8CwQrdoOBckI2G+VvPSUJNZhcS2RKR/ORGXb+Bce4KGlvOoXsDxXnCfRocceTvKJEDXGxt6wowyt8S4uPGrixxYnzyHxXKnEo5vQSEti339HPYD4kSW3PWsfCOmrrb+uruHWs6TVwHS333nigN2n8TOplScKVQ+7DQ6q0ydgjvq1ga6bhNhcacO9Rxb3KKNl4EjZiGzYIzfuT02HY7xsi/TTPlhib/snpkPhGXRst5AIHQ+JniYgAB4SETcnQta02G5CiEhbLsRlDfzCZ9KtV0K5O2tXbyaTfe92rn9619tOOfdjaf+nYz1r7rx17sJN0mzXYpg3ebpfbpMHpZGJpflH3oD/yDDAprUSzrW5SxTCK9Do1qkdoyiTcoxshzdkHrfkaW51oxFI/Abkwy602K9zIgqLzxv06GHoexgM68zWXsVr9LpLkei0jglO7zYDQtBY6olGfBcMKz/0hPBkrqo1ubq4uR/f+9qHcQrmsDiUp7FY8NMxsNkUZ2vIrZup3Li4w5vZJLghjMk+SizslYjQY8foQEnJxscIkFHOsaj7vgyExS63ukZXlk9ZK4943tx+arQ1kqIpDqzwzaAbonKFg2Kv2GA8nzP54welm+I6q8Zl9Ppt4w7eb4OSMArEdRDCx2QyoeD/YbEQ/GJ5DnXsn8TcuF1Bl/2G5u9xIWyt6VYhy9KoQ/eC0RCJDKje2v8zy+Rw0mqlcxtkP0p6HnA3C/H1gj0NOYCz6uQWVT5reAWW9uMaKlK3E3xuJa2+2UwnPOwbPOzYXu0ZMRk1ZXIUT9t0dzgcWJTzLCslXwHqZawXTtO4FvTCuG75QkvWqRoHmSqNthLt9rqMlrDjT/qNf9Vxc3Oag1yNryaozTUoSRkpmRueRURqTouTuAoPqrsLQsuH3XBjUdCS/QoXBd3uSsqSLDuoFmClPkkOwP9senyQvwJzyBTjIMl/NQGPiK7cHTzChiVgJc8hbkvCFZBZgMPg2EwXf7WkJzTuEItfzGz5P6FQXAuLuS2xDDlKqAka7NpukUxm6k6DrSLWIupKU/8S1ZVkxwIXv++DXGKiIR06qsqTLDt/cXTQH+Fa3EOISwYPIjJCL/8ZaxF1q/5sKeL/i9sbFrRC+iAnxK9JdiZw2672Pu/ZOZ+upiJ/7uhtF0GyNhMlQLsVtDkjEII2YC9CHpXoiy0uKuyUkYgv4rgM4doPJgWJWU8u/K+aLER4W3gleAcOkLMOB5+EnM8z+oLU/Yj0zXD0zVj0zUO2PUiUJj9pp3dbQTurVhG61RHOtVqjGdoSQa5zIvvjRuRnqwrczPM8Tgzabp549XvsxYYukaS4ybuRtgbUo7MOVzAyXESDm2lALDBO7V6fz7Yb7Tc2q/yzhUfk30PDH+sQMAAA="
-        },
-        {
-          "name": "update_product",
-          "description": "Update an existing product",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "product": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string"
-                  },
-                  "name": {
-                    "type": "string"
-                  },
-                  "description": {
-                    "type": "string"
-                  },
-                  "price": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "id",
-                  "name",
-                  "description",
-                  "price"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "product"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE7VXbW/bNhD+nl/BGIVAwqxqpY2XWWWCrumKAN06NM0nw3Bp6WyzkEmFopI4sv77QOrFVhwP2YB9Mai7E+95nhOPZ56tZYSwkGluCGLnqDhC6AihN2/QpweIcgPILAHNchknECOjVIIiFcMRQndco5h9nf2EyPgxzIWEv7RKQZt1aH03jW8B5uu9bHyXkEVapEZpFzV9PupPvoLMBfxsAlKtjDLrFPwlz3ZCXdQVw4YCYefFXGlsLQIJiYDE2FBBiwWYEYzFhILMV6D5LIHR8aAkJf3i3qSCKvu2mGPwPJtFzREw1lMueW+z2bHNcxkZoWSP2GQJGMSRmqMpBkKOf/oRTxJsKCeex48ZE55nQfAKBCbsHMa8CwQrdoOBckI2G+VvPSUJNZhcS2RKR/ORGXb+Bce4KGlvOoXsDxXnCfRocceTvKJEDXGxt6wowyt8S4uPGrixxYnzyHxXKnEo5vQSEti339HPYD4kSW3PWsfCOmrrb+uruHWs6TVwHS333nigN2n8TOplScKVQ+7DQ6q0ydgjvq1ga6bhNhcacO9Rxb3KKNl4EjZiGzYIzfuT02HY7xsi/TTPlhib/snpkPhGXRst5AIHQ+JniYgAB4SETcnQta02G5CiEhbLsRlDfzCZ9KtV0K5O2tXbyaTfe92rn9619tOOfdjaf+nYz1r7rx17sJN0mzXYpg3ebpfbpMHpZGJpflH3oD/yDDAprUSzrW5SxTCK9Do1qkdoyiTcoxshzdkHrfkaW51oxFI/Abkwy602K9zIgqLzxv06GHoexgM68zWXsVr9LpLkei0jglO7zYDQtBY6olGfBcMKz/0hPBkrqo1ubq4uR/f+9qHcQrmsDiUp7FY8NMxsNkUZ2vIrZup3Li4w5vZJLghjMk+SizslYjQY8foQEnJxscIkFHOsaj7vgyExS63ukZXlk9ZK4943tx+arQ1kqIpDqzwzaAbonKFg2Kv2GA8nzP54welm+I6q8Zl9Ppt4w7eb4OSMArEdRDCx2QyoeD/YbEQ/GJ5DnXsn8TcuF1Bl/2G5u9xIWyt6VYhy9KoQ/eC0RCJDKje2v8zy+Rw0mqlcxtkP0p6HnA3C/H1gj0NOYCz6uQWVT5reAWW9uMaKlK3E3xuJa2+2UwnPOwbPOzYXu0ZMRk1ZXIUT9t0dzgcWJTzLCslXwHqZawXTtO4FvTCuG75QkvWqRoHmSqNthLt9rqMlrDjT/qNf9Vxc3Oag1yNryaozTUoSRkpmRueRURqTouTuAoPqrsLQsuH3XBjUdCS/QoXBd3uSsqSLDuoFmClPkkOwP9senyQvwJzyBTjIMl/NQGPiK7cHTzChiVgJc8hbkvCFZBZgMPg2EwXf7WkJzTuEItfzGz5P6FQXAuLuS2xDDlKqAka7NpukUxm6k6DrSLWIupKU/8S1ZVkxwIXv++DXGKiIR06qsqTLDt/cXTQH+Fa3EOISwYPIjJCL/8ZaxF1q/5sKeL/i9sbFrRC+iAnxK9JdiZw2672Pu/ZOZ+upiJ/7uhtF0GyNhMlQLsVtDkjEII2YC9CHpXoiy0uKuyUkYgv4rgM4doPJgWJWU8u/K+aLER4W3gleAcOkLMOB5+EnM8z+oLU/Yj0zXD0zVj0zUO2PUiUJj9pp3dbQTurVhG61RHOtVqjGdoSQa5zIvvjRuRnqwrczPM8Tgzabp5691PsxYYukaS4ybuRtgbUo7MOVzAyXESDm2lALDBO7V6fz7Yb7Tc2q/yzhUfk3Gyr4TMQMAAA="
-        },
-        {
-          "name": "get_all_products",
-          "description": "Get all products",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "page": {
-                "type": "number"
-              },
-              "limit": {
-                "type": "number"
-              }
-            },
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE7VXbW/bNhD+nl/BGIVAwqxqpY2XWWWCrumKAN06NM0nw3Bp6WyzkEmFopI4sv77QOrFVhwP2YB9Mai7E+95nhOPZ56tZYSwkGluCGLnqDhC6AihN2/QpweIcgPILAHNchknECOjVIIiFcMRQndco5h9nf2EyPgxzIWEv7RKQZt1aH03jW8B5uu9bHyXkEVapEZpFzV9PupPvoLMBfxsAlKtjDLrFPwlz3ZCXdQVw4YCYefFXGlsLQIJiYDE2FBBiwWYEYzFhILMV6D5LIHR8aAkJf3i3qSCKvu2mGPwPJtFzREw1lMueW+z2bHNcxkZoWSP2GQJGMSRmqMpBkKOf/oRTxJsKCeex48ZE55nQfAKBCbsHMa8CwQrdoOBckI2G+VvPSUJNZhcS2RKR/ORGXb+Bce4KGlvOoXsDxXnCfRocceTvKJEDXGxt6wowyt8S4uPGrixxYnzyHxXKnEo5vQSEti339HPYD4kSW3PWsfCOmrrb+uruHWs6TVwHS333nigN2n8TOplScKVQ+7DQ6q0ydgjvq1ga6bhNhcacO9Rxb3KKNl4EjZiGzYIzfuT02HY7xsi/TTPlhib/snpkPhGXRst5AIHQ+JniYgAB4SETcnQta02G5CiEhbLsRlDfzCZ9KtV0K5O2tXbyaTfe92rn9619tOOfdjaf+nYz1r7rx17sJN0mzXYpg3ebpfbpMHpZGJpflH3oD/yDDAprUSzrW5SxTCK9Do1qkdoyiTcoxshzdkHrfkaW51oxFI/Abkwy602K9zIgqLzxv06GHoexgM68zWXsVr9LpLkei0jglO7zYDQtBY6olGfBcMKz/0hPBkrqo1ubq4uR/f+9qHcQrmsDiUp7FY8NMxsNkUZ2vIrZup3Li4w5vZJLghjMk+SizslYjQY8foQEnJxscIkFHOsaj7vgyExS63ukZXlk9ZK4943tx+arQ1kqIpDqzwzaAbonKFg2Kv2GA8nzP54welm+I6q8Zl9Ppt4w7eb4OSMArEdRDCx2QyoeD/YbEQ/GJ5DnXsn8TcuF1Bl/2G5u9xIWyt6VYhy9KoQ/eC0RCJDKje2v8zy+Rw0mqlcxtkP0p6HnA3C/H1gj0NOYCz6uQWVT5reAWW9uMaKlK3E3xuJa2+2UwnPOwbPOzYXu0ZMRk1ZXIUT9t0dzgcWJTzLCslXwHqZawXTtO4FvTCuG75QkvWqRoHmSqNthLt9rqMlrDjT/qNf9Vxc3Oag1yNryaozTUoSRkpmRueRURqTouTuAoPqrsLQsuH3XBjUdCS/QoXBd3uSsqSLDuoFmClPkkOwP9senyQvwJzyBTjIMl/NQGPiK7cHTzChiVgJc8hbkvCFZBZgMPg2EwXf7WkJzTuEItfzGz5P6FQXAuLuS2xDDlKqAka7NpukUxm6k6DrSLWIupKU/8S1ZVkxwIXv++DXGKiIR06qsqTLDt/cXTQH+Fa3EOISwYPIjJCL/8ZaxF1q/5sKeL/i9sbFrRC+iAnxK9JdiZw2672Pu/ZOZ+upiJ/7uhtF0GyNhMlQLsVtDkjEII2YC9CHpXoiy0uKuyUkYgv4rgM4doPJgWJWU8u/K+aLER4W3gleAcOkLMOB5+EnM8z+oLU/Yj0zXD0zVj0zUO2PUiUJj9pp3dbQTurVhG61RHOtVqjGdoSQa5zIvvjRuRnqwrczPM8Tgzabp559zPtBYQul6S4ybvRtkbUw7MOVzAyXESDm+lCLDBO7V6f17Yb7TdGqPy3hUfk3TSMEXcUMAAA="
-        },
-        {
-          "name": "get_product_by_id",
-          "description": "Get a product by its unique identifier",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE7VXbW/bNhD+nl/BGIVAwqxqpY2XWWWCrumKAN06NM0nw3Bp6WyzkEmFopI4sv77QOrFVhwP2YB9Mai7E+95nhOPZ56tZYSwkGluCGLnqDhC6AihN2/QpweIcgPILAHNchknECOjVIIiFcMRQndco5h9nf2EyPgxzIWEv7RKQZt1aH03jW8B5uu9bHyXkEVapEZpFzV9PupPvoLMBfxsAlKtjDLrFPwlz3ZCXdQVw4YCYefFXGlsLQIJiYDE2FBBiwWYEYzFhILMV6D5LIHR8aAkJf3i3qSCKvu2mGPwPJtFzREw1lMueW+z2bHNcxkZoWSP2GQJGMSRmqMpBkKOf/oRTxJsKCeex48ZE55nQfAKBCbsHMa8CwQrdoOBckI2G+VvPSUJNZhcS2RKR/ORGXb+Bce4KGlvOoXsDxXnCfRocceTvKJEDXGxt6wowyt8S4uPGrixxYnzyHxXKnEo5vQSEti339HPYD4kSW3PWsfCOmrrb+uruHWs6TVwHS333nigN2n8TOplScKVQ+7DQ6q0ydgjvq1ga6bhNhcacO9Rxb3KKNl4EjZiGzYIzfuT02HY7xsi/TTPlhib/snpkPhGXRst5AIHQ+JniYgAB4SETcnQta02G5CiEhbLsRlDfzCZ9KtV0K5O2tXbyaTfe92rn9619tOOfdjaf+nYz1r7rx17sJN0mzXYpg3ebpfbpMHpZGJpflH3oD/yDDAprUSzrW5SxTCK9Do1qkdoyiTcoxshzdkHrfkaW51oxFI/Abkwy602K9zIgqLzxv06GHoexgM68zWXsVr9LpLkei0jglO7zYDQtBY6olGfBcMKz/0hPBkrqo1ubq4uR/f+9qHcQrmsDiUp7FY8NMxsNkUZ2vIrZup3Li4w5vZJLghjMk+SizslYjQY8foQEnJxscIkFHOsaj7vgyExS63ukZXlk9ZK4943tx+arQ1kqIpDqzwzaAbonKFg2Kv2GA8nzP54welm+I6q8Zl9Ppt4w7eb4OSMArEdRDCx2QyoeD/YbEQ/GJ5DnXsn8TcuF1Bl/2G5u9xIWyt6VYhy9KoQ/eC0RCJDKje2v8zy+Rw0mqlcxtkP0p6HnA3C/H1gj0NOYCz6uQWVT5reAWW9uMaKlK3E3xuJa2+2UwnPOwbPOzYXu0ZMRk1ZXIUT9t0dzgcWJTzLCslXwHqZawXTtO4FvTCuG75QkvWqRoHmSqNthLt9rqMlrDjT/qNf9Vxc3Oag1yNryaozTUoSRkpmRueRURqTouTuAoPqrsLQsuH3XBjUdCS/QoXBd3uSsqSLDuoFmClPkkOwP9senyQvwJzyBTjIMl/NQGPiK7cHTzChiVgJc8hbkvCFZBZgMPg2EwXf7WkJzTuEItfzGz5P6FQXAuLuS2xDDlKqAka7NpukUxm6k6DrSLWIupKU/8S1ZVkxwIXv++DXGKiIR06qsqTLDt/cXTQH+Fa3EOISwYPIjJCL/8ZaxF1q/5sKeL/i9sbFrRC+iAnxK9JdiZw2672Pu/ZOZ+upiJ/7uhtF0GyNhMlQLsVtDkjEII2YC9CHpXoiy0uKuyUkYgv4rgM4doPJgWJWU8u/K+aLER4W3gleAcOkLMOB5+EnM8z+oLU/Yj0zXD0zVj0zUO2PUiUJj9pp3dbQTurVhG61RHOtVqjGdoSQa5zIvvjRuRnqwrczPM8Tgzabp559gPtBYQul6S4ybvRtkbUw7MOVzAyXESDm+lCLDBO7V6f17Yb7TdGqPy3hUfk3fSIEF8UMAAA="
-        },
-        {
-          "name": "delete_product",
-          "description": "Delete an existing product",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE7VXbW/bNhD+nl/BGIVAwqxqpY2XWWWCrumKAN06NM0nw3Bp6WyzkEmFopI4sv77QOrFVhwP2YB9Mai7E+95nhOPZ56tZYSwkGluCGLnqDhC6AihN2/QpweIcgPILAHNchknECOjVIIiFcMRQndco5h9nf2EyPgxzIWEv7RKQZt1aH03jW8B5uu9bHyXkEVapEZpFzV9PupPvoLMBfxsAlKtjDLrFPwlz3ZCXdQVw4YCYefFXGlsLQIJiYDE2FBBiwWYEYzFhILMV6D5LIHR8aAkJf3i3qSCKvu2mGPwPJtFzREw1lMueW+z2bHNcxkZoWSP2GQJGMSRmqMpBkKOf/oRTxJsKCeex48ZE55nQfAKBCbsHMa8CwQrdoOBckI2G+VvPSUJNZhcS2RKR/ORGXb+Bce4KGlvOoXsDxXnCfRocceTvKJEDXGxt6wowyt8S4uPGrixxYnzyHxXKnEo5vQSEti339HPYD4kSW3PWsfCOmrrb+uruHWs6TVwHS333nigN2n8TOplScKVQ+7DQ6q0ydgjvq1ga6bhNhcacO9Rxb3KKNl4EjZiGzYIzfuT02HY7xsi/TTPlhib/snpkPhGXRst5AIHQ+JniYgAB4SETcnQta02G5CiEhbLsRlDfzCZ9KtV0K5O2tXbyaTfe92rn9619tOOfdjaf+nYz1r7rx17sJN0mzXYpg3ebpfbpMHpZGJpflH3oD/yDDAprUSzrW5SxTCK9Do1qkdoyiTcoxshzdkHrfkaW51oxFI/Abkwy602K9zIgqLzxv06GHoexgM68zWXsVr9LpLkei0jglO7zYDQtBY6olGfBcMKz/0hPBkrqo1ubq4uR/f+9qHcQrmsDiUp7FY8NMxsNkUZ2vIrZup3Li4w5vZJLghjMk+SizslYjQY8foQEnJxscIkFHOsaj7vgyExS63ukZXlk9ZK4943tx+arQ1kqIpDqzwzaAbonKFg2Kv2GA8nzP54welm+I6q8Zl9Ppt4w7eb4OSMArEdRDCx2QyoeD/YbEQ/GJ5DnXsn8TcuF1Bl/2G5u9xIWyt6VYhy9KoQ/eC0RCJDKje2v8zy+Rw0mqlcxtkP0p6HnA3C/H1gj0NOYCz6uQWVT5reAWW9uMaKlK3E3xuJa2+2UwnPOwbPOzYXu0ZMRk1ZXIUT9t0dzgcWJTzLCslXwHqZawXTtO4FvTCuG75QkvWqRoHmSqNthLt9rqMlrDjT/qNf9Vxc3Oag1yNryaozTUoSRkpmRueRURqTouTuAoPqrsLQsuH3XBjUdCS/QoXBd3uSsqSLDuoFmClPkkOwP9senyQvwJzyBTjIMl/NQGPiK7cHTzChiVgJc8hbkvCFZBZgMPg2EwXf7WkJzTuEItfzGz5P6FQXAuLuS2xDDlKqAka7NpukUxm6k6DrSLWIupKU/8S1ZVkxwIXv++DXGKiIR06qsqTLDt/cXTQH+Fa3EOISwYPIjJCL/8ZaxF1q/5sKeL/i9sbFrRC+iAnxK9JdiZw2672Pu/ZOZ+upiJ/7uhtF0GyNhMlQLsVtDkjEII2YC9CHpXoiy0uKuyUkYgv4rgM4doPJgWJWU8u/K+aLER4W3gleAcOkLMOB5+EnM8z+oLU/Yj0zXD0zVj0zUO2PUiUJj9pp3dbQTurVhG61RHOtVqjGdoSQa5zIvvjRuRnqwrczPM8Tgzabp549FvsxYYukaS4ybuRtgbUo7MOVzAyXESDm2lALDBO7V6fz7Yb7Tc2q/yzhUfk3xDI9H8QMAAA="
-        }
-      ],
-      "skillId": "5f0b6252-6804-4cf4-b1a1-f1628b41a9ab"
-    },
-    {
-      "name": "basket-skill",
-      "version": "1.0.0",
-      "description": "Basket management skill",
-      "context": "Basket management skill",
-      "tools": [
-        {
-          "name": "create_basket",
-          "description": "Create a new basket",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "basket": {
-                "type": "object",
-                "properties": {
-                  "currency": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "currency"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "basket"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE8VXTW/bOBC9+1cwOhgkQKg9x2CAOtstfOhmse2egsKgybGttUSqJJXElfXfC5KSYil2ENQL9OiZ0fDNm09zu1cC4UyVlSOI3aB6gtAEoXfv0McnEJUD5LaAVpWSOUjktM6R0BImCD1wgzJ2t/oPhEslrDMFfxtdgnH7mdftO90G3N2j6nR/gBUmK502wSo/bfUXL8AGg3VnUBrttNuXkG65PTINVhuGOQXCbuq1NthLLMoUApJhTi2tN+Cu4d5+o6CqAgxf5XB99b4hDV2EL6mlW/91tsYwnfpX9BoBY4kOjyeHw5FsXSnhMq0S4h/LwSGF9BrlGAi5WqeC5znmVJHpVF0xZqdTD0JFEJiwG7hXQyB4y/YYqCLkcNimz5qGzAy4yijEmxDmE+PsZoEzXDc0WS7BftayyiGh9QPPqxgS5STYzlndzDZ4TusPUi4cFF/1nNsduK9a5wFHRW+3IHa6ciPFit7mwM1IqumtAe5gJBb0E7QO5vuF7OW7Z7nthYb+A4V+AI/nT6OLka+C/lvK/onP4LjkjvdqOVB/cdxVz67LhsyKQEcKT6U2zrInPI9cOGbge5UZwMkPLRNCBRM5t7ZWvACWiBDXchXcJjPZlmimFUtizIgjBY+oswj98kVsoeDMpT/SWCW4jvrrY5GojAEl9kFoncnUBpOGNGTGQ+9BbDMMpG5z3XKWRlQY0uiVNA01A9gbcC1mOwL9CRzieY567TnANnAYsPmyw/cJFy57gIQmwtcGyKWuXEITvuJKagUyoQk8lZkBmXwjqQ4P8hy/ElDLir3mjzxzfXgbcBjSCIA0TUOrQXBcymXmoFg6fToxH6REXCFvg5xG/I3JWchBJqj/fpCwbGRQmkxAEKmqWIHBhH6vuHKZ2w+kr+UUvwjdt0qf2oUkJOWxSzGkHpLPdjEgxITGiZysjS5OsxLbqyfGG15EzUh2WYim7/02yoX0cephM/rRc6YXvepXw7kMekCFPdpygLYKA6mFu4zVPEIdZ1bYo1Hvl8Wv5uTChr2MhBhsnLvHvUvlK5wU7RQ/z0pncQkvnY9BK+9gOHZp3JJvncRvp6TbVBjSDoinZTUs7HbZnqltr0W6cr+nvsucC7gzEgyuG499d2bVLFf7ZSZP7ZsWNlrtkTf4n8C/BrtpZu+nUzza+qfunROXzvjGeXHdvLxrRhfN2Vvm7BVz5n5pyGzS392eS98V8db2OYhTvA1vgpDQyjrkP7wNaoaGDPhrnFe5Q4fDWDOO8aXJrAfSXT5KdlnpcfUg/I+Fso4rAYiFG6nHhYn31R2woQSPzdMu1fHPx2zS/ASz7p5djQwAAA=="
-        },
-        {
-          "name": "get_basket_by_id",
-          "description": "Get a basket by id",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "basketId": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "basketId"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE8VXTW/bOBC9+1cwOhgkQKg9x2CAOtstfOhmse2egsKgybGttUSqJJXYlfXfC5KSEil2ENQL9OiZ0fDNm09ze1AC4UyVlSOI3aB6gtAEoXfv0Mc9iMoBcltAq0rJHCRyWudIaAkThB64QRm7W/0HwqUS1pmCv40uwbjDzOsOnW4D7u5Rdbo/wAqTlU6bYJWftvqLF2CDwbozKI122h1KSLfcPjMNVhuGOQXCbuq1NthLLMoUApJhTi2tN+Cu4d5+o6CqAgxf5XB99b4hDV2EL6mlW/91tsYwnfpX9BoBY4kOjyfH4zPZulLCZVolxD+Wg0MK6TXKMRBytU4Fz3PMqSLTqbpizE6nHoSKIDBhN3CvhkDwlh0wUEXI8bhNnzQNmRlwlVGINyHMPePsZoEzXDc0WS7BftayyiGh9QPPqxgS5STYzlndzDZ4TusPUi4cFF/1nNsduK9a5wFHRW+3IHa6ciPFit7mwM1IqumtAe5gJBb0E7QO5oeF7OW7J7nthYb+A4V+AI/nT6OLka+C/lvK/onP4LjkjvdqOVB/cdxVT67LhsyKQEcK+1IbZ9kezyMXjhn4XmUGcPJDy4RQwUTOra0VL4AlIsS1XAW3yUy2JZppxZIYM+JIwSPqLEK/fBFbKDhz6Y80Vgmuo/76uUhUxoAShyC0zmRqg0lDGjLjofcgthkGUre5bjlLIyoMafRKmoaaAewNuBazHYH+BA7xPEe99hxgGzgM2HzZ4fuEC5c9QEIT4WsD5FJXLqEJX3EltQKZ0AT2ZWZAJt9IqsODPMevBNSyYq/5I89cH94GHIY0AiBN09BqEByXcpk5KJZOn07MBykRV8jbIKcRf2NyFnKQCeq/HyQsGxmUJhMQRKoqVmAwod8rrlzmDgPpaznFL0L3rdKndiEJSXnsUgyph+SzXQwIMaFxIidro4vTrMT26onxhhdRM5JdFqLpe7+NciF9nHrYjH70nOlFr/rVcC6DHlBhj7YcoK3CQGrhLmM1j1DHmRX2aNT7ZfGrObmwYS8jIQYb5+7z3qXyFU6KdoqfZ6WzuISXzseglXcwHLs0bsm3TuK3U9JtKgxpB8TTshoWdrtsz9S21yJdud9T32XOBdwZCQbXjce+O7NqlqvDMpOn9k0LG60OyBv8T+Bfg900s/fTKR5t/VP3zolLZ3zjvLhuXt41o4vm7C1z9oo5c780ZDbp727Ppe+KeGv7HMQp3oY3QUhoZR3yH94GNUNDBvw1zqvcoeNxrHkR0kubWY+kO32U7NLSA+tR+B8LZR1XAhALR1IPDBPvq7tgQw0+N0+7XMd/H7NJ8xN/blBmjgwAAA=="
-        },
-        {
-          "name": "update_basket_status",
-          "description": "Update the status of a basket",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "basketId": {
-                "type": "string"
-              },
-              "status": {
+              "action": {
                 "type": "string",
                 "enum": [
-                  "active",
-                  "checked_out",
-                  "abandoned",
-                  "expired"
+                  "check_stock",
+                  "log_waste",
+                  "get_alerts"
                 ]
-              }
-            },
-            "required": [
-              "basketId",
-              "status"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE8VXTW/bOBC9+1cwOhgkQKg9x2CAOtstfOhmse2egsKgybGttUSqJJXElfXfC5KSYil2ENQL9OiZ0fDNm09zu1cC4UyVlSOI3aB6gtAEoXfv0McnEJUD5LaAVpWSOUjktM6R0BImCD1wgzJ2t/oPhEslrDMFfxtdgnH7mdftO90G3N2j6nR/gBUmK502wSo/bfUXL8AGg3VnUBrttNuXkG65PTINVhuGOQXCbuq1NthLLMoUApJhTi2tN+Cu4d5+o6CqAgxf5XB99b4hDV2EL6mlW/91tsYwnfpX9BoBY4kOjyeHw5FsXSnhMq0S4h/LwSGF9BrlGAi5WqeC5znmVJHpVF0xZqdTD0JFEJiwG7hXQyB4y/YYqCLkcNimz5qGzAy4yijEmxDmE+PsZoEzXDc0WS7BftayyiGh9QPPqxgS5STYzlndzDZ4TusPUi4cFF/1nNsduK9a5wFHRW+3IHa6ciPFit7mwM1IqumtAe5gJBb0E7QO5vuF7OW7Z7nthYb+A4V+AI/nT6OLka+C/lvK/onP4LjkjvdqOVB/cdxVz67LhsyKQEcKT6U2zrInPI9cOGbge5UZwMkPLRNCBRM5t7ZWvACWiBDXchXcJjPZlmimFUtizIgjBY+oswj98kVsoeDMpT/SWCW4jvrrY5GojAEl9kFoncnUBpOGNGTGQ+9BbDMMpG5z3XKWRlQY0uiVNA01A9gbcC1mOwL9CRzieY567TnANnAYsPmyw/cJFy57gIQmwtcGyKWuXEITvuJKagUyoQk8lZkBmXwjqQ4P8hy/ElDLir3mjzxzfXgbcBjSCIA0TUOrQXBcymXmoFg6fToxH6REXCFvg5xG/I3JWchBJqj/fpCwbGRQmkxAEKmqWIHBhH6vuHKZ2w+kr+UUvwjdt0qf2oUkJOWxSzGkHpLPdjEgxITGiZysjS5OsxLbqyfGG15EzUh2WYim7/02yoX0cephM/rRc6YXvepXw7kMekCFPdpygLYKA6mFu4zVPEIdZ1bYo1Hvl8Wv5uTChr2MhBhsnLvHvUvlK5wU7RQ/z0pncQkvnY9BK+9gOHZp3JJvncRvp6TbVBjSDoinZTUs7HbZnqltr0W6cr+nvsucC7gzEgyuG499d2bVLFf7ZSZP7ZsWNlrtkTf4n8C/BrtpZu+nUzza+qfunROXzvjGeXHdvLxrRhfN2Vvm7BVz5n5pyGzS392eS98V8db2OYhTvA1vgpDQyjrkP7wNaoaGDPhrnFe5Q4fDWHP6/ZeGsx5Od/8o2eWmR9dD8T8WyjquBCAWLqUeHSbeV3fGhkI8Nk+7hMe/ILNJ8xPPJOR1kwwAAA=="
-        },
-        {
-          "name": "update_basket_metadata",
-          "description": "Update the metadata of a basket",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "basketId": {
-                "type": "string"
-              },
-              "metadata": {
-                "type": "object",
-                "properties": {
-                  "key": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "key",
-                  "value"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "basketId",
-              "metadata"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE8VXTW/bOBC9+1cwOhgkQKg9x2CAOtstfOhmse2egsKgybGttUSqJJXElfXfC5KSYil2ENQL9OiZ0fDNm09zu1cC4UyVlSOI3aB6gtAEoXfv0McnEJUD5LaAVpWSOUjktM6R0BImCD1wgzJ2t/oPhEslrDMFfxtdgnH7mdftO90G3N2j6nR/gBUmK502wSo/bfUXL8AGg3VnUBrttNuXkG65PTINVhuGOQXCbuq1NthLLMoUApJhTi2tN+Cu4d5+o6CqAgxf5XB99b4hDV2EL6mlW/91tsYwnfpX9BoBY4kOjyeHw5FsXSnhMq0S4h/LwSGF9BrlGAi5WqeC5znmVJHpVF0xZqdTD0JFEJiwG7hXQyB4y/YYqCLkcNimz5qGzAy4yijEmxDmE+PsZoEzXDc0WS7BftayyiGh9QPPqxgS5STYzlndzDZ4TusPUi4cFF/1nNsduK9a5wFHRW+3IHa6ciPFit7mwM1IqumtAe5gJBb0E7QO5vuF7OW7Z7nthYb+A4V+AI/nT6OLka+C/lvK/onP4LjkjvdqOVB/cdxVz67LhsyKQEcKT6U2zrInPI9cOGbge5UZwMkPLRNCBRM5t7ZWvACWiBDXchXcJjPZlmimFUtizIgjBY+oswj98kVsoeDMpT/SWCW4jvrrY5GojAEl9kFoncnUBpOGNGTGQ+9BbDMMpG5z3XKWRlQY0uiVNA01A9gbcC1mOwL9CRzieY567TnANnAYsPmyw/cJFy57gIQmwtcGyKWuXEITvuJKagUyoQk8lZkBmXwjqQ4P8hy/ElDLir3mjzxzfXgbcBjSCIA0TUOrQXBcymXmoFg6fToxH6REXCFvg5xG/I3JWchBJqj/fpCwbGRQmkxAEKmqWIHBhH6vuHKZ2w+kr+UUvwjdt0qf2oUkJOWxSzGkHpLPdjEgxITGiZysjS5OsxLbqyfGG15EzUh2WYim7/02yoX0cephM/rRc6YXvepXw7kMekCFPdpygLYKA6mFu4zVPEIdZ1bYo1Hvl8Wv5uTChr2MhBhsnLvHvUvlK5wU7RQ/z0pncQkvnY9BK+9gOHZp3JJvncRvp6TbVBjSDoinZTUs7HbZnqltr0W6cr+nvsucC7gzEgyuG499d2bVLFf7ZSZP7ZsWNlrtkTf4n8C/BrtpZu+nUzza+qfunROXzvjGeXHdvLxrRhfN2Vvm7BVz5n5pyGzS392eS98V8db2OYhTvA1vgpDQyjrkP7wNaoaGDPhrnFe5Q4fDWHMO2EvTWQ+ou4CU7LLT4+vB+B8LZR1XAhALt1KPDxPvqztkQykem6ddyuOfkNmk+Qm6JJYclQwAAA=="
-        },
-        {
-          "name": "checkout_basket",
-          "description": "Check out a basket",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "basketId": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "basketId"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE8VXTW/bOBC9+1cwOhgkQKg9x2CAOtstfOhmse2egsKgybGttUSqJJXYlfXfC5KSEil2ENQL9OiZ0fDNm09ze1AC4UyVlSOI3aB6gtAEoXfv0Mc9iMoBcltAq0rJHCRyWudIaAkThB64QRm7W/0HwqUS1pmCv40uwbjDzOsOnW4D7u5Rdbo/wAqTlU6bYJWftvqLF2CDwbozKI122h1KSLfcPjMNVhuGOQXCbuq1NthLLMoUApJhTi2tN+Cu4d5+o6CqAgxf5XB99b4hDV2EL6mlW/91tsYwnfpX9BoBY4kOjyfH4zPZulLCZVolxD+Wg0MK6TXKMRBytU4Fz3PMqSLTqbpizE6nHoSKIDBhN3CvhkDwlh0wUEXI8bhNnzQNmRlwlVGINyHMPePsZoEzXDc0WS7BftayyiGh9QPPqxgS5STYzlndzDZ4TusPUi4cFF/1nNsduK9a5wFHRW+3IHa6ciPFit7mwM1IqumtAe5gJBb0E7QO5oeF7OW7J7nthYb+A4V+AI/nT6OLka+C/lvK/onP4LjkjvdqOVB/cdxVT67LhsyKQEcK+1IbZ9kezyMXjhn4XmUGcPJDy4RQwUTOra0VL4AlIsS1XAW3yUy2JZppxZIYM+JIwSPqLEK/fBFbKDhz6Y80Vgmuo/76uUhUxoAShyC0zmRqg0lDGjLjofcgthkGUre5bjlLIyoMafRKmoaaAewNuBazHYH+BA7xPEe99hxgGzgM2HzZ4fuEC5c9QEIT4WsD5FJXLqEJX3EltQKZ0AT2ZWZAJt9IqsODPMevBNSyYq/5I89cH94GHIY0AiBN09BqEByXcpk5KJZOn07MBykRV8jbIKcRf2NyFnKQCeq/HyQsGxmUJhMQRKoqVmAwod8rrlzmDgPpaznFL0L3rdKndiEJSXnsUgyph+SzXQwIMaFxIidro4vTrMT26onxhhdRM5JdFqLpe7+NciF9nHrYjH70nOlFr/rVcC6DHlBhj7YcoK3CQGrhLmM1j1DHmRX2aNT7ZfGrObmwYS8jIQYb5+7z3qXyFU6KdoqfZ6WzuISXzseglXcwHLs0bsm3TuK3U9JtKgxpB8TTshoWdrtsz9S21yJdud9T32XOBdwZCQbXjce+O7NqlqvDMpOn9k0LG60OyBv8T+Bfg900s/fTKR5t/VP3zolLZ3zjvLhuXt41o4vm7C1z9oo5c780ZDbp727Ppe+KeGv7HMQp3oY3QUhoZR3yH94GNUNDBvw1zqvcoeNxrHlJw0ujWQ+lu32U7PLSI+th+B8LZR1XAhALV1KPDBPvqzthQxE+N0+7ZMe/H7NJ8xPjNnoJjwwAAA=="
-        },
-        {
-          "name": "get_baskets",
-          "description": "Get all baskets",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "status": {
-                "type": "string",
-                "enum": [
-                  "active",
-                  "checked_out",
-                  "abandoned",
-                  "expired"
-                ]
-              }
-            },
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE8VXTW/bOBC9+1cwOhgkQKg9x2CAOtstfOhmse2egsKgybGttUSqJJXElfXfC5KSYil2ENQL9OiZ0fDNm09zu1cC4UyVlSOI3aB6gtAEoXfv0McnEJUD5LaAVpWSOUjktM6R0BImCD1wgzJ2t/oPhEslrDMFfxtdgnH7mdftO90G3N2j6nR/gBUmK502wSo/bfUXL8AGg3VnUBrttNuXkG65PTINVhuGOQXCbuq1NthLLMoUApJhTi2tN+Cu4d5+o6CqAgxf5XB99b4hDV2EL6mlW/91tsYwnfpX9BoBY4kOjyeHw5FsXSnhMq0S4h/LwSGF9BrlGAi5WqeC5znmVJHpVF0xZqdTD0JFEJiwG7hXQyB4y/YYqCLkcNimz5qGzAy4yijEmxDmE+PsZoEzXDc0WS7BftayyiGh9QPPqxgS5STYzlndzDZ4TusPUi4cFF/1nNsduK9a5wFHRW+3IHa6ciPFit7mwM1IqumtAe5gJBb0E7QO5vuF7OW7Z7nthYb+A4V+AI/nT6OLka+C/lvK/onP4LjkjvdqOVB/cdxVz67LhsyKQEcKT6U2zrInPI9cOGbge5UZwMkPLRNCBRM5t7ZWvACWiBDXchXcJjPZlmimFUtizIgjBY+oswj98kVsoeDMpT/SWCW4jvrrY5GojAEl9kFoncnUBpOGNGTGQ+9BbDMMpG5z3XKWRlQY0uiVNA01A9gbcC1mOwL9CRzieY567TnANnAYsPmyw/cJFy57gIQmwtcGyKWuXEITvuJKagUyoQk8lZkBmXwjqQ4P8hy/ElDLir3mjzxzfXgbcBjSCIA0TUOrQXBcymXmoFg6fToxH6REXCFvg5xG/I3JWchBJqj/fpCwbGRQmkxAEKmqWIHBhH6vuHKZ2w+kr+UUvwjdt0qf2oUkJOWxSzGkHpLPdjEgxITGiZysjS5OsxLbqyfGG15EzUh2WYim7/02yoX0cephM/rRc6YXvepXw7kMekCFPdpygLYKA6mFu4zVPEIdZ1bYo1Hvl8Wv5uTChr2MhBhsnLvHvUvlK5wU7RQ/z0pncQkvnY9BK+9gOHZp3JJvncRvp6TbVBjSDoinZTUs7HbZnqltr0W6cr+nvsucC7gzEgyuG499d2bVLFf7ZSZP7ZsWNlrtkTf4n8C/BrtpZu+nUzza+qfunROXzvjGeXHdvLxrRhfN2Vvm7BVz5n5pyGzS392eS98V8db2OYhTvA1vgpDQyjrkP7wNaoaGDPhrnFe5Q4fDWDMM4KXBrIfR3T1KdjnpUfUQ/I+Fso4rAYiFC6lHhYn31Z2voQCPzdMu0fGvx2zS/ARKaxEpiwwAAA=="
-        },
-        {
-          "name": "add_item_to_basket",
-          "description": "Add an item to a basket",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "basketId": {
-                "type": "string"
               },
               "item": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string"
-                  },
-                  "price": {
-                    "type": "number"
-                  },
-                  "quantity": {
-                    "type": "number"
-                  }
-                },
-                "required": [
-                  "id",
-                  "price",
-                  "quantity"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "required": [
-              "basketId",
-              "item"
-            ],
-            "additionalProperties": false
-          },
-          "execute": "H4sIAAAAAAAAE8VXTW/bOBC9+1cwOhgkQKg9x2CAOtstfOhmse2egsKgybGttUSqJJXElfXfC5KSYil2ENQL9OiZ0fDNm09zu1cC4UyVlSOI3aB6gtAEoXfv0McnEJUD5LaAVpWSOUjktM6R0BImCD1wgzJ2t/oPhEslrDMFfxtdgnH7mdftO90G3N2j6nR/gBUmK502wSo/bfUXL8AGg3VnUBrttNuXkG65PTINVhuGOQXCbuq1NthLLMoUApJhTi2tN+Cu4d5+o6CqAgxf5XB99b4hDV2EL6mlW/91tsYwnfpX9BoBY4kOjyeHw5FsXSnhMq0S4h/LwSGF9BrlGAi5WqeC5znmVJHpVF0xZqdTD0JFEJiwG7hXQyB4y/YYqCLkcNimz5qGzAy4yijEmxDmE+PsZoEzXDc0WS7BftayyiGh9QPPqxgS5STYzlndzDZ4TusPUi4cFF/1nNsduK9a5wFHRW+3IHa6ciPFit7mwM1IqumtAe5gJBb0E7QO5vuF7OW7Z7nthYb+A4V+AI/nT6OLka+C/lvK/onP4LjkjvdqOVB/cdxVz67LhsyKQEcKT6U2zrInPI9cOGbge5UZwMkPLRNCBRM5t7ZWvACWiBDXchXcJjPZlmimFUtizIgjBY+oswj98kVsoeDMpT/SWCW4jvrrY5GojAEl9kFoncnUBpOGNGTGQ+9BbDMMpG5z3XKWRlQY0uiVNA01A9gbcC1mOwL9CRzieY567TnANnAYsPmyw/cJFy57gIQmwtcGyKWuXEITvuJKagUyoQk8lZkBmXwjqQ4P8hy/ElDLir3mjzxzfXgbcBjSCIA0TUOrQXBcymXmoFg6fToxH6REXCFvg5xG/I3JWchBJqj/fpCwbGRQmkxAEKmqWIHBhH6vuHKZ2w+kr+UUvwjdt0qf2oUkJOWxSzGkHpLPdjEgxITGiZysjS5OsxLbqyfGG15EzUh2WYim7/02yoX0cephM/rRc6YXvepXw7kMekCFPdpygLYKA6mFu4zVPEIdZ1bYo1Hvl8Wv5uTChr2MhBhsnLvHvUvlK5wU7RQ/z0pncQkvnY9BK+9gOHZp3JJvncRvp6TbVBjSDoinZTUs7HbZnqltr0W6cr+nvsucC7gzEgyuG499d2bVLFf7ZSZP7ZsWNlrtkTf4n8C/BrtpZu+nUzza+qfunROXzvjGeXHdvLxrRhfN2Vvm7BVz5n5pyGzS392eS98V8db2OYhTvA1vgpDQyjrkP7wNaoaGDPhrnFe5Q4fDWHOCmpdWsx5Ld/wo2SWmh9bj8D8WyjquBCAWzqQeGibeV3fDhio8Nk+7bMf/H7NJ8xOX3sOwkAwAAA=="
-        },
-        {
-          "name": "remove_item_from_basket",
-          "description": "Remove an item from a basket",
-          "inputSchema": {
-            "type": "object",
-            "properties": {
-              "basketId": {
                 "type": "string"
               },
-              "itemId": {
+              "quantity": {
+                "type": "number"
+              },
+              "unit": {
                 "type": "string"
               }
             },
             "required": [
-              "basketId",
-              "itemId"
+              "action"
             ],
             "additionalProperties": false
           },
-          "execute": "H4sIAAAAAAAAE8VXTW/bOBC9+1cwOhgkQKg9x2CAOtstfOhmse2egsKgybGttUSqJJXElfXfC5KSYil2ENQL9OiZ0fDNm09zu1cC4UyVlSOI3aB6gtAEoXfv0McnEJUD5LaAVpWSOUjktM6R0BImCD1wgzJ2t/oPhEslrDMFfxtdgnH7mdftO90G3N2j6nR/gBUmK502wSo/bfUXL8AGg3VnUBrttNuXkG65PTINVhuGOQXCbuq1NthLLMoUApJhTi2tN+Cu4d5+o6CqAgxf5XB99b4hDV2EL6mlW/91tsYwnfpX9BoBY4kOjyeHw5FsXSnhMq0S4h/LwSGF9BrlGAi5WqeC5znmVJHpVF0xZqdTD0JFEJiwG7hXQyB4y/YYqCLkcNimz5qGzAy4yijEmxDmE+PsZoEzXDc0WS7BftayyiGh9QPPqxgS5STYzlndzDZ4TusPUi4cFF/1nNsduK9a5wFHRW+3IHa6ciPFit7mwM1IqumtAe5gJBb0E7QO5vuF7OW7Z7nthYb+A4V+AI/nT6OLka+C/lvK/onP4LjkjvdqOVB/cdxVz67LhsyKQEcKT6U2zrInPI9cOGbge5UZwMkPLRNCBRM5t7ZWvACWiBDXchXcJjPZlmimFUtizIgjBY+oswj98kVsoeDMpT/SWCW4jvrrY5GojAEl9kFoncnUBpOGNGTGQ+9BbDMMpG5z3XKWRlQY0uiVNA01A9gbcC1mOwL9CRzieY567TnANnAYsPmyw/cJFy57gIQmwtcGyKWuXEITvuJKagUyoQk8lZkBmXwjqQ4P8hy/ElDLir3mjzxzfXgbcBjSCIA0TUOrQXBcymXmoFg6fToxH6REXCFvg5xG/I3JWchBJqj/fpCwbGRQmkxAEKmqWIHBhH6vuHKZ2w+kr+UUvwjdt0qf2oUkJOWxSzGkHpLPdjEgxITGiZysjS5OsxLbqyfGG15EzUh2WYim7/02yoX0cephM/rRc6YXvepXw7kMekCFPdpygLYKA6mFu4zVPEIdZ1bYo1Hvl8Wv5uTChr2MhBhsnLvHvUvlK5wU7RQ/z0pncQkvnY9BK+9gOHZp3JJvncRvp6TbVBjSDoinZTUs7HbZnqltr0W6cr+nvsucC7gzEgyuG499d2bVLFf7ZSZP7ZsWNlrtkTf4n8C/BrtpZu+nUzza+qfunROXzvjGeXHdvLxrRhfN2Vvm7BVz5n5pyGzS392eS98V8db2OYhTvA1vgpDQyjrkP7wNaoaGDPhrnFe5Q4fDWHMO8UvTWQ+ou4CU7LLT4+vB+B8LZR1XAhALt1KPDxPvqztkQykem6ddyuOfkNmk+Qm0Ks2blQwAAA=="
-        },
+          "execute": "H4sIAAAAAAAAE4VV227cNhB991eMiXRBAoTiFMiLFrRRuEVh1IkDx0UfDGPNlUYyuxS54cXrjax/L0jtta2Rl12IM3Pm8MyF0q9NBVSZZQwMxDn0JwAnAO/fw28vWMWAEJ4Q5tHUGmsI1mqobI0nAM/SgRI387+xCkWNjTL4xdklurCeJlvc2loMNyuztf2KvnJqGazLXt3/e32WHfrs0G4dls4GG9ZLLJ6kP3DNXpWgniMT531jHU0nAZQBZIp6HnjfYijxPjxwNLFDJ+cay9OzgQ1c50geuEnRqqE4maQstgEUgticnLy+Hpw10VRBWUNYSqYxgATbQEeRsdO2qKTW1HPJJhN5KkSYTBIJOZKgTJzjvTwmQo2IFLlk7PXVFHvLwKYOQ3QG/JCvWQsvzjVVtB84mc3Qf7J11Eh4/yx1HK/EPcu+jeiHaUUb3tfYyKjH3HZg0y4HFfiytC54UdNmjHDC4beoHFLy3daEcSsqLb3vjexQEGWe0QTr1rNOGtmiI9N6U0xljSCf8ik49EFGJ02qwCaCQ/WE1QJ8sNUCND6j9hykqSE4WS1gJX3AgkxzH36tnrCTwhXfi1F92susd5mOkjr0nmS8WcYjnGjbzjIG4aTFMJMaXfDkgXEVsMtxPjhlWsoKm+lKTRn/FqUJKqyzg4ndHN2xQzQqvBU9sKnM04PjoFDkgfWpG4wIp8JErSeT3NcX+ZeSvTJXNWHls1U1nHH5Q+80DISV5E+zMHZl4HZnIdv+MBe0ssZbjYW2LX28v9pKf2etftgMszItNNbBu14OQN/1ZmCPjGMxyiuEOJL1ovdBhuhL4mNVofeE7zmVcpQWi/THq+gcmjBGluTDx0VL+Bg+y+Uuyc0fhHfovWyxfPyaG2HkMkIMoDz42DSqUmgCyJBpFo9DeUhwX+kf0dvlurZti3VOtC34kD5ScYc0uHsK0o+tuFOpeOQOK9t1aGqZe5BcWuNVjQ4c1rFKki4dLnNEeFIeEhLM1/Dh7Ccw+BJghbgoyPE1Dpr0oj+iPZ6W932Wl9zZTgaLnvCNjJe3V3dXl79c78Uko5hz1HYFPy/aAm7RusRQdR3WSgbU64IMfAN5Lbv5Du765q83kD4eIvnYtugD1gUZHoZyJz06Z90BwJV5llrVMN6UDOxt18/2cFVU1oQkVmOjqQv4olF6BDQ+OoS1jSAdgh4rqUxBhmGYnuzeqt8x5HdqfJ/SzoLG2Q42K+4EEr4PkIbhMpsFHG/BYrMk4fX135ajUfqvfbpjcelQBsxrDQ8ez0RqxyB9XBkfpKkQBBhc7UlRlrA2Ey1XUh27F9tFM77W05PhH3+Wh9y+BwAA"
+        }
+      ],
+      "skillId": "ff8fafe5-ff0e-4944-8653-9576ad97a502"
+    },
+    {
+      "name": "staff-orchestrator",
+      "version": "1.0.9",
+      "description": "Staff scheduling and task orchestration",
+      "context": "Create tasks, optimize schedules, and manage staff workflows",
+      "tools": [
         {
-          "name": "clear_basket",
-          "description": "Clear a basket",
+          "name": "schedule_optimizer",
+          "description": "Optimize staff schedules based on predicted demand and staff availability.",
           "inputSchema": {
             "type": "object",
             "properties": {
-              "basketId": {
-                "type": "string"
+              "week_start": {
+                "type": "string",
+                "description": "Start date of the week (YYYY-MM-DD)"
+              },
+              "department": {
+                "type": "string",
+                "enum": [
+                  "kitchen",
+                  "service",
+                  "all"
+                ]
               }
             },
             "required": [
-              "basketId"
+              "week_start"
             ],
             "additionalProperties": false
           },
-          "execute": "H4sIAAAAAAAAE8VXTW/bOBC9+1cwOhgkQKg9x2CAOtstfOhmse2egsKgybGttUSqJJXElfXfC5KSYil2ENQL9OiZ0fDNm09zu1cC4UyVlSOI3aB6gtAEoXfv0McnEJUD5LaAVpWSOUjktM6R0BImCD1wgzJ2t/oPhEslrDMFfxtdgnH7mdftO90G3N2j6nR/gBUmK502wSo/bfUXL8AGg3VnUBrttNuXkG65PTINVhuGOQXCbuq1NthLLMoUApJhTi2tN+Cu4d5+o6CqAgxf5XB99b4hDV2EL6mlW/91tsYwnfpX9BoBY4kOjyeHw5FsXSnhMq0S4h/LwSGF9BrlGAi5WqeC5znmVJHpVF0xZqdTD0JFEJiwG7hXQyB4y/YYqCLkcNimz5qGzAy4yijEmxDmE+PsZoEzXDc0WS7BftayyiGh9QPPqxgS5STYzlndzDZ4TusPUi4cFF/1nNsduK9a5wFHRW+3IHa6ciPFit7mwM1IqumtAe5gJBb0E7QO5vuF7OW7Z7nthYb+A4V+AI/nT6OLka+C/lvK/onP4LjkjvdqOVB/cdxVz67LhsyKQEcKT6U2zrInPI9cOGbge5UZwMkPLRNCBRM5t7ZWvACWiBDXchXcJjPZlmimFUtizIgjBY+oswj98kVsoeDMpT/SWCW4jvrrY5GojAEl9kFoncnUBpOGNGTGQ+9BbDMMpG5z3XKWRlQY0uiVNA01A9gbcC1mOwL9CRzieY567TnANnAYsPmyw/cJFy57gIQmwtcGyKWuXEITvuJKagUyoQk8lZkBmXwjqQ4P8hy/ElDLir3mjzxzfXgbcBjSCIA0TUOrQXBcymXmoFg6fToxH6REXCFvg5xG/I3JWchBJqj/fpCwbGRQmkxAEKmqWIHBhH6vuHKZ2w+kr+UUvwjdt0qf2oUkJOWxSzGkHpLPdjEgxITGiZysjS5OsxLbqyfGG15EzUh2WYim7/02yoX0cephM/rRc6YXvepXw7kMekCFPdpygLYKA6mFu4zVPEIdZ1bYo1Hvl8Wv5uTChr2MhBhsnLvHvUvlK5wU7RQ/z0pncQkvnY9BK+9gOHZp3JJvncRvp6TbVBjSDoinZTUs7HbZnqltr0W6cr+nvsucC7gzEgyuG499d2bVLFf7ZSZP7ZsWNlrtkTf4n8C/BrtpZu+nUzza+qfunROXzvjGeXHdvLxrRhfN2Vvm7BVz5n5pyGzS392eS98V8db2OYhTvA1vgpDQyjrkP7wNaoaGDPhrnFe5Q4fDWDOK+aXFrMfRHT5KdknpYfUY/I+Fso4rAYiFE6mHhYn31d2voQKPzdMu0/G/x2zS/ASoL73MjAwAAA=="
+          "execute": "H4sIAAAAAAAAE4VVTW8bNxC9+1eMCUMgAWaV8wq0D3FbBIWTIh8HwzAsipyVWHHJLT9sy+v97wVXK8lJA/QgAeK8mXnUvDeUcecUUOO6nBiIS+jPAM4A5nP47RlVTghpg7DKTlvUkLy3oLzGM4BHGcCJz6u/UaVKY2Mc/hV8hyHtFiXWHmJrTJ+f3CF2jVEF0yUfRpT/NeqTbDGOgO4A6IJPPu06rDYyvoGOqI2ggUcmLvvGB1pOEIyDyBwNHHm/xlTHO7zn6HKLQa4s1ufvBzbw9ZjJkZuSbRoaZ7PSxTcQhSB+bE5eX9+cNdmpZLwjrDSzmECCb8DTyNh5VylpLQ1cstlMnguBs1khIfckKBOX8U7+SIQa0dLIJWOvr6Y6RQa2CJhycBCG8ZpKBHG5po72AycPDxhvvM4WCe8fpc37K/HARuxW9MNiQ7e819jIbPe988AW7ZhU4XPnQ4pC0e0+I4mA/2QTkJIXrwnjWSgrY+ydbFGQqDZYEh98l0xrXjCQhZ6mabwT5PN0DjHJpoEDPsJKRtTgHXQBtVEJNWhspdNQPnu0fJTGypWxJu0qshgV+VVtsJUiVS/Vfg60f0LcPsQkQ6rLcUzBuDVl1Z7ICin5WoKgZcIylKLekgP09vb29t3Nzbvra0YY19jJkFp0+zrlP6d3ZGuS2qAjnEQMj0Yh4URaS+5Z5cdLSkvZwBZytA3uHUIjR9YXGRiB58Jla2czLIK+Gr8pCRiTzEG69FETVj96o+E9l/+LLi4grCbf3db5JwdfjhGyMA09N/u2WuDVZJIt7iJFVpNSl/DmbYscMVyRLmBEl0hNWhOjcWvC7VtUCtKk+CvcpMU+JplyrAmG4APhLcYo11gvP3k4UQflXcLnBI3PTldwjau8ruFP3EVxd9Hr4Z7D94hBXPTNwOHb2FVc9HZYDsMkeuVd9BYr69d0efd1ktNBZeGb9/Z+WlPGraHxAS56OQC96M3AlowfqcasFMZI+IlgLU/MD6XhoGw9Fht14xu46GN10t1wbLTkxkWz3qRY35GPTgUcdT6JaNK1d/B7MFruAB/RFZ46IyQP+NzhaIXkczAxgXGNzc8V4eQL6qxQwyTCU6Ub70olm53anFy1MTH5YJS0YP0TpCCbxqiK3POjZXOw9XKTUhfr+bw1L9JV0syPDp2Xf2z+0z2XwzAszo7vwR+YRjft34CyF6AJvoVpjZzBOK8EZSwfxrCAHzdNNS0ieH39OfLL4f4Xtziy+RCwOLzsD3zzUBVyRyblx0cXk3QKQYDDpxM5ykqtSWjySZof4dXB2/uXcXE2/Av6Do1+KgcAAA=="
         }
       ],
-      "skillId": "3cb231f9-412e-4ac7-b67e-c8c83d39d214"
+      "skillId": "f8f28466-4864-4f0c-be40-9fd977c487e7"
+    },
+    {
+      "name": "predictive-analyst",
+      "version": "1.0.9",
+      "description": "Sales forecasting and demand signals",
+      "context": "Use these tools to fetch weather, product signals, and generate demand forecasts",
+      "tools": [
+        {
+          "name": "demand_forecast",
+          "description": "Predict sales and customer footfall based on historical data, events, and weather.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "date": {
+                "type": "string",
+                "description": "Date to forecast (YYYY-MM-DD)"
+              }
+            },
+            "required": [
+              "date"
+            ],
+            "additionalProperties": false
+          },
+          "execute": "H4sIAAAAAAAAE4VVYU/kNhD9zq8YrNPKlkwucK1UZRVOV+B6J5U7VKgqRBE3xJOse469tZ1lIeS/V0524ehV6pdE9rzxvPG8GWO4txVwbZddFFAeQr8DsAPw+jWcrKnqIkFcENx2VhlSEJ0zUDlFOwAr9KDLz7d/URUzRbW2dObdkny8nyeb29oaip/v7NZ2TKHyehmdH1Hdf6M+YUthBNRbwNK76OL9krIFhm+gI6oquZcoysO+dp6nHQJtAYXmXpLsG4oFXtG1JNu15PHWULGbD2KQZvSUJEPy1jXH2SxFcTVgWTI3BmePj9/s1Z2tonaWiRTMUIQIroaOoxC7dVahMdzLKGazuFuWNJslEnEiwUV5iFfxJREeSsdRRiEeH0P2bBnE3FPsvAU/jGm2pS8PDde8HyS7uaFw6lRniMl+haabUpJejNim7Id5xRvZK6qxM1NsO4h5OzpltF46H0PZ8mbyUKWnvzvtibMHp5iQtqwMhtBbbKlkilq06qZ2nioMkc3VppTa2ZKdeVK6ihDQUAC0CqouRNeSh9q5WKMxcIuBFDgLCx2i87pCAwojSqAV2Rjk6HdHGBfkMzYfZXleLajFUmUP2VQM3iuMVKSNEL22DRfZROWWODvGpFkHW5rALy8vL/dOT/eOjwUTg5jjqHma5M1RkuhTDUNJu6XtjJnNKKnx7fjlzFOI2Hm08aNiolg5rSCX8X/RScJMFOx3+9W6Owu/PVnYtqrhLa+cDc5QZlzDv1wdj1f8fkP9wjlzvelDbZuUErzq4wD8VR8G8UXI6SYwSz/5HLqIcpt+0dN6SVUkdePTJXdUsP0fZZ7ncPrumMkna+VW5EOxf5DLJeHXm4XrfCiu2P6bIs/39n8o3uRMsoM8rQ4Oijxn14OssYpuhP3qUjE/OKMV3hdwohW8M3vvdfTAP+hmAZN6YBtPMMn+mApdwHln7b2Eg5/+XP+cHwG/IO+xIgiEY+JuGXWrHyavC9d5HSKcEwZnCxhP56foPX6lagHa1qZbC3YtPVWubckqTBJNLM88LdET0Dp6hAtstE1zoknaTQLMmGQnNnSeoO6MgRCxrsd7V9pa8hDIr3RFGbseRNGHiLELBSPvnWeypRCwoYJ9cvBcDKicjbSOULvOqgzODGEgoCnMvesgMTKuaUiBthkbhmG+8zSGf0njZUGb0ZvaEWrvWth07w6k80OEJJaj0VzCywbPNv0Pj4//tnyvt+9B8ycqR55Sc01lfH4cErMnGmnx0YaItiIowdLdMzMu0lkb7eMd6pfwbNuS02s03xn+AWeUKUueBgAA"
+        }
+      ],
+      "skillId": "80c230d3-38e7-4020-9e74-2df61f48c520"
     }
   ]
 }

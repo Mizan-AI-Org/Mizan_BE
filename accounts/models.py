@@ -74,6 +74,8 @@ class Restaurant(models.Model):
     break_duration = models.IntegerField(default=30) # Default to 30 minutes
     email_notifications = models.JSONField(default=dict)
     push_notifications = models.JSONField(default=dict)
+    general_settings = models.JSONField(default=dict)
+    settings_schema_version = models.IntegerField(default=1)
     
     # POS Integration Fields
     pos_provider = models.CharField(max_length=50, choices=[

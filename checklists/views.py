@@ -289,7 +289,7 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
     filterset_fields = ['status', 'template__category', 'assigned_to']
     search_fields = ['template__name', 'completion_notes']
-    ordering_fields = ['created_at', 'due_date', 'progress_percentage']
+    ordering_fields = ['created_at', 'updated_at', 'completed_at', 'due_date', 'progress_percentage']
     ordering = ['-created_at']
     
     def get_queryset(self):
@@ -302,8 +302,9 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
             'step_responses__step', 'step_responses__evidence', 'actions'
         )
         
-        # Filter by assigned user if not manager
-        if not user.is_manager and not user.is_admin:
+        # Filter by assigned user if not manager/admin/owner
+        allowed_roles = {'SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER'}
+        if str(getattr(user, 'role', '')).upper() not in allowed_roles:
             queryset = queryset.filter(assigned_to=user)
         
         return queryset
@@ -436,6 +437,21 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
             )
         
         execution.start_execution()
+        try:
+            AuditLog.create_log(
+                restaurant=request.user.restaurant,
+                user=request.user,
+                action_type='CREATE',
+                entity_type='ChecklistExecution',
+                entity_id=str(execution.id),
+                description='Checklist execution started',
+                old_values={},
+                new_values={'status': 'IN_PROGRESS', 'started_at': execution.started_at.isoformat()},
+                ip_address=request.META.get('REMOTE_ADDR', ''),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+        except Exception:
+            pass
         serializer = self.get_serializer(execution)
         return Response(serializer.data)
     
@@ -468,6 +484,21 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
         
         completion_notes = request.data.get('completion_notes', '')
         execution.complete_execution(completion_notes)
+        try:
+            AuditLog.create_log(
+                restaurant=request.user.restaurant,
+                user=request.user,
+                action_type='UPDATE',
+                entity_type='ChecklistExecution',
+                entity_id=str(execution.id),
+                description='Checklist execution completed',
+                old_values={},
+                new_values={'status': 'COMPLETED', 'completed_at': execution.completed_at.isoformat()},
+                ip_address=request.META.get('REMOTE_ADDR', ''),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+        except Exception:
+            pass
         
         serializer = self.get_serializer(execution)
         return Response(serializer.data)
@@ -488,6 +519,21 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
             sync_service = ChecklistSyncService()
             result = sync_service.sync_execution_data(execution, serializer.validated_data)
             
+            try:
+                AuditLog.create_log(
+                    restaurant=request.user.restaurant,
+                    user=request.user,
+                    action_type='UPDATE',
+                    entity_type='ChecklistExecution',
+                    entity_id=str(execution.id),
+                    description='Checklist execution synced',
+                    old_values={},
+                    new_values={'synced_items': result['synced_items']},
+                    ip_address=request.META.get('REMOTE_ADDR', ''),
+                    user_agent=request.META.get('HTTP_USER_AGENT', '')
+                )
+            except Exception:
+                pass
             return Response({
                 'success': True,
                 'synced_items': result['synced_items'],
@@ -507,6 +553,12 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         
+        ordering = request.query_params.get('ordering')
+        if ordering:
+            try:
+                queryset = queryset.order_by(ordering)
+            except Exception:
+                pass
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
@@ -526,6 +578,105 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
         
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def submitted(self, request):
+        """List completed submissions for managers of the current restaurant"""
+        user = request.user
+        restaurant = getattr(user, 'restaurant', None)
+        if not restaurant:
+            return Response({'error': 'No restaurant context'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Authorization: allow SUPER_ADMIN/ADMIN/OWNER/MANAGER to view submissions for their restaurant
+        allowed_roles = {'SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER'}
+        if str(getattr(user, 'role', '')).upper() not in allowed_roles:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        qs = ChecklistExecution.objects.filter(template__restaurant=restaurant, status='COMPLETED')
+
+        # Optional date filter
+        date_str = request.query_params.get('date')
+        if date_str:
+            try:
+                from datetime import datetime
+                target = datetime.fromisoformat(date_str)
+                from django.db.models.functions import TruncDate
+                qs = qs.annotate(comp_date=TruncDate('completed_at')).filter(comp_date=target.date())
+            except Exception:
+                pass
+
+        # Order newest completions first
+        qs = qs.order_by('-completed_at', '-updated_at')
+
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def manager_review(self, request, pk=None):
+        """Manager approval or rejection of a completed checklist"""
+        user = request.user
+        allowed_roles = {'SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER'}
+        if str(getattr(user, 'role', '')).upper() not in allowed_roles:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            execution = ChecklistExecution.objects.get(id=pk)
+        except ChecklistExecution.DoesNotExist:
+            return Response({'error': 'Execution not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        decision = str(request.data.get('decision', '')).upper()
+        if decision not in {'APPROVED', 'REJECTED'}:
+            return Response({'error': 'Invalid decision'}, status=status.HTTP_400_BAD_REQUEST)
+
+        from django.utils import timezone
+        if decision == 'APPROVED':
+            execution.supervisor_approved = True
+            execution.approved_by = user
+            execution.approved_at = timezone.now()
+        else:
+            execution.supervisor_approved = False
+            execution.approved_by = None
+            execution.approved_at = None
+            # Optionally attach an action to follow up on rejection
+            note = str(request.data.get('reason', '')).strip() or 'Rejected by manager'
+            try:
+                ChecklistAction.objects.create(
+                    execution=execution,
+                    title='Checklist Rejected',
+                    description=note,
+                    priority='MEDIUM',
+                    assigned_to=execution.assigned_to,
+                )
+            except Exception:
+                pass
+
+        execution.save()
+
+        # Audit log
+        try:
+            AuditLog.create_log(
+                restaurant=user.restaurant,
+                user=user,
+                action_type='OTHER',
+                entity_type='ChecklistExecution',
+                entity_id=str(execution.id),
+                description=f'Manager review decision: {decision}',
+                old_values={},
+                new_values={'decision': decision},
+                ip_address=request.META.get('REMOTE_ADDR', ''),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+        except Exception:
+            pass
+
+        data = self.get_serializer(execution).data
+        data.update({'review_status': decision})
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class ChecklistStepResponseViewSet(viewsets.ModelViewSet):
@@ -610,8 +761,9 @@ class ChecklistActionViewSet(viewsets.ModelViewSet):
             execution__template__restaurant=user.restaurant
         ).select_related('assigned_to', 'created_by', 'resolved_by', 'execution')
         
-        # Filter by assigned user if not manager
-        if not user.is_manager and not user.is_admin:
+        # Filter by assigned user if not manager/admin/owner
+        allowed_roles = {'SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER'}
+        if str(getattr(user, 'role', '')).upper() not in allowed_roles:
             queryset = queryset.filter(
                 Q(assigned_to=user) | Q(created_by=user)
             )
