@@ -74,3 +74,21 @@ Configuration
 - Routes included under `/api/attendance/` in `mizan/urls.py`.
 - CORS for local dev allows `http://localhost:8080`.
 - Apply migrations as needed: `python manage.py migrate`.
+
+## Checklists: Submissions & Manager Review
+
+Endpoints
+- `GET /api/checklists/executions/my_checklists/` — List the current staff member’s checklist executions. Supports `status`, `page`, `page_size`, `ordering` (`created_at`, `updated_at`, `completed_at`).
+- `GET /api/checklists/executions/submitted/` — For managers/admins, list completed submissions for the current restaurant. Optional `date` (`YYYY-MM-DD`). Paginates by default. Ordered by `-completed_at`.
+- `POST /api/checklists/executions/<id>/manager_review/` — Managers/admins approve or reject a submission.
+  - Body: `{ "decision": "APPROVED" | "REJECTED", "reason": "optional text" }`
+  - Response includes the updated execution payload and `review_status`.
+
+Behavior
+- Submissions set `completed_at` using server time in ISO 8601.
+- Approval sets `supervisor_approved = true`, `approved_by`, and `approved_at`.
+- Rejection sets `supervisor_approved = false` and records an audit entry.
+
+Permissions
+- Staff can only access their own executions via `my_checklists`.
+- Managers/Admins can access restaurant-wide submissions and perform review actions.

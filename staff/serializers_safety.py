@@ -62,12 +62,30 @@ class SafetyConcernReportSerializer(serializers.ModelSerializer):
         read_only_fields = ('created_at', 'resolved_at', 'resolved_by')
     
     def create(self, validated_data):
-        # Handle anonymous reports
+        # Get the request user
+        request = self.context.get('request')
+        if not request or not request.user.is_authenticated:
+            raise serializers.ValidationError("Authentication required")
+            
+        user = request.user
+        
+        # Automatically set the restaurant from user's restaurant
+        if 'restaurant' not in validated_data:
+            # Try to get restaurant from user's restaurant field
+            if hasattr(user, 'restaurant') and user.restaurant:
+                validated_data['restaurant'] = user.restaurant
+            # Or get the first restaurant the user is associated with (if using many-to-many)
+            elif hasattr(user, 'restaurants') and hasattr(user.restaurants, 'exists') and user.restaurants.exists():
+                validated_data['restaurant'] = user.restaurants.first()
+            else:
+                raise serializers.ValidationError({
+                    "restaurant": "User must be associated with a restaurant. Please contact your administrator."
+                })
+        
+        # Handle anonymous reports - store the reporter but mark as anonymous
         if validated_data.get('is_anonymous', True):
-            # Store the reporter but don't expose it in API responses
-            request = self.context.get('request')
-            if request and request.user.is_authenticated:
-                validated_data['reporter'] = request.user
+            validated_data['reporter'] = user
+        
         return super().create(validated_data)
 
 class SafetyRecognitionSerializer(serializers.ModelSerializer):

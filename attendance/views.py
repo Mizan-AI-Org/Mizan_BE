@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminOrSuperAdmin, IsAdminOrManager
+from accounts.models import AuditLog
 from .models import ShiftReview, ReviewLike
 try:
     # Optional import; only used to derive restaurant when user has none
@@ -156,8 +157,54 @@ class ShiftReviewListCreateAPIView(generics.ListCreateAPIView):
                     "hours_decimal": self.request.data.get("hours_decimal"),
                 },
             )
+            AuditLog.create_log(
+                restaurant=restaurant_obj,
+                user=user,
+                action_type='CREATE',
+                entity_type='SHIFT_REVIEW',
+                entity_id=str(getattr(instance, 'id', '')),
+                description='Shift review submitted',
+                new_values={
+                    'session_id': str(session),
+                    'rating': self.request.data.get('rating'),
+                    'tags': self.request.data.get('tags'),
+                    'hours_decimal': self.request.data.get('hours_decimal'),
+                },
+            )
         except Exception:
             pass
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            try:
+                logger.error(
+                    "ShiftReview validation failed",
+                    extra={
+                        "errors": serializer.errors,
+                        "payload_keys": list(request.data.keys()),
+                        "staff_id": str(getattr(request.user, "id", "")),
+                    },
+                )
+                AuditLog.create_log(
+                    restaurant=getattr(request.user, 'restaurant', None),
+                    user=request.user,
+                    action_type='UPDATE',
+                    entity_type='SHIFT_REVIEW',
+                    entity_id=None,
+                    description='Shift review submission failed',
+                    old_values={},
+                    new_values={
+                        'errors': serializer.errors,
+                        'payload_keys': list(request.data.keys()),
+                    },
+                )
+            except Exception:
+                pass
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
 
 class ReviewLikeToggleAPIView(APIView):

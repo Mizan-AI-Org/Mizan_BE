@@ -1,6 +1,7 @@
 from django.db import models
 import uuid
 from django.utils import timezone
+from datetime import datetime as _dt, time as _time
 from django.conf import settings
 from django.core.exceptions import ValidationError
 
@@ -107,6 +108,14 @@ class AssignedShift(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     created_by = models.ForeignKey('accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='created_shifts')
     last_modified_by = models.ForeignKey('accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='modified_shifts')
+    
+    # Task templates assigned to this shift
+    task_templates = models.ManyToManyField(
+        'TaskTemplate',
+        blank=True,
+        related_name='assigned_shifts',
+        help_text="Task templates assigned to this shift for staff checklist"
+    )
 
     class Meta:
         db_table = 'assigned_shifts'
@@ -120,24 +129,29 @@ class AssignedShift(models.Model):
         return f'{self.staff.first_name} {self.staff.last_name} - {self.shift_date} ({self.start_time}-{self.end_time})'
 
     def clean(self):
-        """Validate shift doesn't conflict with other shifts"""
         from django.db.models import Q
-        
-        # Check for overlapping shifts
         overlapping = AssignedShift.objects.filter(
             staff=self.staff,
             shift_date=self.shift_date,
             status__in=['SCHEDULED', 'CONFIRMED', 'COMPLETED']
         ).exclude(id=self.id)
-        
-        # Convert to datetime for comparison
-        shift_start = timezone.datetime.combine(self.shift_date, self.start_time)
-        shift_end = timezone.datetime.combine(self.shift_date, self.end_time)
-        
+        if isinstance(self.start_time, _dt):
+            shift_start = self.start_time
+        else:
+            shift_start = timezone.datetime.combine(self.shift_date, self.start_time)
+        if isinstance(self.end_time, _dt):
+            shift_end = self.end_time
+        else:
+            shift_end = timezone.datetime.combine(self.shift_date, self.end_time)
         for existing_shift in overlapping:
-            existing_start = timezone.datetime.combine(existing_shift.shift_date, existing_shift.start_time)
-            existing_end = timezone.datetime.combine(existing_shift.shift_date, existing_shift.end_time)
-            
+            if isinstance(existing_shift.start_time, _dt):
+                existing_start = existing_shift.start_time
+            else:
+                existing_start = timezone.datetime.combine(existing_shift.shift_date, existing_shift.start_time)
+            if isinstance(existing_shift.end_time, _dt):
+                existing_end = existing_shift.end_time
+            else:
+                existing_end = timezone.datetime.combine(existing_shift.shift_date, existing_shift.end_time)
             if shift_start < existing_end and shift_end > existing_start:
                 raise ValidationError(f"Staff member has overlapping shift from {existing_shift.start_time} to {existing_shift.end_time}")
     
@@ -147,20 +161,19 @@ class AssignedShift(models.Model):
 
     @property
     def actual_hours(self):
-        """Calculate actual working hours excluding break time"""
-        shift_start_datetime = timezone.datetime.combine(self.shift_date, self.start_time)
-        shift_end_datetime = timezone.datetime.combine(self.shift_date, self.end_time)
-        
-        # Handle overnight shifts
+        if isinstance(self.start_time, _dt):
+            shift_start_datetime = self.start_time
+        else:
+            shift_start_datetime = timezone.datetime.combine(self.shift_date, self.start_time)
+        if isinstance(self.end_time, _dt):
+            shift_end_datetime = self.end_time
+        else:
+            shift_end_datetime = timezone.datetime.combine(self.shift_date, self.end_time)
         if shift_end_datetime < shift_start_datetime:
             shift_end_datetime += timezone.timedelta(days=1)
-        
         duration = shift_end_datetime - shift_start_datetime
-        
-        # Subtract break duration if it exists
         if self.break_duration:
             duration -= self.break_duration
-            
         return duration.total_seconds() / 3600
     
     @property
