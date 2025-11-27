@@ -422,19 +422,29 @@ class InviteStaffView(APIView):
         invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
         print(f"Staff Invitation Link for {email}: {invite_link}")
 
-        # Uncomment and configure email settings in production
-        html_message = render_to_string('emails/staff_invite.html', {'invite_link': invite_link, 'restaurant_name': request.user.restaurant.name, 'year': timezone.now().year})
+        html_message = render_to_string('emails/staff_invite.html', {
+            'invite_link': invite_link,
+            'restaurant_name': request.user.restaurant.name,
+            'year': timezone.now().year
+        })
         plain_message = strip_tags(html_message)
-        send_mail(
-            'You\'ve been invited to join Mizan AI!',
-            plain_message,
-            settings.DEFAULT_FROM_EMAIL,
-            [email],
-            html_message=html_message,
-            fail_silently=False,
-        )
 
-        return Response({'message': 'Invitation sent successfully', 'token': token}, status=status.HTTP_201_CREATED)
+        try:
+            send_mail(
+                'You\'ve been invited to join Mizan AI!',
+                plain_message,
+                settings.DEFAULT_FROM_EMAIL,
+                [email],
+                html_message=html_message,
+                fail_silently=False,
+            )
+            return Response({'message': 'Invitation sent successfully', 'token': token}, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            return Response({
+                'message': 'Invitation created successfully, but email failed to send',
+                'error': str(e),
+                'token': token
+            }, status=status.HTTP_201_CREATED)
 
 class AcceptInvitationView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -494,8 +504,18 @@ class AcceptInvitationView(APIView):
             user.set_pin(pin_code)  # We know pin_code exists because we checked it
             user.save()
 
+            from django.utils import timezone as dj_tz
             invitation.is_accepted = True
-            invitation.save()
+            invitation.status = 'ACCEPTED'
+            invitation.accepted_at = dj_tz.now()
+            invitation.save(update_fields=['is_accepted', 'status', 'accepted_at'])
+
+            # Close any other pending invitations for the same email within this restaurant
+            UserInvitation.objects.filter(
+                restaurant=invitation.restaurant,
+                email=invitation.email,
+                is_accepted=False,
+            ).update(status='EXPIRED', expires_at=dj_tz.now())
 
             refresh = RefreshToken.for_user(user)
 

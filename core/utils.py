@@ -75,3 +75,25 @@ def get_tenant_from_request(request):
             pass
     
     return None
+
+def build_tenant_context(request):
+    user = getattr(request, 'user', None)
+    if not user or not user.is_authenticated:
+        return None
+    restaurant = getattr(request, 'tenant', None) or getattr(user, 'restaurant', None)
+    if not restaurant:
+        return None
+    full_name = f"{user.first_name} {user.last_name}".strip()
+    email = user.email
+    params = {}
+    params['timezone'] = getattr(restaurant, 'timezone', None)
+    params['language'] = getattr(restaurant, 'language', None)
+    params['currency'] = getattr(restaurant, 'currency', None)
+    params['operating_hours'] = getattr(restaurant, 'operating_hours', None)
+    return {
+        'user_name': full_name,
+        'user_email': email,
+        'restaurant_id': str(restaurant.id),
+        'restaurant_name': restaurant.name,
+        'params': params,
+    }

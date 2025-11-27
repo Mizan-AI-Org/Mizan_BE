@@ -125,41 +125,17 @@ TEMPLATES = [
     },
 ]
 
-# ---------------------------
-# Database (PostgreSQL)
-# # ---------------------------
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.postgresql',
-#         'NAME': config('DB_NAME', default='mizan_db2'),
-#         'USER': config('DB_USER', default='mizan_user'),
-#         'PASSWORD': config('DB_PASSWORD', default='mizan_password123'),
-#         'HOST': config('DB_HOST', default='localhost'),
-#         'PORT': config('DB_PORT', default='5432'),
-#     }
-# }
 
-USE_SQLITE = os.getenv("USE_SQLITE", "0") in ["1", "true", "True"]
-
-DATABASES = (
-    {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
-        }
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": config('DB_NAME', default=config('POSTGRES_DB', default=os.getenv('POSTGRES_DB', ''))),
+        "USER": config('DB_USER', default=config('POSTGRES_USER', default=os.getenv('POSTGRES_USER', ''))),
+        "PASSWORD": config('DB_PASSWORD', default=config('POSTGRES_PASSWORD', default=os.getenv('POSTGRES_PASSWORD', ''))),
+        "HOST": config('DB_HOST', default=config('POSTGRES_HOST', default=os.getenv('POSTGRES_HOST', 'localhost'))),
+        "PORT": config('DB_PORT', default=config('POSTGRES_PORT', default=os.getenv('POSTGRES_PORT', '5432'))),
     }
-    if USE_SQLITE
-    else {
-        "default": {
-            "ENGINE": "django.db.backends.postgresql",
-            "NAME": os.getenv("POSTGRES_DB", "mizan_db"),
-            "USER": os.getenv("POSTGRES_USER", "aankote"),
-            "PASSWORD": os.getenv("POSTGRES_PASSWORD", ""),
-            "HOST": os.getenv("POSTGRES_HOST", "localhost"),
-            "PORT": os.getenv("POSTGRES_PORT", "5432"),
-        }
-    }
-)
+}
 
 
 # ---------------------------
@@ -311,11 +287,11 @@ else:
     DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=config('EMAIL_HOST_USER', default='no-reply@mizan.local'))
 
 
-# # EMAIL Configuration for Production
-# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-# EMAIL_HOST = 'smtp.gmail.com'
-# EMAIL_PORT = 587
-# EMAIL_USE_TLS = True  # For secure connection
-# EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "jarjuadama101@gmail.com")
-# EMAIL_HOST_PASSWORD =  os.getenv('EMAIL_HOST_PASSWORD', '')
-# DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "jarjuadama101@gmail.com")
+# EMAIL Configuration (from .env)
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = config('EMAIL_HOST', default=os.getenv('EMAIL_HOST', 'smtp.gmail.com'))
+EMAIL_PORT = config('EMAIL_PORT', default=os.getenv('EMAIL_PORT', '587'), cast=int)
+EMAIL_USE_TLS = str_to_bool(config('EMAIL_USE_TLS', default=os.getenv('EMAIL_USE_TLS', 'True')))
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default=os.getenv('EMAIL_HOST_USER', ''))
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default=os.getenv('EMAIL_HOST_PASSWORD', ''))
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=os.getenv('DEFAULT_FROM_EMAIL', 'no-reply@mizan.local'))

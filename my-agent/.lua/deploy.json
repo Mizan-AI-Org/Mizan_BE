@@ -2,7 +2,7 @@
   "skills": [
     {
       "name": "restaurant-ops",
-      "version": "1.0.9",
+      "version": "1.0.10",
       "description": "Guest experience, inventory, and kitchen coordination",
       "context": "Manage inventory, waste tracking, baskets, orders, and payments",
       "tools": [
@@ -42,7 +42,7 @@
     },
     {
       "name": "staff-orchestrator",
-      "version": "1.0.9",
+      "version": "1.0.10",
       "description": "Staff scheduling and task orchestration",
       "context": "Create tasks, optimize schedules, and manage staff workflows",
       "tools": [
@@ -77,7 +77,7 @@
     },
     {
       "name": "predictive-analyst",
-      "version": "1.0.9",
+      "version": "1.0.10",
       "description": "Sales forecasting and demand signals",
       "context": "Use these tools to fetch weather, product signals, and generate demand forecasts",
       "tools": [

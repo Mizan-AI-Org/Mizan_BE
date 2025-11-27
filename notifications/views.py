@@ -17,6 +17,7 @@ from .serializers import (
     AnnouncementCreateSerializer
 )
 from .services import notification_service
+from core.utils import build_tenant_context
 
 
 class NotificationPagination(PageNumberPagination):
@@ -122,6 +123,9 @@ def create_announcement(request):
     """Create and send announcement to all restaurant staff"""
     print("Creating announcement...", file=sys.stderr)
     try:
+        ctx = build_tenant_context(request)
+        if not ctx:
+            return Response({'success': False, 'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
         serializer = AnnouncementCreateSerializer(data=request.data)
         
         if not serializer.is_valid():
