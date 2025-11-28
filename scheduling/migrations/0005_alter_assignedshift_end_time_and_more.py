@@ -64,14 +64,14 @@ DO $$
 BEGIN
   IF EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name='scheduling_task' AND column_name='due_time' AND data_type='time without time zone'
+    WHERE table_name='template_tasks' AND column_name='due_time' AND data_type='time without time zone'
   ) THEN
-    ALTER TABLE scheduling_task ALTER COLUMN due_time TYPE timestamptz USING (CURRENT_DATE + due_time);
+    ALTER TABLE template_tasks ALTER COLUMN due_time TYPE timestamptz USING (CURRENT_DATE + due_time);
   END IF;
 END $$;
 """,
             reverse_sql="""
-ALTER TABLE scheduling_task
+ALTER TABLE template_tasks
   ALTER COLUMN due_time TYPE time USING (due_time::time);
 """,
         ),

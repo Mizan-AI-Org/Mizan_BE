@@ -1,3 +1,5 @@
+"use strict";
+`` `
 import { LuaSkill } from "lua-cli";
 import RestaurantLookupTool from "./tools/RestaurantLookupTool";
 
@@ -9,3 +11,4 @@ export const restaurantOpsSkill = new LuaSkill({
     new RestaurantLookupTool()
   ]
 });
+` ``;

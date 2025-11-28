@@ -26,13 +26,13 @@ agent:
   welcomeMessage: ''
 skills:
   - name: restaurant-ops
-    version: 1.0.10
+    version: 1.0.11
     skillId: ff8fafe5-ff0e-4944-8653-9576ad97a502
   - name: staff-orchestrator
-    version: 1.0.10
+    version: 1.0.11
     skillId: f8f28466-4864-4f0c-be40-9fd977c487e7
   - name: predictive-analyst
-    version: 1.0.10
+    version: 1.0.11
     skillId: 80c230d3-38e7-4020-9e74-2df61f48c520
 webhooks:
   - name: dining-experience-events

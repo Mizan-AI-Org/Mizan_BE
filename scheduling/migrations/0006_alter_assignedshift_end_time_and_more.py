@@ -10,6 +10,53 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunSQL(
+            sql="""
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='assigned_shifts' AND column_name='end_time' AND data_type='time without time zone'
+  ) THEN
+    ALTER TABLE assigned_shifts ALTER COLUMN end_time TYPE timestamptz USING (CURRENT_DATE + end_time);
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='assigned_shifts' AND column_name='start_time' AND data_type='time without time zone'
+  ) THEN
+    ALTER TABLE assigned_shifts ALTER COLUMN start_time TYPE timestamptz USING (CURRENT_DATE + start_time);
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='scheduling_templateshift' AND column_name='end_time' AND data_type='time without time zone'
+  ) THEN
+    ALTER TABLE scheduling_templateshift ALTER COLUMN end_time TYPE timestamptz USING (CURRENT_DATE + end_time);
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='scheduling_templateshift' AND column_name='start_time' AND data_type='time without time zone'
+  ) THEN
+    ALTER TABLE scheduling_templateshift ALTER COLUMN start_time TYPE timestamptz USING (CURRENT_DATE + start_time);
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name='template_tasks' AND column_name='due_time' AND data_type='time without time zone'
+  ) THEN
+    ALTER TABLE template_tasks ALTER COLUMN due_time TYPE timestamptz USING (CURRENT_DATE + due_time);
+  END IF;
+END $$;
+""",
+            reverse_sql="""
+ALTER TABLE assigned_shifts
+  ALTER COLUMN end_time TYPE time USING (end_time::time),
+  ALTER COLUMN start_time TYPE time USING (start_time::time);
+ALTER TABLE scheduling_templateshift
+  ALTER COLUMN end_time TYPE time USING (end_time::time),
+  ALTER COLUMN start_time TYPE time USING (start_time::time);
+ALTER TABLE template_tasks
+  ALTER COLUMN due_time TYPE time USING (due_time::time);
+""",
+        ),
         migrations.AlterField(
             model_name='assignedshift',
             name='end_time',

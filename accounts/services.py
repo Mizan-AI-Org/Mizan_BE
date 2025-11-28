@@ -346,7 +346,7 @@ class UserManagementService:
         Returns tuple: (user, error)
         """
         try:
-            invitation = UserInvitation.objects.get(token=token, is_accepted=False)
+            invitation = UserInvitation.objects.get(invitation_token=token, is_accepted=False)
             # Check expiration
             if invitation.expires_at < timezone.now():
                 return None, "Invitation has expired"
@@ -385,8 +385,18 @@ class UserManagementService:
                         defaults={'department': department}
                     )
 
+                from django.utils import timezone as dj_tz
                 invitation.is_accepted = True
-                invitation.save(update_fields=['is_accepted'])
+                invitation.status = 'ACCEPTED'
+                invitation.accepted_at = dj_tz.now()
+                invitation.save(update_fields=['is_accepted', 'status', 'accepted_at'])
+
+                # Close any other pending invitations for the same email in this restaurant
+                UserInvitation.objects.filter(
+                    restaurant=invitation.restaurant,
+                    email=invitation.email,
+                    is_accepted=False,
+                ).update(status='EXPIRED', expires_at=dj_tz.now())
 
                 return user, None
         except UserInvitation.DoesNotExist:
