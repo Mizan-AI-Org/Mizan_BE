@@ -10,7 +10,7 @@ from django.utils import timezone
 from datetime import timedelta
 import sys
 
-from .models import CustomUser, StaffInvitation
+from .models import CustomUser, UserInvitation
 from .serializers import (
     UserSerializer, StaffInvitationSerializer,
     BulkInviteSerializer, AcceptInvitationSerializer,
@@ -145,10 +145,10 @@ class InvitationViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if not hasattr(user, 'restaurant') or not user.restaurant:
-            return StaffInvitation.objects.none()
+            return UserInvitation.objects.none()
         
         # Filter by restaurant (tenant isolation)
-        queryset = StaffInvitation.objects.filter(restaurant=user.restaurant)
+        queryset = UserInvitation.objects.filter(restaurant=user.restaurant)
         
         # Filter by status
         is_accepted = self.request.query_params.get('is_accepted')
@@ -179,7 +179,7 @@ class InvitationViewSet(viewsets.ModelViewSet):
 
             # Prevent duplicate pending invitations
             email = serializer.validated_data.get('email')
-            existing = StaffInvitation.objects.filter(
+            existing = UserInvitation.objects.filter(
                 restaurant=restaurant,
                 email=email,
                 is_accepted=False,
@@ -208,7 +208,7 @@ class InvitationViewSet(viewsets.ModelViewSet):
             invitation = serializer.save(
                 restaurant=restaurant,
                 invited_by=user,
-                token=token,
+                invitation_token=token,
                 expires_at=expires_at,
                 extra_data=extra_data,
             )

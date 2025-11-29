@@ -1,11 +1,11 @@
 import { LuaSkill } from "lua-cli";
-import InventoryTool from "./tools/InventoryTool";
+import RestaurantLookupTool from "./tools/RestaurantLookupTool";
 
 export const restaurantOpsSkill = new LuaSkill({
-  name: "restaurant-ops",
-  description: "Guest experience, inventory, and kitchen coordination",
-  context: "Manage inventory, waste tracking, baskets, orders, and payments",
+  name: "restaurant-operations",
+  description: "Restaurant-specific operations and context management",
+  context: "Manage restaurant data, retrieve context, and handle operational queries",
   tools: [
-    new InventoryTool(),
-  ],
+    new RestaurantLookupTool()
+  ]
 });

@@ -1,5 +1,6 @@
 import { LuaSkill } from "lua-cli";
 import ScheduleOptimizerTool from "./tools/ScheduleOptimizerTool";
+import StaffSchedulerTool from "./tools/StaffSchedulerTool";
 
 export const staffOrchestratorSkill = new LuaSkill({
   name: "staff-orchestrator",
@@ -7,5 +8,6 @@ export const staffOrchestratorSkill = new LuaSkill({
   context: "Create tasks, optimize schedules, and manage staff workflows",
   tools: [
     new ScheduleOptimizerTool(),
+    new StaffSchedulerTool(),
   ]
 });

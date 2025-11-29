@@ -1,39 +1,66 @@
-import { PreProcessor, Message } from "lua-cli";
+import ApiService from "../services/ApiService";
 
-export const tenantContextPreprocessor: PreProcessor = {
+export const tenantContextPreprocessor = {
     name: "tenant-context-enrichment",
     description: "Extracts restaurant context from user traits and enriches the conversation session",
 
     execute: async (message: any, context: any) => {
-        // Extract traits passed from the frontend widget via sessionId workaround
-        // Format: tenant-<id>-name-<base64Name>-user-<uid>
-        const sessionId = context.sessionId || "";
-        let restaurantId = context.user?.traits?.restaurant_id;
-        let restaurantName = context.user?.traits?.restaurant_name;
+        const apiService = new ApiService();
 
-        // If not in traits, try to parse from sessionId
-        if (!restaurantId && sessionId.startsWith("tenant-")) {
+        // 1. Extract token from metadata (passed from frontend)
+        const token = message.metadata?.token || context.metadata?.token;
+
+        console.log("[TenantContext] Incoming Metadata:", {
+            messageMetadata: message.metadata,
+            contextMetadata: context.metadata
+        });
+
+        if (token) {
+            console.log("[TenantContext] Validating user token...");
+            const validationResult = await apiService.validateUser(token);
+
+            if (validationResult.isValid) {
+                // 2. Bind Context
+                const { user, restaurant } = validationResult;
+
+                context.set("user", user);
+                context.set("restaurantId", restaurant.id);
+                context.set("restaurantName", restaurant.name);
+                context.set("restaurantData", restaurant); // Store full data for skills
+
+                console.log(`[TenantContext] ✅ Authenticated: ${user.email} @ ${restaurant.name} (${restaurant.id})`);
+                return message;
+            } else {
+                console.warn(`[TenantContext] ❌ Token validation failed: ${validationResult.error}`);
+                // We could throw an error here to block the message, or let it proceed as anonymous if allowed.
+                // For strict multi-tenancy, we should probably block or flag it.
+                context.set("isAuthenticated", false);
+                context.set("authError", validationResult.error);
+            }
+        }
+
+        // Fallback to legacy sessionId parsing (TEMPORARY - for backward compatibility if needed)
+        // ... (keeping existing logic as fallback or removing it if we want strict enforcement)
+
+        // For now, let's keep the legacy logic as a fallback but log a warning
+        const sessionId = context.sessionId || "";
+        if (!context.get("restaurantId") && sessionId.startsWith("tenant-")) {
+            console.warn("[TenantContext] ⚠️ Using insecure sessionId parsing fallback");
+            // ... existing logic ...
             try {
                 const parts = sessionId.split("-");
-                // tenant-<id> is parts[1]
-                // name-<base64> is parts[3]
-                // user-<uid> is parts[5]
-
-                // Find indices dynamically to be safe
                 const tenantIndex = parts.indexOf("tenant");
                 const nameIndex = parts.indexOf("name");
 
                 if (tenantIndex !== -1 && parts[tenantIndex + 1]) {
-                    restaurantId = parts[tenantIndex + 1];
+                    context.set("restaurantId", parts[tenantIndex + 1]);
                 }
 
                 if (nameIndex !== -1 && parts[nameIndex + 1]) {
-                    const encodedName = parts[nameIndex + 1];
                     try {
-                        restaurantName = decodeURIComponent(atob(encodedName));
+                        context.set("restaurantName", decodeURIComponent(atob(parts[nameIndex + 1])));
                     } catch (e) {
-                        console.warn("[TenantContext] Failed to decode restaurant name:", e);
-                        restaurantName = "Unknown Restaurant";
+                        context.set("restaurantName", "Unknown Restaurant");
                     }
                 }
             } catch (e) {
@@ -41,14 +68,8 @@ export const tenantContextPreprocessor: PreProcessor = {
             }
         }
 
-        if (restaurantId) {
-            // Store in the conversation context for tools to access
-            context.set("restaurantId", restaurantId);
-            context.set("restaurantName", restaurantName || "Unknown Restaurant");
-
-            console.log(`[TenantContext] Enriched context for Restaurant: ${restaurantName} (${restaurantId})`);
-        } else {
-            console.warn("[TenantContext] No restaurant_id found in traits or sessionId");
+        if (!context.get("restaurantId")) {
+            console.error("[TenantContext] ⛔ No tenant context resolved!");
         }
 
         return message;

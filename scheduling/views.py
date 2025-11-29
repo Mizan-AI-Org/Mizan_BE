@@ -23,9 +23,13 @@ from .serializers import (
     TimesheetSerializer,
     TimesheetEntrySerializer,
 )
-from .services import SchedulingService
+from .services import SchedulingService, OptimizationService
 from .task_assignment_service import TaskAssignmentService
-from accounts.views import IsAdmin, IsSuperAdmin, IsManagerOrAdmin
+from accounts.views import IsManagerOrAdmin
+from notifications.services import notification_service
+from django.conf import settings
+from core.utils import build_tenant_context
+from accounts.services import RoleManagementService
 
 # Module logger
 logger = logging.getLogger(__name__)
@@ -146,9 +150,44 @@ class WeeklyScheduleViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def publish(self, request, pk=None):
         """Publish schedule"""
+        ctx = build_tenant_context(request)
+        if not ctx:
+            return Response({'detail': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
         schedule = self.get_object()
+        if str(getattr(request.user.restaurant, 'id', '')) != str(getattr(schedule.restaurant, 'id', '')):
+            return Response({'detail': 'Cross-tenant access denied'}, status=status.HTTP_403_FORBIDDEN)
+        if not RoleManagementService.check_user_permission(request.user, schedule.restaurant, 'schedule.edit'):
+            return Response({'detail': 'Insufficient permissions'}, status=status.HTTP_403_FORBIDDEN)
         schedule.is_published = True
         schedule.save()
+        shifts = AssignedShift.objects.filter(schedule=schedule, schedule__restaurant=request.user.restaurant).select_related('staff')
+        by_staff = {}
+        for s in shifts:
+            key = str(s.staff.id)
+            by_staff.setdefault(key, {'user': s.staff, 'items': []})
+            by_staff[key]['items'].append(s)
+        for _, data in by_staff.items():
+            user = data['user']
+            lines = []
+            lines.append('📅 Your Schedule is Live!')
+            lines.append(f"Week of {schedule.week_start} to {schedule.week_end}")
+            lines.append('Shifts:')
+            for it in data['items']:
+                lines.append(f"{it.shift_date} {it.start_time} - {it.end_time} ({it.role})")
+            hrs = sum([getattr(it, 'actual_hours', 0) or 0 for it in data['items']])
+            lines.append(f"Total hours: {round(hrs, 2)}")
+            view_link = f"{settings.FRONTEND_URL}/staff-dashboard"
+            swap_link = f"{settings.FRONTEND_URL}/dashboard/swap-requests"
+            lines.append(f"View full schedule: {view_link}")
+            lines.append(f"Need changes? Request swap: {swap_link}")
+            msg = '\n'.join(lines)
+            notification_service.send_custom_notification(
+                recipient=user,
+                message=msg,
+                notification_type='SHIFT_ASSIGNED',
+                title='Your Schedule is Live',
+                channels=['whatsapp','app']
+            )
         return Response({'detail': 'Schedule published successfully'})
     
     @action(detail=True, methods=['post'])
@@ -182,6 +221,38 @@ class WeeklyScheduleViewSet(viewsets.ModelViewSet):
             return Response({'detail': message})
         else:
             return Response({'detail': message}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['post'])
+    def optimize(self, request):
+        """
+        Generate optimized schedule for a week
+        """
+        week_start = request.data.get('week_start')
+        department = request.data.get('department')
+        
+        if not week_start:
+            return Response(
+                {'detail': 'week_start is required (YYYY-MM-DD)'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        # Build tenant context if needed, but request.user.restaurant should be available
+        if not request.user.restaurant:
+             return Response(
+                {'detail': 'User is not associated with a restaurant'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        result = OptimizationService.optimize_schedule(
+            str(request.user.restaurant.id),
+            week_start,
+            department
+        )
+        
+        if result.get('error'):
+            return Response(result, status=status.HTTP_400_BAD_REQUEST)
+            
+        return Response(result)
 
 class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = AssignedShiftSerializer

@@ -18,20 +18,30 @@ try:
         }
     )
     
-    # Create a test user
-    user = CustomUser.objects.create_user(
+    # Create or get test user
+    user, user_created = CustomUser.objects.get_or_create(
         email="test@example.com",
-        password="test123",
-        first_name="Test",
-        last_name="User",
-        role="SUPER_ADMIN",
-        restaurant=restaurant,
-        is_verified=True
+        defaults={
+            'first_name': "Test",
+            'last_name': "User",
+            'role': "SUPER_ADMIN",
+            'restaurant': restaurant,
+            'is_verified': True
+        }
     )
     
-    print("✅ User created successfully!")
-    print(f"Email: test@example.com")
-    print(f"Password: test123")
+    user.set_password("test123")
+    user.save()
     
+    print(f"✅ User {'created' if user_created else 'updated'} successfully!")
+    
+    # Verify authentication locally
+    from django.contrib.auth import authenticate
+    user_auth = authenticate(email="test@example.com", password="test123")
+    if user_auth:
+        print("✅ Local authentication successful!")
+    else:
+        print("❌ Local authentication failed!")
+        
 except Exception as e:
     print(f"❌ Error: {e}")

@@ -1,5 +1,6 @@
 import { LuaTool } from "lua-cli";
 import { z } from "zod";
+import ApiService from "../../services/ApiService";
 
 export default class ScheduleOptimizerTool implements LuaTool {
     name = "schedule_optimizer";
@@ -7,39 +8,70 @@ export default class ScheduleOptimizerTool implements LuaTool {
 
     inputSchema = z.object({
         week_start: z.string().describe("Start date of the week (YYYY-MM-DD)"),
-        department: z.enum(["kitchen", "service", "all"]).optional(),
+        department: z.enum(["kitchen", "service", "all"]).optional().describe("Department to optimize"),
+        restaurantId: z.string().optional().describe("Restaurant ID (will use context if not provided)")
     });
 
+    private apiService: ApiService;
+
+    constructor(apiService?: ApiService) {
+        this.apiService = apiService || new ApiService();
+    }
+
     async execute(input: z.infer<typeof this.inputSchema>, context?: any) {
-        const restaurantId = context?.get ? context.get("restaurantId") : undefined;
-        const restaurantName = context?.get ? context.get("restaurantName") : "Unknown Restaurant";
+        // DEBUG: Log the entire context to diagnose missing restaurantId
+        console.log('[ScheduleOptimizerTool] Full context received:', JSON.stringify(context, null, 2));
+        console.log('[ScheduleOptimizerTool] Metadata:', context?.metadata);
+        console.log('[ScheduleOptimizerTool] Input:', input);
+
+        // Priority: input parameter > context.get > context.metadata > context direct
+        const restaurantId =
+            input.restaurantId ||
+            (context?.get ? context.get("restaurantId") : undefined) ||
+            context?.metadata?.restaurantId ||
+            context?.restaurantId;
+
+        const token = context?.metadata?.token || (context?.get ? context.get("token") : undefined);
 
         if (!restaurantId) {
-            // DEBUG: Inspect context to see what's actually there
-            const keys = context ? Object.keys(context) : "null";
-            // Check if context has a 'user' property directly
-            const userProp = context?.user ? "present" : "missing";
-            // Check if context has a 'traits' property directly
-            const traitsProp = context?.traits ? "present" : "missing";
-
+            console.error('[ScheduleOptimizerTool] Context keys:', context ? Object.keys(context) : 'null');
+            console.error('[ScheduleOptimizerTool] Input keys:', Object.keys(input));
             return {
                 status: "error",
-                message: `No restaurant context found. Debug: Keys=[${keys}], User=${userProp}, Traits=${traitsProp}`
+                message: "Restaurant context is missing. Please provide restaurantId in the request or ensure your session is authenticated."
             };
         }
 
-        console.log(`[ScheduleOptimizerTool] Executing for ${restaurantName} (${restaurantId})`);
+        if (!token) {
+            return {
+                status: "error",
+                message: "Authentication token missing. Cannot access scheduling API."
+            };
+        }
 
-        // Simulated logic
-        return {
-            status: "success",
-            restaurant: restaurantName,
-            message: `Schedule optimized for week of ${input.week_start} for ${restaurantName}`,
-            insights: [
-                "Increased kitchen staff on Friday evening due to expected tourist influx.",
-                "Reduced service staff on Monday lunch based on historical low traffic."
-            ],
-            schedule_url: `https://mizan.ai/schedules/${restaurantId}/${input.week_start}`
-        };
+        const userToken = token || context?.user?.token;
+
+        try {
+            console.log(`[ScheduleOptimizerTool] Optimizing for ${restaurantId}, week: ${input.week_start}`);
+
+            const result = await this.apiService.optimizeSchedule({
+                week_start: input.week_start,
+                department: input.department
+            }, userToken);
+
+            return {
+                status: "success",
+                message: result.message,
+                shifts_generated: result.shifts.length,
+                metrics: result.optimization_metrics,
+                schedule_summary: result.shifts.map((s: any) => `${s.date} ${s.time}: ${s.staff} (${s.role || 'Staff'})`).slice(0, 10) // Limit summary
+            };
+        } catch (error: any) {
+            console.error("[ScheduleOptimizerTool] Optimization failed:", error.message);
+            return {
+                status: "error",
+                message: `Optimization failed: ${error.message}`
+            };
+        }
     }
 }
