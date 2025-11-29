@@ -89,6 +89,7 @@ def send_clock_in_reminder():
     upcoming_tasks = AssignedShift.objects.filter(
         start_time__gte=now,
         start_time__lte=now + timedelta(minutes=60),
+        start_time__gt=now + timedelta(minutes=30),
         clock_in_reminder_sent=False
     )
 
