@@ -8,7 +8,10 @@ from django.dispatch import receiver
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from threading import local
-import json
+import json, sys
+from django.conf import settings
+import requests
+from .utils import send_whatsapp
 
 from .models import (
     ScheduleTemplate, TemplateShift, WeeklySchedule, 
@@ -92,7 +95,6 @@ def log_schedule_template_save(sender, instance, created, **kwargs):
     """Log schedule template creation and updates"""
     user = get_current_user()
     request = get_current_request()
-    
     if created:
         AuditTrailService.log_activity(
             user=user,
@@ -148,6 +150,7 @@ def log_schedule_template_delete(sender, instance, **kwargs):
 @receiver(post_save, sender=TemplateShift)
 def log_template_shift_save(sender, instance, created, **kwargs):
     """Log template shift creation and updates"""
+    print("Logging template shift save",file=sys.stderr)
     user = get_current_user()
     request = get_current_request()
     
@@ -168,6 +171,127 @@ def log_template_shift_save(sender, instance, created, **kwargs):
             request=request
         )
 
+
+# Here after creating the templates we will send full message to staff via whatsapp
+@receiver(post_save, sender=AssignedShift)
+def inform_staff(sender, instance, created, **kwargs):
+    """Log template shift deletion"""
+    user = get_current_user()
+    request = get_current_request()
+
+    if hasattr(instance.staff, 'phone') and instance.staff.phone:
+            token = 'EAAJ7TTzO5PYBQAXm1FEekVZAYM38Yf7Ebs12jYa3jEBRCZBazzbo8Nt9ZBUtFib30GzhZCLSmO1Gsv4WTvwLKL9c0BFRYky9ZAgjTBU95cisoedq0gZBb6gcvLZAO5IfKVh0XcOXHaGvFRH3PV6g5AZBKPlLyBKRSLBddyZAGuauhy4ZB8bwCxrCqvHSn1JpJV09hQWAZDZD'
+            phone_id = "871135792752623"
+            
+            if not token or not phone_id:
+                return False
+            phone = instance.staff.phone
+            phone = ''.join(filter(str.isdigit, phone))
+            url = f"https://graph.facebook.com/v22.0/{phone_id}/messages"
+            name = instance.staff.first_name
+            # start_week = "instance.schedule.week_start_date.strftime('%Y-%m-%d')"
+            # end_week = instance.schedule.week_end_date.strftime('%Y-%m-%d')
+            # total_hours = sum(shift.get_shift_duration_hours() for shift in instance.schedule.assigned_shifts.filter(staff=instance.staff))
+            # next_shift_date = instance.shift_date.strftime('%Y-%m-%d')
+            # next_shift_time = instance.start_time.strftime('%H:%M') if instance.start_time else ''
+
+            # print(f"\n\nshift infos : {name}, {start_week}, {end_week}, {total_hours}, {next_shift_date}, {next_shift_time}", flush=True, file=sys.stderr)
+
+            if hasattr(instance, 'schedule') and instance.schedule:
+                try:
+                    start_week = instance.schedule.week_start.strftime('%Y-%m-%d')
+                    end_week = instance.schedule.week_end.strftime('%Y-%m-%d')
+                    total_hours = sum(shift.get_shift_duration_hours() for shift in instance.schedule.assigned_shifts.filter(staff=instance.staff))
+                    next_shift_date = instance.shift_date.strftime('%Y-%m-%d')
+                    next_shift_time = instance.start_time.strftime('%H:%M') if instance.start_time else ''
+                    next_shift_end_time = instance.end_time.strftime('%H:%M') if instance.end_time else ''
+                    message = [
+                        {"type": "text", "text": name},
+                        {"type": "text", "text": f"{start_week} to {end_week}"},
+                        {"type": "text", "text": f"{instance.role} on {next_shift_date} at {next_shift_time} to {next_shift_end_time}"},
+                        {"type": "text", "text": str(total_hours)},
+                        {"type": "text", "text": next_shift_date},
+                        {"type": "text", "text": next_shift_time}
+                    ]
+                
+                    print(f"Prepared message: {message}", flush=True, file=sys.stderr)
+                
+                    if created:
+                        resp_code = send_whatsapp(phone, message, "schedule_publication_reminder", 'en')
+                        if resp_code['status_code'] == 200:
+                            print(f"WhatsApp message sent successfully to {phone}", flush=True, file=sys.stderr)
+                        else:
+                            print(f"Failed to send WhatsApp message to {phone}: {resp_code}", flush=True)
+                    
+
+                except Exception as e:
+                    print(f"Error getting start_week: {e}", flush=True)
+                    start_week = "N/A"
+                
+            else:   
+                print(f"shift schedule does not exist", flush=True, file=sys.stderr)
+            # start_week = instance.schedule.week_start_date.strftime('%Y-%m-%d')
+            # end_week = instance.schedule.week_end_date.strftime('%Y-%m-%d')
+            # total_hours = sum(shift.get_shift_duration_hours() for shift in instance.schedule.assigned_shifts.filter(staff=instance.staff))
+            # next_shift_date = instance.shift_date.strftime('%Y-%m-%d')
+            # next_shift_time = instance.start_time.strftime('%H:%M') if instance.start_time else ''
+
+            # print(f"\n\nshift infos : {name}, {start_week}, {end_week}, {total_hours}, {next_shift_date}, {next_shift_time}", flush=True, file=sys.stderr)
+
+
+            # payload = {}
+            # if created:
+
+            #     payload = {
+            #         "messaging_product": "whatsapp",
+            #         "to": phone,
+            #         "type": "template",
+            #         "template": {
+            #             "name": "hello_world",
+            #             "language": {"code": "en_US"}
+            #         }
+            #     }
+            # else:
+            #     print(f"shift updated: {url}", flush=True)
+            #     payload = {
+            #         "messaging_product": "whatsapp",
+            #         "to": phone,
+            #         "type": "template",
+            #         "template": {
+            #             "name": "hello_world",
+            #             "language": {"code": "en_US"}
+            #         }
+            #     }
+                
+            # resp = requests.post(
+            #     url,
+            #     headers={'Authorization': f"Bearer {token}"},
+            #     json=payload
+            # )
+            # print(f"WhatsApp response: {resp.status_code} - {resp.text}", flush=True)
+            # return resp.status_code == 200
+    
+
+
+
+'''
+
+Template name: schedule_publication_reminder
+Language: en
+
+📅 *Your Schedule is Ready!*
+
+Hello {{1}}, your shifts for the week of {{2}}:
+
+{{3}}
+
+• Total hours: {{4}}
+• Next shift: {{5}} at {{6}}
+
+View full schedule
+
+Static link as a button : http://localhost:8080/staff-dashboard/schedule redirecting to schedules.
+'''
 # Weekly Schedule Signals
 @receiver(post_save, sender=WeeklySchedule)
 def log_weekly_schedule_save(sender, instance, created, **kwargs):
@@ -175,6 +299,7 @@ def log_weekly_schedule_save(sender, instance, created, **kwargs):
     user = get_current_user()
     request = get_current_request()
     
+    print("Loggin§g creation of weekly schedule",file=sys.stderr)
     if created:
         AuditTrailService.log_schedule_activity(
             user=user,

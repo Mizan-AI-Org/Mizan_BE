@@ -8,7 +8,7 @@ from asgiref.sync import async_to_sync
 from .models import Notification, DeviceToken, NotificationLog
 import firebase_admin
 from firebase_admin import messaging
-import logging, sys, time
+import logging, sys
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,7 @@ class NotificationService:
     def _send_in_app_notification(self, notification_data, existing_notification=None):
         """WebSocket real-time event without creating duplicate notifications."""
         try:
+            print("Sending in-app notification...", flush=True, file=sys.stderr)
             notification = existing_notification
 
             # Log
@@ -126,6 +127,8 @@ class NotificationService:
                 pass
 
             group = f"user_{notification.recipient.id}_notifications"
+            print(f"Group: {group}", flush=True, file=sys.stderr)
+            print(f"current user: {notification.recipient}", flush=True, file=sys.stderr)
             # IMPORTANT FIX → match consumer handler name
             async_to_sync(self.channel_layer.group_send)(
                 group,
@@ -151,27 +154,28 @@ class NotificationService:
 
     # ----------------------------------------------------------------------
 
-
     def _send_whatsapp_notification(self, data):
+        print(f"data for WhatsApp: {data}", flush=True, file=sys.stderr)
         try:
-            phone = getattr(data['recipient'], 'phone', None)
+            recipient = data['recipient']
+            phone = getattr(recipient, 'phone', None)
+            title = data['title']
+            message = data['message']
+            # phone = getattr(recipient, 'phone', None)
+            print(f"Recipient object: {recipient}", flush=True, file=sys.stderr)
             if not phone:
                 return False
-
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+            print(f"Recipient phone: {phone}", flush=True, file=sys.stderr)
+            token = 'EAAcJkGF80TQBP1lLIlif23afZBQZAYNrtTZAYaLcf5hY0IZAqqXqPDC17EbcecxotQ27QiYWSEegJ1lxpAkr4ikHjfOOcxsz42DyabFlBU1De91WCXZB0VFsMECG8IRbuhhQmpVQqayrDR3O7RZBHmaeHjaZARZAnp2lXhV7eZC4xjtKAzqcldjqzRhGZAB249d3s1jeT9dX0nzLyyCZCLczCT9JwRkzCxoxkNeDIpZC6X7ADQ7K4TsOZCVYwxkLudY3jbH0tvLsHR4ZC87NYrZAPt9ZAKBrPO6DrQZDZD'
             phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            
             if not token or not phone_id:
                 return False
 
-            # Format phone number with +212...
-            digits = ''.join(filter(str.isdigit, phone))
-            phone = f"+{digits}"
-
+            phone = ''.join(filter(str.isdigit, phone))
             url = f"https://graph.facebook.com/v22.0/{phone_id}/messages"
-            headers = {"Authorization": f"Bearer {token}"}
-
-            # STEP 1 — Open Conversation Window
-            template_payload = {
+            print(f"WhatsApp URL: {url}", flush=True)
+            payload = {
                 "messaging_product": "whatsapp",
                 "to": phone,
                 "type": "template",
@@ -180,31 +184,37 @@ class NotificationService:
                     "language": {"code": "en_US"}
                 }
             }
-
-            print("Sending hello_world...", flush=True)
-            r1 = requests.post(url, json=template_payload, headers=headers)
-            print(f"hello_world response: {r1.status_code} - {r1.text}", flush=True)
-
-            # Wait for WhatsApp to open window
-            time.sleep(3)
-
-            # STEP 2 — Send your real message
-            announcement = "You have a new announcement, please check your app announcements."
-            text_payload = {
+            payload = {
                 "messaging_product": "whatsapp",
                 "to": phone,
-                "type": "text",
-                "text": {"body": announcement}
+                "type": "template",
+                "template": {
+                    "name": "cuntom_template",   # your template name
+                    "language": {"code": "en_US"},
+                    "components": [
+                        {
+                            "type": "body",
+                            "parameters": [
+                                {"type": "text", "text": title},
+                                {"type": "text", "text": message}
+                            ]
+                        }
+                    ]
+                }
             }
 
-            print("Sending announcement...", flush=True)
-            r2 = requests.post(url, json=text_payload, headers=headers)
-            print(f"Announcement response: {r2.status_code} - {r2.text}", flush=True)
-
-            return r2.status_code == 200
+            print(f"WhatsApp payload: {payload}", flush=True)
+            resp = requests.post(
+                url,
+                headers={'Authorization': f"Bearer {token}"},
+                json=payload
+            )
+            print(f"WhatsApp response: {resp.status_code} - {resp.text}", flush=True)
+            return resp.status_code == 200
 
         except Exception as e:
-            print(f"WhatsApp error: {e}", flush=True, file=sys.stderr)
+            logger.error(f"WhatsApp error: {e}")
+            print(f"WhatsApp exception: {e}", flush=True)
             return False
 
     # ----------------------------------------------------------------------

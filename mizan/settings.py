@@ -176,7 +176,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # ---------------------------
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+TIME_ZONE = "Africa/Casablanca"
 USE_I18N = True
 USE_TZ = True
 
@@ -311,15 +311,25 @@ else:
     DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=config('EMAIL_HOST_USER', default='no-reply@mizan.local'))
 
 
-# WHATSAPP_ACCESS_TOKEN = os.getenv('WHATSAPP_ACCESS_TOKEN', 'EAAcJkGF80TQBQPKRkLsk2GFkybUMUjzQ9WHNX07ifjFB9KUwDBoV2CcRZAWZC35Q9EsMZCLv5RBZAOT6qzBACYBhX0Q3tq0aZCZCUBCiBZAxTTsNTi5ZAkB2ObE2AI6RoneYPqwTj39ZCtEdI1AZCMz8KFUnDe5US20wbL0wNgL3cSyUeBir9skpzbv4ZAidImn8keZAaKg10pIvlwQaJ2AcrhaXnpObgk04V9nUe9C1ZAOZBjsQlRF8ChI9yoaqYEIl1ofO3hROzmpBCUDzSFjH64zY0qxrmt')
-WHATSAPP_ACCESS_TOKEN="EAAcJkGF80TQBQFE0fW3HpebOMjQ3fNY3Tidt7d1K3q6ItZAAAtrLK8KH48EE99EPmKGZAtXZCGdJnfLgZCIxNhPor2U7ReqWfBCQQvR8qZBvGKxzf8B8BGnVOzQO7rlWGxjfKzZBfomLexM1cr9IcGpTUVLNyZBLloF9ZAfekv4q2s7OTOwmduzweNmGI1JBOxkfkfu6Qi67qz7kHBbi8GIXZBWoKlOFVfo9vgjVtuEKbUwB3kN4NVWICYQHqkVcTFoZACN4PTn4TKYKla4vE0qe0pEYxrUQZDZD"
+WHATSAPP_ACCESS_TOKEN= os.getenv('WHATSAPP_ACCESS_TOKEN', '')
 WHATSAPP_PHONE_NUMBER_ID= os.getenv('WHATSAPP_PHONE_NUMBER_ID', '')
 WHATSAPP_API_VERSION= os.getenv('WHATSAPP_API_VERSION', 'v22.0')
-# # EMAIL Configuration for Production
-# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-# EMAIL_HOST = 'smtp.gmail.com'
-# EMAIL_PORT = 587
-# EMAIL_USE_TLS = True  # For secure connection
-# EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', "jarjuadama101@gmail.com")
-# EMAIL_HOST_PASSWORD =  os.getenv('EMAIL_HOST_PASSWORD', '')
-# DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "jarjuadama101@gmail.com")
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
+
+
+
+from celery.schedules import crontab
+
+CELERY_BEAT_SCHEDULE = {
+    "check_tasks_every_minute": {
+        "task": "scheduling.tasks.check_upcoming_tasks",
+        "schedule": 5,
+    },
+}
+
+
+from django.utils import timezone
+
+now = timezone.now()
+print("Now:", now.strftime("%Y-%m-%d %H:%M:%S"), file=sys.stderr)

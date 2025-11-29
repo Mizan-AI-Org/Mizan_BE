@@ -6,7 +6,7 @@ from django.db.models import Q
 from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 from datetime import datetime, timedelta
-import logging
+import logging, sys
 
 from .models import (
     ScheduleTemplate, TemplateShift, WeeklySchedule, AssignedShift, 
@@ -194,7 +194,6 @@ class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         schedule_id = self.kwargs.get('schedule_pk')
         schedule = WeeklySchedule.objects.get(id=schedule_id, restaurant=self.request.user.restaurant)
-        # AssignedShift model does not have a restaurant field; restaurant comes via schedule
         serializer.save(schedule=schedule)
 
     def create(self, request, *args, **kwargs):
@@ -234,7 +233,6 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
     """ViewSet for assigned shifts with conflict detection"""
     serializer_class = AssignedShiftSerializer
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
-    
     def get_queryset(self):
         user = self.request.user
         queryset = AssignedShift.objects.filter(schedule__restaurant=user.restaurant)
@@ -262,6 +260,7 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Create shift and send notification"""
         shift = serializer.save()
+        print(f"Created shift:{shift}", file=sys.stderr)
         # Send notification to staff about the new shift
         SchedulingService.notify_shift_assignment(shift)
     

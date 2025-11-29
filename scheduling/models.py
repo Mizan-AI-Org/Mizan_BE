@@ -109,6 +109,9 @@ class AssignedShift(models.Model):
     created_by = models.ForeignKey('accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='created_shifts')
     last_modified_by = models.ForeignKey('accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='modified_shifts')
     
+    # Reminders and alerts
+    clock_in_reminder_sent = models.BooleanField(default=False)
+    check_list_reminder_sent = models.BooleanField(default=False)
     # Task templates assigned to this shift
     task_templates = models.ManyToManyField(
         'TaskTemplate',
@@ -116,6 +119,20 @@ class AssignedShift(models.Model):
         related_name='assigned_shifts',
         help_text="Task templates assigned to this shift for staff checklist"
     )
+    
+    def get_shift_duration_hours(self):
+        if isinstance(self.start_time, _dt):
+            shift_start_datetime = self.start_time
+        else:
+            shift_start_datetime = timezone.datetime.combine(self.shift_date, self.start_time)
+        if isinstance(self.end_time, _dt):
+            shift_end_datetime = self.end_time
+        else:
+            shift_end_datetime = timezone.datetime.combine(self.shift_date, self.end_time)
+        if shift_end_datetime < shift_start_datetime:
+            shift_end_datetime += timezone.timedelta(days=1)
+        duration = shift_end_datetime - shift_start_datetime
+        return duration.total_seconds() / 3600
 
     class Meta:
         db_table = 'assigned_shifts'
