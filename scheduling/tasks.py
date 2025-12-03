@@ -89,7 +89,6 @@ def clock_in_remender(task):
     print(f"message payload: {message}", file=sys.stderr)
     return status_code  # safe return, always exists now
 
-
 def send_clock_in_reminder():
     now = timezone.now()
     upcoming_tasks = AssignedShift.objects.filter(
