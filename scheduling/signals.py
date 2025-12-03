@@ -11,7 +11,7 @@ from threading import local
 import json, sys
 from django.conf import settings
 import requests
-from .utils import send_whatsapp
+from .utils import send_whatsapp, shift_create_notification
 
 from .models import (
     ScheduleTemplate, TemplateShift, WeeklySchedule, 
@@ -176,100 +176,77 @@ def log_template_shift_save(sender, instance, created, **kwargs):
 @receiver(post_save, sender=AssignedShift)
 def inform_staff(sender, instance, created, **kwargs):
     """Log template shift deletion"""
-    user = get_current_user()
-    request = get_current_request()
 
+    if not created:
+        return
     if hasattr(instance.staff, 'phone') and instance.staff.phone:
-            token = 'EAAJ7TTzO5PYBQAXm1FEekVZAYM38Yf7Ebs12jYa3jEBRCZBazzbo8Nt9ZBUtFib30GzhZCLSmO1Gsv4WTvwLKL9c0BFRYky9ZAgjTBU95cisoedq0gZBb6gcvLZAO5IfKVh0XcOXHaGvFRH3PV6g5AZBKPlLyBKRSLBddyZAGuauhy4ZB8bwCxrCqvHSn1JpJV09hQWAZDZD'
-            phone_id = "871135792752623"
-            
+            token = settings.WHATSAPP_ACCESS_TOKEN
+            phone_id = settings.WHATSAPP_PHONE_NUMBER_ID
             if not token or not phone_id:
                 return False
-            phone = instance.staff.phone
-            phone = ''.join(filter(str.isdigit, phone))
-            url = f"https://graph.facebook.com/v22.0/{phone_id}/messages"
-            name = instance.staff.first_name
-            # start_week = "instance.schedule.week_start_date.strftime('%Y-%m-%d')"
-            # end_week = instance.schedule.week_end_date.strftime('%Y-%m-%d')
-            # total_hours = sum(shift.get_shift_duration_hours() for shift in instance.schedule.assigned_shifts.filter(staff=instance.staff))
-            # next_shift_date = instance.shift_date.strftime('%Y-%m-%d')
-            # next_shift_time = instance.start_time.strftime('%H:%M') if instance.start_time else ''
+            status_code = shift_create_notification(instance)
+            if status_code == 200:
+                print(f"✅ Shift for date {instance.shift_date} created", file=sys.stderr)
+            else:
+                print("❌ Shift didn't create, something went wrong", file=sys.stderr)
+    else:
+        print("❌ Staff phone number not available", file=sys.stderr)
+        
 
-            # print(f"\n\nshift infos : {name}, {start_week}, {end_week}, {total_hours}, {next_shift_date}, {next_shift_time}", flush=True, file=sys.stderr)
+@receiver(pre_save, sender=AssignedShift)
+def inform_staff_before_save(sender, instance, **kwargs):
+    """Send WhatsApp message only if non-reminder fields change"""
 
-            if hasattr(instance, 'schedule') and instance.schedule:
-                try:
-                    start_week = instance.schedule.week_start.strftime('%Y-%m-%d')
-                    end_week = instance.schedule.week_end.strftime('%Y-%m-%d')
-                    total_hours = sum(shift.get_shift_duration_hours() for shift in instance.schedule.assigned_shifts.filter(staff=instance.staff))
-                    next_shift_date = instance.shift_date.strftime('%Y-%m-%d')
-                    next_shift_time = instance.start_time.strftime('%H:%M') if instance.start_time else ''
-                    next_shift_end_time = instance.end_time.strftime('%H:%M') if instance.end_time else ''
-                    message = [
-                        {"type": "text", "text": name},
-                        {"type": "text", "text": f"{start_week} to {end_week}"},
-                        {"type": "text", "text": f"{instance.role} on {next_shift_date} at {next_shift_time} to {next_shift_end_time}"},
-                        {"type": "text", "text": str(total_hours)},
-                        {"type": "text", "text": next_shift_date},
-                        {"type": "text", "text": next_shift_time}
-                    ]
-                
-                    print(f"Prepared message: {message}", flush=True, file=sys.stderr)
-                
-                    if created:
-                        resp_code = send_whatsapp(phone, message, "schedule_publication_reminder", 'en')
-                        if resp_code['status_code'] == 200:
-                            print(f"WhatsApp message sent successfully to {phone}", flush=True, file=sys.stderr)
-                        else:
-                            print(f"Failed to send WhatsApp message to {phone}: {resp_code}", flush=True)
-                    
+    token = settings.WHATSAPP_ACCESS_TOKEN
+    phone_id = settings.WHATSAPP_PHONE_NUMBER_ID
+    if not token or not phone_id:
+        return False
+    # If this is a new object, don't compare
+    if not instance.pk:
+        return
 
-                except Exception as e:
-                    print(f"Error getting start_week: {e}", flush=True)
-                    start_week = "N/A"
-                
-            else:   
-                print(f"shift schedule does not exist", flush=True, file=sys.stderr)
-            # start_week = instance.schedule.week_start_date.strftime('%Y-%m-%d')
-            # end_week = instance.schedule.week_end_date.strftime('%Y-%m-%d')
-            # total_hours = sum(shift.get_shift_duration_hours() for shift in instance.schedule.assigned_shifts.filter(staff=instance.staff))
-            # next_shift_date = instance.shift_date.strftime('%Y-%m-%d')
-            # next_shift_time = instance.start_time.strftime('%H:%M') if instance.start_time else ''
+    try:
+        old_instance = sender.objects.get(pk=instance.pk)
+    except sender.DoesNotExist:
+        return
 
-            # print(f"\n\nshift infos : {name}, {start_week}, {end_week}, {total_hours}, {next_shift_date}, {next_shift_time}", flush=True, file=sys.stderr)
+    if old_instance.staff != instance.staff:
+        if hasattr(instance.staff, 'phone') and instance.staff.phone:
+            status_code = shift_create_notification(instance)
+            if status_code == 200:
+                print(f"✅ Shift for date {instance.shift_date} created", file=sys.stderr)
+            else:
+                print("❌ Shift didn't create, something went wrong", file=sys.stderr)
+        else:
+            print("❌ Staff phone number not available", file=sys.stderr)
+        
+        if hasattr(old_instance.staff, 'phone') and old_instance.staff.phone:
+            print(f"✅ Hello {old_instance.staff.first_name}, your shift on {old_instance.shift_date} has been reassigned.", file=sys.stderr)
+        return
+    # Check if these two fields changed
+    clock_in_changed = old_instance.clock_in_reminder_sent != instance.clock_in_reminder_sent
+    checklist_changed = old_instance.check_list_reminder_sent != instance.check_list_reminder_sent
 
+    # If only these two changed → skip
+    if clock_in_changed or checklist_changed:
+        return  # do nothing
 
-            # payload = {}
-            # if created:
+    # Otherwise, something else changed → send WhatsApp message
+    phone = instance.staff.phone
+    name = instance.staff.first_name
+    next_shift_date = instance.shift_date.strftime('%Y-%m-%d')
 
-            #     payload = {
-            #         "messaging_product": "whatsapp",
-            #         "to": phone,
-            #         "type": "template",
-            #         "template": {
-            #             "name": "hello_world",
-            #             "language": {"code": "en_US"}
-            #         }
-            #     }
-            # else:
-            #     print(f"shift updated: {url}", flush=True)
-            #     payload = {
-            #         "messaging_product": "whatsapp",
-            #         "to": phone,
-            #         "type": "template",
-            #         "template": {
-            #             "name": "hello_world",
-            #             "language": {"code": "en_US"}
-            #         }
-            #     }
-                
-            # resp = requests.post(
-            #     url,
-            #     headers={'Authorization': f"Bearer {token}"},
-            #     json=payload
-            # )
-            # print(f"WhatsApp response: {resp.status_code} - {resp.text}", flush=True)
-            # return resp.status_code == 200
+    message = [
+        {"type": "text", "text": name},
+        {"type": "text", "text": f"{next_shift_date}"},
+    ]
+    resp_code = send_whatsapp(phone, message, 'shift_update')
+
+    if resp_code['status_code'] == 200:
+        print(f"✅ Shift for date {next_shift_date} updated", file=sys.stderr)
+    else:
+        print("❌ Shift didn't update, something went wrong", file=sys.stderr)
+
     
 
 

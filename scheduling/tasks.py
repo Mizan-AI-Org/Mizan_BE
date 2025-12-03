@@ -45,13 +45,17 @@ def send_whatsapp(phone, message, template_name):
 
 
 def clock_in_remender(task):
-    staff = task.staff
-    first_name = staff.first_name
-    start_time = task.start_time.strftime('%Y-%m-%d %H:%M')
-    duration_from_now = str(int((task.start_time - timezone.now()).total_seconds() // 60)) + " minutes"
-    restaurant = task.schedule.restaurant.name
-    notification_link = f"https://mizanapp.com/notify_late/{task.id}"
-    shift_duration = int((task.end_time - task.start_time).total_seconds() // 60)
+    try:
+        staff = task.staff
+        first_name = staff.first_name
+        start_time = task.start_time.strftime('%Y-%m-%d %H:%M')
+        duration_from_now = str(int((task.start_time - timezone.now()).total_seconds() // 60)) + " minutes"
+        restaurant = task.schedule.restaurant.name
+        notification_link = f"https://mizanapp.com/notify_late/{task.id}"
+        shift_duration = int((task.end_time - task.start_time).total_seconds() // 60)
+    except Exception as e:
+        print(f"Error preparing reminder for shift {task.id}: {e}", file=sys.stderr)
+        return None
     if shift_duration < 60:
         shift_duration = f"{shift_duration} minutes"
     else:
@@ -73,9 +77,11 @@ def clock_in_remender(task):
             {"type": "text", "text": restaurant},
             {"type": "text", "text": 'Unknown'},
             {"type": "text", "text": shift_duration},
+            {"type": "text", "text": "localhost:8080"},
     ]
 
-    response = send_whatsapp(phone, message, "clockin_reminder")
+
+    response = send_whatsapp(phone, message, "clockin_reminder_v2")
     # Handle the case where response is a dict and may not have .status_code
     status_code = response.get("status_code", None)
     data = response.get("data", {})
@@ -110,7 +116,7 @@ def check_list_remender(shift):
     first_name = staff.first_name
     duration_from_now = str(int((shift.start_time - timezone.now()).total_seconds() // 60)) + " minutes"
     restaurant = shift.schedule.restaurant.name
-    notification_link = f"https://tst.com"
+    notification_link = f"http://lcaolhost:8080"
     tasks = ShiftTask.objects.filter(shift=shift)
     task_templates = shift.task_templates.all()
     # tasktemplate
@@ -118,7 +124,6 @@ def check_list_remender(shift):
     key_checklist_items = "test checklist items"
     task_titles = get_tasks(shift=shift, task_templates=task_templates, tasks=tasks)
 
-    print(f"Tasks for shift {shift.id}: {task_titles}", file=sys.stderr)
     if not hasattr(staff, 'phone') or not staff.phone:
         print(f"Staff {staff.id} has no phone number. Skipping reminder.", file=sys.stderr)
         return
@@ -134,7 +139,7 @@ def check_list_remender(shift):
             {"type": "text", "text": task_titles},
         ]
     
-    response = send_whatsapp(phone, message, "shift_checklist_preview")
+    response = send_whatsapp(phone, message, "shift_checklist_preview_v2")
     status_code = response.get("status_code", None)
     data = response.get("data", {})
 

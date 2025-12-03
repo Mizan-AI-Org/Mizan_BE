@@ -331,7 +331,6 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Create shift and send notification"""
         shift = serializer.save()
-        print(f"Created shift:{shift}", file=sys.stderr)
         # Send notification to staff about the new shift
         SchedulingService.notify_shift_assignment(shift)
     

@@ -6,6 +6,10 @@ from .models import (
 )
 from .task_templates import TaskTemplate, Task
 from .audit import AuditLog
+from django.utils import timezone
+from datetime import datetime
+import sys
+
 
 class TemplateShiftSerializer(serializers.ModelSerializer):
     class Meta:
@@ -196,14 +200,43 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
         queryset=TaskTemplate.objects.all(),
         required=False
     )
-    
+
     class Meta:
         model = AssignedShift
-        fields = ['id', 'schedule', 'staff', 'staff_name', 'shift_date', 'start_time', 
-                 'end_time', 'break_duration', 'role', 'notes', 'color', 'created_at', 'updated_at', 
-                 'tasks', 'task_templates', 'task_templates_details']
-        # schedule comes from the nested URL (or explicitly in v2); clients of the nested endpoint shouldn't send it
+        fields = [
+            'id', 'schedule', 'staff', 'staff_name', 'shift_date', 'start_time', 
+            'end_time', 'break_duration', 'role', 'notes', 'color',
+            'created_at', 'updated_at', 'tasks', 'task_templates', 'task_templates_details'
+        ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'schedule']
+
+    def get_staff_name(self, obj):
+        return str(obj.staff)
+
+    def validate(self, data):
+        start = data.get("start_time")
+        end = data.get("end_time")
+
+        if not start or not end:
+            return data
+
+        try: 
+                
+            if start < timezone.now():
+                print(f"❌❌Validation error: start_time {start} is in the past.", file=sys.stderr)
+                raise serializers.ValidationError(
+                    "Shift start time cannot be in the past."
+                )
+
+            if end <= start:
+                print(f"❌❌Validation error: end_time {end} is not after start_time {start}.", file=sys.stderr)
+                raise serializers.ValidationError(
+                    "Shift end time must be after start time."
+                )
+            return data
+        except Exception as e:
+            print(f"Validation error in AssignedShiftSerializer: {e}", file=sys.stderr)
+            raise serializers.ValidationError("Invalid start_time or end_time format.")
 
 
 # Unified view item for both ShiftTask and Template Task
