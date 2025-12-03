@@ -12,7 +12,7 @@ import json, sys
 from django.conf import settings
 import requests
 from .utils import send_whatsapp, shift_create_notification
-
+from django.db.models.signals import m2m_changed
 from .models import (
     ScheduleTemplate, TemplateShift, WeeklySchedule, 
     AssignedShift, ShiftTask, ShiftSwapRequest
@@ -191,7 +191,6 @@ def inform_staff(sender, instance, created, **kwargs):
                 print("❌ Shift didn't create, something went wrong", file=sys.stderr)
     else:
         print("❌ Staff phone number not available", file=sys.stderr)
-        
 
 @receiver(pre_save, sender=AssignedShift)
 def inform_staff_before_save(sender, instance, **kwargs):
@@ -209,7 +208,22 @@ def inform_staff_before_save(sender, instance, **kwargs):
         old_instance = sender.objects.get(pk=instance.pk)
     except sender.DoesNotExist:
         return
+    
 
+    # Compare specific fields you care about
+    fields_to_watch = ['start_time', 'end_time', 'staff']  # example fields
+    has_changed = any(
+        getattr(old_instance, f) != getattr(instance, f)
+        for f in fields_to_watch
+    )
+
+    # If nothing changed → do nothing
+    if not has_changed:
+        return
+
+    # If something changed → send notification
+    print("Shift changed — sending notification!")
+    # Check if staff changed (reassignment)
     if old_instance.staff != instance.staff:
         if hasattr(instance.staff, 'phone') and instance.staff.phone:
             status_code = shift_create_notification(instance)
@@ -269,6 +283,17 @@ View full schedule
 
 Static link as a button : http://localhost:8080/staff-dashboard/schedule redirecting to schedules.
 '''
+
+
+# @receiver(m2m_changed, sender=AssignedShift.task_templates.through)
+# def notify_on_task_template_change(sender, instance, action, **kwargs):
+#     """Send notification when tasks are added or removed."""
+#     print("Notifying on task template change",file=sys.stderr)
+#     if action in ["post_add", "post_remove", "post_clear"]:
+#         print(f"✅ task_templates changed for shift {instance.id}", file=sys.stderr)
+
+        # Send WhatsApp notification here
+
 # Weekly Schedule Signals
 @receiver(post_save, sender=WeeklySchedule)
 def log_weekly_schedule_save(sender, instance, created, **kwargs):
