@@ -17,7 +17,7 @@ from django.utils.crypto import get_random_string
 from django.core.mail import send_mail
 from django.utils.html import strip_tags
 from django.template.loader import render_to_string
-
+from .utils import send_whatsapp
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role == 'ADMIN'
@@ -395,9 +395,11 @@ class InviteStaffView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def post(self, request):
+
         email = request.data.get('email')
         role = request.data.get('role')
-
+        phone = request.data.get('phone_number', '')
+        print(f"the whole request data: {request.data}", file=sys.stderr)
         if not all([email, role]):
             return Response({'error': 'Email and role are required.'}, status=status.HTTP_400_BAD_REQUEST)
         
@@ -438,6 +440,8 @@ class InviteStaffView(APIView):
                 html_message=html_message,
                 fail_silently=False,
             )
+            send_whatsapp(phone, None, 'hello_world')  # Placeholder WhatsApp message
+
             return Response({'message': 'Invitation sent successfully', 'token': token}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({
