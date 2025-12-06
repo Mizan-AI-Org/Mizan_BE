@@ -70,7 +70,7 @@ def send_whatsapp(phone, message, template_name, language_code="en_US"):
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
-    if message is None:
+    if message is not None:
         payload = {
                     "messaging_product": "whatsapp",
                     "to": phone,
