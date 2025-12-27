@@ -199,10 +199,21 @@ class InvitationViewSet(viewsets.ModelViewSet):
 
             # Normalize extra_data from request for convenience
             extra_data = serializer.validated_data.get('extra_data') or {}
-            # Allow top-level fields to be merged into extra_data if provided
-            for key in ('first_name', 'last_name', 'department', 'phone'):
-                if key in request.data and request.data.get(key) is not None:
-                    extra_data[key] = request.data.get(key)
+            
+            # Extract names and phone from request.data or validated_data
+            first_name = request.data.get('first_name') or serializer.validated_data.get('first_name')
+            last_name = request.data.get('last_name') or serializer.validated_data.get('last_name')
+            phone = request.data.get('phone') or request.data.get('whatsapp') or extra_data.get('phone')
+            department = request.data.get('department') or extra_data.get('department')
+
+            # Ensure they are in extra_data for frontend display consistency
+            if first_name: extra_data['first_name'] = first_name
+            if last_name: extra_data['last_name'] = last_name
+            if phone: extra_data['phone'] = phone
+            if department: extra_data['department'] = department
+
+            logger.info(f"Creating invitation: email={email}, phone={phone}, names={first_name} {last_name}")
+            print(f"DEBUG: Invitation payload: {extra_data}")
 
             # Save with server-side fields
             invitation = serializer.save(
@@ -211,6 +222,8 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 invitation_token=token,
                 expires_at=expires_at,
                 extra_data=extra_data,
+                first_name=first_name,
+                last_name=last_name
             )
 
             # Send invitation email (do not throw HTML errors)

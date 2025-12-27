@@ -52,6 +52,7 @@ urlpatterns = [
     # Weekly Schedules
     path('weekly-schedules/', WeeklyScheduleListCreateAPIView.as_view(), name='weekly-schedule-list-create'),
     path('weekly-schedules/<uuid:pk>/', WeeklyScheduleRetrieveUpdateDestroyAPIView.as_view(), name='weekly-schedule-detail'),
+    path('auto-schedule/', WeeklyScheduleViewSet.as_view({'post': 'optimize'}), name='auto-schedule'),
 
     # Assigned Shifts (nested under weekly schedules)
     path('weekly-schedules/<uuid:schedule_pk>/assigned-shifts/', AssignedShiftListCreateAPIView.as_view(), name='assigned-shift-list-create'),

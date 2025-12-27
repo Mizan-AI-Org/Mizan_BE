@@ -16,4 +16,5 @@ router.register(r'analytics', views.ChecklistAnalyticsViewSet, basename='checkli
 # The API URLs are now determined automatically by the router
 urlpatterns = [
     path('api/checklists/', include(router.urls)),
+    path('api/checklists/shift-checklists/', views.get_shift_checklists, name='get-shift-checklists'),
 ]

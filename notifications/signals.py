@@ -175,7 +175,7 @@ def send_shift_reminders():
         from scheduling.models import AssignedShift
         
         # Get shifts starting in the next 2 hours
-        reminder_time = timezone.now() + timedelta(hours=2)
+        reminder_time = timezone.now() + timedelta(hours=1)
         upcoming_shifts = AssignedShift.objects.filter(
             start_time__lte=reminder_time,
             start_time__gt=timezone.now(),

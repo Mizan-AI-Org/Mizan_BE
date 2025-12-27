@@ -31,4 +31,6 @@ urlpatterns = [
 
     # Health checks
     path('health-check/', views.health_check_notifications, name='health-check-notifications'),
+    path('whatsapp/activity/', views.whatsapp_activity, name='whatsapp-activity'),
+    path('whatsapp/webhook/', views.whatsapp_webhook, name='whatsapp-webhook'),
 ]

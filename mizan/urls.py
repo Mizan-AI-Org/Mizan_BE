@@ -36,6 +36,7 @@ urlpatterns = [
     path('api/notifications/', include('notifications.urls')),
     path('api/pos/', include('pos.urls')),
     path('', include('checklists.urls')),  # Checklist management URLs
+    path('api/billing/', include('billing.urls')),
     # AI Assistant routes removed
     path('api/attendance/', include('attendance.urls')),  # Attendance module URLs
 

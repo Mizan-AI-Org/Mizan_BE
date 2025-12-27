@@ -17,7 +17,7 @@ from django.utils.crypto import get_random_string
 from django.core.mail import send_mail
 from django.utils.html import strip_tags
 from django.template.loader import render_to_string
-
+from .utils import send_whatsapp
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role == 'ADMIN'
@@ -395,9 +395,14 @@ class InviteStaffView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def post(self, request):
+
         email = request.data.get('email')
         role = request.data.get('role')
+        phone = request.data.get('phone_number', '')
+        restaurant_name = request.user.restaurant.name
+        staff_name = request.data.get('last_name', '')
 
+        print(f"the whole request data: {request.data}", file=sys.stderr)
         if not all([email, role]):
             return Response({'error': 'Email and role are required.'}, status=status.HTTP_400_BAD_REQUEST)
         
@@ -409,7 +414,7 @@ class InviteStaffView(APIView):
 
         token = get_random_string(64)
         expires_at = timezone.now() + timezone.timedelta(days=7)
-
+        print(f"request : {request}", file=sys.stderr)
         invitation = UserInvitation.objects.create(
             email=email,
             role=role,
@@ -419,8 +424,10 @@ class InviteStaffView(APIView):
             expires_at=expires_at
         )
 
+
         invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
-        print(f"Staff Invitation Link for {email}: {invite_link}")
+        print(f"✅ {restaurant_name}, {staff_name} ,{invite_link}", file=sys.stderr)
+        # print(f"Staff Invitation Link for {email}: {invite_link}")
 
         html_message = render_to_string('emails/staff_invite.html', {
             'invite_link': invite_link,
@@ -438,6 +445,13 @@ class InviteStaffView(APIView):
                 html_message=html_message,
                 fail_silently=False,
             )
+
+            whatsapp_msg = [
+                {"type": "text", "text": restaurant_name},
+                {"type": "text", "text": staff_name},
+                {"type": "text", "text": "https://test.com"},
+            ]
+            send_whatsapp(phone, whatsapp_msg, 'staff_invitation')  # Placeholder WhatsApp messageprint(f"res : {res}", file=sys.stderr)
             return Response({'message': 'Invitation sent successfully', 'token': token}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({

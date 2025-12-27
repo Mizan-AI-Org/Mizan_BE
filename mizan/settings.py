@@ -66,6 +66,7 @@ INSTALLED_APPS = [
     'pos',  # Point of Sale app
     'core',  # Core utilities app
     'checklists',  # Checklist management app
+    'billing',     # Billing & Subscriptions
 ]
 
 # ---------------------------
@@ -152,7 +153,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # ---------------------------
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+TIME_ZONE = "Africa/Casablanca"
 USE_I18N = True
 USE_TZ = True
 
@@ -287,11 +288,51 @@ else:
     DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=config('EMAIL_HOST_USER', default='no-reply@mizan.local'))
 
 
-# EMAIL Configuration (from .env)
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = config('EMAIL_HOST', default=os.getenv('EMAIL_HOST', 'smtp.gmail.com'))
-EMAIL_PORT = config('EMAIL_PORT', default=os.getenv('EMAIL_PORT', '587'), cast=int)
-EMAIL_USE_TLS = str_to_bool(config('EMAIL_USE_TLS', default=os.getenv('EMAIL_USE_TLS', 'True')))
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default=os.getenv('EMAIL_HOST_USER', ''))
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default=os.getenv('EMAIL_HOST_PASSWORD', ''))
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=os.getenv('DEFAULT_FROM_EMAIL', 'no-reply@mizan.local'))
+WHATSAPP_ACCESS_TOKEN = config('WHATSAPP_ACCESS_TOKEN', default='')
+WHATSAPP_PHONE_NUMBER_ID = config('WHATSAPP_PHONE_NUMBER_ID', default='')
+WHATSAPP_API_VERSION = config('WHATSAPP_API_VERSION', default='v22.0')
+WHATSAPP_BUSINESS_ACCOUNT_ID = config('WHATSAPP_BUSINESS_ACCOUNT_ID', default='')
+WHATSAPP_VERIFY_TOKEN = config('WHATSAPP_VERIFY_TOKEN', default='')
+WHATSAPP_INVITATION_FLOW_ID = config('WHATSAPP_INVITATION_FLOW_ID', default=None)
+OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://redis:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0')
+
+LUA_API_URL = os.getenv('LUA_API_URL', 'https://api.heylua.ai')
+LUA_AGENT_ID = os.getenv('LUA_AGENT_ID', '')
+LUA_WEBHOOK_API_KEY = os.getenv('LUA_WEBHOOK_API_KEY', '')
+
+# ---------------------------
+# Stripe Configuration
+# ---------------------------
+STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY', default='')
+STRIPE_PUBLISHABLE_KEY = config('STRIPE_PUBLISHABLE_KEY', default='')
+STRIPE_WEBHOOK_SECRET = config('STRIPE_WEBHOOK_SECRET', default='')
+
+
+from celery.schedules import crontab
+
+CELERY_BEAT_SCHEDULE = {
+    "check_tasks_every_minute": {
+        "task": "scheduling.tasks.check_upcoming_tasks",
+        "schedule": 5,
+    },
+    "shift_reminders_30min": {
+        "task": "scheduling.reminder_tasks.send_shift_reminders_30min",
+        "schedule": crontab(minute='*/5'),  # Every 5 minutes
+    },
+    "checklist_reminders": {
+        "task": "scheduling.reminder_tasks.send_checklist_reminders",
+        "schedule": crontab(minute='*/10'),  # Every 10 minutes
+    },
+    "clock_in_reminders": {
+        "task": "scheduling.reminder_tasks.send_clock_in_reminders",
+        "schedule": crontab(minute='*/5'),  # Every 5 minutes
+    },
+}
+
+
+from django.utils import timezone
+
+now = timezone.now()
+print("Now:", now.strftime("%Y-%m-%d %H:%M:%S"), file=sys.stderr)

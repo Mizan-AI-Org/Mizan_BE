@@ -33,8 +33,8 @@ class TemplateShift(models.Model):
     role = models.CharField(max_length=20, choices=settings.STAFF_ROLES_CHOICES)
     day_of_week = models.IntegerField(choices=[(0, 'Monday'), (1, 'Tuesday'), (2, 'Wednesday'),
                                               (3, 'Thursday'), (4, 'Friday'), (5, 'Saturday'), (6, 'Sunday')])
-    start_time = models.DateTimeField(null=True, blank=True)
-    end_time =models.DateTimeField(null=True, blank=True)
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
     required_staff = models.IntegerField(default=1)
     
     class Meta:
@@ -109,6 +109,10 @@ class AssignedShift(models.Model):
     created_by = models.ForeignKey('accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='created_shifts')
     last_modified_by = models.ForeignKey('accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='modified_shifts')
     
+    # Reminders and alerts
+    clock_in_reminder_sent = models.BooleanField(default=False)
+    clock_out_reminder_sent = models.BooleanField(default=False)
+    check_list_reminder_sent = models.BooleanField(default=False)
     # Task templates assigned to this shift
     task_templates = models.ManyToManyField(
         'TaskTemplate',
@@ -116,6 +120,20 @@ class AssignedShift(models.Model):
         related_name='assigned_shifts',
         help_text="Task templates assigned to this shift for staff checklist"
     )
+    
+    def get_shift_duration_hours(self):
+        if isinstance(self.start_time, _dt):
+            shift_start_datetime = self.start_time
+        else:
+            shift_start_datetime = timezone.datetime.combine(self.shift_date, self.start_time)
+        if isinstance(self.end_time, _dt):
+            shift_end_datetime = self.end_time
+        else:
+            shift_end_datetime = timezone.datetime.combine(self.shift_date, self.end_time)
+        if shift_end_datetime < shift_start_datetime:
+            shift_end_datetime += timezone.timedelta(days=1)
+        duration = shift_end_datetime - shift_start_datetime
+        return duration.total_seconds() / 3600
 
     class Meta:
         db_table = 'assigned_shifts'
@@ -156,6 +174,12 @@ class AssignedShift(models.Model):
                 raise ValidationError(f"Staff member has overlapping shift from {existing_shift.start_time} to {existing_shift.end_time}")
     
     def save(self, *args, **kwargs):
+        # Convert time to datetime if needed
+        if self.start_time and isinstance(self.start_time, _time) and not isinstance(self.start_time, _dt):
+            self.start_time = timezone.datetime.combine(self.shift_date, self.start_time)
+        if self.end_time and isinstance(self.end_time, _time) and not isinstance(self.end_time, _dt):
+            self.end_time = timezone.datetime.combine(self.shift_date, self.end_time)
+            
         self.clean()
         super().save(*args, **kwargs)
 

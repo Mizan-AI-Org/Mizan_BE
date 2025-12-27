@@ -8,8 +8,11 @@ from django.dispatch import receiver
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from threading import local
-import json
-
+import json, sys
+from django.conf import settings
+import requests
+from .utils import send_whatsapp, shift_create_notification
+from django.db.models.signals import m2m_changed
 from .models import (
     ScheduleTemplate, TemplateShift, WeeklySchedule, 
     AssignedShift, ShiftTask, ShiftSwapRequest
@@ -92,7 +95,6 @@ def log_schedule_template_save(sender, instance, created, **kwargs):
     """Log schedule template creation and updates"""
     user = get_current_user()
     request = get_current_request()
-    
     if created:
         AuditTrailService.log_activity(
             user=user,
@@ -148,6 +150,7 @@ def log_schedule_template_delete(sender, instance, **kwargs):
 @receiver(post_save, sender=TemplateShift)
 def log_template_shift_save(sender, instance, created, **kwargs):
     """Log template shift creation and updates"""
+    print("Logging template shift save",file=sys.stderr)
     user = get_current_user()
     request = get_current_request()
     
@@ -168,6 +171,129 @@ def log_template_shift_save(sender, instance, created, **kwargs):
             request=request
         )
 
+
+# Here after creating the templates we will send full message to staff via whatsapp
+@receiver(post_save, sender=AssignedShift)
+def inform_staff(sender, instance, created, **kwargs):
+    """Log template shift deletion"""
+
+    if not created:
+        return
+    if hasattr(instance.staff, 'phone') and instance.staff.phone:
+            token = settings.WHATSAPP_ACCESS_TOKEN
+            phone_id = settings.WHATSAPP_PHONE_NUMBER_ID
+            if not token or not phone_id:
+                return False
+            status_code = shift_create_notification(instance)
+            if status_code == 200:
+                print(f"✅ Shift for date {instance.shift_date} created", file=sys.stderr)
+            else:
+                print("❌ Shift didn't create, something went wrong", file=sys.stderr)
+    else:
+        print("❌ Staff phone number not available", file=sys.stderr)
+
+@receiver(pre_save, sender=AssignedShift)
+def inform_staff_before_save(sender, instance, **kwargs):
+    """Send WhatsApp message only if non-reminder fields change"""
+
+    token = settings.WHATSAPP_ACCESS_TOKEN
+    phone_id = settings.WHATSAPP_PHONE_NUMBER_ID
+    if not token or not phone_id:
+        return False
+    # If this is a new object, don't compare
+    if not instance.pk:
+        return
+
+    try:
+        old_instance = sender.objects.get(pk=instance.pk)
+    except sender.DoesNotExist:
+        return
+    
+
+    # Compare specific fields you care about
+    fields_to_watch = ['start_time', 'end_time', 'staff']  # example fields
+    has_changed = any(
+        getattr(old_instance, f) != getattr(instance, f)
+        for f in fields_to_watch
+    )
+
+    # If nothing changed → do nothing
+    if not has_changed:
+        return
+
+    # If something changed → send notification
+    print("Shift changed — sending notification!")
+    # Check if staff changed (reassignment)
+    if old_instance.staff != instance.staff:
+        if hasattr(instance.staff, 'phone') and instance.staff.phone:
+            status_code = shift_create_notification(instance)
+            if status_code == 200:
+                print(f"✅ Shift for date {instance.shift_date} created", file=sys.stderr)
+            else:
+                print("❌ Shift didn't create, something went wrong", file=sys.stderr)
+        else:
+            print("❌ Staff phone number not available", file=sys.stderr)
+        
+        if hasattr(old_instance.staff, 'phone') and old_instance.staff.phone:
+            print(f"✅ Hello {old_instance.staff.first_name}, your shift on {old_instance.shift_date} has been reassigned.", file=sys.stderr)
+        return
+    # Check if these two fields changed
+    clock_in_changed = old_instance.clock_in_reminder_sent != instance.clock_in_reminder_sent
+    checklist_changed = old_instance.check_list_reminder_sent != instance.check_list_reminder_sent
+
+    # If only these two changed → skip
+    if clock_in_changed or checklist_changed:
+        return  # do nothing
+
+    # Otherwise, something else changed → send WhatsApp message
+    phone = instance.staff.phone
+    name = instance.staff.first_name
+    next_shift_date = instance.shift_date.strftime('%Y-%m-%d')
+
+    message = [
+        {"type": "text", "text": name},
+        {"type": "text", "text": f"{next_shift_date}"},
+    ]
+    resp_code = send_whatsapp(phone, message, 'shift_update')
+
+    if resp_code['status_code'] == 200:
+        print(f"✅ Shift for date {next_shift_date} updated", file=sys.stderr)
+    else:
+        print("❌ Shift didn't update, something went wrong", file=sys.stderr)
+
+    
+
+
+
+'''
+
+Template name: schedule_publication_reminder
+Language: en
+
+📅 *Your Schedule is Ready!*
+
+Hello {{1}}, your shifts for the week of {{2}}:
+
+{{3}}
+
+• Total hours: {{4}}
+• Next shift: {{5}} at {{6}}
+
+View full schedule
+
+Static link as a button : http://localhost:8080/staff-dashboard/schedule redirecting to schedules.
+'''
+
+
+# @receiver(m2m_changed, sender=AssignedShift.task_templates.through)
+# def notify_on_task_template_change(sender, instance, action, **kwargs):
+#     """Send notification when tasks are added or removed."""
+#     print("Notifying on task template change",file=sys.stderr)
+#     if action in ["post_add", "post_remove", "post_clear"]:
+#         print(f"✅ task_templates changed for shift {instance.id}", file=sys.stderr)
+
+        # Send WhatsApp notification here
+
 # Weekly Schedule Signals
 @receiver(post_save, sender=WeeklySchedule)
 def log_weekly_schedule_save(sender, instance, created, **kwargs):
@@ -175,14 +301,15 @@ def log_weekly_schedule_save(sender, instance, created, **kwargs):
     user = get_current_user()
     request = get_current_request()
     
+    print("Loggin§g creation of weekly schedule",file=sys.stderr)
     if created:
         AuditTrailService.log_schedule_activity(
             user=user,
             schedule=instance,
             action=AuditActionType.CREATE,
-            description=f"Created weekly schedule for week {instance.week_start_date}",
+            description=f"Created weekly schedule for week {instance.week_start}",
             metadata={
-                'week_start': instance.week_start_date.isoformat(),
+                'week_start': instance.week_start.isoformat(),
                 'restaurant_id': instance.restaurant.id if instance.restaurant else None,
                 'is_published': instance.is_published
             },
@@ -197,10 +324,10 @@ def log_weekly_schedule_save(sender, instance, created, **kwargs):
                     user=user,
                     schedule=instance,
                     action=AuditActionType.SCHEDULE_PUBLISH,
-                    description=f"Published weekly schedule for week {instance.week_start_date}",
+                    description=f"Published weekly schedule for week {instance.week_start}",
                     old_values=old_values,
                     new_values=new_values,
-                    metadata={'week_start': instance.week_start_date.isoformat()},
+                    metadata={'week_start': instance.week_start.isoformat()},
                     request=request
                 )
             else:
@@ -208,7 +335,7 @@ def log_weekly_schedule_save(sender, instance, created, **kwargs):
                     user=user,
                     schedule=instance,
                     action=AuditActionType.UPDATE,
-                    description=f"Updated weekly schedule for week {instance.week_start_date}",
+                    description=f"Updated weekly schedule for week {instance.week_start}",
                     old_values=old_values,
                     new_values=new_values,
                     request=request
@@ -274,7 +401,6 @@ def log_assigned_shift_delete(sender, instance, **kwargs):
         shift=instance,
         action=AuditActionType.UNASSIGN,
         description=f"Removed shift assignment for {instance.staff.get_full_name() if instance.staff else 'Unknown'}",
-        severity=AuditSeverity.MEDIUM,
         metadata={
             'staff_id': instance.staff.id if instance.staff else None,
             'staff_name': instance.staff.get_full_name() if instance.staff else None,

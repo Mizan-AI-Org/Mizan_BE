@@ -358,6 +358,7 @@ class UserInvitation(models.Model):
     accepted_at = models.DateTimeField(blank=True, null=True)
     accepted_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='invitations_accepted')
     invited_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='invitations_sent')
+    extra_data = models.JSONField(default=dict, blank=True)
     is_bulk_invite = models.BooleanField(default=False)
     bulk_batch_id = models.CharField(max_length=50, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -498,4 +499,35 @@ class AIAssistantConfig(models.Model):
     
     def __str__(self):
         return f"AI Config - {self.restaurant.name}"
+
+
+class InvitationDeliveryLog(models.Model):
+    """Log of all invitation delivery attempts"""
+    STATUS_CHOICES = (
+        ('PENDING', 'Pending'),
+        ('SENT', 'Sent'),
+        ('DELIVERED', 'Delivered'),
+        ('READ', 'Read'),
+        ('FAILED', 'Failed'),
+    )
+
+    invitation = models.ForeignKey(UserInvitation, on_delete=models.CASCADE, related_name='delivery_logs')
+    channel = models.CharField(max_length=20) # 'email', 'whatsapp'
+    recipient_address = models.CharField(max_length=255) # email or phone
+    
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    external_id = models.CharField(max_length=255, blank=True, null=True, help_text="External message ID (e.g. wamid)")
+    response_data = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True, null=True)
+    attempt_count = models.IntegerField(default=1)
+    
+    sent_at = models.DateTimeField(auto_now_add=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'invitation_delivery_logs'
+        ordering = ['-sent_at']
+
+    def __str__(self):
+        return f"{self.channel} invitation to {self.recipient_address} - {self.status}"
     

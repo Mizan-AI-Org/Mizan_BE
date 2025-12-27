@@ -45,14 +45,17 @@ class NotificationConsumer(AsyncWebsocketConsumer):
             return
 
         self.user = await self.get_user_from_token(token)
+        username = self.user.first_name if self.user else "Anonymous"
+        print(f"Authenticated user: {username}", file=sys.stderr)
 
         if not self.user or not self.user.is_authenticated:
             await self.close(code=4002)
             return
 
         self.group_name = f"user_{self.user.id}_notifications"
-
+        print(f"Joining group: {self.group_name}", file=sys.stderr)
         await self.channel_layer.group_add(self.group_name, self.channel_name)
+        print(f"layer: {self.channel_layer}", file=sys.stderr)
         await self.accept()
 
     async def disconnect(self, close_code):

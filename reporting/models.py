@@ -56,3 +56,57 @@ class InventoryReport(models.Model):
 
     def __str__(self):
         return f"Inventory Report for {self.restaurant.name} on {self.date}"
+
+
+class Incident(models.Model):
+    """
+    Formal record of an incident reported by staff or automated systems.
+    """
+    PRIORITY_CHOICES = (
+        ('LOW', 'Low'),
+        ('MEDIUM', 'Medium'),
+        ('HIGH', 'High'),
+        ('CRITICAL', 'Critical'),
+    )
+    
+    STATUS_CHOICES = (
+        ('OPEN', 'Open'),
+        ('INVESTIGATING', 'Investigating'),
+        ('RESOLVED', 'Resolved'),
+        ('CLOSED', 'Closed'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='incidents')
+    reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='reported_incidents')
+    
+    title = models.CharField(max_length=255)
+    description = models.TextField()
+    
+    # Classification
+    category = models.CharField(max_length=100, blank=True, null=True) # e.g., 'Maintenance', 'Safety', 'HR'
+    priority = models.CharField(max_length=20, choices=PRIORITY_CHOICES, default='MEDIUM')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='OPEN')
+    
+    # Evidence
+    photo_evidence = models.JSONField(default=list, blank=True)
+    audio_evidence = models.JSONField(default=list, blank=True) # URLs to audio files
+    
+    # Resolution
+    assigned_to = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_incidents')
+    resolution_notes = models.TextField(blank=True, null=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'incidents'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['restaurant', 'status']),
+            models.Index(fields=['priority']),
+        ]
+    
+    def __str__(self):
+        return f"{self.title} ({self.status}) - {self.restaurant.name}"

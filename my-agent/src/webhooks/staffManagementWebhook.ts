@@ -13,15 +13,13 @@
  */
 
 import { LuaWebhook, Data } from "lua-cli";
+import { IncidentManagementModule } from "../modules/incident-management";
 import { StaffManagementModule } from "../modules/staff-management-events";
 import { z } from "zod";
 
 const staffManagementWebhook = new LuaWebhook({
     name: "staff-management-events",
-    version: "2.0.0",
     description: "Manages staff scheduling, assignments, and performance tracking",
-    context: "This webhook optimizes staff operations by tracking assignments, monitoring workload, " +
-        "and ensuring efficient task distribution across the team.",
 
     querySchema: z.object({
         shift: z.enum(['breakfast', 'lunch', 'dinner', 'late_night']).optional(),
@@ -83,11 +81,11 @@ const staffManagementWebhook = new LuaWebhook({
         if (!expectedKey) {
             throw new Error('API key is not configured in the environment variables');
         }
-        if (headers['x-api-key'] !== expectedKey) {
+        if (headers && headers['x-api-key'] !== expectedKey) {
             throw new Error('Unauthorized: Invalid API key');
         }
 
-        const role = headers['x-role'];
+        const role = headers?.['x-role'];
         const eventPermissions: Record<string, string[]> = {
             clock_in: ['server', 'bartender', 'host', 'busser', 'chef', 'cook', 'dishwasher', 'manager'],
             clock_out: ['server', 'bartender', 'host', 'busser', 'chef', 'cook', 'dishwasher', 'manager'],
@@ -107,6 +105,16 @@ const staffManagementWebhook = new LuaWebhook({
         const allowedRoles = eventPermissions[body.eventType];
         if (allowedRoles && !allowedRoles.includes(role)) {
             throw new Error(`Forbidden: role ${role} not permitted for event ${body.eventType}`);
+        }
+
+        let incidentAnalysis = null;
+        if (body.eventType === 'incident_reported' && body.details?.incidentDescription) {
+            const incidentModule = new IncidentManagementModule();
+            incidentAnalysis = await incidentModule.analyzeIncident(
+                body.details.incidentDescription,
+                { staff: body.staffName, role: body.role, context: body.metadata }
+            );
+            console.log("   🚨 Incident Analyzed:", incidentAnalysis);
         }
 
         const start = Date.now();
@@ -140,11 +148,12 @@ const staffManagementWebhook = new LuaWebhook({
             ...body,
             shift: query?.shift,
             department: query?.department,
-            managerId: headers['x-manager-id'],
+            managerId: headers?.['x-manager-id'],
             actionTaken,
-            requiresManagerAttention,
+            requiresManagerAttention: requiresManagerAttention || (incidentAnalysis?.analysis?.priority === 'CRITICAL' || incidentAnalysis?.analysis?.priority === 'HIGH'),
             workloadImpact,
             workloadScore,
+            incidentAnalysis,
             receivedAt: new Date().toISOString(),
             processed: true
         };
@@ -165,18 +174,19 @@ const staffManagementWebhook = new LuaWebhook({
             }
         }
 
-        console.log(`✅ Staff event processed: ${result.id}`);
+        console.log(`✅ Staff event processed: ${result?.id}`);
 
         // Return response with workload insights
         return {
             success: true,
-            eventId: result.id,
+            eventId: result?.id,
             staffId: body.staffId,
             staffName: body.staffName,
             actionTaken,
             workloadScore,
-            requiresManagerAttention,
+            requiresManagerAttention: eventData.requiresManagerAttention,
             recommendations,
+            incidentAnalysis: incidentAnalysis?.analysis,
             timestamp: new Date().toISOString()
         };
     }

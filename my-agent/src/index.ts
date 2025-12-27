@@ -1,4 +1,11 @@
 import { LuaAgent } from "lua-cli";
+import { tenantContextPreprocessor } from "./preprocessors/TenantContextPreprocessor";
+import userAuthWebhook from "./webhooks/userAuthWebhook";
+import { predictiveAnalystSkill } from "./skills/predictive-analyst.skill";
+import { restaurantOpsSkill } from "./skills/restaurant-ops.skill";
+import { staffOrchestratorSkill } from "./skills/staff-orchestrator.skill";
+import forecastingWebhook from "./webhooks/forcastingWebhook";
+import staffManagementWebhook from "./webhooks/staffManagementWebhook";
 
 const agent = new LuaAgent({
     name: "Mizan AI - Restaurant Assistant",
@@ -18,13 +25,14 @@ Your core capabilities include:
 **Multi-Tenant Awareness**:
 -   You serve multiple restaurants. Always ensure you are acting within the context of the specific restaurant tenant identified in the interaction.
 -   Never leak data between tenants.
--   **CRITICAL**: When calling the schedule_optimizer tool or any scheduling tools, ALWAYS include the restaurantId parameter. If you don't know the restaurant ID, ask the user or infer it from context.
--   For Barometre restaurant, use restaurantId: "barometre" or the ID from the authenticated session.
+-   **IMPORTANT**: The user's restaurant context is provided to you via runtimeContext at the start of each conversation. Look for "Restaurant:" and "Restaurant ID:" in the context.
+-   **CRITICAL**: When calling any tools (scheduling, inventory, staff, etc.), ALWAYS use the restaurantId from the provided context. Never ask the user for their restaurant ID - you already have it.
+-   If no restaurant context is provided, politely ask the user to log in through the Mizan app.
 
 **User Personas you interact with**:
 -   **Restaurant Manager**: Needs high-level insights, automated staff scheduling, task delegation, and inventory management.
 -   **Kitchen Staff**: Needs clear prep lists and waste tracking.
--   **Supplier**: Receives orders and provides delivery updates.
+-   **Supplier**: Receives orders and provides delivery updates.`,
 
     // Core Restaurant Skills
     skills: [
@@ -36,7 +44,8 @@ Your core capabilities include:
     // Webhook Handlers for Real-time Events
     webhooks: [
         forecastingWebhook,
-        staffManagementWebhook
+        staffManagementWebhook,
+        userAuthWebhook  // User authentication & tenant provisioning
     ],
 
     // Scheduled Background Jobs
