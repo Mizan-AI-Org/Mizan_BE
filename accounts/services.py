@@ -57,7 +57,7 @@ class UserManagementService:
                 last_name = (row.get('last_name') or row.get('lastname') or '').strip()
 
                 department = (row.get('department') or '').strip()
-                phone = (row.get('phone') or row.get('phonenumber') or '').strip()
+                phone = (row.get('phone') or row.get('whatsapp') or row.get('phonenumber') or '').strip()
 
                 # Check if pending invitation already exists
                 print(f"Row {idx}: checking existing invitation for {email}", file=sys.stderr)
@@ -86,6 +86,13 @@ class UserManagementService:
                     token = secrets.token_urlsafe(32)
                     expires_at = timezone.now() + timedelta(days=expires_in_days)
                     
+                    extra_data = {
+                        'first_name': first_name,
+                        'last_name': last_name,
+                        'department': department,
+                        'phone': phone
+                    }
+
                     invitation = UserInvitation.objects.create(
                         email=email,
                         role=role_value,  # skipped role conversion
@@ -94,11 +101,9 @@ class UserManagementService:
                         invitation_token=token,
                         expires_at=expires_at,
                         is_accepted=False,
-                        first_name= first_name,
-                        last_name= last_name,
-                        # department= department,
-                        # phone= phone,
-                        
+                        first_name=first_name,
+                        last_name=last_name,
+                        extra_data=extra_data,
                     )
                     print(f"Row {idx}: invitation created for {email}", file=sys.stderr)
 
@@ -148,7 +153,7 @@ class UserManagementService:
                 first_name = (item.get('first_name') or item.get('firstname') or '').strip()
                 last_name = (item.get('last_name') or item.get('lastname') or '').strip()
                 department = (item.get('department') or '').strip()
-                phone = (item.get('phone') or item.get('phonenumber') or '').strip()
+                phone = (item.get('phone') or item.get('whatsapp') or item.get('phonenumber') or '').strip()
 
                 existing_invite = UserInvitation.objects.filter(
                     restaurant=restaurant,
@@ -163,6 +168,14 @@ class UserManagementService:
 
                 token = secrets.token_urlsafe(32)
                 expires_at = timezone.now() + timedelta(days=expires_in_days)
+                
+                extra_data = {
+                    'first_name': first_name,
+                    'last_name': last_name,
+                    'department': department,
+                    'phone': phone
+                }
+
                 invitation = UserInvitation.objects.create(
                     email=email,
                     role=role_value,
@@ -170,10 +183,9 @@ class UserManagementService:
                     invited_by=invited_by,
                     invitation_token=token,
                     expires_at=expires_at,
-                    first_name= first_name,
-                    last_name= last_name,
-                    # department= department,
-                    # phone= phone,
+                    first_name=first_name,
+                    last_name=last_name,
+                    extra_data=extra_data,
                 )
                 try:
                     UserManagementService._send_invitation_email(invitation)

@@ -191,15 +191,51 @@ class TaskSerializer(serializers.ModelSerializer):
         from accounts.serializers import UserSerializer
         return UserSerializer(obj.assigned_to.all(), many=True).data
 
+class LenientManyRelatedField(serializers.ManyRelatedField):
+    """Custom ManyRelatedField that ignores non-existent PKs instead of erroring"""
+    def to_internal_value(self, data):
+        if not data:
+            return []
+        from .task_templates import TaskTemplate
+        # Filter to only existing objects
+        valid_ids = [pk for pk in data if TaskTemplate.objects.filter(id=pk).exists()]
+        return list(TaskTemplate.objects.filter(id__in=valid_ids))
+
+
+class LenientPKRelatedField(serializers.PrimaryKeyRelatedField):
+    """PrimaryKeyRelatedField that uses LenientManyRelatedField for many=True"""
+    @classmethod
+    def many_init(cls, *args, **kwargs):
+        list_kwargs = {'child_relation': cls(*args, **kwargs)}
+        for key in kwargs:
+            if key in ('read_only', 'write_only', 'required', 'default', 'source', 'allow_empty', 'allow_null'):
+                list_kwargs[key] = kwargs[key]
+        return LenientManyRelatedField(**list_kwargs)
+
+
 class AssignedShiftSerializer(serializers.ModelSerializer):
     staff_name = serializers.CharField(source='staff.__str__', read_only=True)
     tasks = ShiftTaskSerializer(many=True, read_only=True)
     task_templates_details = TaskTemplateSerializer(source='task_templates', many=True, read_only=True)
-    task_templates = serializers.PrimaryKeyRelatedField(
+    # Use lenient field that ignores non-existent IDs
+    task_templates = LenientPKRelatedField(
         many=True,
         queryset=TaskTemplate.objects.all(),
         required=False
     )
+    # Explicit time fields to handle multiple input formats
+    start_time = serializers.DateTimeField(
+        input_formats=['iso-8601', '%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%dT%H:%M:%S', '%H:%M:%S', '%H:%M'],
+        required=False,
+        allow_null=True
+    )
+    end_time = serializers.DateTimeField(
+        input_formats=['iso-8601', '%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%dT%H:%M:%S', '%H:%M:%S', '%H:%M'],
+        required=False,
+        allow_null=True
+    )
+    # Override role field to accept any case - we'll normalize in validate_role
+    role = serializers.CharField(required=False, allow_blank=True)
 
     class Meta:
         model = AssignedShift
@@ -213,6 +249,12 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
     def get_staff_name(self, obj):
         return str(obj.staff)
 
+    def validate_role(self, value):
+        """Normalize role to uppercase to match STAFF_ROLES_CHOICES"""
+        if value:
+            return value.upper()
+        return value
+
     def validate(self, data):
         start = data.get("start_time")
         end = data.get("end_time")
@@ -220,23 +262,20 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
         if not start or not end:
             return data
 
-        try: 
-                
-            if start < timezone.now():
-                print(f"❌❌Validation error: start_time {start} is in the past.", file=sys.stderr)
-                raise serializers.ValidationError(
-                    "Shift start time cannot be in the past."
-                )
-
-            if end <= start:
-                print(f"❌❌Validation error: end_time {end} is not after start_time {start}.", file=sys.stderr)
-                raise serializers.ValidationError(
-                    "Shift end time must be after start time."
-                )
+        # Handle cases where start/end might be datetime or time objects
+        # Convert to something comparable
+        try:
+            # If they're already datetime objects, compare directly
+            if hasattr(start, 'timestamp') and hasattr(end, 'timestamp'):
+                if end <= start:
+                    raise serializers.ValidationError(
+                        "Shift end time must be after start time."
+                    )
             return data
-        except Exception as e:
-            print(f"Validation error in AssignedShiftSerializer: {e}", file=sys.stderr)
-            raise serializers.ValidationError("Invalid start_time or end_time format.")
+        except TypeError:
+            # If comparison fails due to type mismatch, just return data
+            # The model's clean() method will do final validation
+            return data
 
 
 # Unified view item for both ShiftTask and Template Task
@@ -335,7 +374,9 @@ class ShiftSwapRequestSerializer(serializers.ModelSerializer):
 class AIScheduleRequestSerializer(serializers.Serializer):
     """Serializer for AI schedule generation requests"""
     week_start = serializers.DateField()
+    template_id = serializers.UUIDField(required=True)
     labor_budget = serializers.DecimalField(max_digits=10, decimal_places=2, required=False)
+    demand_level = serializers.ChoiceField(choices=['LOW', 'MEDIUM', 'HIGH'], default='MEDIUM')
     demand_override = serializers.DictField(
         child=serializers.ChoiceField(choices=['LOW', 'MEDIUM', 'HIGH']),
         required=False

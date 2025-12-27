@@ -6,165 +6,148 @@ from .task_templates import TaskTemplate
 import requests, sys
 from django.conf import settings
 from .utils import get_tasks
+from notifications.services import notification_service
 
 
-def send_whatsapp(phone, message, template_name):
-    token = settings.WHATSAPP_ACCESS_TOKEN
-    phone_id = settings.WHATSAPP_PHONE_NUMBER_ID
-    verision = settings.WHATSAPP_API_VERSION
-    url = f"https://graph.facebook.com/v20.0/{phone_id}/messages"
-    
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-
-    payload = {
-                "messaging_product": "whatsapp",
-                "to": phone,
-                "type": "template",
-                "template": {
-                    "name": template_name,
-                    "language": {"code": "en_US"},
-                    "components": [
-                        {
-                            "type": "body",
-                            "parameters": message
-                        }
-                    ]
-                }
-        }
-    response = requests.post(url, json=payload, headers=headers)
-    try:
-        data = response.json()
-    except Exception:
-        data = {"error": "Invalid JSON response"}
-
-    # Return both response and parsed JSON to avoid losing info
-    return {"status_code": response.status_code, "data": data}
 
 
-def clock_in_remender(task):
+def clock_in_reminder(task):
+    """
+    Send a WhatsApp reminder to staff to clock in 30 mins before shift.
+    """
     try:
         staff = task.staff
         first_name = staff.first_name
-        start_time = task.start_time.strftime('%Y-%m-%d %H:%M')
-        duration_from_now = str(int((task.start_time - timezone.now()).total_seconds() // 60)) + " minutes"
+        start_time = task.start_time.strftime('%H:%M')
         restaurant = task.schedule.restaurant.name
-        notification_link = f"https://mizanapp.com/notify_late/{task.id}"
-        shift_duration = int((task.end_time - task.start_time).total_seconds() // 60)
     except Exception as e:
         print(f"Error preparing reminder for shift {task.id}: {e}", file=sys.stderr)
         return None
-    if shift_duration < 60:
-        shift_duration = f"{shift_duration} minutes"
-    else:
-        hours = shift_duration // 60
-        minutes = shift_duration % 60
-        shift_duration = f"{hours} hours"
-        if minutes > 0:
-            shift_duration += f" {minutes} minutes"
 
     if not hasattr(staff, 'phone') or not staff.phone:
-        print(f"Staff {staff.id} has no phone number. Skipping reminder.", file=sys.stderr)
-        return
+        return None
 
-    phone = ''.join(filter(str.isdigit, staff.phone))
-    message =  [
-            {"type": "text", "text": first_name},
-            {"type": "text", "text": start_time},
-            {"type": "text", "text": duration_from_now},
-            {"type": "text", "text": restaurant},
-            {"type": "text", "text": 'Unknown'},
-            {"type": "text", "text": shift_duration},
-            {"type": "text", "text": "localhost:8080"},
+    # Use interactive buttons for Clock-In
+    message = (
+        f"Hi {first_name}! 👋 Your shift at *{restaurant}* starts soon at *{start_time}*.\n\n"
+        "Are you ready to clock in?"
+    )
+    
+    buttons = [
+        {"id": "clock_in_now", "title": "Clock In 🕒"}
     ]
 
-
-    response = send_whatsapp(phone, message, "clockin_reminder_v2")
-    # Handle the case where response is a dict and may not have .status_code
-    status_code = response.get("status_code", None)
-    data = response.get("data", {})
-
-    print(f"message payload: {message}", file=sys.stderr)
-    return status_code  # safe return, always exists now
+    ok, _ = notification_service.send_whatsapp_buttons(staff.phone, message, buttons)
+    return 200 if ok else 400
 
 def send_clock_in_reminder():
     now = timezone.now()
+    # Check shifts starting between 30 and 60 minutes from now
     upcoming_tasks = AssignedShift.objects.filter(
-        start_time__gte=now,
-        start_time__lte=now + timedelta(minutes=60),
-        start_time__gt=now + timedelta(minutes=30),
-        clock_in_reminder_sent=False
+        start_time__gte=now + timedelta(minutes=29),
+        start_time__lte=now + timedelta(minutes=61),
+        clock_in_reminder_sent=False,
+        status='SCHEDULED'
     )
 
     print(f"Found {upcoming_tasks.count()} upcoming tasks for reminders.", file=sys.stderr)
 
     for shift in upcoming_tasks:
-        if clock_in_remender(shift) == 200:
+        if clock_in_reminder(shift) == 200:
             shift.clock_in_reminder_sent = True
-            shift.save()
+            shift.save(update_fields=['clock_in_reminder_sent'])
             print(f"Marked reminder_sent=True for shift {shift.id}", file=sys.stderr)
 
+def clock_out_reminder(task):
+    """
+    Send a WhatsApp reminder to clock out when shift ends.
+    """
+    try:
+        staff = task.staff
+        first_name = staff.first_name
+        end_time = task.end_time.strftime('%H:%M')
+    except Exception as e:
+        return None
+        
+    if not hasattr(staff, 'phone') or not staff.phone:
+        return None
+
+    # Use interactive buttons for Clock-Out
+    message = (
+        f"Hi {first_name}! 👋 Your shift was scheduled to end at *{end_time}*.\n\n"
+        "Ready to clock out and finish your day?"
+    )
+    
+    buttons = [
+        {"id": "clock_out_now", "title": "Clock Out ✅"}
+    ]
+
+    ok, _ = notification_service.send_whatsapp_buttons(staff.phone, message, buttons)
+    return 200 if ok else 400
+
+def send_clock_out_reminder():
+    now = timezone.now()
+    # Check shifts ending now (or recently)
+    # Give a 15 min buffer to send reminder
+    ending_tasks = AssignedShift.objects.filter(
+        end_time__gte=now - timedelta(minutes=15),
+        end_time__lte=now + timedelta(minutes=5),
+        clock_out_reminder_sent=False,
+        status='IN_PROGRESS'
+    )
+    
+    for shift in ending_tasks:
+        if clock_out_reminder(shift) == 200:
+            shift.clock_out_reminder_sent = True
+            shift.save(update_fields=['clock_out_reminder_sent'])
+            print(f"Marked clock_out_reminder_sent=True for shift {shift.id}", file=sys.stderr)
 
 
-def check_list_remender(shift):
-
+def check_list_reminder(shift):
     print(f"Preparing checklist reminder for shift {shift.id}", file=sys.stderr)
     staff = shift.staff
     first_name = staff.first_name
-    duration_from_now = str(int((shift.start_time - timezone.now()).total_seconds() // 60)) + " minutes"
-    restaurant = shift.schedule.restaurant.name
-    notification_link = f"http://lcaolhost:8080"
+    
     tasks = ShiftTask.objects.filter(shift=shift)
-    task_templates = shift.task_templates.all()
-    # tasktemplate
-
-    key_checklist_items = "test checklist items"
-    task_titles = get_tasks(shift=shift, task_templates=task_templates, tasks=tasks)
+    # Simplified logic
+    task_titles = ", ".join([t.title for t in tasks[:3]])
+    if len(tasks) > 3:
+        task_titles += "..."
 
     if not hasattr(staff, 'phone') or not staff.phone:
-        print(f"Staff {staff.id} has no phone number. Skipping reminder.", file=sys.stderr)
-        return
+        return None
     
-    phone = ''.join(filter(str.isdigit, staff.phone))
-    message = [
-            {"type": "text", "text": first_name},
-            {"type": "text", "text": 'Title'},
-            {"type": "text", "text": 'Special test'},
-            {"type": "text", "text": 'Target test'},
-            {"type": "text", "text": key_checklist_items},
-            {"type": "text", "text": "testlink.com"},
-            {"type": "text", "text": task_titles},
-        ]
+    message = (
+        f"Hi {first_name}! 📋 You have {tasks.count()} tasks assigned for your shift.\n\n"
+        f"Preview: {task_titles}\n\n"
+        "Good luck!"
+    )
     
-    response = send_whatsapp(phone, message, "shift_checklist_preview_v2")
-    status_code = response.get("status_code", None)
-    data = response.get("data", {})
-
-    print(f"staff {first_name} reminder response: {data}", file=sys.stderr)
-    return status_code  # safe return, always exists now
+    ok, _ = notification_service.send_whatsapp_text(staff.phone, message)
+    return 200 if ok else 400
 
 
 def send_check_list_reminder():
     now = timezone.now()
-    upcoming_tasks = AssignedShift.objects.filter(
-        start_time__gte=now,
-        start_time__lte=now + timedelta(minutes=30),
-        check_list_reminder_sent = False
+    # Logic for checklist reminder (e.g., at start of shift)
+    active_shifts = AssignedShift.objects.filter(
+        start_time__lte=now,
+        end_time__gt=now,
+        check_list_reminder_sent=False,
+        status__in=['IN_PROGRESS', 'CONFIRMED']
     )
 
-    for shift in upcoming_tasks:
-        if check_list_remender(shift) == 200:
+    for shift in active_shifts:
+        if check_list_reminder(shift) == 200:
             shift.check_list_reminder_sent = True
-            shift.save()
-            print(f"Marked reminder_sent=True for shift {shift.id}", file=sys.stderr)
+            shift.save(update_fields=['check_list_reminder_sent'])
 
 
 @shared_task
 def check_upcoming_tasks():
     send_clock_in_reminder()
     send_check_list_reminder()
+    send_clock_out_reminder()
 
 
 

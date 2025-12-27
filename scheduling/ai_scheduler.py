@@ -8,7 +8,7 @@ from django.db.models import Avg, Sum, Count, Q
 from django.utils import timezone
 import logging
 
-from .models import AssignedShift, WeeklySchedule, ShiftTask
+from .models import AssignedShift, WeeklySchedule, ShiftTask, ScheduleTemplate, TemplateShift
 from accounts.models import CustomUser, Restaurant
 
 logger = logging.getLogger(__name__)
@@ -35,25 +35,13 @@ class AIScheduler:
     def generate_optimal_schedule(
         self,
         week_start: datetime.date,
+        template_id: Optional[str] = None,
         demand_forecast: Optional[Dict] = None,
-        labor_budget: Optional[float] = None
+        labor_budget: Optional[float] = None,
+        demand_level: str = "MEDIUM"
     ) -> Dict:
         """
         Generate optimal schedule for a week
-        
-        Args:
-            week_start: Start date of the week
-            demand_forecast: Dict with daily demand predictions
-            labor_budget: Maximum labor cost for the week
-        
-        Returns:
-            {
-                'shifts': List[Dict],
-                'total_hours': float,
-                'estimated_cost': float,
-                'coverage_score': float,
-                'warnings': List[str]
-            }
         """
         logger.info(f"Generating optimal schedule for {self.restaurant.name} starting {week_start}")
         
@@ -61,11 +49,23 @@ class AIScheduler:
         if not demand_forecast:
             demand_forecast = self._get_demand_forecast(week_start)
         
+        # Override with global demand_level if forecast is empty for some reason
+        if not demand_forecast:
+            demand_forecast = {d: demand_level for d in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']}
+            
         # Get available staff
         available_staff = self._get_available_staff()
         
-        # Get historical shift patterns
-        historical_patterns = self._get_historical_patterns(week_start)
+        # Get template if provided
+        template = None
+        if template_id:
+            try:
+                template = ScheduleTemplate.objects.get(id=template_id, restaurant=self.restaurant)
+            except (ScheduleTemplate.DoesNotExist, ValueError):
+                logger.warning(f"Template {template_id} not found for restaurant {self.restaurant.id}")
+
+        # Get historical shift patterns (fallback if no template)
+        historical_patterns = self._get_historical_patterns(week_start) if not template else {}
         
         # Generate shifts
         generated_shifts = []
@@ -77,19 +77,31 @@ class AIScheduler:
         for day_offset in range(7):
             shift_date = week_start + timedelta(days=day_offset)
             day_name = shift_date.strftime('%A')
+            day_num = shift_date.weekday() # 0=Monday
             
             # Get demand for this day
-            demand_level = demand_forecast.get(day_name, 'MEDIUM')
+            current_day_demand = demand_forecast.get(day_name, demand_level)
             
-            # Determine required staff by role
-            required_roles = self._calculate_required_roles(demand_level, historical_patterns)
+            if template:
+                # Use template shifts for this day
+                day_template_shifts = TemplateShift.objects.filter(template=template, day_of_week=day_num)
+                required_roles = {}
+                # Calculate required roles based on template + demand scaling
+                scale = {'LOW': 0.7, 'MEDIUM': 1.0, 'HIGH': 1.3}.get(current_day_demand, 1.0)
+                
+                for ts in day_template_shifts:
+                    required_roles[ts.role] = max(1, round(ts.required_staff * scale))
+            else:
+                # Determine required staff by role from history
+                required_roles = self._calculate_required_roles(current_day_demand, historical_patterns)
             
             # Assign staff to shifts
             day_shifts = self._assign_staff_to_shifts(
                 shift_date=shift_date,
                 required_roles=required_roles,
                 available_staff=available_staff,
-                existing_assignments=generated_shifts
+                existing_assignments=generated_shifts,
+                template=template if template else None
             )
             
             generated_shifts.extend(day_shifts)
@@ -249,7 +261,8 @@ class AIScheduler:
         shift_date: datetime.date,
         required_roles: Dict,
         available_staff: List[CustomUser],
-        existing_assignments: List[Dict]
+        existing_assignments: List[Dict],
+        template: Optional[ScheduleTemplate] = None
     ) -> List[Dict]:
         """
         Assign staff to shifts for a specific day
@@ -279,7 +292,7 @@ class AIScheduler:
                     continue
                 
                 # Determine shift times based on role and demand
-                start_time, end_time = self._determine_shift_times(role, shift_date)
+                start_time, end_time = self._determine_shift_times(role, shift_date, template)
                 
                 # Calculate hours
                 shift_duration = self._calculate_shift_duration(start_time, end_time)
@@ -349,9 +362,15 @@ class AIScheduler:
         
         return True
     
-    def _determine_shift_times(self, role: str, shift_date: datetime.date) -> Tuple[time, time]:
-        """Determine shift start and end times based on role"""
-        # Simplified shift times
+    def _determine_shift_times(self, role: str, shift_date: datetime.date, template: Optional[ScheduleTemplate] = None) -> Tuple[time, time]:
+        """Determine shift start and end times based on role or template"""
+        if template:
+            day_num = shift_date.weekday()
+            ts = TemplateShift.objects.filter(template=template, role=role, day_of_week=day_num).first()
+            if ts:
+                return ts.start_time, ts.end_time
+
+        # Simplified shift times fallback
         shift_templates = {
             'CHEF': (time(10, 0), time(18, 0)),  # 8-hour shift
             'WAITER': (time(11, 0), time(19, 0)),  # 8-hour shift

@@ -307,9 +307,9 @@ def log_weekly_schedule_save(sender, instance, created, **kwargs):
             user=user,
             schedule=instance,
             action=AuditActionType.CREATE,
-            description=f"Created weekly schedule for week {instance.week_start_date}",
+            description=f"Created weekly schedule for week {instance.week_start}",
             metadata={
-                'week_start': instance.week_start_date.isoformat(),
+                'week_start': instance.week_start.isoformat(),
                 'restaurant_id': instance.restaurant.id if instance.restaurant else None,
                 'is_published': instance.is_published
             },
@@ -324,10 +324,10 @@ def log_weekly_schedule_save(sender, instance, created, **kwargs):
                     user=user,
                     schedule=instance,
                     action=AuditActionType.SCHEDULE_PUBLISH,
-                    description=f"Published weekly schedule for week {instance.week_start_date}",
+                    description=f"Published weekly schedule for week {instance.week_start}",
                     old_values=old_values,
                     new_values=new_values,
-                    metadata={'week_start': instance.week_start_date.isoformat()},
+                    metadata={'week_start': instance.week_start.isoformat()},
                     request=request
                 )
             else:
@@ -335,7 +335,7 @@ def log_weekly_schedule_save(sender, instance, created, **kwargs):
                     user=user,
                     schedule=instance,
                     action=AuditActionType.UPDATE,
-                    description=f"Updated weekly schedule for week {instance.week_start_date}",
+                    description=f"Updated weekly schedule for week {instance.week_start}",
                     old_values=old_values,
                     new_values=new_values,
                     request=request
@@ -401,7 +401,6 @@ def log_assigned_shift_delete(sender, instance, **kwargs):
         shift=instance,
         action=AuditActionType.UNASSIGN,
         description=f"Removed shift assignment for {instance.staff.get_full_name() if instance.staff else 'Unknown'}",
-        severity=AuditSeverity.MEDIUM,
         metadata={
             'staff_id': instance.staff.id if instance.staff else None,
             'staff_name': instance.staff.get_full_name() if instance.staff else None,

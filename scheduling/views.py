@@ -225,34 +225,79 @@ class WeeklyScheduleViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def optimize(self, request):
         """
-        Generate optimized schedule for a week
+        Generate optimized schedule for a week using AI
         """
-        week_start = request.data.get('week_start')
-        department = request.data.get('department')
+        serializer = AIScheduleRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
-        if not week_start:
+        week_start = serializer.validated_data['week_start']
+        template_id = str(serializer.validated_data['template_id'])
+        labor_budget = serializer.validated_data.get('labor_budget')
+        demand_level = serializer.validated_data.get('demand_level', 'MEDIUM')
+        demand_override = serializer.validated_data.get('demand_override')
+
+        # Initialize AI scheduler
+        from .ai_scheduler import AIScheduler
+        ai_scheduler = AIScheduler(restaurant=request.user.restaurant)
+        
+        try:
+            result = ai_scheduler.generate_optimal_schedule(
+                week_start=week_start,
+                template_id=template_id,
+                demand_forecast=demand_override,
+                labor_budget=float(labor_budget) if labor_budget else None,
+                demand_level=demand_level
+            )
+            
+            # 1. Create WeeklySchedule model instance
+            # Check if one already exists for this week
+            week_end = week_start + timedelta(days=6)
+            schedule, created = WeeklySchedule.objects.get_or_create(
+                restaurant=request.user.restaurant,
+                week_start=week_start,
+                defaults={'week_end': week_end, 'is_published': False}
+            )
+            
+            if not created:
+                # Clear existing shifts if we are re-optimizing? 
+                # For now, let's just clear unconfirmed shifts or all? 
+                # User likely expects a fresh generation.
+                AssignedShift.objects.filter(schedule=schedule, status='SCHEDULED').delete()
+
+            # 2. Create AssignedShift instances from AI results
+            created_shifts = []
+            for shift_data in result['shifts']:
+                shift = AssignedShift.objects.create(
+                    schedule=schedule,
+                    staff_id=shift_data['staff_id'],
+                    shift_date=shift_data['shift_date'],
+                    start_time=shift_data['start_time'],
+                    end_time=shift_data['end_time'],
+                    role=shift_data['role'],
+                    status='SCHEDULED'
+                )
+                created_shifts.append(shift)
+            
+            return Response({
+                'success': True,
+                'message': f'AI schedule generated successfully. Created {len(created_shifts)} shifts.',
+                'schedule_id': str(schedule.id),
+                'shifts_created': len(created_shifts),
+                'analytics': {
+                    'total_hours': result['total_hours'],
+                    'estimated_cost': result['estimated_cost'],
+                    'coverage_score': result['coverage_score'],
+                    'warnings': result['warnings']
+                }
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            logger.error(f"Error generating AI schedule: {str(e)}")
             return Response(
-                {'detail': 'week_start is required (YYYY-MM-DD)'},
-                status=status.HTTP_400_BAD_REQUEST
+                {'success': False, 'message': f'Error generating schedule: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-            
-        # Build tenant context if needed, but request.user.restaurant should be available
-        if not request.user.restaurant:
-             return Response(
-                {'detail': 'User is not associated with a restaurant'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-            
-        result = OptimizationService.optimize_schedule(
-            str(request.user.restaurant.id),
-            week_start,
-            department
-        )
-        
-        if result.get('error'):
-            return Response(result, status=status.HTTP_400_BAD_REQUEST)
-            
-        return Response(result)
 
 class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = AssignedShiftSerializer
@@ -269,8 +314,11 @@ class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
 
     def create(self, request, *args, **kwargs):
         """Create assigned shift under a schedule, with friendly duplicate/validation errors."""
+        logger.info(f"[AssignedShift] Received payload: {request.data}")
         serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            logger.error(f"[AssignedShift] Validation errors: {serializer.errors}")
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         # Note: We no longer block multiple same-day shifts for the same staff.
         # Overlap prevention is enforced in AssignedShift.clean() and via detect_conflicts.
@@ -285,6 +333,7 @@ class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
             return Response({"detail": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             # Catch-all to avoid 500s and expose the error during testing
+            logger.error(f"[AssignedShift] Creation failed: {e}")
             return Response({"detail": f"Shift creation failed: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
 
         headers = self.get_success_headers(serializer.data)

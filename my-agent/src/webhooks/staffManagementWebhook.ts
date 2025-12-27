@@ -13,6 +13,7 @@
  */
 
 import { LuaWebhook, Data } from "lua-cli";
+import { IncidentManagementModule } from "../modules/incident-management";
 import { StaffManagementModule } from "../modules/staff-management-events";
 import { z } from "zod";
 
@@ -106,6 +107,16 @@ const staffManagementWebhook = new LuaWebhook({
             throw new Error(`Forbidden: role ${role} not permitted for event ${body.eventType}`);
         }
 
+        let incidentAnalysis = null;
+        if (body.eventType === 'incident_reported' && body.details?.incidentDescription) {
+            const incidentModule = new IncidentManagementModule();
+            incidentAnalysis = await incidentModule.analyzeIncident(
+                body.details.incidentDescription,
+                { staff: body.staffName, role: body.role, context: body.metadata }
+            );
+            console.log("   🚨 Incident Analyzed:", incidentAnalysis);
+        }
+
         const start = Date.now();
         const module = new StaffManagementModule();
         const { actionTaken, requiresManagerAttention, workloadImpact, workloadScore, recommendations } = module.processEvent({
@@ -139,9 +150,10 @@ const staffManagementWebhook = new LuaWebhook({
             department: query?.department,
             managerId: headers?.['x-manager-id'],
             actionTaken,
-            requiresManagerAttention,
+            requiresManagerAttention: requiresManagerAttention || (incidentAnalysis?.analysis?.priority === 'CRITICAL' || incidentAnalysis?.analysis?.priority === 'HIGH'),
             workloadImpact,
             workloadScore,
+            incidentAnalysis,
             receivedAt: new Date().toISOString(),
             processed: true
         };
@@ -172,8 +184,9 @@ const staffManagementWebhook = new LuaWebhook({
             staffName: body.staffName,
             actionTaken,
             workloadScore,
-            requiresManagerAttention,
+            requiresManagerAttention: eventData.requiresManagerAttention,
             recommendations,
+            incidentAnalysis: incidentAnalysis?.analysis,
             timestamp: new Date().toISOString()
         };
     }

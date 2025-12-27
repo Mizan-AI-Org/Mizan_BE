@@ -5,6 +5,7 @@ from .views import (
     PaymentViewSet, POSTransactionViewSet, ReceiptSettingViewSet,
     DiscountViewSet
 )
+from . import webhooks
 
 router = DefaultRouter()
 router.register(r'tables', TableViewSet, basename='pos-table')
@@ -17,4 +18,13 @@ router.register(r'discounts', DiscountViewSet, basename='pos-discount')
 
 urlpatterns = [
     path('', include(router.urls)),
+    
+    # Integration Management
+    path('sync/menu/', webhooks.sync_menu_view, name='pos-sync-menu'),
+    path('sync/orders/', webhooks.sync_orders_view, name='pos-sync-orders'),
+    
+    # Webhooks
+    path('webhooks/toast/', webhooks.TOASTWebhookView.as_view(), name='toast-webhook'),
+    path('webhooks/square/', webhooks.SquareWebhookView.as_view(), name='square-webhook'),
+   path('webhooks/clover/', webhooks.CloverWebhookView.as_view(), name='clover-webhook'),
 ]

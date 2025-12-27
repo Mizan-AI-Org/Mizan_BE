@@ -21,6 +21,7 @@ class Notification(models.Model):
         ('BREAK_REQUEST', 'Break Request'),
         ('EMERGENCY', 'Emergency'),
         ('SYSTEM_ALERT', 'System Alert'),
+        ('INVITATION', 'Staff Invitation'),
         ('OTHER', 'Other'),
     )
     
@@ -211,6 +212,7 @@ class NotificationLog(models.Model):
         ('PENDING', 'Pending'),
         ('SENT', 'Sent'),
         ('DELIVERED', 'Delivered'),
+        ('READ', 'Read'),
         ('FAILED', 'Failed'),
         ('BOUNCED', 'Bounced'),
     )
@@ -293,3 +295,19 @@ class NotificationIssue(models.Model):
 
     def __str__(self):
         return f"Issue by {self.reporter.email} - {self.status}"
+
+
+class WhatsAppSession(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='whatsapp_sessions')
+    phone = models.CharField(max_length=20, db_index=True)
+    state = models.CharField(max_length=50, default='idle')
+    context = models.JSONField(default=dict, blank=True)
+    last_interaction_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        db_table = 'whatsapp_sessions'
+        indexes = [
+            models.Index(fields=['phone']),
+            models.Index(fields=['state']),
+        ]

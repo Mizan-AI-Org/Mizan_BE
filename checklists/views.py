@@ -872,3 +872,104 @@ class ChecklistAnalyticsViewSet(viewsets.ViewSet):
         stats['template_usage'] = list(template_usage)
         
         return Response(stats)
+
+
+# Import for function-based views
+from rest_framework.decorators import api_view, permission_classes as perm_classes
+from scheduling.models import AssignedShift
+
+
+@api_view(['GET'])
+@perm_classes([permissions.IsAuthenticated])
+def get_shift_checklists(request):
+    """
+    Get checklist templates assigned to the staff's current active shift.
+    
+    This endpoint is called after a successful clock-in to determine which
+    checklists the staff member needs to complete during their shift.
+    
+    Returns:
+        - shift_id: The active shift ID
+        - checklists: List of checklist templates with their steps
+        - message: Status message if no shift/checklists found
+    """
+    user = request.user
+    today = timezone.now().date()
+    
+    # Find the active shift for today
+    active_shift = AssignedShift.objects.filter(
+        staff=user,
+        shift_date=today,
+        status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS']
+    ).prefetch_related('task_templates').first()
+    
+    if not active_shift:
+        return Response({
+            'shift_id': None,
+            'checklists': [],
+            'message': 'No active shift found for today'
+        })
+    
+    # Get task templates assigned to this shift
+    task_templates = active_shift.task_templates.filter(is_active=True)
+    
+    if not task_templates.exists():
+        return Response({
+            'shift_id': str(active_shift.id),
+            'checklists': [],
+            'message': 'No task templates assigned to this shift'
+        })
+    
+    # Get checklist templates linked to these task templates
+    checklist_templates = ChecklistTemplate.objects.filter(
+        task_template__in=task_templates,
+        is_active=True
+    ).prefetch_related('steps').distinct()
+    
+    # If no checklist templates found via task_template link, 
+    # try to find by matching category to template_type
+    if not checklist_templates.exists():
+        task_types = task_templates.values_list('template_type', flat=True)
+        checklist_templates = ChecklistTemplate.objects.filter(
+            restaurant=user.restaurant,
+            is_active=True,
+            category__in=task_types
+        ).prefetch_related('steps').distinct()
+    
+    # Build response with checklist details
+    checklists_data = []
+    for template in checklist_templates:
+        steps = template.steps.all().order_by('order')
+        checklists_data.append({
+            'id': str(template.id),
+            'name': template.name,
+            'description': template.description,
+            'category': template.category,
+            'estimated_duration_minutes': (
+                int(template.estimated_duration.total_seconds() / 60) 
+                if template.estimated_duration else None
+            ),
+            'requires_supervisor_approval': template.requires_supervisor_approval,
+            'total_steps': steps.count(),
+            'steps': [
+                {
+                    'id': str(step.id),
+                    'order': step.order,
+                    'title': step.title,
+                    'description': step.description,
+                    'step_type': step.step_type,
+                    'is_required': step.is_required,
+                    'requires_photo': step.requires_photo,
+                    'requires_note': step.requires_note,
+                }
+                for step in steps
+            ]
+        })
+    
+    return Response({
+        'shift_id': str(active_shift.id),
+        'shift_date': active_shift.shift_date.isoformat(),
+        'shift_start': active_shift.start_time.isoformat() if active_shift.start_time else None,
+        'checklists': checklists_data,
+        'message': f'Found {len(checklists_data)} checklist(s) for your shift' if checklists_data else 'No checklists assigned to your shift'
+    })

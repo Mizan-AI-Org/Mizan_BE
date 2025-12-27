@@ -1,6 +1,11 @@
 import { LuaAgent } from "lua-cli";
 import { tenantContextPreprocessor } from "./preprocessors/TenantContextPreprocessor";
 import userAuthWebhook from "./webhooks/userAuthWebhook";
+import { predictiveAnalystSkill } from "./skills/predictive-analyst.skill";
+import { restaurantOpsSkill } from "./skills/restaurant-ops.skill";
+import { staffOrchestratorSkill } from "./skills/staff-orchestrator.skill";
+import forecastingWebhook from "./webhooks/forcastingWebhook";
+import staffManagementWebhook from "./webhooks/staffManagementWebhook";
 
 const agent = new LuaAgent({
     name: "Mizan AI - Restaurant Assistant",

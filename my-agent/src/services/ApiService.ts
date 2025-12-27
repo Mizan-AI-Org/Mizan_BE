@@ -206,4 +206,100 @@ export default class ApiService {
             throw new Error(`Optimization failed: ${error.message}`);
         }
     }
+
+    // Checklist Methods
+
+    async getShiftChecklists(token: string) {
+        try {
+            const response = await axios.get(`${this.baseUrl}/api/checklists/shift-checklists/`, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to fetch shift checklists:", error.message);
+            return { checklists: [], error: error.message };
+        }
+    }
+
+    async createChecklistExecution(data: { template_id: string; assigned_shift_id?: string }, token: string) {
+        try {
+            const response = await axios.post(`${this.baseUrl}/api/checklists/executions/`, {
+                template: data.template_id,
+                assigned_shift: data.assigned_shift_id
+            }, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to create checklist execution:", error.message);
+            if (error.response && error.response.data) {
+                throw new Error(`Failed to create execution: ${JSON.stringify(error.response.data)}`);
+            }
+            throw new Error(`Failed to create execution: ${error.message}`);
+        }
+    }
+
+    async startChecklistExecution(executionId: string, token: string) {
+        try {
+            const response = await axios.post(`${this.baseUrl}/api/checklists/executions/${executionId}/start/`, {}, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to start checklist execution:", error.message);
+            throw new Error(`Failed to start execution: ${error.message}`);
+        }
+    }
+
+    async syncChecklistResponse(executionId: string, data: any, token: string) {
+        try {
+            const response = await axios.post(`${this.baseUrl}/api/checklists/executions/${executionId}/sync/`, data, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to sync checklist response:", error.message);
+            if (error.response && error.response.data) {
+                throw new Error(`Sync failed: ${JSON.stringify(error.response.data)}`);
+            }
+            throw new Error(`Sync failed: ${error.message}`);
+        }
+    }
+
+    async completeChecklistExecution(executionId: string, completionNotes: string, token: string) {
+        try {
+            const response = await axios.post(`${this.baseUrl}/api/checklists/executions/${executionId}/complete/`, {
+                completion_notes: completionNotes
+            }, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to complete checklist:", error.message);
+            if (error.response && error.response.data) {
+                throw new Error(`Completion failed: ${JSON.stringify(error.response.data)}`);
+            }
+            throw new Error(`Completion failed: ${error.message}`);
+        }
+    }
 }
