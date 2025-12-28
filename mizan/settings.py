@@ -100,6 +100,16 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://app.heymizan.ai",
+    "https://mizan-frontend.netlify.app",
+    "https://mizan-frontend-v2.netlify.app"
+]
+
+CORS_ALLOW_CREDENTIALS = True
+
 # ---------------------------
 # URLs
 # ---------------------------
