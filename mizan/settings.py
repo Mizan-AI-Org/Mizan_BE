@@ -100,6 +100,16 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "https://app.heymizan.ai",
+    "https://mizan-frontend.netlify.app",
+    "https://mizan-frontend-v2.netlify.app"
+]
+
+CORS_ALLOW_CREDENTIALS = True
+
 # ---------------------------
 # URLs
 # ---------------------------
@@ -130,11 +140,11 @@ TEMPLATES = [
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": config('DB_NAME', default=config('POSTGRES_DB', default=os.getenv('POSTGRES_DB', ''))),
-        "USER": config('DB_USER', default=config('POSTGRES_USER', default=os.getenv('POSTGRES_USER', ''))),
-        "PASSWORD": config('DB_PASSWORD', default=config('POSTGRES_PASSWORD', default=os.getenv('POSTGRES_PASSWORD', ''))),
-        "HOST": config('DB_HOST', default=config('POSTGRES_HOST', default=os.getenv('POSTGRES_HOST', 'localhost'))),
-        "PORT": config('DB_PORT', default=config('POSTGRES_PORT', default=os.getenv('POSTGRES_PORT', '5432'))),
+        "NAME": config('DB_NAME', default=config('POSTGRES_DB', default=os.getenv('POSTGRES_DB'))),
+        "USER": config('DB_USER', default=config('POSTGRES_USER', default=os.getenv('POSTGRES_USER'))),
+        "PASSWORD": config('DB_PASSWORD', default=config('POSTGRES_PASSWORD', default=os.getenv('POSTGRES_PASSWORD'))),
+        "HOST": config('DB_HOST', default=config('POSTGRES_HOST', default=os.getenv('POSTGRES_HOST'))),
+        "PORT": config('DB_PORT', default=config('POSTGRES_PORT', default=os.getenv('POSTGRES_PORT'))),
     }
 }
 
