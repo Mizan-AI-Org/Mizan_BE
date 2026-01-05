@@ -1,4 +1,4 @@
-from django.urls import path, include
+from django.urls import path, include, re_path
 from rest_framework.routers import DefaultRouter
 from .views import (
     CustomTokenObtainPairView, CustomTokenRefreshView, RegisterView, VerifyEmailView, PasswordResetRequestView,
@@ -32,12 +32,12 @@ urlpatterns = [
     path('staff/profile/<uuid:pk>/update/', StaffProfileUpdateView.as_view(), name='staff_profile_update'),
     path('staff/', StaffListAPIView.as_view(), name='staff_list'),
     # path('staff/users/', StaffUsersListView.as_view(), name='staff_users_list'),
-    path('auth/login/', LoginView.as_view(), name='login'),
+    re_path(r'^auth/login/?$', LoginView.as_view(), name='login'),
     # Use class-based view for PIN login (public endpoint)
-    path('auth/pin-login/', StaffPinLoginView.as_view(), name='pin_login'),
+    re_path(r'^auth/pin-login/?$', StaffPinLoginView.as_view(), name='pin_login'),
     path('auth/me/', MeView.as_view(), name='me'),
     path('staff/invite/', InviteStaffView.as_view(), name='invite_staff'),
     path('staff/accept-invitation/', AcceptInvitationView.as_view(), name='accept_invitation'),
-    path('staff/login/', StaffPinLoginView.as_view(), name='pin_login'),
+    re_path(r'^staff/login/?$', StaffPinLoginView.as_view(), name='pin_login'),
     path('auth/agent-context/', AgentContextView.as_view(), name='agent_context'),
 ]
