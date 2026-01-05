@@ -167,39 +167,56 @@ class RestaurantOwnerSignupView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        restaurant_serializer = RestaurantSerializer(data=request.data.get('restaurant'))
-        if not restaurant_serializer.is_valid():
-            return Response(restaurant_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        restaurant = restaurant_serializer.save()
+        try:
+            restaurant_serializer = RestaurantSerializer(data=request.data.get('restaurant'))
+            if not restaurant_serializer.is_valid():
+                return Response(restaurant_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            
+            restaurant = restaurant_serializer.save()
 
-        user_data = request.data.get('user')
-        user_data['restaurant'] = restaurant.id
-        user_data['role'] = 'SUPER_ADMIN'
-        user_data['is_verified'] = True
-        password = user_data.pop('password', None)
-        pin_code = user_data.pop('pin_code', None)
+            user_payload = request.data.get('user')
+            if not user_payload:
+                 restaurant.delete()
+                 return Response({"error": "User data is missing"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Create a copy to avoid mutating request.data directly
+            user_data = user_payload.copy() if isinstance(user_payload, dict) else {}
+            if not user_data:
+                # If user_payload was not a dict or empty
+                restaurant.delete()
+                return Response({"error": "Invalid user data format"}, status=status.HTTP_400_BAD_REQUEST)
 
-        user_serializer = CustomUserSerializer(data=user_data)
-        if not user_serializer.is_valid():
-            restaurant.delete()
-            return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        user = user_serializer.save()
-        user.set_password(password)
-        if pin_code:
-            user.set_pin(pin_code)
-        user.save()
+            user_data['restaurant'] = restaurant.id
+            user_data['role'] = 'SUPER_ADMIN'
+            user_data['is_verified'] = True
+            password = user_data.pop('password', None)
+            pin_code = user_data.pop('pin_code', None)
 
-        refresh = RefreshToken.for_user(user)
-        return Response({
-            'user': CustomUserSerializer(user).data,
-            'restaurant': restaurant_serializer.data,
-            'tokens': {
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-            }
-        }, status=status.HTTP_201_CREATED)
+            user_serializer = CustomUserSerializer(data=user_data)
+            if not user_serializer.is_valid():
+                restaurant.delete()
+                return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            
+            user = user_serializer.save()
+            if password:
+                user.set_password(password)
+            if pin_code:
+                user.set_pin(pin_code)
+            user.save()
+
+            refresh = RefreshToken.for_user(user)
+            return Response({
+                'user': CustomUserSerializer(user).data,
+                'restaurant': restaurant_serializer.data,
+                'tokens': {
+                    'refresh': str(refresh),
+                    'access': str(refresh.access_token),
+                }
+            }, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return Response({'error': str(e), 'detail': traceback.format_exc()}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class LoginView(APIView):
     permission_classes = [permissions.AllowAny]
