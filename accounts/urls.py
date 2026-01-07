@@ -9,7 +9,7 @@ from .views import (
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
 from .views_invitations import InvitationViewSet, UserManagementViewSet
-from .views_agent import AgentContextView
+from .views_agent import AgentContextView, accept_invitation_from_agent
 
 router = DefaultRouter()
 router.register(r'settings', RestaurantSettingsViewSet, basename='settings')
@@ -40,4 +40,7 @@ urlpatterns = [
     path('staff/accept-invitation/', AcceptInvitationView.as_view(), name='accept_invitation'),
     path('staff/login/', StaffPinLoginView.as_view(), name='pin_login'),
     path('auth/agent-context/', AgentContextView.as_view(), name='agent_context'),
+    
+    # Agent Integration
+    path('agent/accept-invitation/', accept_invitation_from_agent, name='agent_accept_invitation'),
 ]

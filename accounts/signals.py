@@ -30,20 +30,22 @@ def auto_send_whatsapp_invite(sender, instance: UserInvitation, created, **kwarg
                 status='PENDING'
             )
         else:
-            ok, info = notification_service.send_whatsapp_invitation(
+            # Delegate to Lua Agent
+            ok, info = notification_service.send_lua_staff_invite(
+                invitation_token=instance.invitation_token,
                 phone=phone,
                 first_name=instance.first_name,
                 restaurant_name=instance.restaurant.name,
-                invite_link=invite_link,
-                support_contact=getattr(settings, 'SUPPORT_CONTACT', ''),
-                invitation_token=instance.invitation_token
+                invite_link=invite_link
             )
+            # Log as PROCESSED_BY_AGENT or similar, but for now reuse SENT/FAILED
+            # info might be agent response
             log = InvitationDeliveryLog(
                 invitation=instance,
                 channel='whatsapp',
                 recipient_address=phone,
                 status='SENT' if ok else 'FAILED',
-                external_id=(info or {}).get('wamid'),
+                external_id=(info or {}).get('eventId'), # Agent returns eventId
                 response_data=info or {},
             )
             log.save()

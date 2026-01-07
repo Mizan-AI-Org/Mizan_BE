@@ -1,10 +1,15 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
+from rest_framework.decorators import api_view, permission_classes
 from .models import CustomUser
 from .serializers import CustomUserSerializer, RestaurantSerializer
+from .services import UserManagementService
 import requests
+import logging
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 
 class AgentContextView(APIView):
     """
@@ -81,3 +86,84 @@ def send_whatsapp(phone, message, template_name, language_code="en_US"):
     # Return both response and parsed JSON to avoid losing info
     return {"status_code": response.status_code, "data": data}
 
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])  # Authenticated via Agent Key
+def accept_invitation_from_agent(request):
+    """
+    Endpoint for Lua Agent to accept invitations on behalf of staff.
+    
+    Expected payload:
+    {
+        "invitation_token": "abc-123",
+        "phone": "+1234567890",
+        "first_name": "John",
+        "last_name": "Doe",  # optional
+        "pin": "1234"
+    }
+    """
+    try:
+        # Validate Agent Key
+        auth_header = request.headers.get('Authorization')
+        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        
+        if not expected_key:
+            return Response({
+                'success': False,
+                'error': 'Agent key not configured'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+             
+        if not auth_header or auth_header != f"Bearer {expected_key}":
+            return Response({
+                'success': False,
+                'error': 'Unauthorized'
+            }, status=status.HTTP_401_UNAUTHORIZED)
+             
+        # Extract parameters
+        invitation_token = request.data.get('invitation_token')
+        pin = request.data.get('pin')
+        first_name = request.data.get('first_name', '')
+        last_name = request.data.get('last_name', '')
+        
+        if not invitation_token or not pin:
+            return Response({
+                'success': False,
+                'error': 'invitation_token and pin are required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Accept invitation using existing service
+        user, error = UserManagementService.accept_invitation(
+            token=invitation_token,
+            password=pin,  # Using PIN as password
+            first_name=first_name,
+            last_name=last_name
+        )
+        
+        if error:
+            return Response({
+                'success': False,
+                'error': error
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        return Response({
+            'success': True,
+            'user': {
+                'id': str(user.id),
+                'email': user.email,
+                'first_name': user.first_name,
+                'last_name': user.last_name,
+                'phone': user.phone,
+                'role': user.role,
+                'restaurant': {
+                    'id': str(user.restaurant.id),
+                    'name': user.restaurant.name
+                }
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Agent invitation acceptance error: {e}")
+        return Response({
+            'success': False,
+            'error': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

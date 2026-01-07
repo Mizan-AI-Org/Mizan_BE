@@ -660,6 +660,97 @@ class NotificationService:
             return False, None
 
     # ----------------------------------------------------------------------
+    
+    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link):
+        try:
+            api_url = getattr(settings, 'LUA_API_URL', 'https://api.heylua.ai')
+            agent_id = getattr(settings, 'LUA_AGENT_ID', '')
+            api_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', '')
+
+            if not agent_id or not api_key:
+                logger.error("Lua configuration missing for staff invitation")
+                return False, None
+
+            url = f"{api_url}/webhooks/{agent_id}/staff-management-events"
+            
+            body = {
+                "eventType": "staff_invite",
+                "staffId": invitation_token, # Using token as ID for potential correlation? Or strictly invited user.
+                "staffName": first_name,
+                "role": "server", # Default role for invite context, agent logic can clarify
+                "details": {
+                    "inviteLink": invite_link,
+                    "restaurantName": restaurant_name,
+                    "phone": phone
+                },
+                "timestamp": timezone.now().isoformat()
+            }
+            
+            headers = {
+                "x-api-key": api_key,
+                "x-role": "manager", # Invites triggered by system/manager context
+                "content-type": "application/json"
+            }
+            
+            r = requests.post(url, json=body, headers=headers, timeout=15)
+            try:
+                j = r.json()
+            except Exception:
+                j = None
+                
+            return r.status_code in (200, 201), j
+            
+        except Exception as e:
+            logger.error(f"Error sending Lua staff invite: {e}")
+            return False, None
+
+    # ----------------------------------------------------------------------
+    
+    def send_lua_invitation_accepted(self, invitation_token, phone, first_name, flow_data=None):
+        """Notify Lua agent that staff accepted invitation via WhatsApp."""
+        try:
+            api_url = getattr(settings, 'LUA_API_URL', 'https://api.heylua.ai')
+            agent_id = getattr(settings, 'LUA_AGENT_ID', '')
+            api_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', '')
+
+            if not agent_id or not api_key:
+                logger.error("Lua configuration missing for invitation acceptance")
+                return False, None
+
+            url = f"{api_url}/webhooks/{agent_id}/staff-management-events"
+            
+            body = {
+                "eventType": "staff_invitation_accepted",
+                "staffId": invitation_token,  # Token serves as temp ID
+                "staffName": first_name,
+                "role": "manager",  # Acceptance triggered by system/manager
+                "details": {
+                    "invitationToken": invitation_token,
+                    "phoneNumber": phone,
+                    "flowData": flow_data or {}
+                },
+                "timestamp": timezone.now().isoformat()
+            }
+            
+            headers = {
+                "x-api-key": api_key,
+                "x-role": "manager",
+                "content-type": "application/json"
+            }
+            
+            r = requests.post(url, json=body, headers=headers, timeout=15)
+            try:
+                j = r.json()
+            except Exception:
+                j = None
+                
+            return r.status_code in (200, 201), j
+            
+        except Exception as e:
+            logger.error(f"Error sending Lua invitation accepted: {e}")
+            return False, None
+
+    # ----------------------------------------------------------------------
 
     def _send_push_notification(self, data):
         try:

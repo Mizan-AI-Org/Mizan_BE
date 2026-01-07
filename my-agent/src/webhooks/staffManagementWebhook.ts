@@ -48,7 +48,9 @@ const staffManagementWebhook = new LuaWebhook({
             'performance_logged',
             'tip_reported',
             'incident_reported',
-            'shift_change'
+            'shift_change',
+            'staff_invite',
+            'staff_invitation_accepted'
         ]),
         staffId: z.string(),
         staffName: z.string(),
@@ -68,7 +70,13 @@ const staffManagementWebhook = new LuaWebhook({
             tipAmount: z.number().optional(),
             incidentDescription: z.string().optional(),
             transferredTo: z.string().optional(),
-            breakDuration: z.number().optional() // in minutes
+            breakDuration: z.number().optional(), // in minutes
+            inviteLink: z.string().optional(),
+            restaurantName: z.string().optional(),
+            phone: z.string().optional(),
+            invitationToken: z.string().optional(),
+            phoneNumber: z.string().optional(),
+            flowData: z.record(z.any()).optional()
         }).optional(),
         metadata: z.record(z.any()).optional(),
         timestamp: z.string()
@@ -100,7 +108,9 @@ const staffManagementWebhook = new LuaWebhook({
             performance_logged: ['manager'],
             tip_reported: ['server', 'bartender', 'manager'],
             incident_reported: ['server', 'bartender', 'host', 'busser', 'chef', 'cook', 'dishwasher', 'manager'],
-            shift_change: ['manager']
+            shift_change: ['manager'],
+            staff_invite: ['manager'],
+            staff_invitation_accepted: ['manager']
         };
         const allowedRoles = eventPermissions[body.eventType];
         if (allowedRoles && !allowedRoles.includes(role)) {
@@ -119,7 +129,7 @@ const staffManagementWebhook = new LuaWebhook({
 
         const start = Date.now();
         const module = new StaffManagementModule();
-        const { actionTaken, requiresManagerAttention, workloadImpact, workloadScore, recommendations } = module.processEvent({
+        const { actionTaken, requiresManagerAttention, workloadImpact, workloadScore, recommendations } = await module.processEvent({
             eventType: body.eventType as any,
             staffId: body.staffId,
             staffName: body.staffName,
