@@ -302,4 +302,45 @@ export default class ApiService {
             throw new Error(`Completion failed: ${error.message}`);
         }
     }
+
+    // Communication Methods
+
+    async sendWhatsapp(data: { phone: string; type: 'text' | 'template'; body?: string; template_name?: string; language_code?: string; components?: any[] }, token: string) {
+        try {
+            const response = await axios.post(`${this.baseUrl}/api/notifications/agent/send-whatsapp/`, data, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`, // Agent key
+                    'Content-Type': 'application/json'
+                }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to send WhatsApp:", error.message);
+            if (error.response && error.response.data) {
+                // Log detail if needed
+                console.error(JSON.stringify(error.response.data));
+            }
+            return { success: false, error: error.message };
+        }
+    }
+
+    async acceptInvitation(data: { invitation_token: string; phone: string; first_name: string; last_name?: string; pin: string }, token: string) {
+        try {
+            const response = await axios.post(`${this.baseUrl}/api/accounts/agent/accept-invitation/`, data, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to accept invitation:", error.message);
+            if (error.response && error.response.data) {
+                console.error(JSON.stringify(error.response.data));
+            }
+            return { success: false, error: error.message };
+        }
+    }
 }

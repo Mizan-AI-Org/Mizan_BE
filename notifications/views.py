@@ -23,7 +23,7 @@ from .serializers import (
 from .services import notification_service
 from scheduling.audit import AuditTrailService, AuditActionType, AuditSeverity
 from core.utils import build_tenant_context
-from .models import WhatsAppSession, NotificationIssue
+from .models import WhatsAppSession
 from accounts.models import CustomUser
 from timeclock.models import ClockEvent
 from scheduling.models import ShiftTask
@@ -635,7 +635,7 @@ def whatsapp_webhook(request):
                             try:
                                 flow_data = json.loads(response_json_str)
                                 if flow_data.get('invite_accepted') == 'yes':
-                                    # Handle Invitation Flow
+                                    # Delegate to Lua Agent for invitation acceptance
                                     flow_token = nfm_reply.get('flow_token')
                                     if flow_token:
                                         from accounts.models import UserInvitation
@@ -647,16 +647,29 @@ def whatsapp_webhook(request):
                                                 invitation.first_name = entered_name
                                                 invitation.save(update_fields=['first_name'])
                                             
-                                            # Send the actual acceptance link
-                                            invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={invitation.invitation_token}"
-                                            msg = f"Great to meet you! 🤝 Please click the link below to set your PIN and complete your registration at *{invitation.restaurant.name}*:\n\n{invite_link}"
-                                            notification_service.send_whatsapp_text(phone_digits, msg)
+                                            # Delegate to Lua Agent
+                                            ok, agent_response = notification_service.send_lua_invitation_accepted(
+                                                invitation_token=invitation.invitation_token,
+                                                phone=phone_digits,
+                                                first_name=invitation.first_name,
+                                                flow_data=flow_data
+                                            )
                                             
-                                            # Update delivery log to READ
+                                            if ok:
+                                                logger.info(f"Invitation acceptance delegated to agent: {agent_response}")
+                                            else:
+                                                logger.error("Failed to delegate invitation acceptance to agent")
+                                                # Fallback: send error message
+                                                notification_service.send_whatsapp_text(
+                                                    phone_digits,
+                                                    "Sorry, there was an issue processing your invitation. Please try again or contact support."
+                                                )
+                                            
+                                            # Update delivery log
                                             from accounts.models import InvitationDeliveryLog
                                             log = InvitationDeliveryLog.objects.filter(invitation=invitation, channel='whatsapp').first()
                                             if log:
-                                                log.status = 'READ'
+                                                log.status = 'ACCEPTED' if ok else 'FAILED'
                                                 log.save(update_fields=['status'])
                             except Exception as e:
                                 logger.error(f"Flow response error: {e}")
