@@ -55,3 +55,4 @@ locale/**/*.mo
 
 # Lua Agent (Exclude from production backend push)
 my-agent/
+venv/
