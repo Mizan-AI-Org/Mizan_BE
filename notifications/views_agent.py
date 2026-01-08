@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 @api_view(['POST'])
-@permission_classes([permissions.AllowAny]) # Authenticated via Agent Key
+@permission_classes([AllowAny]) # Authenticated via Agent Key
 def send_whatsapp_from_agent(request):
     """
     Endpoint for Lua Agent to send WhatsApp messages/templates via the backend.
