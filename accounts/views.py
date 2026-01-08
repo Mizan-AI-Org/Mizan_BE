@@ -432,13 +432,21 @@ class InviteStaffView(APIView):
         token = get_random_string(64)
         expires_at = timezone.now() + timezone.timedelta(days=7)
         print(f"request : {request}", file=sys.stderr)
+        
+        # Capture names and phone for automation
+        first_name = request.data.get('first_name', '')
+        last_name = request.data.get('last_name', '')
+        
         invitation = UserInvitation.objects.create(
             email=email,
             role=role,
             invited_by=request.user,
             restaurant=request.user.restaurant,
             invitation_token=token,
-            expires_at=expires_at
+            expires_at=expires_at,
+            first_name=first_name,
+            last_name=last_name,
+            extra_data={'phone': phone, 'first_name': first_name, 'last_name': last_name}
         )
 
 
@@ -463,12 +471,9 @@ class InviteStaffView(APIView):
                 fail_silently=False,
             )
 
-            whatsapp_msg = [
-                {"type": "text", "text": restaurant_name},
-                {"type": "text", "text": staff_name},
-                {"type": "text", "text": "https://test.com"},
-            ]
-            send_whatsapp(phone, whatsapp_msg, 'staff_invitation')  # Placeholder WhatsApp messageprint(f"res : {res}", file=sys.stderr)
+            # NOTE: WhatsApp is now handled by the UserInvitation post_save signal 
+            # delegating to the Lua Agent via notification_service.send_lua_staff_invite
+            
             return Response({'message': 'Invitation sent successfully', 'token': token}, status=status.HTTP_201_CREATED)
         except Exception as e:
             return Response({

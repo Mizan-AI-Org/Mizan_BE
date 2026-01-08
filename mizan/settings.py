@@ -312,6 +312,11 @@ LUA_API_URL = os.getenv('LUA_API_URL', 'https://api.heylua.ai')
 LUA_AGENT_ID = os.getenv('LUA_AGENT_ID', '')
 LUA_WEBHOOK_API_KEY = os.getenv('LUA_WEBHOOK_API_KEY', '')
 
+# WhatsApp Invitation Automation (Delegates to Lua Agent by default)
+AUTO_WHATSAPP_INVITES = str_to_bool(os.getenv('AUTO_WHATSAPP_INVITES', True))
+WHATSAPP_INVITE_DELAY_SECONDS = int(os.getenv('WHATSAPP_INVITE_DELAY_SECONDS', 0))
+SUPPORT_CONTACT = os.getenv('SUPPORT_CONTACT', '+212626154332') # Default support contact if needed
+
 # ---------------------------
 # Stripe Configuration
 # ---------------------------
