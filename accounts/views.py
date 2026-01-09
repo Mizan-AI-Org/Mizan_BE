@@ -553,6 +553,17 @@ class AcceptInvitationView(APIView):
                 is_accepted=False,
             ).update(status='EXPIRED', expires_at=dj_tz.now())
 
+            # Notify Lua agent if phone is available for follow-up message
+            phone = (invitation.extra_data or {}).get('phone')
+            if phone:
+                from notifications.services import notification_service
+                notification_service.send_lua_invitation_accepted(
+                    invitation_token=invitation.invitation_token,
+                    phone=phone,
+                    first_name=user.first_name,
+                    flow_data={'last_name': user.last_name, 'email': user.email}
+                )
+
             refresh = RefreshToken.for_user(user)
 
             return Response({
