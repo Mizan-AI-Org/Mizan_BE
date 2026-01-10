@@ -25,7 +25,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production!')
 DEBUG = config('DEBUG', default=True, cast=bool)
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'app.heymizan.ai', 'api.heymizan.ai']
 
 # ---------------------------
 # Installed Apps
@@ -98,14 +98,6 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',    # REQUIRED for admin
     'django.contrib.messages.middleware.MessageMiddleware',       # REQUIRED for admin
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-]
-
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "https://app.heymizan.ai",
-    "https://mizan-frontend.netlify.app",
-    "https://mizan-frontend-v2.netlify.app"
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -221,15 +213,12 @@ SIMPLE_JWT = {
 # CORS Settings
 # ---------------------------
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:8080",  # React frontend
-    "http://127.0.0.1:8080",  # React frontend alternative
-    "http://localhost:5173",  # Vite dev server default
-    "http://127.0.0.1:5173",  # Vite dev server alternative
-    "http://localhost:8000",  # Django backend (for testing)
-    "http://127.0.0.1:8000",  # Django backend alternative
+    "https://app.heymizan.ai",  # React frontend
+    "http://127.0.0.1:8080",    # React frontend alternative
+    "http://localhost:5173",    # Vite dev server default
+    "http://127.0.0.1:5173",    # Vite dev server alternative
+    "http://localhost:8000",    # Django backend (for testing)
 ]
-
-CORS_ALLOW_ALL_ORIGINS = True  # ⚠️ development only
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 CORS_ALLOW_HEADERS = [
