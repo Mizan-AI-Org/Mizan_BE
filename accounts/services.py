@@ -410,6 +410,16 @@ class UserManagementService:
                     is_accepted=False,
                 ).update(status='EXPIRED', expires_at=dj_tz.now())
 
+                # Notify Lua agent if phone is available for follow-up message
+                if phone:
+                    from notifications.services import notification_service
+                    notification_service.send_lua_invitation_accepted(
+                        invitation_token=invitation.invitation_token,
+                        phone=phone,
+                        first_name=user.first_name,
+                        flow_data={'last_name': user.last_name, 'email': user.email}
+                    )
+
                 return user, None
         except UserInvitation.DoesNotExist:
             return None, "Invalid invitation token"

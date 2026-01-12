@@ -25,7 +25,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production!')
 DEBUG = config('DEBUG', default=True, cast=bool)
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'app.heymizan.ai', 'api.heymizan.ai']
 
 # ---------------------------
 # Installed Apps
@@ -98,14 +98,6 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',    # REQUIRED for admin
     'django.contrib.messages.middleware.MessageMiddleware',       # REQUIRED for admin
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-]
-
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "https://app.heymizan.ai",
-    "https://mizan-frontend.netlify.app",
-    "https://mizan-frontend-v2.netlify.app"
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -221,15 +213,12 @@ SIMPLE_JWT = {
 # CORS Settings
 # ---------------------------
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:8080",  # React frontend
-    "http://127.0.0.1:8080",  # React frontend alternative
-    "http://localhost:5173",  # Vite dev server default
-    "http://127.0.0.1:5173",  # Vite dev server alternative
-    "http://localhost:8000",  # Django backend (for testing)
-    "http://127.0.0.1:8000",  # Django backend alternative
+    "https://app.heymizan.ai",  # React frontend
+    "http://127.0.0.1:8080",    # React frontend alternative
+    "http://localhost:5173",    # Vite dev server default
+    "http://127.0.0.1:5173",    # Vite dev server alternative
+    "http://localhost:8000",    # Django backend (for testing)
 ]
-
-CORS_ALLOW_ALL_ORIGINS = True  # ⚠️ development only
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 CORS_ALLOW_HEADERS = [
@@ -244,6 +233,9 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
+CSRF_TRUSTED_ORIGINS = [
+    "https://app.heymizan.ai",
+]
 # ---------------------------
 # Channels (WebSockets)
 # ---------------------------
@@ -269,10 +261,23 @@ EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # For development - use console backend
 # EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # ---------------------------
-# Security settings (production)
-# ---------------------------
 # Default to local dev URL; can be overridden via environment
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:8081')
+
+# ---------------------------
+# Security settings (production)
+# ---------------------------
+if not DEBUG:
+    SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
 
 # ---------------------------
 # Email Configuration
@@ -311,6 +316,11 @@ CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'redis://redis:6379/0
 LUA_API_URL = os.getenv('LUA_API_URL', 'https://api.heylua.ai')
 LUA_AGENT_ID = os.getenv('LUA_AGENT_ID', '')
 LUA_WEBHOOK_API_KEY = os.getenv('LUA_WEBHOOK_API_KEY', '')
+
+# WhatsApp Invitation Automation (Delegates to Lua Agent by default)
+AUTO_WHATSAPP_INVITES = str_to_bool(os.getenv('AUTO_WHATSAPP_INVITES', True))
+WHATSAPP_INVITE_DELAY_SECONDS = int(os.getenv('WHATSAPP_INVITE_DELAY_SECONDS', 0))
+SUPPORT_CONTACT = os.getenv('SUPPORT_CONTACT', '+212626154332') # Default support contact if needed
 
 # ---------------------------
 # Stripe Configuration

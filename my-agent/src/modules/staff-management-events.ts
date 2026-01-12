@@ -42,17 +42,34 @@ export class StaffManagementModule {
             return;
         }
 
-        const message = `Welcome to Mizan AI 👋\n\nYou've been invited to join *${restaurantName}* on Mizan. Tap below to accept your invitation and activate your staff account.\n\n${inviteLink}\n\nThank you!`;
-
         const agentKey = process.env.WEBHOOK_API_KEY || '';
 
+        // Using the 'staff_invitation' template seen in dashboard
         await this.apiService.sendWhatsapp({
             phone: phone,
-            type: 'text',
-            body: message
+            type: 'template',
+            template_name: 'staff_invitation',
+            language_code: 'en_US',
+            components: [
+                {
+                    type: 'body',
+                    parameters: [
+                        { type: 'text', text: staffName },
+                        { type: 'text', text: restaurantName }
+                    ]
+                },
+                {
+                    type: 'button',
+                    sub_type: 'url',
+                    index: '0',
+                    parameters: [
+                        { type: 'text', text: inviteLink.split('token=')[1] } // Assuming button URL uses token as suffix
+                    ]
+                }
+            ]
         }, agentKey);
 
-        console.log(`📨 Sent invite to ${staffName} (${phone})`);
+        console.log(`📨 Sent template invite to ${staffName} (${phone})`);
     }
 
     async handleInvitationAcceptance(event: any) {
