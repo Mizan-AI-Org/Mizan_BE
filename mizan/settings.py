@@ -233,6 +233,9 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
 ]
 
+CSRF_TRUSTED_ORIGINS = [
+    "https://app.heymizan.ai",
+]
 # ---------------------------
 # Channels (WebSockets)
 # ---------------------------
