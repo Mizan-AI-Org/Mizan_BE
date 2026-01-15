@@ -9,11 +9,7 @@ import { LuaJob, Data } from "lua-cli";
 
 const dataMigrationJob = new LuaJob({
   name: "migrate-user-schema",
-  version: "1.0.0",
   description: "One-time migration to new user event schema",
-  context: "Scheduled one-time task to migrate user events from old schema to new schema. " +
-           "Runs once at the specified time and then automatically deactivates.",
-
   // One-time schedule: Run at specific date/time
   schedule: {
     type: 'once',

@@ -31,6 +31,7 @@ ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'app.heymizan.ai', 'api.heymizan.ai']
 # Installed Apps
 # ---------------------------
 INSTALLED_APPS = [
+    'daphne',
     # Django apps
     'django.contrib.admin',
     'django.contrib.auth',
@@ -55,11 +56,7 @@ INSTALLED_APPS = [
     'scheduling',
     'timeclock',
     'reporting',
-    'menu', # New menu app
-    'inventory', # New inventory app
     'staff',
-    # 'notifications',
-    'kitchen',
     'chat',
     # 'ai_assistant',  # AI Assistant app (removed)
     'firebase_admin', #  firebase_admin
@@ -67,6 +64,8 @@ INSTALLED_APPS = [
     'core',  # Core utilities app
     'checklists',  # Checklist management app
     'billing',     # Billing & Subscriptions
+    'menu',
+    'inventory',
 ]
 
 # ---------------------------
@@ -200,6 +199,8 @@ REST_FRAMEWORK = {
     ],
     # This tells DRF to use drf-spectacular for its schema
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'PAGE_SIZE': 20,
 }
 
 SIMPLE_JWT = {
@@ -215,6 +216,7 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = [
     "https://app.heymizan.ai",  # React frontend
     "http://127.0.0.1:8080",    # React frontend alternative
+    "http://localhost:8080",    # Vite dev server (added)
     "http://localhost:5173",    # Vite dev server default
     "http://127.0.0.1:5173",    # Vite dev server alternative
     "http://localhost:8000",    # Django backend (for testing)
@@ -235,6 +237,7 @@ CORS_ALLOW_HEADERS = [
 
 CSRF_TRUSTED_ORIGINS = [
     "https://app.heymizan.ai",
+    "http://localhost:8080",
 ]
 # ---------------------------
 # Channels (WebSockets)
@@ -243,7 +246,7 @@ CHANNEL_LAYERS = {
     "default": {
         "BACKEND": "channels_redis.core.RedisChannelLayer",
         "CONFIG": {
-            "hosts": [("redis", 6379)],  # ✅ use the docker service name here
+            "hosts": [(os.getenv('REDIS_HOST', 'localhost'), 6379)],  # ✅ use env var or localhost
         },
     },
 }
@@ -285,14 +288,21 @@ if not DEBUG:
 # Use a reliable local SMTP sink (Mailhog) in development, SMTP in production
 if DEBUG:
     print("Using development email settings", file=sys.stderr)
-    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    EMAIL_HOST = os.getenv('DEV_EMAIL_HOST', 'smtp.gmail.com')
+    EMAIL_HOST = os.getenv('DEV_EMAIL_HOST', 'localhost')
     EMAIL_PORT = int(os.getenv('DEV_EMAIL_PORT', '1025'))
-    EMAIL_USE_TLS = True
     EMAIL_HOST_USER = os.getenv('DEV_EMAIL_USER', '')
     EMAIL_HOST_PASSWORD = os.getenv('DEV_EMAIL_PASSWORD', '')
+    EMAIL_USE_TLS = os.getenv('DEV_EMAIL_USE_TLS', 'False').lower() == 'true'
+    
+    # If a user is provided but host is still localhost, switch to Gmail as reasonable default
+    if EMAIL_HOST_USER and EMAIL_HOST == 'localhost':
+        EMAIL_HOST = 'smtp.gmail.com'
+        EMAIL_PORT = 587
+        EMAIL_USE_TLS = True
+        
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
     DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'no-reply@mizan.local')
-    print("DEV_EMAIL_USER:", EMAIL_HOST, file=sys.stderr)  
+    print(f"Email Backend: {EMAIL_HOST}:{EMAIL_PORT}", file=sys.stderr)
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
     EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')

@@ -25,11 +25,22 @@ class CustomUserSerializer(serializers.ModelSerializer):
 
 
 class StaffInvitationSerializer(serializers.ModelSerializer):
+    phone_number = serializers.SerializerMethodField(read_only=True)
     class Meta:
         model = UserInvitation
-        fields = ['id', 'email', 'role', 'restaurant', 'invited_by', 'invitation_token', 'is_accepted', 'created_at', 'expires_at', 'extra_data', 'first_name', 'last_name']
-        # restaurant and invited_by are set server-side in the ViewSet; mark them read-only
-        read_only_fields = ['id', 'invitation_token', 'is_accepted', 'created_at', 'expires_at', 'restaurant', 'invited_by']
+        fields = [
+            'id', 'email', 'role', 'restaurant', 'invited_by', 'invitation_token',
+            'is_accepted', 'sent_at', 'expires_at', 'first_name', 'last_name', 'extra_data', 'phone_number'
+        ]
+        read_only_fields = [
+            'id', 'invitation_token', 'is_accepted', 'sent_at', 'expires_at',
+            'restaurant', 'invited_by'
+        ]
+
+    def get_phone_number(self, obj):
+        data = getattr(obj, 'extra_data', {}) or {}
+        # prefer explicit phone_number then phone
+        return data.get('phone_number') or data.get('phone') or None
 
 
 class StaffProfileSerializer(serializers.ModelSerializer):
@@ -107,15 +118,16 @@ class UserSerializer(serializers.ModelSerializer):
     """Enhanced user serializer with profile data"""
     restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
     role_display = serializers.CharField(source='get_role_display', read_only=True)
+    restaurant_data = RestaurantSerializer(source='restaurant', read_only=True)
     
     class Meta:
         model = CustomUser
         fields = [
             'id', 'email', 'first_name', 'last_name', 'role', 'role_display',
-            'phone', 'restaurant', 'restaurant_name', 'is_verified', 'is_active',
+            'phone', 'restaurant', 'restaurant_name', 'restaurant_data', 'is_verified', 'is_active',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name', 'role_display']
+        read_only_fields = ['id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name', 'role_display', 'restaurant_data']
 
 
 class BulkInviteSerializer(serializers.Serializer):

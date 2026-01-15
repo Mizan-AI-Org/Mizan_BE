@@ -5,6 +5,7 @@ from django.utils import timezone
 from django.db.models import Q
 from django.db import IntegrityError
 from django.core.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from datetime import datetime, timedelta
 import logging, sys
 
@@ -30,6 +31,7 @@ from notifications.services import notification_service
 from django.conf import settings
 from core.utils import build_tenant_context
 from accounts.services import RoleManagementService
+from accounts.models import CustomUser, AuditLog
 
 # Module logger
 logger = logging.getLogger(__name__)
@@ -82,6 +84,21 @@ class WeeklyScheduleListCreateAPIView(generics.ListCreateAPIView):
     def get_queryset(self):
         return WeeklySchedule.objects.filter(restaurant=self.request.user.restaurant).order_by('-week_start')
 
+    def list(self, request, *args, **kwargs):
+        import logging
+        logger = logging.getLogger(__name__)
+        try:
+            queryset = self.get_queryset()
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(serializer.data)
+        except Exception as e:
+            logger.exception("WeeklySchedule list failed")
+            return Response({"detail": "Failed to load weekly schedules"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
     def perform_create(self, serializer):
         serializer.save(restaurant=self.request.user.restaurant)
 
@@ -114,6 +131,21 @@ class WeeklyScheduleViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         return WeeklySchedule.objects.filter(restaurant=self.request.user.restaurant)
+    
+    def list(self, request, *args, **kwargs):
+        import logging
+        logger = logging.getLogger(__name__)
+        try:
+            queryset = self.filter_queryset(self.get_queryset())
+            page = self.paginate_queryset(queryset)
+            if page is not None:
+                serializer = self.get_serializer(page, many=True)
+                return self.get_paginated_response(serializer.data)
+            serializer = self.get_serializer(queryset, many=True)
+            return Response(serializer.data)
+        except Exception:
+            logger.exception("WeeklySchedule v2 list failed")
+            return Response({"detail": "Failed to load weekly schedules"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def perform_create(self, serializer):
         serializer.save(restaurant=self.request.user.restaurant)
@@ -225,79 +257,34 @@ class WeeklyScheduleViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def optimize(self, request):
         """
-        Generate optimized schedule for a week using AI
+        Generate optimized schedule for a week
         """
-        serializer = AIScheduleRequestSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        week_start = request.data.get('week_start')
+        department = request.data.get('department')
         
-        week_start = serializer.validated_data['week_start']
-        template_id = str(serializer.validated_data['template_id'])
-        labor_budget = serializer.validated_data.get('labor_budget')
-        demand_level = serializer.validated_data.get('demand_level', 'MEDIUM')
-        demand_override = serializer.validated_data.get('demand_override')
-
-        # Initialize AI scheduler
-        from .ai_scheduler import AIScheduler
-        ai_scheduler = AIScheduler(restaurant=request.user.restaurant)
-        
-        try:
-            result = ai_scheduler.generate_optimal_schedule(
-                week_start=week_start,
-                template_id=template_id,
-                demand_forecast=demand_override,
-                labor_budget=float(labor_budget) if labor_budget else None,
-                demand_level=demand_level
-            )
-            
-            # 1. Create WeeklySchedule model instance
-            # Check if one already exists for this week
-            week_end = week_start + timedelta(days=6)
-            schedule, created = WeeklySchedule.objects.get_or_create(
-                restaurant=request.user.restaurant,
-                week_start=week_start,
-                defaults={'week_end': week_end, 'is_published': False}
-            )
-            
-            if not created:
-                # Clear existing shifts if we are re-optimizing? 
-                # For now, let's just clear unconfirmed shifts or all? 
-                # User likely expects a fresh generation.
-                AssignedShift.objects.filter(schedule=schedule, status='SCHEDULED').delete()
-
-            # 2. Create AssignedShift instances from AI results
-            created_shifts = []
-            for shift_data in result['shifts']:
-                shift = AssignedShift.objects.create(
-                    schedule=schedule,
-                    staff_id=shift_data['staff_id'],
-                    shift_date=shift_data['shift_date'],
-                    start_time=shift_data['start_time'],
-                    end_time=shift_data['end_time'],
-                    role=shift_data['role'],
-                    status='SCHEDULED'
-                )
-                created_shifts.append(shift)
-            
-            return Response({
-                'success': True,
-                'message': f'AI schedule generated successfully. Created {len(created_shifts)} shifts.',
-                'schedule_id': str(schedule.id),
-                'shifts_created': len(created_shifts),
-                'analytics': {
-                    'total_hours': result['total_hours'],
-                    'estimated_cost': result['estimated_cost'],
-                    'coverage_score': result['coverage_score'],
-                    'warnings': result['warnings']
-                }
-            }, status=status.HTTP_201_CREATED)
-
-        except Exception as e:
-            logger.error(f"Error generating AI schedule: {str(e)}")
+        if not week_start:
             return Response(
-                {'success': False, 'message': f'Error generating schedule: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {'detail': 'week_start is required (YYYY-MM-DD)'},
+                status=status.HTTP_400_BAD_REQUEST
             )
+            
+        # Build tenant context if needed, but request.user.restaurant should be available
+        if not request.user.restaurant:
+             return Response(
+                {'detail': 'User is not associated with a restaurant'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        result = OptimizationService.optimize_schedule(
+            str(request.user.restaurant.id),
+            week_start,
+            department
+        )
+        
+        if result.get('error'):
+            return Response(result, status=status.HTTP_400_BAD_REQUEST)
+            
+        return Response(result)
 
 class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = AssignedShiftSerializer
@@ -314,11 +301,15 @@ class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
 
     def create(self, request, *args, **kwargs):
         """Create assigned shift under a schedule, with friendly duplicate/validation errors."""
-        logger.info(f"[AssignedShift] Received payload: {request.data}")
         serializer = self.get_serializer(data=request.data)
-        if not serializer.is_valid():
-            logger.error(f"[AssignedShift] Validation errors: {serializer.errors}")
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            serializer.is_valid(raise_exception=True)
+        except DRFValidationError as ve:
+            # Surface field errors clearly to the client
+            return Response({
+                'detail': 'Validation error',
+                'errors': ve.detail
+            }, status=status.HTTP_400_BAD_REQUEST)
 
         # Note: We no longer block multiple same-day shifts for the same staff.
         # Overlap prevention is enforced in AssignedShift.clean() and via detect_conflicts.
@@ -333,7 +324,6 @@ class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
             return Response({"detail": str(ve)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             # Catch-all to avoid 500s and expose the error during testing
-            logger.error(f"[AssignedShift] Creation failed: {e}")
             return Response({"detail": f"Shift creation failed: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
 
         headers = self.get_success_headers(serializer.data)
@@ -380,6 +370,7 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Create shift and send notification"""
         shift = serializer.save()
+        print(f"Created shift:{shift}", file=sys.stderr)
         # Send notification to staff about the new shift
         SchedulingService.notify_shift_assignment(shift)
     
@@ -414,6 +405,26 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
+        try:
+            staff = CustomUser.objects.get(id=staff_id)
+        except CustomUser.DoesNotExist:
+            return Response({'detail': 'Staff not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if str(getattr(staff.restaurant, 'id', '')) != str(getattr(request.user.restaurant, 'id', '')):
+            AuditLog.create_log(
+                restaurant=request.user.restaurant,
+                user=request.user,
+                action_type='OTHER',
+                entity_type='AssignedShift',
+                description='Cross-tenant conflict check denied',
+                entity_id=staff_id,
+                old_values={},
+                new_values={},
+                ip_address=request.META.get('REMOTE_ADDR'),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
         conflicts = SchedulingService.detect_scheduling_conflicts(
             staff_id,
             shift_date_obj,
@@ -425,10 +436,51 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
             'has_conflicts': len(conflicts) > 0,
             'conflicts': conflicts
         })
-    
+
     @action(detail=False, methods=['get'])
     def staff_hours(self, request):
         """Get total working hours for staff in date range"""
+        staff_id = request.query_params.get('staff_id')
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+
+        if not all([staff_id, start_date, end_date]):
+            return Response(
+                {'detail': 'staff_id, start_date, and end_date are required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+        except ValueError:
+            return Response(
+                {'detail': 'Invalid date format. Use YYYY-MM-DD'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            staff = CustomUser.objects.get(id=staff_id)
+        except CustomUser.DoesNotExist:
+            return Response({'detail': 'Staff not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if str(getattr(staff.restaurant, 'id', '')) != str(getattr(request.user.restaurant, 'id', '')):
+            AuditLog.create_log(
+                restaurant=request.user.restaurant,
+                user=request.user,
+                action_type='OTHER',
+                entity_type='AssignedShift',
+                description='Cross-tenant staff hours denied',
+                entity_id=staff_id,
+                old_values={},
+                new_values={},
+                ip_address=request.META.get('REMOTE_ADDR'),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        hours_data = SchedulingService.calculate_staff_hours(staff_id, start_date_obj, end_date_obj)
+        return Response(hours_data)
         staff_id = request.query_params.get('staff_id')
         start_date = request.query_params.get('start_date')
         end_date = request.query_params.get('end_date')

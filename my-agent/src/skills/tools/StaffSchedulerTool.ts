@@ -15,6 +15,7 @@ export default class StaffSchedulerTool implements LuaTool {
         role: z.string().optional().describe("Role for the shift (e.g., waiter, chef)"),
         shift_id: z.string().optional().describe("ID of the shift to update"),
         notes: z.string().optional().describe("Notes for the shift"),
+        restaurantId: z.string().optional().describe("Restaurant ID (from context)"),
     });
 
     private apiService: ApiService;
@@ -28,6 +29,7 @@ export default class StaffSchedulerTool implements LuaTool {
 
         // Check multiple sources for restaurantId
         const restaurantId =
+            input.restaurantId ||
             (context?.get ? context.get("restaurantId") : undefined) ||
             context?.metadata?.restaurantId ||
             context?.restaurantId;

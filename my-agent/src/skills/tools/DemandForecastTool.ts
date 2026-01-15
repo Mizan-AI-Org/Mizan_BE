@@ -7,11 +7,13 @@ export default class DemandForecastTool implements LuaTool {
 
     inputSchema = z.object({
         date: z.string().describe("Date to forecast (YYYY-MM-DD)"),
+        restaurantId: z.string().optional().describe("The ID of the restaurant (from context)"),
+        restaurantName: z.string().optional().describe("The name of the restaurant (from context)")
     });
 
     async execute(input: z.infer<typeof this.inputSchema>, context?: any) {
-        const restaurantId = context?.get ? context.get("restaurantId") : undefined;
-        const restaurantName = context?.get ? context.get("restaurantName") : "Unknown Restaurant";
+        const restaurantId = input.restaurantId || (context?.get ? context.get("restaurantId") : undefined);
+        const restaurantName = input.restaurantName || (context?.get ? context.get("restaurantName") : "Unknown Restaurant");
 
         if (!restaurantId) {
             return { status: "error", message: "No restaurant context found. Please ensure you are logged in." };

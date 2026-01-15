@@ -245,6 +245,53 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at', 'tasks', 'task_templates', 'task_templates_details'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'schedule']
+        extra_kwargs = {
+            'role': {'required': False},
+        }
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        staff = attrs.get('staff')
+        schedule = attrs.get('schedule')
+        if schedule is None and isinstance(getattr(self, 'initial_data', {}), dict):
+            sched_id = self.initial_data.get('schedule')
+            if sched_id:
+                from .models import WeeklySchedule
+                try:
+                    schedule = WeeklySchedule.objects.get(id=sched_id)
+                except WeeklySchedule.DoesNotExist:
+                    raise serializers.ValidationError({'schedule': 'Schedule not found'})
+        if staff is None and isinstance(getattr(self, 'initial_data', {}), dict):
+            from accounts.models import CustomUser
+            staff_id = self.initial_data.get('staff')
+            if staff_id:
+                try:
+                    staff = CustomUser.objects.get(id=staff_id)
+                except CustomUser.DoesNotExist:
+                    raise serializers.ValidationError({'staff': 'Staff not found'})
+        if request and hasattr(request, 'user') and getattr(request.user, 'restaurant', None):
+            user_restaurant = request.user.restaurant
+            if schedule and getattr(schedule, 'restaurant', None) and schedule.restaurant != user_restaurant:
+                raise serializers.ValidationError({'restaurant': 'Cross-tenant schedule access denied'})
+            if staff and getattr(staff, 'restaurant', None) and staff.restaurant != user_restaurant:
+                raise serializers.ValidationError({'staff': 'Staff belongs to a different restaurant'})
+            if schedule and staff and getattr(schedule, 'restaurant', None) and getattr(staff, 'restaurant', None):
+                if schedule.restaurant != staff.restaurant:
+                    raise serializers.ValidationError({'staff': 'Staff must belong to the same restaurant as the schedule'})
+            # Default role to staff.role if not provided
+            if not attrs.get('role') and staff and getattr(staff, 'role', None):
+                attrs['role'] = staff.role
+        return attrs
+
+    def validate_role(self, value):
+        from django.conf import settings
+        if not value:
+            return value
+        norm = str(value).strip().upper().replace('-', '_')
+        allowed = set([c[0] for c in settings.STAFF_ROLES_CHOICES])
+        if norm in allowed:
+            return norm
+        raise serializers.ValidationError('Invalid role')
 
     def get_staff_name(self, obj):
         return str(obj.staff)
@@ -330,7 +377,7 @@ class CombinedTaskItemSerializer(serializers.Serializer):
         return data
 
 class WeeklyScheduleSerializer(serializers.ModelSerializer):
-    assigned_shifts = AssignedShiftSerializer(many=True, read_only=True)
+    assigned_shifts = serializers.SerializerMethodField()
     
     class Meta:
         model = WeeklySchedule
@@ -359,6 +406,13 @@ class WeeklyScheduleSerializer(serializers.ModelSerializer):
                     'week_start': 'A weekly schedule for this week already exists.'
                 })
         return data
+
+    def get_assigned_shifts(self, obj):
+        try:
+            qs = obj.assigned_shifts.all()
+            return AssignedShiftSerializer(qs, many=True).data
+        except Exception:
+            return []
 
 class ShiftSwapRequestSerializer(serializers.ModelSerializer):
     shift_to_swap_details = AssignedShiftSerializer(source='shift_to_swap', read_only=True)

@@ -22,6 +22,7 @@ from .models import (
     Role, Permission, RolePermission, UserInvitation,
     UserRole, AuditLog
 )
+from .tasks import send_whatsapp_invitation_task
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,19 @@ class UserManagementService:
                     results['success'] += 1
                     results['invitations'].append(invitation)
 
+                    # Send WhatsApp if phone is present
+                    phone_num = (row.get('phone') or row.get('phonenumber') or '').strip()
+                    if phone_num:
+                        invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
+                        send_whatsapp_invitation_task.delay(
+                            invitation_id=invitation.id,
+                            phone=phone_num,
+                            first_name=first_name,
+                            restaurant_name=restaurant.name,
+                            invite_link=invite_link,
+                            support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
+                        )
+
                 except Exception as e:
                     results['failed'] += 1
                     results['errors'].append(f"Row {idx}: Creation failed for {email} - {str(e)}")
@@ -193,6 +207,18 @@ class UserManagementService:
                     results['errors'].append(f"Item {idx}: Email send failed for {email} - {str(e)}")
                 results['success'] += 1
                 results['invitations'].append(invitation)
+
+                # Send WhatsApp if phone is present
+                if phone:
+                    invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
+                    send_whatsapp_invitation_task.delay(
+                        invitation_id=invitation.id,
+                        phone=phone,
+                        first_name=first_name,
+                        restaurant_name=restaurant.name,
+                        invite_link=invite_link,
+                        support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
+                    )
             except Exception as e:
                 results['failed'] += 1
                 results['errors'].append(f"Item {idx}: {str(e)}")
@@ -344,6 +370,10 @@ class UserManagementService:
             
             # Send email
             UserManagementService._send_invitation_email(invitation)
+            try:
+                UserManagementService.sync_hr_on_invitation(invitation)
+            except Exception:
+                pass
             
             return invitation
         
@@ -458,6 +488,13 @@ class UserManagementService:
             return True
         except Exception as e:
             logger.error(f"Failed to send invitation email: {str(e)}")
+            return False
+
+    @staticmethod
+    def sync_hr_on_invitation(invitation):
+        try:
+            return True
+        except Exception:
             return False
 
 

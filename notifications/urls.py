@@ -1,6 +1,5 @@
 from django.urls import path
 from . import views
-from . import views_agent
 
 app_name = 'notifications'
 
@@ -32,9 +31,7 @@ urlpatterns = [
 
     # Health checks
     path('health-check/', views.health_check_notifications, name='health-check-notifications'),
-    path('whatsapp/activity/', views.whatsapp_activity, name='whatsapp-activity'),
+
+    # WhatsApp webhook
     path('whatsapp/webhook/', views.whatsapp_webhook, name='whatsapp-webhook'),
-    
-    # Agent Integration
-    path('agent/send-whatsapp/', views_agent.send_whatsapp_from_agent, name='agent-send-whatsapp'),
 ]

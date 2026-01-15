@@ -239,12 +239,14 @@ class AuditTrailService:
         old_values: Optional[Dict] = None,
         new_values: Optional[Dict] = None,
         metadata: Optional[Dict] = None,
-        request=None
+        request=None,
+        severity: Optional[str] = None
     ):
         """Log shift-specific activities"""
-        severity = AuditSeverity.MEDIUM if action in [
-            AuditActionType.SHIFT_SWAP, AuditActionType.ASSIGN, AuditActionType.UNASSIGN
-        ] else AuditSeverity.LOW
+        if severity is None:
+            severity = AuditSeverity.MEDIUM if action in [
+                AuditActionType.SHIFT_SWAP, AuditActionType.ASSIGN, AuditActionType.UNASSIGN
+            ] else AuditSeverity.LOW
         
         return AuditTrailService.log_activity(
             user=user,

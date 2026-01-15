@@ -18,11 +18,22 @@ def create_default_checklists_on_restaurant_create(sender, instance, created, **
 
     logger = logging.getLogger(__name__)
 
+    from django.utils import timezone
+
+    def normalize_duration(value):
+        try:
+            # Interpret integers as minutes for DurationField
+            if isinstance(value, int):
+                return timezone.timedelta(minutes=value)
+        except Exception:
+            pass
+        return value
+
     default_templates = [
         {
             "name": "Restaurant Safety Checklist",
             "category": "SAFETY",
-            "estimated_duration": 20,
+            "estimated_duration": normalize_duration(20),
             "requires_supervisor_approval": True,
             "steps": [
                 {"title": "Check fire extinguishers tagged and accessible", "step_type": "CHECK"},
@@ -35,7 +46,7 @@ def create_default_checklists_on_restaurant_create(sender, instance, created, **
         {
             "name": "Restaurant Opening Checklist",
             "category": "OPENING",
-            "estimated_duration": 30,
+            "estimated_duration": normalize_duration(30),
             "requires_supervisor_approval": False,
             "steps": [
                 {"title": "Front-of-house cleanliness check", "step_type": "CHECK"},
@@ -71,7 +82,7 @@ def create_default_checklists_on_restaurant_create(sender, instance, created, **
         {
             "name": "Restaurant Mystery Shopper Template",
             "category": "QUALITY",
-            "estimated_duration": 35,
+            "estimated_duration": normalize_duration(35),
             "requires_supervisor_approval": False,
             "steps": [
                 {"title": "Rate service friendliness", "step_type": "CHECK"},
@@ -82,7 +93,7 @@ def create_default_checklists_on_restaurant_create(sender, instance, created, **
         {
             "name": "Restaurant Manager Opening Checklist",
             "category": "OPENING",
-            "estimated_duration": 30,
+            "estimated_duration": normalize_duration(30),
             "requires_supervisor_approval": True,
             "steps": [
                 {"title": "Verify staff assignments and coverage", "step_type": "CHECK"},
@@ -101,7 +112,7 @@ def create_default_checklists_on_restaurant_create(sender, instance, created, **
                     name=tmpl["name"],
                     defaults={
                         "category": tmpl["category"],
-                        "estimated_duration": tmpl.get("estimated_duration", 15),
+                        "estimated_duration": normalize_duration(tmpl.get("estimated_duration", 15)),
                         "requires_supervisor_approval": tmpl.get("requires_supervisor_approval", False),
                     },
                 )

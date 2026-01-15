@@ -10,11 +10,7 @@ import { LuaJob, Data, Products } from "lua-cli";
 const healthCheckJob = new LuaJob({
   // Use a distinct name to avoid collision with an existing job on the server
   name: "health-check-dev",
-  version: "1.0.0",
   description: "System health monitoring",
-  context: "Runs every 5 minutes to check API health, database connectivity, and service availability. " +
-           "Logs health metrics and can trigger alerts if issues are detected.",
-
   // Interval schedule: Every 5 minutes
   schedule: {
     type: 'interval',

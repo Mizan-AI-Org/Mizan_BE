@@ -215,19 +215,35 @@ class CustomUser(AbstractUser):
 
 class StaffInvitation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    email = models.EmailField()
+    email = models.EmailField(blank=True, null=True)  # Made optional for phone-only invitations
     role = models.CharField(max_length=20, choices=CustomUser.ROLE_CHOICES)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
     invited_by = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
-    token = models.CharField(max_length=100, unique=True)
+    invitation_token = models.CharField(max_length=100, unique=True)
     is_accepted = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
+    sent_at = models.DateTimeField(auto_now_add=True)  # Renamed from created_at for clarity
     expires_at = models.DateTimeField()
-    # Store optional onboarding data like department and phone
+    # Store optional data: first_name, last_name, department, phone, phone_number
     extra_data = models.JSONField(default=dict, blank=True)
     
     class Meta:
         db_table = 'staff_invitations'
+    
+    def clean(self):
+        """Ensure at least email or phone is provided"""
+        from django.core.exceptions import ValidationError
+        phone = self.extra_data.get('phone') or self.extra_data.get('phone_number')
+        if not self.email and not phone:
+            raise ValidationError('Either email or phone number must be provided')
+    
+    @property
+    def first_name(self):
+        return self.extra_data.get('first_name', '')
+    
+    @property
+    def last_name(self):
+        return self.extra_data.get('last_name', '')
+
 
 
 # ============================================================================
@@ -346,7 +362,7 @@ class UserInvitation(models.Model):
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='user_invitations')
-    email = models.EmailField()
+    email = models.EmailField(blank=True, null=True)
     role = models.CharField(max_length=20, choices=CustomUser.ROLE_CHOICES)
     first_name = models.CharField(max_length=100, blank=True, null=True)
     last_name = models.CharField(max_length=100, blank=True, null=True)
@@ -354,6 +370,8 @@ class UserInvitation(models.Model):
     invitation_token = models.CharField(max_length=255, unique=True)
     sent_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
+    # optional onboarding details (e.g., phone_number, department)
+    extra_data = models.JSONField(default=dict, blank=True)
     is_accepted = models.BooleanField(default=False)
     accepted_at = models.DateTimeField(blank=True, null=True)
     accepted_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='invitations_accepted')
@@ -375,6 +393,28 @@ class UserInvitation(models.Model):
         """Check if invitation has expired"""
         from django.utils import timezone
         return timezone.now() > self.expires_at and self.status == 'PENDING'
+
+
+class InvitationDeliveryLog(models.Model):
+    STATUS_CHOICES = (
+        ('PENDING', 'Pending'),
+        ('SENT', 'Sent'),
+        ('DELIVERED', 'Delivered'),
+        ('FAILED', 'Failed'),
+    )
+    invitation = models.ForeignKey(UserInvitation, on_delete=models.CASCADE, related_name='delivery_logs')
+    channel = models.CharField(max_length=20)
+    recipient_address = models.CharField(max_length=255)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    external_id = models.CharField(max_length=255, blank=True, null=True)
+    response_data = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True, null=True)
+    attempt_count = models.IntegerField(default=1)
+    sent_at = models.DateTimeField(auto_now_add=True)
+    delivered_at = models.DateTimeField(null=True, blank=True)
+    class Meta:
+        db_table = 'invitation_delivery_logs'
+        ordering = ['-sent_at']
 
 
 class AuditLog(models.Model):

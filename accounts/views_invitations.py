@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.db.models import Q
 from django.utils import timezone
+from django.conf import settings
 from datetime import timedelta
 import sys
 
@@ -16,6 +17,7 @@ from .serializers import (
     BulkInviteSerializer, AcceptInvitationSerializer,
     UpdateUserRoleSerializer
 )
+from .tasks import send_whatsapp_invitation_task
 from .services import UserManagementService
 from core.permissions import IsRestaurantOwnerOrManager
 import logging
@@ -160,10 +162,10 @@ class InvitationViewSet(viewsets.ModelViewSet):
         if show_expired.lower() == 'false':
             queryset = queryset.filter(expires_at__gt=timezone.now())
         
-        return queryset.order_by('-created_at')
+        return queryset.order_by('-sent_at')
     
     def create(self, request, *args, **kwargs):
-        """Create single invitation and send email, returning JSON even on errors."""
+        """Create single invitation and send email/prepare WhatsApp link, returning JSON even on errors."""
         try:
             serializer = self.get_serializer(data=request.data)
             serializer.is_valid(raise_exception=True)
@@ -177,19 +179,31 @@ class InvitationViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST
                 )
 
-            # Prevent duplicate pending invitations
+            # Extract contact information
             email = serializer.validated_data.get('email')
-            existing = UserInvitation.objects.filter(
-                restaurant=restaurant,
-                email=email,
-                is_accepted=False,
-                expires_at__gt=timezone.now()
-            ).first()
-            if existing:
+            phone = request.data.get('phone_number') or request.data.get('phone')
+            send_whatsapp = request.data.get('send_whatsapp', False)
+            
+            # Validate at least one contact method
+            if not email and not phone:
                 return Response(
-                    {'detail': f'Invitation already pending for {email}'},
+                    {'detail': 'Either email or phone number must be provided'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
+
+            # Prevent duplicate pending invitations (check email if provided)
+            if email:
+                existing = UserInvitation.objects.filter(
+                    restaurant=restaurant,
+                    email=email,
+                    is_accepted=False,
+                    expires_at__gt=timezone.now()
+                ).first()
+                if existing:
+                    return Response(
+                        {'detail': f'Invitation already pending for {email}'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
 
             # Generate secure token and expiry
             import secrets
@@ -199,21 +213,10 @@ class InvitationViewSet(viewsets.ModelViewSet):
 
             # Normalize extra_data from request for convenience
             extra_data = serializer.validated_data.get('extra_data') or {}
-            
-            # Extract names and phone from request.data or validated_data
-            first_name = request.data.get('first_name') or serializer.validated_data.get('first_name')
-            last_name = request.data.get('last_name') or serializer.validated_data.get('last_name')
-            phone = request.data.get('phone') or request.data.get('whatsapp') or extra_data.get('phone')
-            department = request.data.get('department') or extra_data.get('department')
-
-            # Ensure they are in extra_data for frontend display consistency
-            if first_name: extra_data['first_name'] = first_name
-            if last_name: extra_data['last_name'] = last_name
-            if phone: extra_data['phone'] = phone
-            if department: extra_data['department'] = department
-
-            logger.info(f"Creating invitation: email={email}, phone={phone}, names={first_name} {last_name}")
-            print(f"DEBUG: Invitation payload: {extra_data}")
+            # Allow top-level fields to be merged into extra_data if provided
+            for key in ('first_name', 'last_name', 'department', 'phone', 'phone_number'):
+                if key in request.data and request.data.get(key) is not None:
+                    extra_data[key] = request.data.get(key)
 
             # Save with server-side fields
             invitation = serializer.save(
@@ -222,16 +225,38 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 invitation_token=token,
                 expires_at=expires_at,
                 extra_data=extra_data,
-                first_name=first_name,
-                last_name=last_name
             )
 
-            # Send invitation email (do not throw HTML errors)
-            email_ok = UserManagementService._send_invitation_email(invitation)
+            # Send invitation email only if email is provided and not WhatsApp-only
+            email_ok = False
+            if email and not send_whatsapp:
+                email_ok = UserManagementService._send_invitation_email(invitation)
+            
             headers = self.get_success_headers(StaffInvitationSerializer(invitation).data)
-            if email_ok:
+            response_data = StaffInvitationSerializer(invitation).data
+            
+            if send_whatsapp or not email:
+                # WhatsApp invitation - return token for frontend to generate link
+                # AND trigger the background task to send the message
+                if phone:
+                    invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
+                    send_whatsapp_invitation_task.delay(
+                        invitation_id=invitation.id,
+                        phone=phone,
+                        first_name=invitation.first_name,
+                        restaurant_name=restaurant.name,
+                        invite_link=invite_link,
+                        support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
+                    )
+
                 return Response(
-                    StaffInvitationSerializer(invitation).data,
+                    response_data,
+                    status=status.HTTP_201_CREATED,
+                    headers=headers
+                )
+            elif email_ok:
+                return Response(
+                    response_data,
                     status=status.HTTP_201_CREATED,
                     headers=headers
                 )
@@ -240,7 +265,7 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 return Response(
                     {
                         'detail': 'Invitation created successfully, but email failed to send',
-                        'invitation': StaffInvitationSerializer(invitation).data,
+                        'invitation': response_data,
                     },
                     status=status.HTTP_201_CREATED,
                     headers=headers
@@ -359,3 +384,25 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 {'detail': 'Failed to send email'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        try:
+            from .models import InvitationDeliveryLog
+            restaurant = request.user.restaurant
+            invites = UserInvitation.objects.filter(restaurant=restaurant)
+            logs = InvitationDeliveryLog.objects.filter(invitation__in=invites)
+            total = invites.count()
+            email_sent = logs.filter(channel='email', status='SENT').count()
+            whatsapp_sent = logs.filter(channel='whatsapp', status='SENT').count()
+            whatsapp_failed = logs.filter(channel='whatsapp', status='FAILED').count()
+            pending_whatsapp = logs.filter(channel='whatsapp', status='PENDING').count()
+            return Response({
+                'total_invitations': total,
+                'email_sent': email_sent,
+                'whatsapp_sent': whatsapp_sent,
+                'whatsapp_failed': whatsapp_failed,
+                'whatsapp_pending': pending_whatsapp,
+            })
+        except Exception as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
