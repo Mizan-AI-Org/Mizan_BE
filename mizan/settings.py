@@ -12,9 +12,14 @@ def str_to_bool(value):
 STAFF_ROLES_CHOICES = [
     ('SUPER_ADMIN', 'Super Admin'),
     ('ADMIN', 'Admin'),
+    ('MANAGER', 'Manager'),
     ('CHEF', 'Chef'),
     ('WAITER', 'Waiter'),
+    ('KITCHEN_HELP', 'Kitchen Help'),
+    ('BARTENDER', 'Bartender'),
+    ('RECEPTIONIST', 'Receptionist'),
     ('CLEANER', 'Cleaner'),
+    ('SECURITY', 'Security'),
     ('CASHIER', 'Cashier'),
 ]
 # ---------------------------

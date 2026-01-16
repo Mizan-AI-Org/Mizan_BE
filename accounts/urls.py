@@ -5,7 +5,7 @@ from .views import (
     PasswordResetConfirmView, RestaurantDetailView, RestaurantUpdateView, StaffInvitationListView, 
     StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView,
     LoginView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView, pin_login,
-    StaffListView
+    StaffListView, StaffPasswordResetView
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
 from .views_invitations import InvitationViewSet, UserManagementViewSet
@@ -30,6 +30,7 @@ urlpatterns = [
     path('restaurant/<uuid:pk>/update/', RestaurantUpdateView.as_view(), name='restaurant_update'),
     path('staff/invitations/', StaffInvitationListView.as_view(), name='staff_invitations'),
     path('staff/profile/<uuid:pk>/update/', StaffProfileUpdateView.as_view(), name='staff_profile_update'),
+    path('staff/profile/<uuid:pk>/reset-password/', StaffPasswordResetView.as_view(), name='staff_password_reset'),
     path('staff/', StaffListAPIView.as_view(), name='staff_list'),
     # path('staff/users/', StaffUsersListView.as_view(), name='staff_users_list'),
     path('auth/login/', LoginView.as_view(), name='login'),

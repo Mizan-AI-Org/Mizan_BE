@@ -1,10 +1,13 @@
-from rest_framework import status, permissions, generics
+from rest_framework import status, permissions, generics, viewsets
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.shortcuts import get_object_or_404
-from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer, StaffSerializer
+from .serializers import (
+    CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer,
+    PinLoginSerializer, StaffProfileSerializer, StaffSerializer
+)
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
 from .models import CustomUser, Restaurant, UserInvitation, StaffProfile, AuditLog
@@ -709,6 +712,9 @@ class StaffProfileUpdateView(APIView):
 
     def put(self, request, pk):
         staff_member = get_object_or_404(CustomUser, pk=pk, restaurant=request.user.restaurant)
+        
+        # Extract profile data to handle it separately if needed, 
+        # or rely on the serializer's update method.
         serializer = CustomUserSerializer(staff_member, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
@@ -917,3 +923,33 @@ class StaffPinLoginView(APIView):
             }
         }, status=status.HTTP_200_OK)
     
+class StaffPasswordResetView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
+
+    def post(self, request, pk):
+        staff_member = get_object_or_404(CustomUser, pk=pk, restaurant=request.user.restaurant)
+        new_password = request.data.get('password')
+        
+        if not new_password:
+            return Response({'error': 'Password is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Basic validation for staff PINS/passwords
+        if len(new_password) < 4:
+            return Response({'error': 'Password must be at least 4 characters'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        staff_member.set_password(new_password) # For staff who have login access
+        if len(new_password) == 4 and new_password.isdigit():
+            staff_member.set_pin(new_password) # Also update PIN if it looks like one
+            
+        staff_member.save()
+        
+        AuditLog.create_log(
+            restaurant=request.user.restaurant,
+            user=request.user,
+            action_type='PASSWORD_CHANGED',
+            entity_type='USER',
+            entity_id=str(staff_member.id),
+            description=f'Password reset for {staff_member.email} by manager'
+        )
+        
+        return Response({'message': 'Password reset successfully'})

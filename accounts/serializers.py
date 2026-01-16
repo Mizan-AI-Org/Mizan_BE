@@ -1,13 +1,14 @@
 from rest_framework import serializers
-from .models import CustomUser, Restaurant, UserInvitation, StaffProfile
+from .models import (
+    CustomUser, Restaurant, UserInvitation, StaffProfile, StaffInvitation, AuditLog
+)
 from django.contrib.auth import authenticate
 import sys
 
 class StaffProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = StaffProfile
-        fields = '__all__'
-        read_only_fields = ['user']
+        fields = ['hourly_rate', 'salary_type', 'join_date', 'promotion_history', 'emergency_contact_name', 'emergency_contact_phone', 'notes', 'department']
 
 class RestaurantSerializer(serializers.ModelSerializer):
     class Meta:
@@ -16,12 +17,29 @@ class RestaurantSerializer(serializers.ModelSerializer):
 
 class CustomUserSerializer(serializers.ModelSerializer):
     restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
-    profile = StaffProfileSerializer(read_only=True)
+    profile = StaffProfileSerializer(required=False)
     
     class Meta:
         model = CustomUser
         fields = ['id', 'email', 'first_name', 'last_name', 'role', 'phone', 'restaurant', 'restaurant_name', 'is_verified', 'created_at', 'updated_at', 'profile']
         read_only_fields = ['id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name']
+
+    def update(self, instance, validated_data):
+        profile_data = validated_data.pop('profile', None)
+        
+        # Update CustomUser fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        
+        # Update or create StaffProfile
+        if profile_data:
+            profile, created = StaffProfile.objects.get_or_create(user=instance)
+            profile_serializer = StaffProfileSerializer(profile, data=profile_data, partial=True)
+            if profile_serializer.is_valid(raise_exception=True):
+                profile_serializer.save()
+        
+        return instance
 
 
 class StaffInvitationSerializer(serializers.ModelSerializer):
@@ -43,11 +61,6 @@ class StaffInvitationSerializer(serializers.ModelSerializer):
         return data.get('phone_number') or data.get('phone') or None
 
 
-class StaffProfileSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = StaffProfile
-        fields = '__all__'
-        read_only_fields = ['user']
 
 
 class PinLoginSerializer(serializers.Serializer):
@@ -93,7 +106,7 @@ class PinLoginSerializer(serializers.Serializer):
             users_with_pin = CustomUser.objects.filter(
                 pin_code__isnull=False, 
                 is_active=True,
-                role__in=['CHEF', 'WAITER', 'CLEANER', 'CASHIER', 'KITCHEN_STAFF', 'DELIVERY']
+                role__in=['CHEF', 'WAITER', 'CLEANER', 'CASHIER', 'KITCHEN_HELP', 'BARTENDER', 'RECEPTIONIST', 'SECURITY']
             )
             
             authenticated_user = None
@@ -125,7 +138,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'email', 'first_name', 'last_name', 'role', 'role_display',
             'phone', 'restaurant', 'restaurant_name', 'restaurant_data', 'is_verified', 'is_active',
-            'created_at', 'updated_at'
+            'created_at', 'updated_at', 'profile'
         ]
         read_only_fields = ['id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name', 'role_display', 'restaurant_data']
 

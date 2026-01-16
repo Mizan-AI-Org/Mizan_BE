@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Schedule, StaffProfile, ScheduleChange, ScheduleNotification, StaffAvailability, PerformanceMetric
+from .models import Schedule, StaffProfile, StaffDocument, ScheduleChange, ScheduleNotification, StaffAvailability, PerformanceMetric
 from .models_task import StandardOperatingProcedure, SafetyChecklist, ScheduleTask, SafetyConcernReport, SafetyRecognition
 from accounts.serializers import CustomUserSerializer, RestaurantSerializer
 import decimal
@@ -12,6 +12,12 @@ class StaffProfileSerializer(serializers.ModelSerializer):
         model = StaffProfile
         fields = '__all__'
         read_only_fields = ('user',)
+
+class StaffDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StaffDocument
+        fields = '__all__'
+        read_only_fields = ('uploaded_at', 'staff')
 
 class ScheduleSerializer(serializers.ModelSerializer):
     staff_details = CustomUserSerializer(source='staff', read_only=True)
