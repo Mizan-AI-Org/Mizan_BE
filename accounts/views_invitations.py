@@ -1,7 +1,7 @@
 """
 User Management and Invitation API Views
 """
-from rest_framework import viewsets, status
+from rest_framework import viewsets, status, pagination
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -25,6 +25,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class StandardResultsSetPagination(pagination.PageNumberPagination):
+    page_size = 10
+    page_size_query_param = 'page_size'
+    max_page_size = 500
+
+
 class UserManagementViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing users in a restaurant
@@ -41,6 +47,7 @@ class UserManagementViewSet(viewsets.ModelViewSet):
     """
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated, IsRestaurantOwnerOrManager]
+    pagination_class = StandardResultsSetPagination
     
     def get_queryset(self):
         user = self.request.user
