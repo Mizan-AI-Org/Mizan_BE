@@ -113,6 +113,11 @@ class CustomUser(AbstractUser):
     last_failed_login = models.DateTimeField(null=True, blank=True)
     last_successful_login = models.DateTimeField(null=True, blank=True)
     
+    # Password reset fields
+    password_reset_token = models.CharField(max_length=64, blank=True, null=True)
+    password_reset_expires = models.DateTimeField(blank=True, null=True)
+
+    
     # Remove username and use email instead
     username = None
     email = models.EmailField(unique=True)
@@ -212,6 +217,30 @@ class CustomUser(AbstractUser):
             raise ValidationError("Password must contain at least one special character.")
         
         return True
+    
+    def generate_password_reset_token(self):
+        """Generate a secure password reset token with 1-hour expiry."""
+        from django.utils.crypto import get_random_string
+        self.password_reset_token = get_random_string(64)
+        self.password_reset_expires = timezone.now() + timedelta(hours=1)
+        self.save(update_fields=['password_reset_token', 'password_reset_expires'])
+        return self.password_reset_token
+    
+    def validate_password_reset_token(self, token):
+        """Validate the password reset token."""
+        if not self.password_reset_token or not self.password_reset_expires:
+            return False
+        if self.password_reset_token != token:
+            return False
+        if timezone.now() > self.password_reset_expires:
+            return False
+        return True
+    
+    def clear_password_reset_token(self):
+        """Clear the password reset token after use."""
+        self.password_reset_token = None
+        self.password_reset_expires = None
+        self.save(update_fields=['password_reset_token', 'password_reset_expires'])
 
 class StaffInvitation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -393,6 +422,24 @@ class UserInvitation(models.Model):
         """Check if invitation has expired"""
         from django.utils import timezone
         return timezone.now() > self.expires_at and self.status == 'PENDING'
+
+    @classmethod
+    def create_invitation(cls, restaurant, email, role, invited_by, expires_in_days=7, bulk_batch_id=None):
+        """Factory method to create an invitation with token"""
+        import secrets
+        from django.utils.crypto import get_random_string
+        token = get_random_string(64)
+        
+        invitation = cls.objects.create(
+            restaurant=restaurant,
+            email=email,
+            role=role,
+            invitation_token=token,
+            expires_at=timezone.now() + timedelta(days=expires_in_days),
+            invited_by=invited_by,
+            bulk_batch_id=bulk_batch_id,
+        )
+        return invitation
 
 
 class InvitationDeliveryLog(models.Model):

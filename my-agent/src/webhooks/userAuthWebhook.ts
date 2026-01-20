@@ -57,21 +57,24 @@ const userAuthWebhook = new LuaWebhook({
     bodySchema: z.object({
         // User identification (at least one required)
         emailAddress: z.string().email().optional(),
-        mobileNumber: z.string().optional(),
-        
+        mobileNumber: z.string().optional().nullable(),
+
         // User info
         fullName: z.string().optional(),
-        
+
         // Tenant context (required)
         restaurantId: z.string(),
         restaurantName: z.string(),
-        
+
         // Permissions
-        role: z.enum(['owner', 'manager', 'chef', 'server', 'staff']).optional(),
+        role: z.string().optional(), // Accept any role string (will be normalized)
         permissions: z.array(z.string()).optional(),
-        
-        // Optional metadata
-        metadata: z.record(z.any()).optional()
+
+        // Metadata including token
+        metadata: z.object({
+            token: z.string().optional(),
+            userId: z.string().optional()
+        }).optional()
     }).refine(data => data.emailAddress || data.mobileNumber, {
         message: "Either emailAddress or mobileNumber is required"
     }),
@@ -105,7 +108,7 @@ const userAuthWebhook = new LuaWebhook({
         //   - Create user if not exists (by emailAddress or mobileNumber)
         //   - Return existing user if already exists
         //   - Return the UserDataInstance for further modifications
-        
+
         /*
         try {
             // Create or get existing user by emailAddress/mobileNumber

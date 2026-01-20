@@ -36,30 +36,104 @@ import { ChatMessage, PreProcessor, UserDataInstance } from "lua-cli";
 export const tenantContextPreprocessor = new PreProcessor({
     name: "tenant-context-validation",
     description: "Validates tenant context is available (context comes via runtimeContext)",
-    priority: 10, // Run early in the pipeline
+    priority: 100, // Run LATE in the pipeline to ensure our modifications stick
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
         console.log("[TenantContext] Processing request", {
             uid: user.uid,
             channel,
-            hasUserData: !!user.data
+            hasUserData: !!user.data,
+            hasLuaProfile: !!(user as any)._luaProfile
         });
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // APPROACH 1: runtimeContext (ACTIVE)
-        // ═══════════════════════════════════════════════════════════════════════
-        // 
-        // With runtimeContext approach, the tenant context is passed directly to
-        // the AI via the runtimeContext field in LuaPop.init() or HTTP API request.
-        // 
-        // The PreProcessor doesn't need to do much - just log and proceed.
-        // The AI will see the context and use it when calling tools.
-        //
-        // If you want to enforce that context exists, you could check user.data
-        // for a flag set by the userAuthWebhook (see Approach 2).
+        // 0. Extract token from Lua profile session data (passed via LuaPop.init({ token }))
+        const luaProfile = (user as any)._luaProfile || {};
+        const sessionToken = luaProfile.credentials?.accessToken ||
+            luaProfile.token ||
+            luaProfile.sessionToken ||
+            (user as any).token;
 
-        // Simply proceed - context comes via runtimeContext to the AI
-        console.log("[TenantContext] ✅ Proceeding (context provided via runtimeContext)");
+        if (sessionToken && !user.data?.token) {
+            console.log("[TenantContext] 🔐 Extracted session token from profile");
+            user.data = { ...user.data, token: sessionToken };
+        }
+
+        // 1. Detect context from messages (specifically the first one where runtimeContext sits)
+        let detectedRestaurantId = user.data?.restaurantId;
+        let detectedRestaurantName = user.data?.restaurantName;
+
+        const firstMessage = messages[0];
+        if (firstMessage && firstMessage.type === 'text') {
+            const text = firstMessage.text;
+            // Enhanced regex for: "Restaurant: Name (ID: id)", "User: Full Name (ID: id)", "Role: RO_LE"
+            const restaurantMatch = text.match(/Restaurant:\s*([^(\n]+?)\s*\(ID:\s*([^)]+?)\)/i);
+            const userMatch = text.match(/User:\s*([^(\n]+?)\s*\(ID:\s*([^)]+?)\)/i);
+            const roleMatch = text.match(/Role:\s*([^,)\n]+)/i);
+
+            if (restaurantMatch) {
+                detectedRestaurantName = restaurantMatch[1].trim();
+                detectedRestaurantId = restaurantMatch[2].trim();
+                console.log(`[TenantContext] 🏢 Detected Restaurant: ${detectedRestaurantName} (${detectedRestaurantId})`);
+                user.data = { ...user.data, restaurantId: detectedRestaurantId, restaurantName: detectedRestaurantName };
+            }
+            if (userMatch) {
+                const userName = userMatch[1].trim();
+                const userId = userMatch[2].trim();
+                console.log(`[TenantContext] 👤 Detected User: ${userName} (${userId})`);
+                user.data = { ...user.data, userName, userId };
+            }
+            if (roleMatch) {
+                const role = roleMatch[1].trim();
+                user.data = { ...user.data, role };
+            }
+        }
+
+        // 2. If we have context, inject/update the anchoring block
+        if (detectedRestaurantId) {
+            console.log(`[TenantContext] ⚓ Anchoring context for ${detectedRestaurantName} (${detectedRestaurantId})`);
+
+            // Only save if we actually updated something
+            if (user.data?.restaurantId === detectedRestaurantId) {
+                try {
+                    await user.save();
+                    console.log("[TenantContext] ✅ User data persisted to cloud.");
+                } catch (e) {
+                    console.error("[TenantContext] ❌ Failed to save user data:", e);
+                }
+            }
+
+            const now = new Date();
+            const contextBlock = [
+                `[SYSTEM: PERSISTENT CONTEXT]`,
+                `Restaurant: ${detectedRestaurantName}`,
+                `Restaurant ID: ${detectedRestaurantId}`,
+                `User: ${user.data?.userName || user._luaProfile?.fullName || "Manager"} (Role: ${user.data?.role || "Owner"})`,
+                `Today is ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
+                `Current Time: ${now.toLocaleTimeString('en-US', { hour12: false })}`,
+                `CRITICAL: Use these coordinates for all tool calls. Do not ask for restaurant or date.`,
+                `AGENT_IDENTITY_VERIFIED: TRUE`
+            ].join('\n');
+
+            // Inject into messages to ensure it's in the prompt
+            const modifiedMessages = messages.map((msg, i) => {
+                // Remove any existing blocks first
+                if (msg.type === 'text') {
+                    const cleanText = msg.text.replace(/\[SYSTEM: PERSISTENT CONTEXT\][\s\S]*?AGENT_IDENTITY_VERIFIED: TRUE/g, '').trim();
+
+                    // Inject into the FIRST message (anchoring) AND the LATEST message (recency)
+                    if (i === 0 || i === messages.length - 1) {
+                        return { ...msg, text: `${contextBlock}\n\n${cleanText}` };
+                    }
+                    return { ...msg, text: cleanText };
+                }
+                return msg;
+            });
+
+            return { action: 'proceed' as const, modifiedMessage: modifiedMessages };
+        }
+
+        return { action: 'proceed' as const };
+
         return { action: 'proceed' as const };
 
         // ═══════════════════════════════════════════════════════════════════════
@@ -72,7 +146,7 @@ export const tenantContextPreprocessor = new PreProcessor({
         // - PreProcessor reads from user.data and injects into messages
         //
         // To enable: uncomment the code below and comment out the 'proceed' above
-        
+
         /*
         const restaurantId = user.data?.restaurantId;
         const restaurantName = user.data?.restaurantName;
@@ -110,7 +184,7 @@ export const tenantContextPreprocessor = new PreProcessor({
  * Helper: Injects tenant context into message text (for Approach 2)
  */
 function injectTenantContext(
-    messages: ChatMessage[], 
+    messages: ChatMessage[],
     context: { restaurantId: string; restaurantName: string; role?: string }
 ): ChatMessage[] {
     const contextBlock = [
@@ -119,7 +193,7 @@ function injectTenantContext(
         `Restaurant ID: ${context.restaurantId}`,
         context.role ? `User Role: ${context.role}` : null
     ].filter(Boolean).join('\n');
-    
+
     return messages.map((msg, index) => {
         // Only inject into the first text message
         if (index === 0 && msg.type === 'text') {

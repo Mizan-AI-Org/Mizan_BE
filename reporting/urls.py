@@ -6,6 +6,8 @@ from .views import (
     AttendanceReportRetrieveAPIView,
     InventoryReportListAPIView,
     InventoryReportRetrieveAPIView,
+    IncidentListAPIView,
+    IncidentCreateAPIView,
 )
 
 urlpatterns = [
@@ -20,4 +22,8 @@ urlpatterns = [
     # Inventory Reports
     path('inventory/', InventoryReportListAPIView.as_view(), name='inventory-report-list'),
     path('inventory/<uuid:pk>/', InventoryReportRetrieveAPIView.as_view(), name='inventory-report-detail'),
+
+    # Incidents
+    path('incidents/', IncidentListAPIView.as_view(), name='incident-list'),
+    path('incidents/create/', IncidentCreateAPIView.as_view(), name='incident-create'),
 ]

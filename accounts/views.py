@@ -15,6 +15,8 @@ from django.utils import timezone
 from django.core.files.base import ContentFile
 import base64, os, sys
 from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.contrib.auth.models import UserManager
 from django.contrib.auth.models import UserManager
 from django.utils.crypto import get_random_string
 from django.core.mail import send_mail
@@ -23,6 +25,7 @@ from django.template.loader import render_to_string
 from django.conf import settings
 from notifications.services import notification_service
 from .models import InvitationDeliveryLog
+from .services import sync_user_to_lua_agent
 
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
@@ -101,10 +104,17 @@ def pin_login(request):
             
         # Generate JWT tokens
         refresh = RefreshToken.for_user(user)
+        access_token = str(refresh.access_token)
+        
+        # Sync user context to Lua AI agent (non-blocking)
+        try:
+            sync_user_to_lua_agent(user, access_token)
+        except Exception:
+            pass  # Don't fail login if Lua sync fails
         
         return Response({
             'refresh': str(refresh),
-            'access': str(refresh.access_token),
+            'access': access_token,
             'user': CustomUserSerializer(user).data
         })
     else:
@@ -295,11 +305,19 @@ class LoginView(APIView):
             )
             
             refresh = RefreshToken.for_user(authenticated_user)
+            access_token = str(refresh.access_token)
+            
+            # Sync user context to Lua AI agent (non-blocking)
+            try:
+                sync_user_to_lua_agent(authenticated_user, access_token)
+            except Exception:
+                pass  # Don't fail login if Lua sync fails
+            
             return Response({
                 'user': CustomUserSerializer(authenticated_user).data,
                 'tokens': {
                     'refresh': str(refresh),
-                    'access': str(refresh.access_token),
+                    'access': access_token,
                 }
             })
         else:
@@ -766,14 +784,139 @@ class PasswordResetRequestView(APIView):
     permission_classes = [permissions.AllowAny]
     
     def post(self, request):
-        return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+        email = request.data.get('email')
+        
+        if not email:
+            return Response(
+                {'error': 'Email is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Always return success to prevent email enumeration
+        success_response = Response({
+            'message': 'If an account exists with this email, you will receive a password reset link shortly.'
+        })
+        
+        try:
+            user = CustomUser.objects.get(email=email, is_active=True)
+            
+            # Only allow password reset for admin/manager users
+            if not user.is_admin_role():
+                logger.info(f"Password reset skipped for non-admin user: {email}")
+                return success_response
+            
+            # Generate reset token
+            token = user.generate_password_reset_token()
+            
+            # Build reset link
+            reset_link = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+            
+            # Render email template
+            html_message = render_to_string('emails/password_reset.html', {
+                'reset_link': reset_link,
+                'user_name': user.first_name or 'User',
+                'year': timezone.now().year
+            })
+            plain_message = strip_tags(html_message)
+            
+            # Send email
+            send_mail(
+                'Reset Your Mizan AI Password',
+                plain_message,
+                settings.DEFAULT_FROM_EMAIL,
+                [email],
+                html_message=html_message,
+                fail_silently=False,
+            )
+            
+            # Log the password reset request
+            AuditLog.create_log(
+                restaurant=user.restaurant,
+                user=user,
+                action_type='OTHER',
+                entity_type='USER',
+                entity_id=str(user.id),
+                description='Password reset requested',
+                ip_address=get_client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+            
+        except CustomUser.DoesNotExist:
+            pass  # Don't reveal that email doesn't exist
+        except Exception as e:
+            # Log error but don't reveal to user
+            print(f"Password reset error: {e}")
+        
+        return success_response
 
 
 class PasswordResetConfirmView(APIView):
     permission_classes = [permissions.AllowAny]
     
     def post(self, request):
-        return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+        token = request.data.get('token')
+        new_password = request.data.get('new_password')
+        
+        if not token:
+            return Response(
+                {'error': 'Reset token is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not new_password:
+            return Response(
+                {'error': 'New password is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Find user by token
+        try:
+            user = CustomUser.objects.get(
+                password_reset_token=token,
+                is_active=True
+            )
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'error': 'Invalid or expired reset token'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate token hasn't expired
+        if not user.validate_password_reset_token(token):
+            return Response(
+                {'error': 'Reset token has expired. Please request a new password reset.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate password complexity
+        try:
+            user.validate_password_complexity(new_password)
+        except ValidationError as e:
+            return Response(
+                {'error': str(e.message)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Update password
+        user.set_password(new_password)
+        user.clear_password_reset_token()
+        user.save()
+        
+        # Log the password change
+        AuditLog.create_log(
+            restaurant=user.restaurant,
+            user=user,
+            action_type='PASSWORD_CHANGED',
+            entity_type='USER',
+            entity_id=str(user.id),
+            description='Password reset via email link',
+            ip_address=get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')
+        )
+        
+        return Response({
+            'message': 'Password has been reset successfully. You can now log in with your new password.'
+        })
 
 
 class RestaurantUpdateView(APIView):

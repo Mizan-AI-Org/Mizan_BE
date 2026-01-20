@@ -17,7 +17,11 @@ export default class RestaurantLookupTool implements LuaTool {
     }
 
     async execute(input: z.infer<typeof this.inputSchema>, context?: any) {
-        const token = context?.metadata?.token || (context?.get ? context.get("token") : undefined);
+        const token =
+            context?.metadata?.token ||
+            (context?.get ? context.get("token") : undefined) ||
+            context?.user?.data?.token ||
+            context?.user?.token;
 
         if (!token) {
             return {

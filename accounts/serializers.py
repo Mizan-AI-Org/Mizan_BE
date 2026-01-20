@@ -9,6 +9,13 @@ class StaffProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = StaffProfile
         fields = ['hourly_rate', 'salary_type', 'join_date', 'promotion_history', 'emergency_contact_name', 'emergency_contact_phone', 'notes', 'department']
+        extra_kwargs = {
+            'join_date': {'required': False, 'allow_null': True},
+            'department': {'required': False, 'allow_null': True, 'allow_blank': True},
+            'emergency_contact_name': {'required': False, 'allow_null': True, 'allow_blank': True},
+            'emergency_contact_phone': {'required': False, 'allow_null': True, 'allow_blank': True},
+            'notes': {'required': False, 'allow_blank': True},
+        }
 
 class RestaurantSerializer(serializers.ModelSerializer):
     class Meta:
@@ -18,11 +25,27 @@ class RestaurantSerializer(serializers.ModelSerializer):
 class CustomUserSerializer(serializers.ModelSerializer):
     restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
     profile = StaffProfileSerializer(required=False)
+    email = serializers.EmailField(required=False)
     
     class Meta:
         model = CustomUser
         fields = ['id', 'email', 'first_name', 'last_name', 'role', 'phone', 'restaurant', 'restaurant_name', 'is_verified', 'created_at', 'updated_at', 'profile']
         read_only_fields = ['id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name']
+        extra_kwargs = {
+            'first_name': {'required': False},
+            'last_name': {'required': False},
+            'role': {'required': False},
+        }
+
+    def validate_email(self, value):
+        """
+        Check that the email is unique, ignoring the current instance.
+        """
+        if self.instance and self.instance.email == value:
+            return value
+        if CustomUser.objects.filter(email=value).exists():
+            raise serializers.ValidationError("A user with this email address already exists.")
+        return value
 
     def update(self, instance, validated_data):
         profile_data = validated_data.pop('profile', None)
@@ -132,6 +155,7 @@ class UserSerializer(serializers.ModelSerializer):
     restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
     role_display = serializers.CharField(source='get_role_display', read_only=True)
     restaurant_data = RestaurantSerializer(source='restaurant', read_only=True)
+    profile = StaffProfileSerializer(read_only=True)
     
     class Meta:
         model = CustomUser

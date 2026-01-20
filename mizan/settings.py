@@ -205,7 +205,9 @@ REST_FRAMEWORK = {
     # This tells DRF to use drf-spectacular for its schema
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-    'PAGE_SIZE': 20,
+    'PAGE_SIZE': 10,
+    'PAGE_SIZE_QUERY_PARAM': 'page_size',
+    'MAX_PAGE_SIZE': 500,
 }
 
 SIMPLE_JWT = {
@@ -293,20 +295,20 @@ if not DEBUG:
 # Use a reliable local SMTP sink (Mailhog) in development, SMTP in production
 if DEBUG:
     print("Using development email settings", file=sys.stderr)
-    EMAIL_HOST = os.getenv('DEV_EMAIL_HOST', 'localhost')
-    EMAIL_PORT = int(os.getenv('DEV_EMAIL_PORT', '1025'))
-    EMAIL_HOST_USER = os.getenv('DEV_EMAIL_USER', '')
-    EMAIL_HOST_PASSWORD = os.getenv('DEV_EMAIL_PASSWORD', '')
-    EMAIL_USE_TLS = os.getenv('DEV_EMAIL_USE_TLS', 'False').lower() == 'true'
+    EMAIL_HOST = config('EMAIL_HOST', default='localhost')
+    EMAIL_PORT = config('EMAIL_PORT', default=1025, cast=int)
+    EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+    EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+    EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=False, cast=str_to_bool)
     
-    # If a user is provided but host is still localhost, switch to Gmail as reasonable default
+    # Custom logic: if user is provided but host is local, assume Gmail
     if EMAIL_HOST_USER and EMAIL_HOST == 'localhost':
         EMAIL_HOST = 'smtp.gmail.com'
         EMAIL_PORT = 587
         EMAIL_USE_TLS = True
         
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'no-reply@mizan.local')
+    DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='no-reply@mizan.local')
     print(f"Email Backend: {EMAIL_HOST}:{EMAIL_PORT}", file=sys.stderr)
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'

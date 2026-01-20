@@ -183,12 +183,14 @@ class AuditTrailService:
         old_values: Optional[Dict] = None,
         new_values: Optional[Dict] = None,
         metadata: Optional[Dict] = None,
-        request=None
+        request=None,
+        severity: Optional[str] = None
     ):
         """Log task-specific activities"""
-        severity = AuditSeverity.MEDIUM if action in [
-            AuditActionType.COMPLETE, AuditActionType.ASSIGN, AuditActionType.TASK_REASSIGN
-        ] else AuditSeverity.LOW
+        if severity is None:
+            severity = AuditSeverity.MEDIUM if action in [
+                AuditActionType.COMPLETE, AuditActionType.ASSIGN, AuditActionType.TASK_REASSIGN
+            ] else AuditSeverity.LOW
         
         return AuditTrailService.log_activity(
             user=user,
@@ -211,12 +213,14 @@ class AuditTrailService:
         old_values: Optional[Dict] = None,
         new_values: Optional[Dict] = None,
         metadata: Optional[Dict] = None,
-        request=None
+        request=None,
+        severity: Optional[str] = None
     ):
         """Log schedule-specific activities"""
-        severity = AuditSeverity.HIGH if action in [
-            AuditActionType.SCHEDULE_PUBLISH, AuditActionType.DELETE
-        ] else AuditSeverity.MEDIUM
+        if severity is None:
+            severity = AuditSeverity.HIGH if action in [
+                AuditActionType.SCHEDULE_PUBLISH, AuditActionType.DELETE
+            ] else AuditSeverity.MEDIUM
         
         return AuditTrailService.log_activity(
             user=user,

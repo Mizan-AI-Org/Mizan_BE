@@ -786,5 +786,105 @@ def attendance_history(request, user_id=None):
         
     return Response(attendance_records)
 
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def agent_clock_in(request):
+    """
+    Clock-in for Lua Agent on behalf of staff.
+    Bypasses PIN requirement but requires Agent API Key.
+    """
+    try:
+        # Validate Agent Key
+        auth_header = request.headers.get('Authorization')
+        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        
+        if not expected_key:
+            return Response({'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+             
+        if not auth_header or auth_header != f"Bearer {expected_key}":
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        staff_id = request.data.get('staff_id')
+        latitude = request.data.get('latitude')
+        longitude = request.data.get('longitude')
+        timestamp = request.data.get('timestamp')
+
+        if not staff_id or latitude is None or longitude is None:
+            return Response({'error': 'staff_id, latitude, and longitude are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = get_object_or_404(CustomUser, id=staff_id, is_active=True)
+        
+        # Check if user is already clocked in
+        last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+        if last_event and last_event.event_type == 'in':
+            return Response({
+                'error': 'Already clocked in',
+                'last_clock_in': last_event.timestamp
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Create clock in event
+        clock_event = ClockEvent.objects.create(
+            staff=user,
+            event_type='in',
+            latitude=latitude,
+            longitude=longitude,
+            device_id="Lua Agent",
+            notes=f"Clock-in via WhatsApp Agent"
+        )
+        if timestamp:
+            try:
+                # If timestamp provided, we could override it or just log it
+                pass
+            except Exception:
+                pass
+        
+        return Response(ClockEventSerializer(clock_event).data)
+
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def agent_clock_out(request):
+    """
+    Clock-out for Lua Agent on behalf of staff.
+    """
+    try:
+        # Validate Agent Key
+        auth_header = request.headers.get('Authorization')
+        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        
+        if not expected_key:
+            return Response({'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+             
+        if not auth_header or auth_header != f"Bearer {expected_key}":
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        staff_id = request.data.get('staff_id')
+
+        if not staff_id:
+            return Response({'error': 'staff_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user = get_object_or_404(CustomUser, id=staff_id, is_active=True)
+        
+        # Check if user is clocked in
+        last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+        if not last_event or last_event.event_type != 'in':
+            return Response({'error': 'Not clocked in'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Create clock out event
+        clock_event = ClockEvent.objects.create(
+            staff=user,
+            event_type='out',
+            device_id="Lua Agent",
+            notes="Clock-out via WhatsApp Agent"
+        )
+        
+        return Response(ClockEventSerializer(clock_event).data)
+
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
     # Example of sending a notification (can be triggered by various events)
     # send_realtime_notification(user, 'You viewed your dashboard!', description='Just a friendly reminder.', level='info')
