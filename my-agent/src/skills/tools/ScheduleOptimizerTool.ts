@@ -31,7 +31,11 @@ export default class ScheduleOptimizerTool implements LuaTool {
             context?.metadata?.restaurantId ||
             context?.restaurantId;
 
-        const token = context?.metadata?.token || (context?.get ? context.get("token") : undefined);
+        const token =
+            context?.metadata?.token ||
+            (context?.get ? context.get("token") : undefined) ||
+            context?.user?.data?.token ||
+            context?.user?.token;
 
         if (!restaurantId) {
             console.error('[ScheduleOptimizerTool] Context keys:', context ? Object.keys(context) : 'null');

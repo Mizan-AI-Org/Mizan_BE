@@ -19,6 +19,12 @@ export class StaffManagementModule {
         } else if (event.eventType === 'staff_invitation_accepted') {
             await this.handleInvitationAcceptance(event);
             actionTaken = "invitation_accepted";
+        } else if (event.eventType === 'clock_in') {
+            await this.handleClockIn(event);
+            actionTaken = "clock_in_processed";
+        } else if (event.eventType === 'clock_out') {
+            await this.handleClockOut(event);
+            actionTaken = "clock_out_processed";
         } else {
             // Mock implementation for other events
             recommendations.push("Monitor staff levels");
@@ -31,6 +37,84 @@ export class StaffManagementModule {
             workloadScore: 50,
             recommendations
         };
+    }
+
+    async handleClockIn(event: any) {
+        const { details, staffName, staffId, metadata } = event;
+        const agentKey = process.env.WEBHOOK_API_KEY || '';
+        const phone = details?.phoneNumber || details?.phone || metadata?.phone;
+
+        if (!phone) {
+            console.error("Missing phone for clock-in event");
+            return;
+        }
+
+        // If this is a button click (interaction), we might not have location yet
+        // In Lua, if details.latitude is present, it's a location message
+        if (details?.latitude && details?.longitude) {
+            console.log(`📍 Recording clock-in location for ${staffName}: ${details.latitude}, ${details.longitude}`);
+
+            const result = await this.apiService.clockIn({
+                staff_id: staffId,
+                latitude: details.latitude,
+                longitude: details.longitude,
+                timestamp: event.timestamp
+            }, agentKey);
+
+            if (result.success || result.status === 'success') {
+                await this.apiService.sendWhatsapp({
+                    phone: phone,
+                    type: 'text',
+                    body: `✅ *Clock-In Successful!*\n\nHave a great shift, ${staffName}!`
+                }, agentKey);
+            } else {
+                await this.apiService.sendWhatsapp({
+                    phone: phone,
+                    type: 'text',
+                    body: `⚠️ *Clock-In Failed*\n\nError: ${result.error || 'Unknown error'}. Please try again.`
+                }, agentKey);
+            }
+        } else {
+            // No location yet, send the location sharing request
+            console.log(`📍 Requesting location from ${staffName} to clock in`);
+
+            await this.apiService.sendWhatsapp({
+                phone: phone,
+                type: 'template',
+                template_name: 'clock_in_location_request',
+                language_code: 'en_US',
+                components: []
+            }, agentKey);
+        }
+    }
+
+    async handleClockOut(event: any) {
+        const { staffName, staffId, details, metadata } = event;
+        const agentKey = process.env.WEBHOOK_API_KEY || '';
+        const phone = details?.phoneNumber || details?.phone || metadata?.phone;
+
+        console.log(`✅ Recording clock-out for ${staffName}`);
+
+        const result = await this.apiService.clockOut({
+            staff_id: staffId,
+            timestamp: event.timestamp
+        }, agentKey);
+
+        if (phone) {
+            if (result.success || result.status === 'success') {
+                await this.apiService.sendWhatsapp({
+                    phone: phone,
+                    type: 'text',
+                    body: `✅ *Clock-Out Successful!*\n\nYour shift has been recorded. Get some rest!`
+                }, agentKey);
+            } else {
+                await this.apiService.sendWhatsapp({
+                    phone: phone,
+                    type: 'text',
+                    body: `⚠️ *Clock-Out Failed*\n\nError: ${result.error || 'Unknown error'}. Please try again.`
+                }, agentKey);
+            }
+        }
     }
 
     async handleStaffInvite(event: any) {

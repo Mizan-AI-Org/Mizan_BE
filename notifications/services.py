@@ -149,6 +149,93 @@ class NotificationService:
 
         return True, channels_used
 
+    # ------------------------------------------------------------------------------------
+    # LUA AGENT INTEGRATION
+    # ------------------------------------------------------------------------------------
+
+    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link):
+        """
+        Notify Lua agent about a new staff invitation.
+        This triggers Miya to send a WhatsApp template message.
+        """
+        try:
+            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
+            webhook_id = "9d44ed39-28c6-672h-d749-dhed1ba098e7" # staff-management-events
+            url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
+            
+            payload = {
+                "eventType": "staff_invite",
+                "staffId": "invitation_" + str(invitation_token)[:8],
+                "staffName": first_name,
+                "role": "server", # Default role for invite logic
+                "details": {
+                    "phone": phone,
+                    "inviteLink": invite_link,
+                    "restaurantName": restaurant_name,
+                    "invitationToken": invitation_token
+                },
+                "timestamp": timezone.now().isoformat()
+            }
+            
+            headers = {
+                "Content-Type": "application/json",
+                "x-api-key": LUA_WEBHOOK_API_KEY
+            }
+            
+            logger.info(f"[LuaInvite] Calling webhook for {first_name} at {url}")
+            resp = requests.post(url, json=payload, headers=headers, timeout=5)
+            
+            if resp.status_code in (200, 201):
+                return True, resp.json()
+            else:
+                logger.warning(f"[LuaInvite] Failed: {resp.status_code} - {resp.text}")
+                return False, {"error": resp.text, "status_code": resp.status_code}
+                
+        except Exception as e:
+            logger.error(f"[LuaInvite] Unexpected error: {str(e)}")
+            return False, {"error": str(e)}
+
+    def send_lua_invitation_accepted(self, invitation_token, phone, first_name, flow_data=None):
+        """
+        Notify Lua agent that an invitation was accepted.
+        This allows Miya to send a 'Welcome' message with the staff person's PIN.
+        """
+        try:
+            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
+            webhook_id = "9d44ed39-28c6-672h-d749-dhed1ba098e7" # staff-management-events
+            url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
+            
+            payload = {
+                "eventType": "staff_invitation_accepted",
+                "staffId": "invitation_" + str(invitation_token)[:8],
+                "staffName": first_name,
+                "role": "server",
+                "details": {
+                    "phoneNumber": phone,
+                    "invitationToken": invitation_token,
+                    "flowData": flow_data or {}
+                },
+                "timestamp": timezone.now().isoformat()
+            }
+            
+            headers = {
+                "Content-Type": "application/json",
+                "x-api-key": LUA_WEBHOOK_API_KEY
+            }
+            
+            logger.info(f"[LuaAccept] Calling webhook for {first_name} at {url}")
+            resp = requests.post(url, json=payload, headers=headers, timeout=5)
+            
+            if resp.status_code in (200, 201):
+                return True, resp.json()
+            else:
+                logger.warning(f"[LuaAccept] Failed: {resp.status_code} - {resp.text}")
+                return False, {"error": resp.text, "status_code": resp.status_code}
+                
+        except Exception as e:
+            logger.error(f"[LuaAccept] Unexpected error: {str(e)}")
+            return False, {"error": str(e)}
+
     # ====================================================================================
     # INTERNAL METHODS (UNCHANGED EXCEPT NEVER CREATE A NOTIFICATION TWICE)
     # ====================================================================================

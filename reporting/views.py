@@ -9,8 +9,13 @@ from datetime import timedelta
 from menu.models import MenuItem
 from timeclock.models import ClockEvent
 from scheduling.models import AssignedShift
-from reporting.models import DailySalesReport, AttendanceReport, InventoryReport
-from reporting.serializers import DailySalesReportSerializer, AttendanceReportSerializer, InventoryReportSerializer
+from reporting.models import DailySalesReport, AttendanceReport, InventoryReport, Incident
+from reporting.serializers import (
+    DailySalesReportSerializer, 
+    AttendanceReportSerializer, 
+    InventoryReportSerializer,
+    IncidentSerializer
+)
 from rest_framework.permissions import IsAuthenticated
 from accounts.permissions import IsAdminOrSuperAdmin
 
@@ -58,3 +63,20 @@ class InventoryReportRetrieveAPIView(generics.RetrieveAPIView):
 
     def get_queryset(self):
         return InventoryReport.objects.filter(restaurant=self.request.user.restaurant)
+
+class IncidentListAPIView(generics.ListAPIView):
+    serializer_class = IncidentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Incident.objects.filter(restaurant=self.request.user.restaurant).order_by('-created_at')
+
+class IncidentCreateAPIView(generics.CreateAPIView):
+    serializer_class = IncidentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def perform_create(self, serializer):
+        serializer.save(
+            restaurant=self.request.user.restaurant,
+            reporter=self.request.user
+        )

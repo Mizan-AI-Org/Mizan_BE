@@ -20,4 +20,8 @@ urlpatterns = [
     path('staff-dashboard/', views.staff_dashboard_data, name='staff-dashboard-data'),
     path('attendance-history/', views.attendance_history, name='my-attendance-history'),
     path('attendance-history/<uuid:user_id>/', views.attendance_history, name='staff-attendance-history'),
+
+    # Agent endpoints
+    path('agent/clock-in/', views.agent_clock_in, name='agent-clock-in'),
+    path('agent/clock-out/', views.agent_clock_out, name='agent-clock-out'),
 ]

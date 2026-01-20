@@ -7,7 +7,7 @@ Handles:
 - Permission management
 - RBAC operations
 """
-import csv, io, sys
+import csv, io, sys, os
 import logging
 import secrets
 from datetime import timedelta
@@ -23,8 +23,65 @@ from .models import (
     UserRole, AuditLog
 )
 from .tasks import send_whatsapp_invitation_task
+import requests
 
 logger = logging.getLogger(__name__)
+
+
+# Lua Webhook Configuration
+LUA_AGENT_ID = "baseAgent_agent_1762796132079_ob3ln5fkl"
+LUA_USER_AUTH_WEBHOOK_ID = "df2d840c-b80e-4e6b-98d8-af4e95c0d96a"
+LUA_WEBHOOK_API_KEY = getattr(settings, 'LUA_WEBHOOK_API_KEY', 'mizan-agent-webhook-secret-2026')
+
+
+def sync_user_to_lua_agent(user, access_token):
+    """
+    Sync user context to Lua agent after login.
+    This provisions the user's Lua profile with restaurant context and JWT token,
+    enabling Miya to make API calls on behalf of the user.
+    """
+    try:
+        webhook_url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{LUA_USER_AUTH_WEBHOOK_ID}"
+        
+        # Get the Lua API key for Authorization header
+        lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
+        
+        payload = {
+            "emailAddress": user.email,
+            "mobileNumber": getattr(user, 'phone', None),
+            "fullName": f"{user.first_name} {user.last_name}".strip(),
+            "restaurantId": str(user.restaurant.id) if user.restaurant else None,
+            "restaurantName": user.restaurant.name if user.restaurant else None,
+            "role": user.role.lower() if user.role else "staff",
+            "metadata": {
+                "token": access_token,
+                "userId": str(user.id),
+            }
+        }
+        
+        headers = {
+            "Content-Type": "application/json",
+            "Api-Key": lua_api_key,  # Common Lua API auth header
+            "x-api-key": LUA_WEBHOOK_API_KEY  # Our webhook's internal validation
+        }
+        
+        logger.info(f"[LuaSync] Calling webhook for user {user.email} at {webhook_url}")
+        logger.info(f"[LuaSync] Using API key: {lua_api_key[:8]}... (truncated)")
+        response = requests.post(webhook_url, json=payload, headers=headers, timeout=5)
+        
+        if response.status_code in (200, 201):
+            logger.info(f"[LuaSync] Successfully synced user {user.email} to Lua agent")
+            return True
+        else:
+            logger.warning(f"[LuaSync] Failed to sync user {user.email}: {response.status_code} - {response.text}")
+            return False
+            
+    except requests.RequestException as e:
+        logger.warning(f"[LuaSync] Network error syncing user {user.email}: {str(e)}")
+        return False
+    except Exception as e:
+        logger.error(f"[LuaSync] Unexpected error syncing user {user.email}: {str(e)}")
+        return False
 
 
 class UserManagementService:
