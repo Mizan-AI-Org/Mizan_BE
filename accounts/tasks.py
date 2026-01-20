@@ -26,8 +26,7 @@ def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_n
             channel='whatsapp',
             recipient_address=phone,
             status='SENT' if ok else 'FAILED',
-            recipient_address=phone,
-            status='SENT' if ok else 'FAILED',
+
             external_id=(info or {}).get('eventId'),
             response_data=info or {},
         )

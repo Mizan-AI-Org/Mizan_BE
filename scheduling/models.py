@@ -69,7 +69,8 @@ class AssignedShift(models.Model):
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     schedule = models.ForeignKey(WeeklySchedule, on_delete=models.CASCADE, related_name='assigned_shifts')
-    staff = models.ForeignKey('accounts.CustomUser', on_delete=models.CASCADE, related_name='assigned_shifts')
+    staff = models.ForeignKey('accounts.CustomUser', on_delete=models.CASCADE, related_name='assigned_shifts', null=True, blank=True)
+    staff_members = models.ManyToManyField('accounts.CustomUser', related_name='assigned_shifts_m2m', blank=True)
     shift_date = models.DateField()
     start_time = models.DateTimeField(null=True, blank=True)
     end_time = models.DateTimeField(null=True, blank=True)
@@ -139,20 +140,23 @@ class AssignedShift(models.Model):
         db_table = 'assigned_shifts'
         ordering = ['shift_date', 'start_time']
         indexes = [
-            models.Index(fields=['staff', 'shift_date']),
+            models.Index(fields=['shift_date']),
             models.Index(fields=['status', 'shift_date']),
         ]
     
     def __str__(self):
-        return f'{self.staff.first_name} {self.staff.last_name} - {self.shift_date} ({self.start_time}-{self.end_time})'
+        members = ", ".join([str(s) for s in self.staff_members.all()])
+        return f'{members or self.staff} - {self.shift_date} ({self.start_time}-{self.end_time})'
 
     def clean(self):
-        from django.db.models import Q
-        overlapping = AssignedShift.objects.filter(
-            staff=self.staff,
-            shift_date=self.shift_date,
-            status__in=['SCHEDULED', 'CONFIRMED', 'COMPLETED']
-        ).exclude(id=self.id)
+        # Validation for overlapping shifts
+        # Note: In a real migration, we iterate over staff_members
+        # For now, we handle both single staff (legacy) and staff_members
+        
+        staff_list = list(self.staff_members.all())
+        if self.staff and self.staff not in staff_list:
+            staff_list.append(self.staff)
+
         if isinstance(self.start_time, _dt):
             shift_start = self.start_time
         else:
@@ -161,17 +165,32 @@ class AssignedShift(models.Model):
             shift_end = self.end_time
         else:
             shift_end = timezone.datetime.combine(self.shift_date, self.end_time)
-        for existing_shift in overlapping:
-            if isinstance(existing_shift.start_time, _dt):
-                existing_start = existing_shift.start_time
-            else:
-                existing_start = timezone.datetime.combine(existing_shift.shift_date, existing_shift.start_time)
-            if isinstance(existing_shift.end_time, _dt):
-                existing_end = existing_shift.end_time
-            else:
-                existing_end = timezone.datetime.combine(existing_shift.shift_date, existing_shift.end_time)
-            if shift_start < existing_end and shift_end > existing_start:
-                raise ValidationError(f"Staff member has overlapping shift from {existing_shift.start_time} to {existing_shift.end_time}")
+
+        for staff_member in staff_list:
+            overlapping = AssignedShift.objects.filter(
+                staff_members=staff_member,
+                shift_date=self.shift_date,
+                status__in=['SCHEDULED', 'CONFIRMED', 'COMPLETED']
+            ).exclude(id=self.id)
+            
+            # Also check the legacy staff field
+            overlapping_legacy = AssignedShift.objects.filter(
+                staff=staff_member,
+                shift_date=self.shift_date,
+                status__in=['SCHEDULED', 'CONFIRMED', 'COMPLETED']
+            ).exclude(id=self.id)
+            
+            for existing_shift in list(overlapping) + list(overlapping_legacy):
+                if isinstance(existing_shift.start_time, _dt):
+                    existing_start = existing_shift.start_time
+                else:
+                    existing_start = timezone.datetime.combine(existing_shift.shift_date, existing_shift.start_time)
+                if isinstance(existing_shift.end_time, _dt):
+                    existing_end = existing_shift.end_time
+                else:
+                    existing_end = timezone.datetime.combine(existing_shift.shift_date, existing_shift.end_time)
+                if shift_start < existing_end and shift_end > existing_start:
+                    raise ValidationError(f"Staff member {staff_member} has overlapping shift from {existing_shift.start_time} to {existing_shift.end_time}")
     
     def save(self, *args, **kwargs):
         # Convert time to datetime if needed

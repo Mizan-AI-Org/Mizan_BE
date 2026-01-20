@@ -1,7 +1,7 @@
 from rest_framework import viewsets, status, filters
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from rest_framework.response import Response
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from .permissions import IsManagerOrReadOnly
 from django.db import transaction
@@ -9,9 +9,10 @@ from django.utils import timezone
 from datetime import datetime, timedelta
 import logging
 from django.db.models import Q
+from accounts.models import CustomUser
 
 from .models import (
-    Schedule, StaffProfile, ScheduleChange, 
+    Schedule, StaffProfile, StaffDocument, ScheduleChange, 
     ScheduleNotification, StaffAvailability, PerformanceMetric
 )
 from .models_task import (
@@ -19,7 +20,7 @@ from .models_task import (
     SafetyConcernReport, SafetyRecognition
 )
 from .serializers import (
-    ScheduleSerializer, StaffProfileSerializer, ScheduleChangeSerializer,
+    ScheduleSerializer, StaffProfileSerializer, StaffDocumentSerializer, ScheduleChangeSerializer,
     ScheduleNotificationSerializer, StaffAvailabilitySerializer, PerformanceMetricSerializer,
     StandardOperatingProcedureSerializer, SafetyChecklistSerializer, ScheduleTaskSerializer,
     SafetyConcernReportSerializer, SafetyRecognitionSerializer
@@ -396,6 +397,40 @@ class StaffProfileViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Create a new staff profile"""
         serializer.save(user=self.request.user)
+
+class StaffDocumentViewSet(viewsets.ModelViewSet):
+    """
+    API endpoint for staff documents
+    """
+    queryset = StaffDocument.objects.all()
+    serializer_class = StaffDocumentSerializer
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def get_queryset(self):
+        user = self.request.user
+        queryset = StaffDocument.objects.all()
+        
+        # Filter by staff_id if provided (for admins viewing others)
+        staff_id = self.request.query_params.get('staff_id')
+        if staff_id:
+            queryset = queryset.filter(staff_id=staff_id)
+        
+        # Permission check
+        if user.role not in ['SUPER_ADMIN', 'ADMIN', 'MANAGER']:
+            # Regular staff can only see their own documents
+            queryset = queryset.filter(staff=user)
+        
+        return queryset
+
+    def perform_create(self, serializer):
+        staff_id = self.request.data.get('staff')
+        if staff_id:
+             from accounts.models import CustomUser
+             staff = CustomUser.objects.get(id=staff_id)
+             serializer.save(staff=staff)
+        else:
+             serializer.save(staff=self.request.user)
 
 class ScheduleViewSet(viewsets.ModelViewSet):
     """
@@ -798,6 +833,46 @@ class ScheduleNotificationViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Users can only see their own notifications"""
         return ScheduleNotification.objects.filter(recipient=self.request.user)
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def update_staff_profile_by_user_id(request, staff_id):
+    """
+    Update staff profile by User ID.
+    If profile doesn't exist, create it.
+    """
+    try:
+        user = CustomUser.objects.get(id=staff_id)
+        # Check permissions: Admin/Manager can update anyone, Staff can only update themselves
+        if request.user.role not in ['SUPER_ADMIN', 'ADMIN', 'MANAGER'] and request.user.id != user.id:
+            return Response({"error": "You do not have permission to update this profile"}, status=status.HTTP_403_FORBIDDEN)
+            
+        profile, created = StaffProfile.objects.get_or_create(user=user)
+
+        # Update CustomUser fields
+        user_fields = ['first_name', 'last_name', 'email', 'phone', 'role']
+        user_updated = False
+        for field in user_fields:
+            if field in request.data:
+                setattr(user, field, request.data[field])
+                user_updated = True
+        
+        if user_updated:
+            user.save()
+        
+        # Update StaffProfile fields
+        # Check if profile data is nested under 'profile' key (as sent by frontend)
+        profile_data = request.data.get('profile', request.data)
+        
+        serializer = StaffProfileSerializer(profile, data=profile_data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    except CustomUser.DoesNotExist:
+        return Response({"error": "User not found"}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=True, methods=['post'])
     def mark_read(self, request, pk=None):

@@ -4,7 +4,6 @@
 const modifyResponsePostProcessor = new PostProcessor({
     name: "modify-response",
     description: "Modifies the response to the user",
-    context: "Modifies the response to the user",
     execute: async (user: UserDataInstance, message: string, response: string, channel: string) => {
         console.log("Modify response post processor", user, message, response, channel);
         console.log("User data", await user.data);

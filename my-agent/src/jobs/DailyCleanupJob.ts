@@ -9,11 +9,7 @@ import { LuaJob, Data } from "lua-cli";
 
 const dailyCleanupJob = new LuaJob({
   name: "daily-cleanup",
-  version: "1.0.0",
   description: "Daily database cleanup and maintenance",
-  context: "Runs at 2 AM EST daily to remove old logs, expired sessions, and optimize data collections. " +
-           "This job helps maintain database performance and storage costs.",
-
   // Cron schedule: Every day at 2 AM EST
   schedule: {
     type: 'cron',

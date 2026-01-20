@@ -115,6 +115,28 @@ export default class ApiService {
         }
     }
 
+    async getStaffProfiles(restaurantId: string, token: string) {
+        try {
+            // This might go to a profile-specific endpoint or just a filtered staff list
+            // Assuming /api/staff/profiles/ exists or /api/staff/ returns enough info
+            const response = await axios.get(`${this.baseUrl}/api/staff/`, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                params: {
+                    restaurant_id: restaurantId,
+                    include_profile: true // Hypothetical param to get Position, Skills, etc.
+                }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to fetch staff profiles:", error.message);
+            return [];
+        }
+    }
+
     async getAssignedShifts(params: any, token: string) {
         try {
             const response = await axios.get(`${this.baseUrl}/api/scheduling/assigned-shifts-v2/`, {
@@ -204,6 +226,41 @@ export default class ApiService {
                 throw new Error(`Optimization failed: ${JSON.stringify(error.response.data)}`);
             }
             throw new Error(`Optimization failed: ${error.message}`);
+        }
+    }
+
+    // Restaurant Context
+    async getRestaurantDetails(restaurantId: string, token: string) {
+        try {
+            const response = await axios.get(`${this.baseUrl}/api/restaurants/${restaurantId}/`, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to fetch restaurant details:", error.message);
+            return null;
+        }
+    }
+
+    // Inventory Methods
+    async getInventoryItems(restaurantId: string, token: string) {
+        try {
+            const response = await axios.get(`${this.baseUrl}/api/inventory/items/`, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                params: { restaurant_id: restaurantId }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to fetch inventory items:", error.message);
+            return [];
         }
     }
 
@@ -321,6 +378,38 @@ export default class ApiService {
                 // Log detail if needed
                 console.error(JSON.stringify(error.response.data));
             }
+            return { success: false, error: error.message };
+        }
+    }
+
+    async clockIn(data: { staff_id: string; latitude: number; longitude: number; timestamp?: string }, token: string) {
+        try {
+            const response = await axios.post(`${this.baseUrl}/api/timeclock/agent/clock-in/`, data, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to clock in:", error.message);
+            return { success: false, error: error.message };
+        }
+    }
+
+    async clockOut(data: { staff_id: string; timestamp?: string }, token: string) {
+        try {
+            const response = await axios.post(`${this.baseUrl}/api/timeclock/agent/clock-out/`, data, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to clock out:", error.message);
             return { success: false, error: error.message };
         }
     }

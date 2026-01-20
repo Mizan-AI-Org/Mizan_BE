@@ -8,6 +8,7 @@ from .task_templates import TaskTemplate, Task
 from .audit import AuditLog
 from django.utils import timezone
 from datetime import datetime
+from django.db.models import Q
 import sys
 
 
@@ -76,6 +77,7 @@ class ShiftTaskSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
     progress_percentage = serializers.SerializerMethodField()
     subtasks = serializers.SerializerMethodField()
+    shift = serializers.PrimaryKeyRelatedField(queryset=AssignedShift.objects.all(), required=False)
     
     class Meta:
         model = ShiftTask
@@ -215,7 +217,8 @@ class LenientPKRelatedField(serializers.PrimaryKeyRelatedField):
 
 class AssignedShiftSerializer(serializers.ModelSerializer):
     staff_name = serializers.CharField(source='staff.__str__', read_only=True)
-    tasks = ShiftTaskSerializer(many=True, read_only=True)
+    staff_members_details = serializers.SerializerMethodField(read_only=True)
+    tasks = ShiftTaskSerializer(many=True, required=False)
     task_templates_details = TaskTemplateSerializer(source='task_templates', many=True, read_only=True)
     # Use lenient field that ignores non-existent IDs
     task_templates = LenientPKRelatedField(
@@ -240,42 +243,181 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
     class Meta:
         model = AssignedShift
         fields = [
-            'id', 'schedule', 'staff', 'staff_name', 'shift_date', 'start_time', 
-            'end_time', 'break_duration', 'role', 'notes', 'color',
+            'id', 'schedule', 'staff', 'staff_members', 'staff_name', 'staff_members_details',
+            'shift_date', 'start_time', 'end_time', 'break_duration', 'role', 'notes', 'color',
             'created_at', 'updated_at', 'tasks', 'task_templates', 'task_templates_details'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'schedule']
+        extra_kwargs = {
+            'role': {'required': False},
+            'staff': {'required': False},
+        }
+
+    def get_staff_members_details(self, obj):
+        return [{"id": s.id, "first_name": s.first_name, "last_name": s.last_name} for s in obj.staff_members.all()]
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        staff = attrs.get('staff')
+        staff_members = attrs.get('staff_members', [])
+        schedule = attrs.get('schedule')
+        shift_date = attrs.get('shift_date')
+        start = attrs.get('start_time')
+        end = attrs.get('end_time')
+
+        # If it's an update, get existing values from instance for validation
+        if self.instance:
+            shift_date = shift_date or self.instance.shift_date
+            start = start or self.instance.start_time
+            end = end or self.instance.end_time
+            if schedule is None:
+                schedule = self.instance.schedule
+
+        # Basic time range validation
+        if start and end and end <= start:
+            raise serializers.ValidationError("Shift end time must be after start time.")
+
+        # Resolve schedule if not provided but in initial_data
+        if schedule is None and isinstance(getattr(self, 'initial_data', {}), dict):
+            sched_id = self.initial_data.get('schedule')
+            if sched_id:
+                from .models import WeeklySchedule
+                try:
+                    schedule = WeeklySchedule.objects.get(id=sched_id)
+                except WeeklySchedule.DoesNotExist:
+                    raise serializers.ValidationError({'schedule': 'Schedule not found'})
+
+        if request and hasattr(request, 'user') and getattr(request.user, 'restaurant', None):
+            user_restaurant = request.user.restaurant
+            if schedule and getattr(schedule, 'restaurant', None) and schedule.restaurant != user_restaurant:
+                raise serializers.ValidationError({'restaurant': 'Cross-tenant schedule access denied'})
+            
+            # Combine staff and staff_members for validation
+            all_staff = list(staff_members)
+            if staff and staff not in all_staff:
+                all_staff.append(staff)
+                
+            for s in all_staff:
+                if s and getattr(s, 'restaurant', None) and s.restaurant != user_restaurant:
+                    raise serializers.ValidationError({'staff': f'Staff {s} belongs to a different restaurant'})
+                if schedule and s and getattr(schedule, 'restaurant', None) and getattr(s, 'restaurant', None):
+                    if schedule.restaurant != s.restaurant:
+                        raise serializers.ValidationError({'staff': f'Staff {s} must belong to the same restaurant as the schedule'})
+
+            # Default role from first valid staff member if role not provided
+            if not attrs.get('role') and all_staff and getattr(all_staff[0], 'role', None):
+                attrs['role'] = all_staff[0].role
+
+            # ENHANCED OVERLAP AND DUPLICATION CHECK
+            if shift_date and start and end:
+                for staff_member in all_staff:
+                    overlaps = AssignedShift.objects.filter(
+                        Q(staff=staff_member) | Q(staff_members=staff_member),
+                        shift_date=shift_date,
+                        status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED']
+                    ).distinct()
+                    
+                    if self.instance:
+                        overlaps = overlaps.exclude(id=self.instance.id)
+                    
+                    for existing in overlaps:
+                        e_start = existing.start_time
+                        e_end = existing.end_time
+                        
+                        # Check time overlap
+                        if start < e_end and end > e_start:
+                             raise serializers.ValidationError(
+                                 f"Staff {staff_member} already has a shift on {shift_date} from {e_start.strftime('%H:%M')} to {e_end.strftime('%H:%M')}"
+                             )
+                
+        return attrs
+
+    def validate_role(self, value):
+        from django.conf import settings
+        if not value:
+            return value
+        norm = str(value).strip().upper().replace('-', '_')
+        # Check against allowed roles in settings
+        allowed = set([c[0] for c in getattr(settings, 'STAFF_ROLES_CHOICES', [])])
+        if norm in allowed:
+            return norm
+        # If it's not in the strict list, still return normalized uppercase
+        return norm
 
     def get_staff_name(self, obj):
         return str(obj.staff)
 
-    def validate_role(self, value):
-        """Normalize role to uppercase to match STAFF_ROLES_CHOICES"""
-        if value:
-            return value.upper()
-        return value
+    def create(self, validated_data):
+        tasks_data = validated_data.pop('tasks', [])
+        task_templates = validated_data.pop('task_templates', [])
+        staff_members = validated_data.pop('staff_members', [])
+        
+        # Backward compatibility: set staff to first member if not provided
+        if staff_members and not validated_data.get('staff'):
+            validated_data['staff'] = staff_members[0]
+            
+        shift = AssignedShift.objects.create(**validated_data)
+        
+        if staff_members:
+            shift.staff_members.set(staff_members)
+            
+        if task_templates:
+            shift.task_templates.set(task_templates)
+            
+        request = self.context.get('request')
+        for task_data in tasks_data:
+            ShiftTask.objects.create(
+                shift=shift,
+                created_by=request.user if request and hasattr(request, 'user') else None,
+                **task_data
+            )
+        return shift
 
-    def validate(self, data):
-        start = data.get("start_time")
-        end = data.get("end_time")
-
-        if not start or not end:
-            return data
-
-        # Handle cases where start/end might be datetime or time objects
-        # Convert to something comparable
-        try:
-            # If they're already datetime objects, compare directly
-            if hasattr(start, 'timestamp') and hasattr(end, 'timestamp'):
-                if end <= start:
-                    raise serializers.ValidationError(
-                        "Shift end time must be after start time."
+    def update(self, instance, validated_data):
+        tasks_data = validated_data.pop('tasks', None)
+        task_templates = validated_data.pop('task_templates', None)
+        staff_members = validated_data.pop('staff_members', None)
+        
+        instance = super().update(instance, validated_data)
+        
+        if staff_members is not None:
+            instance.staff_members.set(staff_members)
+            # Maintain legacy field
+            if staff_members and instance.staff != staff_members[0]:
+                instance.staff = staff_members[0]
+                instance.save()
+        
+        if task_templates is not None:
+            instance.task_templates.set(task_templates)
+            
+        if tasks_data is not None:
+            request = self.context.get('request')
+            existing_tasks = {str(t.id): t for t in instance.tasks.all()}
+            new_task_ids = []
+            
+            for task_data in tasks_data:
+                task_id = task_data.get('id')
+                # If task_id is present and exists, update it
+                if task_id and str(task_id) in existing_tasks:
+                    task = existing_tasks[str(task_id)]
+                    for attr, value in task_data.items():
+                        if attr != 'id' and attr != 'shift':
+                            setattr(task, attr, value)
+                    task.save()
+                    new_task_ids.append(str(task.id))
+                else:
+                    # Create new task
+                    new_task = ShiftTask.objects.create(
+                        shift=instance,
+                        created_by=request.user if request and hasattr(request, 'user') else None,
+                        **task_data
                     )
-            return data
-        except TypeError:
-            # If comparison fails due to type mismatch, just return data
-            # The model's clean() method will do final validation
-            return data
+                    new_task_ids.append(str(new_task.id))
+            
+            # Delete tasks that weren't in the update list
+            instance.tasks.exclude(id__in=new_task_ids).delete()
+            
+        return instance
 
 
 # Unified view item for both ShiftTask and Template Task
@@ -330,7 +472,7 @@ class CombinedTaskItemSerializer(serializers.Serializer):
         return data
 
 class WeeklyScheduleSerializer(serializers.ModelSerializer):
-    assigned_shifts = AssignedShiftSerializer(many=True, read_only=True)
+    assigned_shifts = serializers.SerializerMethodField()
     
     class Meta:
         model = WeeklySchedule
@@ -359,6 +501,13 @@ class WeeklyScheduleSerializer(serializers.ModelSerializer):
                     'week_start': 'A weekly schedule for this week already exists.'
                 })
         return data
+
+    def get_assigned_shifts(self, obj):
+        try:
+            qs = obj.assigned_shifts.all()
+            return AssignedShiftSerializer(qs, many=True).data
+        except Exception:
+            return []
 
 class ShiftSwapRequestSerializer(serializers.ModelSerializer):
     shift_to_swap_details = AssignedShiftSerializer(source='shift_to_swap', read_only=True)

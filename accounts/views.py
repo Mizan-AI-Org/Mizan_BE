@@ -1,10 +1,13 @@
-from rest_framework import status, permissions, generics
+from rest_framework import status, permissions, generics, viewsets
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.shortcuts import get_object_or_404
-from .serializers import CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer, PinLoginSerializer, StaffProfileSerializer, StaffSerializer
+from .serializers import (
+    CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer,
+    PinLoginSerializer, StaffProfileSerializer, StaffSerializer
+)
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
 from .models import CustomUser, Restaurant, UserInvitation, StaffProfile, AuditLog
@@ -12,12 +15,18 @@ from django.utils import timezone
 from django.core.files.base import ContentFile
 import base64, os, sys
 from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.contrib.auth.models import UserManager
 from django.contrib.auth.models import UserManager
 from django.utils.crypto import get_random_string
 from django.core.mail import send_mail
 from django.utils.html import strip_tags
 from django.template.loader import render_to_string
-from .utils import send_whatsapp
+from django.conf import settings
+from notifications.services import notification_service
+from .models import InvitationDeliveryLog
+from .services import sync_user_to_lua_agent
+
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.role == 'ADMIN'
@@ -95,10 +104,17 @@ def pin_login(request):
             
         # Generate JWT tokens
         refresh = RefreshToken.for_user(user)
+        access_token = str(refresh.access_token)
+        
+        # Sync user context to Lua AI agent (non-blocking)
+        try:
+            sync_user_to_lua_agent(user, access_token)
+        except Exception:
+            pass  # Don't fail login if Lua sync fails
         
         return Response({
             'refresh': str(refresh),
-            'access': str(refresh.access_token),
+            'access': access_token,
             'user': CustomUserSerializer(user).data
         })
     else:
@@ -167,56 +183,39 @@ class RestaurantOwnerSignupView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        try:
-            restaurant_serializer = RestaurantSerializer(data=request.data.get('restaurant'))
-            if not restaurant_serializer.is_valid():
-                return Response(restaurant_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            
-            restaurant = restaurant_serializer.save()
+        restaurant_serializer = RestaurantSerializer(data=request.data.get('restaurant'))
+        if not restaurant_serializer.is_valid():
+            return Response(restaurant_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        restaurant = restaurant_serializer.save()
 
-            user_payload = request.data.get('user')
-            if not user_payload:
-                 restaurant.delete()
-                 return Response({"error": "User data is missing"}, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Create a copy to avoid mutating request.data directly
-            user_data = user_payload.copy() if isinstance(user_payload, dict) else {}
-            if not user_data:
-                # If user_payload was not a dict or empty
-                restaurant.delete()
-                return Response({"error": "Invalid user data format"}, status=status.HTTP_400_BAD_REQUEST)
+        user_data = request.data.get('user')
+        user_data['restaurant'] = restaurant.id
+        user_data['role'] = 'SUPER_ADMIN'
+        user_data['is_verified'] = True
+        password = user_data.pop('password', None)
+        pin_code = user_data.pop('pin_code', None)
 
-            user_data['restaurant'] = restaurant.id
-            user_data['role'] = 'SUPER_ADMIN'
-            user_data['is_verified'] = True
-            password = user_data.pop('password', None)
-            pin_code = user_data.pop('pin_code', None)
+        user_serializer = CustomUserSerializer(data=user_data)
+        if not user_serializer.is_valid():
+            restaurant.delete()
+            return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        user = user_serializer.save()
+        user.set_password(password)
+        if pin_code:
+            user.set_pin(pin_code)
+        user.save()
 
-            user_serializer = CustomUserSerializer(data=user_data)
-            if not user_serializer.is_valid():
-                restaurant.delete()
-                return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            
-            user = user_serializer.save()
-            if password:
-                user.set_password(password)
-            if pin_code:
-                user.set_pin(pin_code)
-            user.save()
-
-            refresh = RefreshToken.for_user(user)
-            return Response({
-                'user': CustomUserSerializer(user).data,
-                'restaurant': restaurant_serializer.data,
-                'tokens': {
-                    'refresh': str(refresh),
-                    'access': str(refresh.access_token),
-                }
-            }, status=status.HTTP_201_CREATED)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return Response({'error': str(e), 'detail': traceback.format_exc()}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'user': CustomUserSerializer(user).data,
+            'restaurant': restaurant_serializer.data,
+            'tokens': {
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+            }
+        }, status=status.HTTP_201_CREATED)
 
 class LoginView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -306,11 +305,19 @@ class LoginView(APIView):
             )
             
             refresh = RefreshToken.for_user(authenticated_user)
+            access_token = str(refresh.access_token)
+            
+            # Sync user context to Lua AI agent (non-blocking)
+            try:
+                sync_user_to_lua_agent(authenticated_user, access_token)
+            except Exception:
+                pass  # Don't fail login if Lua sync fails
+            
             return Response({
                 'user': CustomUserSerializer(authenticated_user).data,
                 'tokens': {
                     'refresh': str(refresh),
-                    'access': str(refresh.access_token),
+                    'access': access_token,
                 }
             })
         else:
@@ -412,75 +419,210 @@ class InviteStaffView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def post(self, request):
-
         email = request.data.get('email')
         role = request.data.get('role')
-        phone = request.data.get('phone_number', '')
-        restaurant_name = request.user.restaurant.name
-        staff_name = request.data.get('last_name', '')
+        phone_number = request.data.get('phone_number')
+        send_whatsapp = bool(request.data.get('send_whatsapp', False))
 
-        print(f"the whole request data: {request.data}", file=sys.stderr)
-        if not all([email, role]):
-            return Response({'error': 'Email and role are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not role:
+            return Response({'error': 'Role is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not email and not (send_whatsapp and phone_number):
+            return Response({'error': 'Email is required unless sending via WhatsApp with a phone number.'}, status=status.HTTP_400_BAD_REQUEST)
         
-        if CustomUser.objects.filter(email=email).exists():
+        if email and CustomUser.objects.filter(email=email).exists():
             return Response({'error': 'User with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if UserInvitation.objects.filter(email=email, is_accepted=False, expires_at__gt=timezone.now()).exists():
+        if email and UserInvitation.objects.filter(email=email, is_accepted=False, expires_at__gt=timezone.now()).exists():
             return Response({'error': 'A pending invitation already exists for this email.'}, status=status.HTTP_400_BAD_REQUEST)
 
         token = get_random_string(64)
         expires_at = timezone.now() + timezone.timedelta(days=7)
-        print(f"request : {request}", file=sys.stderr)
-        
-        # Capture names and phone for automation
-        first_name = request.data.get('first_name', '')
-        last_name = request.data.get('last_name', '')
-        
+
         invitation = UserInvitation.objects.create(
-            email=email,
+            email=email or '',
             role=role,
             invited_by=request.user,
             restaurant=request.user.restaurant,
             invitation_token=token,
-            expires_at=expires_at,
-            first_name=first_name,
-            last_name=last_name,
-            extra_data={'phone': phone, 'first_name': first_name, 'last_name': last_name}
+            expires_at=expires_at
         )
 
+        first_name = (request.data.get('first_name') or '').strip() or None
+        last_name = (request.data.get('last_name') or '').strip() or None
+        if first_name:
+            invitation.first_name = first_name
+        if last_name:
+            invitation.last_name = last_name
+        invitation.extra_data = {
+            'phone_number': phone_number,
+            'phone': phone_number,
+            'first_name': first_name,
+            'last_name': last_name,
+            'department': request.data.get('department')
+        }
+        invitation.save(update_fields=['first_name', 'last_name', 'extra_data'])
 
         invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
-        print(f"✅ {restaurant_name}, {staff_name} ,{invite_link}", file=sys.stderr)
-        # print(f"Staff Invitation Link for {email}: {invite_link}")
+        print(f"Staff Invitation Link: {invite_link}")
 
-        html_message = render_to_string('emails/staff_invite.html', {
-            'invite_link': invite_link,
-            'restaurant_name': request.user.restaurant.name,
-            'year': timezone.now().year
-        })
-        plain_message = strip_tags(html_message)
+        if email:
+            html_message = render_to_string('emails/staff_invite.html', {
+                'invite_link': invite_link,
+                'restaurant_name': request.user.restaurant.name,
+                'year': timezone.now().year
+            })
+            plain_message = strip_tags(html_message)
 
         try:
-            send_mail(
-                'You\'ve been invited to join Mizan AI!',
-                plain_message,
-                settings.DEFAULT_FROM_EMAIL,
-                [email],
-                html_message=html_message,
-                fail_silently=False,
-            )
-
-            # NOTE: WhatsApp is now handled by the UserInvitation post_save signal 
-            # delegating to the Lua Agent via notification_service.send_lua_staff_invite
-            
+            if email:
+                send_mail(
+                    'You\'ve been invited to join Mizan AI!',
+                    plain_message,
+                    settings.DEFAULT_FROM_EMAIL,
+                    [email],
+                    html_message=html_message,
+                    fail_silently=False,
+                )
+                email_log = InvitationDeliveryLog(
+                    invitation=invitation,
+                    channel='email',
+                    recipient_address=email,
+                    status='SENT'
+                )
+                email_log.delivered_at = timezone.now()
+                email_log.save()
+                try:
+                    AuditLog.create_log(
+                        restaurant=request.user.restaurant,
+                        user=request.user,
+                        action_type='CREATE',
+                        entity_type='INVITATION',
+                        entity_id=str(invitation.id),
+                        description='Staff invitation created and email sent',
+                        old_values={},
+                        new_values={'email': email, 'role': role}
+                    )
+                except Exception:
+                    pass
+            if send_whatsapp and phone_number and settings.WHATSAPP_ACCESS_TOKEN and settings.WHATSAPP_PHONE_NUMBER_ID:
+                from .tasks import send_whatsapp_invitation_task
+                delay = int(getattr(settings, 'WHATSAPP_INVITE_DELAY_SECONDS', 0))
+                if delay > 0:
+                    send_whatsapp_invitation_task.apply_async(
+                        args=[str(invitation.id), phone_number, request.data.get('first_name'), request.user.restaurant.name, invite_link, getattr(settings, 'SUPPORT_CONTACT', '')],
+                        countdown=delay
+                    )
+                    InvitationDeliveryLog.objects.create(
+                        invitation=invitation,
+                        channel='whatsapp',
+                        recipient_address=phone_number,
+                        status='PENDING'
+                    )
+                    try:
+                        AuditLog.create_log(
+                            restaurant=request.user.restaurant,
+                            user=request.user,
+                            action_type='CREATE',
+                            entity_type='INVITATION',
+                            entity_id=str(invitation.id),
+                            description='WhatsApp invitation scheduled',
+                            old_values={},
+                            new_values={'email': email, 'phone': phone_number}
+                        )
+                    except Exception:
+                        pass
+                else:
+                    ok, info = notification_service.send_whatsapp_invitation(
+                        phone=phone_number,
+                        first_name=request.data.get('first_name'),
+                        restaurant_name=request.user.restaurant.name,
+                        invite_link=invite_link,
+                        support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
+                    )
+                    log = InvitationDeliveryLog(
+                        invitation=invitation,
+                        channel='whatsapp',
+                        recipient_address=phone_number,
+                        status='SENT' if ok else 'FAILED',
+                        external_id=(info or {}).get('external_id'),
+                        response_data=info or {},
+                    )
+                    log.save()
+                    try:
+                        AuditLog.create_log(
+                            restaurant=request.user.restaurant,
+                            user=request.user,
+                            action_type='CREATE',
+                            entity_type='INVITATION',
+                            entity_id=str(invitation.id),
+                            description='WhatsApp invitation sent',
+                            old_values={},
+                            new_values={'email': email, 'phone': phone_number}
+                        )
+                    except Exception:
+                        pass
             return Response({'message': 'Invitation sent successfully', 'token': token}, status=status.HTTP_201_CREATED)
-        except Exception as e:
-            return Response({
-                'message': 'Invitation created successfully, but email failed to send',
-                'error': str(e),
-                'token': token
-            }, status=status.HTTP_201_CREATED)
+        except Exception:
+            pass
+        # For WhatsApp-only or after email handling
+        if send_whatsapp and phone_number and settings.WHATSAPP_ACCESS_TOKEN and settings.WHATSAPP_PHONE_NUMBER_ID:
+            from .tasks import send_whatsapp_invitation_task
+            delay = int(getattr(settings, 'WHATSAPP_INVITE_DELAY_SECONDS', 0))
+            if delay > 0:
+                send_whatsapp_invitation_task.apply_async(
+                    args=[str(invitation.id), phone_number, request.data.get('first_name'), request.user.restaurant.name, invite_link, getattr(settings, 'SUPPORT_CONTACT', '')],
+                    countdown=delay
+                )
+                InvitationDeliveryLog.objects.create(
+                    invitation=invitation,
+                    channel='whatsapp',
+                    recipient_address=phone_number,
+                    status='PENDING'
+                )
+                try:
+                    AuditLog.create_log(
+                        restaurant=request.user.restaurant,
+                        user=request.user,
+                        action_type='CREATE',
+                        entity_type='INVITATION',
+                        entity_id=str(invitation.id),
+                        description='WhatsApp invitation scheduled',
+                        old_values={},
+                        new_values={'email': email, 'phone': phone_number}
+                    )
+                except Exception:
+                    pass
+            else:
+                ok, info = notification_service.send_whatsapp_invitation(
+                    phone=phone_number,
+                    first_name=request.data.get('first_name'),
+                    restaurant_name=request.user.restaurant.name,
+                    invite_link=invite_link,
+                    support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
+                )
+                log = InvitationDeliveryLog(
+                    invitation=invitation,
+                    channel='whatsapp',
+                    recipient_address=phone_number,
+                    status='SENT' if ok else 'FAILED',
+                    external_id=(info or {}).get('external_id'),
+                    response_data=info or {},
+                )
+                log.save()
+                try:
+                    AuditLog.create_log(
+                        restaurant=request.user.restaurant,
+                        user=request.user,
+                        action_type='CREATE',
+                        entity_type='INVITATION',
+                        entity_id=str(invitation.id),
+                        description='WhatsApp invitation sent',
+                        old_values={},
+                        new_values={'email': email, 'phone': phone_number}
+                    )
+                except Exception:
+                    pass
+        return Response({'message': 'Invitation created successfully', 'token': token}, status=status.HTTP_201_CREATED)
 
 class AcceptInvitationView(APIView):
     permission_classes = [permissions.AllowAny]
@@ -490,7 +632,8 @@ class AcceptInvitationView(APIView):
         token = data.get('token')
         first_name = data.get('first_name')
         last_name = data.get('last_name')
-        pin_code = data.get('pin_code')  # <-- This is now the required field
+        pin_code = data.get('pin_code')
+        provided_email = data.get('email')
 
         # Build an error dictionary
         print(data, file=sys.stderr)
@@ -514,12 +657,17 @@ class AcceptInvitationView(APIView):
                 is_accepted=False,
                 expires_at__gt=timezone.now()
             )
-
-            if CustomUser.objects.filter(email=invitation.email).exists():
-                return Response(
-                    {'error': 'User with this email already exists'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
+            final_email = invitation.email
+            if not final_email:
+                if not provided_email:
+                    return Response({'email': 'Email is required to complete setup.'}, status=status.HTTP_400_BAD_REQUEST)
+                # Basic validation and uniqueness check
+                if CustomUser.objects.filter(email=provided_email).exists():
+                    return Response({'email': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
+                final_email = provided_email
+            else:
+                if CustomUser.objects.filter(email=final_email).exists():
+                    return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
             
             # 1. Generate a secure, random password the user will never see
            # Creates a random 12-character string to use as the password
@@ -527,7 +675,7 @@ class AcceptInvitationView(APIView):
 
             # 2. Create the user with the random password
             user = CustomUser.objects.create_user(
-                email=invitation.email,
+                email=final_email,
                 password=random_password,  # <-- Use the random password
                 first_name=first_name,
                 last_name=last_name,
@@ -544,6 +692,8 @@ class AcceptInvitationView(APIView):
             invitation.is_accepted = True
             invitation.status = 'ACCEPTED'
             invitation.accepted_at = dj_tz.now()
+            if not invitation.email:
+                invitation.email = final_email
             invitation.save(update_fields=['is_accepted', 'status', 'accepted_at'])
 
             # Close any other pending invitations for the same email within this restaurant
@@ -552,17 +702,6 @@ class AcceptInvitationView(APIView):
                 email=invitation.email,
                 is_accepted=False,
             ).update(status='EXPIRED', expires_at=dj_tz.now())
-
-            # Notify Lua agent if phone is available for follow-up message
-            phone = (invitation.extra_data or {}).get('phone')
-            if phone:
-                from notifications.services import notification_service
-                notification_service.send_lua_invitation_accepted(
-                    invitation_token=invitation.invitation_token,
-                    phone=phone,
-                    first_name=user.first_name,
-                    flow_data={'last_name': user.last_name, 'email': user.email}
-                )
 
             refresh = RefreshToken.for_user(user)
 
@@ -591,6 +730,9 @@ class StaffProfileUpdateView(APIView):
 
     def put(self, request, pk):
         staff_member = get_object_or_404(CustomUser, pk=pk, restaurant=request.user.restaurant)
+        
+        # Extract profile data to handle it separately if needed, 
+        # or rely on the serializer's update method.
         serializer = CustomUserSerializer(staff_member, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
@@ -642,14 +784,139 @@ class PasswordResetRequestView(APIView):
     permission_classes = [permissions.AllowAny]
     
     def post(self, request):
-        return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+        email = request.data.get('email')
+        
+        if not email:
+            return Response(
+                {'error': 'Email is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Always return success to prevent email enumeration
+        success_response = Response({
+            'message': 'If an account exists with this email, you will receive a password reset link shortly.'
+        })
+        
+        try:
+            user = CustomUser.objects.get(email=email, is_active=True)
+            
+            # Only allow password reset for admin/manager users
+            if not user.is_admin_role():
+                logger.info(f"Password reset skipped for non-admin user: {email}")
+                return success_response
+            
+            # Generate reset token
+            token = user.generate_password_reset_token()
+            
+            # Build reset link
+            reset_link = f"{settings.FRONTEND_URL}/reset-password?token={token}"
+            
+            # Render email template
+            html_message = render_to_string('emails/password_reset.html', {
+                'reset_link': reset_link,
+                'user_name': user.first_name or 'User',
+                'year': timezone.now().year
+            })
+            plain_message = strip_tags(html_message)
+            
+            # Send email
+            send_mail(
+                'Reset Your Mizan AI Password',
+                plain_message,
+                settings.DEFAULT_FROM_EMAIL,
+                [email],
+                html_message=html_message,
+                fail_silently=False,
+            )
+            
+            # Log the password reset request
+            AuditLog.create_log(
+                restaurant=user.restaurant,
+                user=user,
+                action_type='OTHER',
+                entity_type='USER',
+                entity_id=str(user.id),
+                description='Password reset requested',
+                ip_address=get_client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+            
+        except CustomUser.DoesNotExist:
+            pass  # Don't reveal that email doesn't exist
+        except Exception as e:
+            # Log error but don't reveal to user
+            print(f"Password reset error: {e}")
+        
+        return success_response
 
 
 class PasswordResetConfirmView(APIView):
     permission_classes = [permissions.AllowAny]
     
     def post(self, request):
-        return Response({'message': 'Not implemented'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+        token = request.data.get('token')
+        new_password = request.data.get('new_password')
+        
+        if not token:
+            return Response(
+                {'error': 'Reset token is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not new_password:
+            return Response(
+                {'error': 'New password is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Find user by token
+        try:
+            user = CustomUser.objects.get(
+                password_reset_token=token,
+                is_active=True
+            )
+        except CustomUser.DoesNotExist:
+            return Response(
+                {'error': 'Invalid or expired reset token'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate token hasn't expired
+        if not user.validate_password_reset_token(token):
+            return Response(
+                {'error': 'Reset token has expired. Please request a new password reset.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate password complexity
+        try:
+            user.validate_password_complexity(new_password)
+        except ValidationError as e:
+            return Response(
+                {'error': str(e.message)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Update password
+        user.set_password(new_password)
+        user.clear_password_reset_token()
+        user.save()
+        
+        # Log the password change
+        AuditLog.create_log(
+            restaurant=user.restaurant,
+            user=user,
+            action_type='PASSWORD_CHANGED',
+            entity_type='USER',
+            entity_id=str(user.id),
+            description='Password reset via email link',
+            ip_address=get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')
+        )
+        
+        return Response({
+            'message': 'Password has been reset successfully. You can now log in with your new password.'
+        })
 
 
 class RestaurantUpdateView(APIView):
@@ -799,3 +1066,33 @@ class StaffPinLoginView(APIView):
             }
         }, status=status.HTTP_200_OK)
     
+class StaffPasswordResetView(APIView):
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
+
+    def post(self, request, pk):
+        staff_member = get_object_or_404(CustomUser, pk=pk, restaurant=request.user.restaurant)
+        new_password = request.data.get('password')
+        
+        if not new_password:
+            return Response({'error': 'Password is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Basic validation for staff PINS/passwords
+        if len(new_password) < 4:
+            return Response({'error': 'Password must be at least 4 characters'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        staff_member.set_password(new_password) # For staff who have login access
+        if len(new_password) == 4 and new_password.isdigit():
+            staff_member.set_pin(new_password) # Also update PIN if it looks like one
+            
+        staff_member.save()
+        
+        AuditLog.create_log(
+            restaurant=request.user.restaurant,
+            user=request.user,
+            action_type='PASSWORD_CHANGED',
+            entity_type='USER',
+            entity_id=str(staff_member.id),
+            description=f'Password reset for {staff_member.email} by manager'
+        )
+        
+        return Response({'message': 'Password reset successfully'})

@@ -19,12 +19,25 @@ class StaffProfile(models.Model):
     hire_date = models.DateField(default=timezone.now)
     position = models.CharField(max_length=100, blank=True, null=True)
     hourly_rate = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    salary_type = models.CharField(max_length=10, choices=[('HOURLY', 'Hourly'), ('MONTHLY', 'Monthly')], default='HOURLY')
+    department = models.CharField(max_length=100, blank=True, null=True)
+    promotion_history = models.JSONField(default=list, blank=True)
     skills = models.JSONField(default=list, blank=True)
     certifications = models.JSONField(default=list, blank=True)
     notes = models.TextField(blank=True, null=True)
     
     def __str__(self):
         return f"{self.user.username}'s Profile"
+
+class StaffDocument(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    staff = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='documents')
+    title = models.CharField(max_length=255)
+    file = models.FileField(upload_to='staff_documents/')
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.title} - {self.staff.username}"
 
 class Schedule(models.Model):
     """Enhanced schedule model with reliability and safety features"""

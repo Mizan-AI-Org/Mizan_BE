@@ -11,6 +11,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from accounts.models import Restaurant, UserRole
 from .utils import get_tenant_from_request
+from accounts.models import AuditLog
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,18 @@ class TenantContextMiddleware:
                 ).exists()
                 
                 if not user_restaurant_access and not request.user.is_superuser:
+                    try:
+                        AuditLog.create_log(
+                            restaurant=request.tenant,
+                            user=request.user,
+                            action_type='OTHER',
+                            entity_type='TenantAccess',
+                            description='Cross-tenant access attempt denied',
+                            ip_address=request.META.get('REMOTE_ADDR'),
+                            user_agent=request.META.get('HTTP_USER_AGENT', '')
+                        )
+                    except Exception:
+                        pass
                     return JsonResponse(
                         {'error': 'Access denied to this restaurant'},
                         status=403

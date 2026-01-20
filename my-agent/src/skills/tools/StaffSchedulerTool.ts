@@ -1,20 +1,23 @@
-import { LuaTool } from "lua-cli";
+import { LuaTool, env } from "lua-cli";
 import { z } from "zod";
 import ApiService from "../../services/ApiService";
 
 export default class StaffSchedulerTool implements LuaTool {
     name = "staff_scheduler";
-    description = "Manage staff schedules, create shifts, and check for conflicts.";
+    description = "Schedule staff shifts. ALWAYS extract the restaurant ID from your [SYSTEM: PERSISTENT CONTEXT] block and pass it as restaurantId. For time periods like 'lunch', use 12:00-15:00; 'dinner' use 19:00-23:00.";
 
     inputSchema = z.object({
         action: z.enum(["list_shifts", "create_shift", "update_shift", "check_availability", "get_staff"]).describe("The action to perform"),
         staff_name: z.string().optional().describe("Name of the staff member (fuzzy match)"),
-        date: z.string().optional().describe("Date of the shift (YYYY-MM-DD)"),
-        start_time: z.string().optional().describe("Start time (HH:MM)"),
-        end_time: z.string().optional().describe("End time (HH:MM)"),
-        role: z.string().optional().describe("Role for the shift (e.g., waiter, chef)"),
+        date: z.string().optional().describe("Date of the shift (YYYY-MM-DD). For 'tomorrow', add 1 day to today's date from your context."),
+        start_time: z.string().optional().describe("Start time (HH:MM). For 'lunch' use 12:00, for 'dinner' use 19:00."),
+        end_time: z.string().optional().describe("End time (HH:MM). For 'lunch' use 15:00, for 'dinner' use 23:00."),
+        role: z.string().optional().describe("Role for the shift - leave empty to use staff member's existing role"),
         shift_id: z.string().optional().describe("ID of the shift to update"),
         notes: z.string().optional().describe("Notes for the shift"),
+        restaurantId: z.string().describe("REQUIRED: The restaurant ID from your context (e.g., 'aef9c4e0-...')"),
+        is_recurring: z.boolean().optional().describe("Whether this shift should be recurring"),
+        frequency: z.enum(["DAILY", "WEEKLY"]).optional().describe("Recurrence frequency if is_recurring is true"),
     });
 
     private apiService: ApiService;
@@ -28,49 +31,43 @@ export default class StaffSchedulerTool implements LuaTool {
 
         // Check multiple sources for restaurantId
         const restaurantId =
+            input.restaurantId ||
             (context?.get ? context.get("restaurantId") : undefined) ||
             context?.metadata?.restaurantId ||
-            context?.restaurantId;
+            context?.restaurantId ||
+            context?.user?.data?.restaurantId ||
+            context?.user?.restaurantId;
 
-        const token = context?.metadata?.token || (context?.get ? context.get("token") : undefined);
+        // Token retrieval with service account fallback
+        const token =
+            context?.metadata?.token ||
+            (context?.get ? context.get("token") : undefined) ||
+            context?.user?.data?.token ||
+            context?.user?.token ||
+            env('MIZAN_SERVICE_TOKEN'); // Service account fallback
 
         if (!restaurantId) {
-            console.error('[StaffSchedulerTool] Missing restaurant context. Keys:', context ? Object.keys(context) : 'null');
+            console.error('[StaffSchedulerTool] Missing restaurant context.');
             return {
                 status: "error",
-                message: "Restaurant context is missing. Cannot perform scheduling operations."
+                message: "I don't have your restaurant context. Please make sure you're logged in through the Mizan app."
             };
         }
 
         if (!token) {
-            // In a real scenario, we might need to handle this better, but for now assuming token is passed or we can't call API
-            // If context.user is present, maybe we can use a system token or the user's token if stored.
-            // For now, let's assume the preprocessor put the token in metadata or we have a way to get it.
-            // If not, we might need to fail.
-            // However, the TenantContextPreprocessor validates the token, so it should be available.
-            // Let's check where the token comes from. In preprocessor: const token = message.metadata?.token || context.metadata?.token;
-            // We should probably store it in context if not already there.
-        }
-
-        // Ensure we have a token to make API calls
-        // If the token is not explicitly in context.get("token"), we might need to rely on it being in metadata
-        const userToken = token || context?.user?.token; // Fallback if we stored it on user object (we didn't in preprocessor)
-
-        // Actually, the preprocessor uses the token to validate but doesn't explicitly save it to context.
-        // We might need to update preprocessor to save the token, or pass it through.
-        // For this implementation, let's assume we can get it from context.metadata.token if available.
-
-        if (!userToken) {
+            console.error('[StaffSchedulerTool] No authentication token available.');
             return {
                 status: "error",
-                message: "Authentication token missing. Cannot access scheduling API."
+                message: "I can't access the scheduling system right now. Please try again or contact support."
             };
         }
+
+        console.log(`[StaffSchedulerTool] Executing ${input.action} for restaurant ${restaurantId}`);
 
         try {
             switch (input.action) {
                 case "get_staff": {
-                    const staff = await apiService.getStaffList(restaurantId, userToken);
+                    const staff = await apiService.getStaffList(restaurantId, token);
                     return {
                         status: "success",
                         staff: staff.map((s: any) => ({ id: s.id, name: `${s.first_name} ${s.last_name}`, role: s.role }))
@@ -84,9 +81,8 @@ export default class StaffSchedulerTool implements LuaTool {
                         params.date_to = input.date;
                     }
 
-                    // Resolve staff name to ID if provided
                     if (input.staff_name) {
-                        const staffList = await apiService.getStaffList(restaurantId, userToken);
+                        const staffList = await apiService.getStaffList(restaurantId, token);
                         const staffMember = staffList.find((s: any) =>
                             `${s.first_name} ${s.last_name}`.toLowerCase().includes(input.staff_name!.toLowerCase())
                         );
@@ -97,10 +93,10 @@ export default class StaffSchedulerTool implements LuaTool {
                         }
                     }
 
-                    const shifts = await apiService.getAssignedShifts(params, userToken);
+                    const shifts = await apiService.getAssignedShifts(params, token);
                     return {
                         status: "success",
-                        shifts: shifts.results || shifts // Handle pagination if needed
+                        shifts: shifts.results || shifts
                     };
                 }
 
@@ -109,105 +105,126 @@ export default class StaffSchedulerTool implements LuaTool {
                         return { status: "error", message: "Missing required fields: staff_name, date, start_time, end_time" };
                     }
 
-                    // Resolve staff ID
-                    const staffList = await apiService.getStaffList(restaurantId, userToken);
-                    const staffMember = staffList.find((s: any) =>
+                    const staffList = await apiService.getStaffList(restaurantId, token);
+                    const matches = staffList.filter((s: any) =>
                         `${s.first_name} ${s.last_name}`.toLowerCase().includes(input.staff_name!.toLowerCase())
                     );
 
-                    if (!staffMember) {
+                    if (matches.length === 0) {
                         return { status: "error", message: `Staff member '${input.staff_name}' not found.` };
                     }
 
-                    // Check for conflicts first
-                    const conflicts = await apiService.detectConflicts({
-                        staff_id: staffMember.id,
-                        shift_date: input.date,
-                        start_time: input.start_time,
-                        end_time: input.end_time
-                    }, userToken);
-
-                    if (conflicts.has_conflicts) {
+                    if (matches.length > 1) {
                         return {
-                            status: "conflict",
-                            message: "Scheduling conflict detected.",
-                            conflicts: conflicts.conflicts
+                            status: "multiple_results",
+                            message: `I found ${matches.length} staff members matching '${input.staff_name}'.`,
+                            matches: matches.map((s: any) => ({ id: s.id, name: `${s.first_name} ${s.last_name}`, role: s.role }))
                         };
                     }
 
-                    const shiftDate = new Date(input.date);
+                    const staffMember = matches[0];
+                    const finalRole = input.role || staffMember.role || "server";
 
-                    const payload = {
-                        staff_id: staffMember.id, // Serializer likely expects staff_id or staff object
-                        shift_date: input.date,
-                        start_time: input.start_time,
-                        end_time: input.end_time,
-                        role: input.role || staffMember.role || "server", // Default role
-                        // schedule: ???
-                    };
+                    // Handle Recurrence
+                    const datesToSchedule = [input.date];
+                    if (input.is_recurring && input.frequency) {
+                        const baseDate = new Date(input.date);
+                        for (let i = 1; i <= 3; i++) { // Schedule 3 more occurrences (4 total)
+                            const nextDate = new Date(baseDate);
+                            if (input.frequency === "DAILY") {
+                                nextDate.setDate(baseDate.getDate() + i);
+                            } else if (input.frequency === "WEEKLY") {
+                                nextDate.setDate(baseDate.getDate() + (i * 7));
+                            }
+                            datesToSchedule.push(nextDate.toISOString().split('T')[0]);
+                        }
+                    }
 
-                    const newShift = await apiService.createAssignedShift(payload, userToken);
+                    const results = [];
+                    for (const shiftDate of datesToSchedule) {
+                        // Check conflicts for each date
+                        const conflicts = await apiService.detectConflicts({
+                            staff_id: staffMember.id,
+                            shift_date: shiftDate,
+                            start_time: input.start_time,
+                            end_time: input.end_time
+                        }, token);
+
+                        if (conflicts.has_conflicts) {
+                            results.push({ date: shiftDate, status: "conflict", message: "Shift overlaps with existing schedule" });
+                            continue;
+                        }
+
+                        const payload = {
+                            staff_id: staffMember.id,
+                            shift_date: shiftDate,
+                            start_time: input.start_time,
+                            end_time: input.end_time,
+                            role: finalRole,
+                            notes: input.notes,
+                            restaurant_id: restaurantId
+                        };
+
+                        try {
+                            const newShift = await apiService.createAssignedShift(payload, token);
+                            results.push({ date: shiftDate, status: "success", shift: newShift });
+                        } catch (err: any) {
+                            results.push({ date: shiftDate, status: "error", message: err.message });
+                        }
+                    }
+
+                    const successCount = results.filter(r => r.status === "success").length;
+                    const errorMsgs = results.filter(r => r.status !== "success").map(r => `${r.date}: ${r.message}`);
+
+                    if (successCount === 0) {
+                        return { status: "error", message: `Failed to create shifts. Reasons: ${errorMsgs.join(", ")}` };
+                    }
+
                     return {
                         status: "success",
-                        shift: newShift,
-                        message: `Shift created for ${input.staff_name} on ${input.date}`
+                        message: `Successfully scheduled ${successCount} shift(s) for ${staffMember.first_name}.` +
+                            (errorMsgs.length > 0 ? ` Some dates failed: ${errorMsgs.join(", ")}` : ""),
+                        data: results
                     };
                 }
 
                 case "update_shift": {
-                    if (!input.shift_id) {
-                        return { status: "error", message: "Missing shift_id for update" };
-                    }
+                    if (!input.shift_id) return { status: "error", message: "Missing shift_id" };
                     const updateData: any = {};
                     if (input.date) updateData.shift_date = input.date;
                     if (input.start_time) updateData.start_time = input.start_time;
                     if (input.end_time) updateData.end_time = input.end_time;
                     if (input.notes) updateData.notes = input.notes;
 
-                    const updatedShift = await apiService.updateAssignedShift(input.shift_id, updateData, userToken);
-                    return {
-                        status: "success",
-                        shift: updatedShift,
-                        message: "Shift updated successfully"
-                    };
+                    const updatedShift = await apiService.updateAssignedShift(input.shift_id, updateData, token);
+                    return { status: "success", shift: updatedShift, message: "Shift updated successfully" };
                 }
 
                 case "check_availability": {
                     if (!input.staff_name || !input.date || !input.start_time || !input.end_time) {
                         return { status: "error", message: "Missing required fields" };
                     }
-
-                    const staffList = await apiService.getStaffList(restaurantId, userToken);
+                    const staffList = await apiService.getStaffList(restaurantId, token);
                     const staffMember = staffList.find((s: any) =>
                         `${s.first_name} ${s.last_name}`.toLowerCase().includes(input.staff_name!.toLowerCase())
                     );
-
-                    if (!staffMember) {
-                        return { status: "error", message: `Staff member '${input.staff_name}' not found.` };
-                    }
+                    if (!staffMember) return { status: "error", message: `Staff member '${input.staff_name}' not found.` };
 
                     const conflicts = await apiService.detectConflicts({
                         staff_id: staffMember.id,
                         shift_date: input.date,
                         start_time: input.start_time,
                         end_time: input.end_time
-                    }, userToken);
+                    }, token);
 
-                    return {
-                        status: "success",
-                        available: !conflicts.has_conflicts,
-                        conflicts: conflicts.conflicts
-                    };
+                    return { status: "success", available: !conflicts.has_conflicts, conflicts: conflicts.conflicts };
                 }
 
                 default:
                     return { status: "error", message: "Invalid action" };
             }
         } catch (error: any) {
-            return {
-                status: "error",
-                message: `Operation failed: ${error.message}`
-            };
+            return { status: "error", message: `Operation failed: ${error.message}` };
         }
     }
 }

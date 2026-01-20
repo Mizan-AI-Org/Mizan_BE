@@ -1,4 +1,5 @@
 import requests
+import re
 from django.conf import settings
 from django.utils import timezone
 from django.template.loader import render_to_string
@@ -19,38 +20,47 @@ class NotificationService:
     def __init__(self):
         self.channel_layer = get_channel_layer()
 
-    # ------------------------------------------------------------------------------------
-    # SHIFT NOTIFICATIONS
-    # ------------------------------------------------------------------------------------
     def send_shift_notification(self, shift, notification_type='SHIFT_ASSIGNED'):
-        """Send notification about shift assignment/update"""
-        message = ""
-        title = "Shift Update"
-        
-        shift_date_str = shift.shift_date.strftime('%A, %b %d')
-        # Handle start_time/end_time being None or not datetime (safety)
+        """Helper to send shift-related notifications"""
         try:
-             time_str = f"{shift.start_time.strftime('%H:%M')} - {shift.end_time.strftime('%H:%M')}"
-        except Exception:
-             time_str = "Time TBD"
-
-        if notification_type == 'SHIFT_ASSIGNED':
-            title = "New Shift Assigned"
-            message = f"You have been assigned a new shift:\nRole: {shift.get_role_display()}\nDate: {shift_date_str}\nTime: {time_str}"
-        elif notification_type == 'SHIFT_UPDATED':
-            title = "Shift Updated"
-            message = f"Your shift on {shift_date_str} has been updated.\nNew Time: {time_str}"
-        elif notification_type == 'SHIFT_CANCELLED':
-            title = "Shift Cancelled"
-            message = f"Your shift on {shift_date_str} has been cancelled."
+            recipient = shift.staff
+            if not recipient:
+                return False
+                
+            title = "Shift Update"
+            message = ""
+            channels = ['app', 'push']
             
-        return self.send_custom_notification(
-            recipient=shift.staff,
-            message=message,
-            title=title,
-            notification_type=notification_type,
-            channels=['app', 'whatsapp', 'push']
-        )
+            start_str = shift.start_time.strftime('%a, %b %d at %H:%M') if shift.start_time else "Unknown time"
+            
+            if notification_type == 'SHIFT_ASSIGNED':
+                title = "New Shift Assigned"
+                message = f"You have been assigned a new shift on {start_str}."
+                channels.append('email')
+                channels.append('whatsapp')
+            elif notification_type == 'SHIFT_UPDATED':
+                title = "Shift Updated"
+                message = f"Your shift on {start_str} has been updated."
+            elif notification_type == 'SHIFT_CANCELLED':
+                title = "Shift Cancelled"
+                message = f"Your shift on {start_str} has been cancelled."
+                channels.append('email')
+                channels.append('whatsapp')
+            elif notification_type == 'SHIFT_REMINDER':
+                title = "Upcoming Shift Reminder"
+                message = f"Reminder: You have a shift starting soon on {start_str}."
+                channels.append('whatsapp')
+                
+            return self.send_custom_notification(
+                recipient=recipient,
+                message=message,
+                notification_type=notification_type,
+                title=title,
+                channels=channels
+            )
+        except Exception as e:
+            logger.error(f"Error sending shift notification: {e}")
+            return False
 
     # ------------------------------------------------------------------------------------
     # MAIN FIX: send_custom_notification() NO LONGER CREATES DUPLICATES
@@ -113,17 +123,8 @@ class NotificationService:
 
         # WhatsApp
         if 'whatsapp' in channels and self._should_send_whatsapp(recipient):
-            ok, wamid = self._send_whatsapp_notification(data)
-            if ok:
+            if self._send_whatsapp_notification(data):
                 channels_used.append('whatsapp')
-                # Log WhatsApp attempt
-                NotificationLog.objects.create(
-                    notification=notification,
-                    channel='whatsapp',
-                    recipient_address=getattr(recipient, 'phone', 'unknown'),
-                    status='SENT',
-                    external_id=wamid
-                )
 
         # Push
         if 'push' in channels:
@@ -147,6 +148,93 @@ class NotificationService:
         notification.save()
 
         return True, channels_used
+
+    # ------------------------------------------------------------------------------------
+    # LUA AGENT INTEGRATION
+    # ------------------------------------------------------------------------------------
+
+    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link):
+        """
+        Notify Lua agent about a new staff invitation.
+        This triggers Miya to send a WhatsApp template message.
+        """
+        try:
+            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
+            webhook_id = "9d44ed39-28c6-672h-d749-dhed1ba098e7" # staff-management-events
+            url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
+            
+            payload = {
+                "eventType": "staff_invite",
+                "staffId": "invitation_" + str(invitation_token)[:8],
+                "staffName": first_name,
+                "role": "server", # Default role for invite logic
+                "details": {
+                    "phone": phone,
+                    "inviteLink": invite_link,
+                    "restaurantName": restaurant_name,
+                    "invitationToken": invitation_token
+                },
+                "timestamp": timezone.now().isoformat()
+            }
+            
+            headers = {
+                "Content-Type": "application/json",
+                "x-api-key": LUA_WEBHOOK_API_KEY
+            }
+            
+            logger.info(f"[LuaInvite] Calling webhook for {first_name} at {url}")
+            resp = requests.post(url, json=payload, headers=headers, timeout=5)
+            
+            if resp.status_code in (200, 201):
+                return True, resp.json()
+            else:
+                logger.warning(f"[LuaInvite] Failed: {resp.status_code} - {resp.text}")
+                return False, {"error": resp.text, "status_code": resp.status_code}
+                
+        except Exception as e:
+            logger.error(f"[LuaInvite] Unexpected error: {str(e)}")
+            return False, {"error": str(e)}
+
+    def send_lua_invitation_accepted(self, invitation_token, phone, first_name, flow_data=None):
+        """
+        Notify Lua agent that an invitation was accepted.
+        This allows Miya to send a 'Welcome' message with the staff person's PIN.
+        """
+        try:
+            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
+            webhook_id = "9d44ed39-28c6-672h-d749-dhed1ba098e7" # staff-management-events
+            url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
+            
+            payload = {
+                "eventType": "staff_invitation_accepted",
+                "staffId": "invitation_" + str(invitation_token)[:8],
+                "staffName": first_name,
+                "role": "server",
+                "details": {
+                    "phoneNumber": phone,
+                    "invitationToken": invitation_token,
+                    "flowData": flow_data or {}
+                },
+                "timestamp": timezone.now().isoformat()
+            }
+            
+            headers = {
+                "Content-Type": "application/json",
+                "x-api-key": LUA_WEBHOOK_API_KEY
+            }
+            
+            logger.info(f"[LuaAccept] Calling webhook for {first_name} at {url}")
+            resp = requests.post(url, json=payload, headers=headers, timeout=5)
+            
+            if resp.status_code in (200, 201):
+                return True, resp.json()
+            else:
+                logger.warning(f"[LuaAccept] Failed: {resp.status_code} - {resp.text}")
+                return False, {"error": resp.text, "status_code": resp.status_code}
+                
+        except Exception as e:
+            logger.error(f"[LuaAccept] Unexpected error: {str(e)}")
+            return False, {"error": str(e)}
 
     # ====================================================================================
     # INTERNAL METHODS (UNCHANGED EXCEPT NEVER CREATE A NOTIFICATION TWICE)
@@ -210,29 +298,19 @@ class NotificationService:
             print(f"Recipient phone: {phone}", flush=True, file=sys.stderr)
             token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
             phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
-            api_version = getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')
             
             if not token or not phone_id:
-                return False, None
+                return False
 
             phone = ''.join(filter(str.isdigit, phone))
-            url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
+            url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
             print(f"WhatsApp URL: {url}", flush=True)
             payload = {
                 "messaging_product": "whatsapp",
                 "to": phone,
                 "type": "template",
                 "template": {
-                    "name": "hello_world",
-                    "language": {"code": "en_US"}
-                }
-            }
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": phone,
-                "type": "template",
-                "template": {
-                    "name": "cuntom_template",
+                    "name": getattr(settings, 'WHATSAPP_TEMPLATE_INVITE', 'onboarding_invite_v1'),
                     "language": {"code": "en_US"},
                     "components": [
                         {
@@ -253,502 +331,12 @@ class NotificationService:
                 json=payload
             )
             print(f"WhatsApp response: {resp.status_code} - {resp.text}", flush=True)
-            
-            wamid = None
-            if resp.status_code in (200, 201):
-                try:
-                    wamid = resp.json().get('messages', [{}])[0].get('id')
-                except Exception:
-                    pass
-            
-            return resp.status_code == 200, wamid
+            return resp.status_code == 200
 
         except Exception as e:
             logger.error(f"WhatsApp error: {e}")
             print(f"WhatsApp exception: {e}", flush=True)
-            return False, None
-
-    def send_whatsapp_invitation(self, phone, first_name, restaurant_name, invite_link, support_contact=None, invitation_token=None):
-        """
-        Sends a staff invitation via WhatsApp using a Flow or a template+text.
-        """
-        try:
-            clean_phone = ''.join(filter(str.isdigit, str(phone)))
-            flow_id = getattr(settings, 'WHATSAPP_INVITATION_FLOW_ID', None)
-            
-            if flow_id:
-                # Use Flow
-                header_text = "Welcome to Mizan AI!"
-                body_text = f"Hi {first_name}! 👋 {restaurant_name} has invited you to join their team. Click below to get started!"
-                return self.send_whatsapp_flow(
-                    to_phone=clean_phone,
-                    flow_id=flow_id,
-                    flow_cta="Join the Team",
-                    flow_token=invitation_token or "invitation_flow",
-                    header_text=header_text,
-                    body_text=body_text,
-                    flow_data={
-                        "restaurant_name": restaurant_name,
-                        "first_name": first_name
-                    }
-                )
-
-            # Fallback to Template + Text
-            template_ok, _ = self.send_whatsapp_template(
-                to_phone=clean_phone,
-                template_name="hello_world",
-                language_code="en_US"
-            )
-            
-            if not template_ok:
-                logger.warning(f"Failed to send 'hello_world' template to {clean_phone}")
-
-            # Now send the actual invitation text.
-            # Note: This might still fail if the window isn't open, 
-            # but the template message above serves as the "primer".
-            message = (
-                f"Hi {first_name}! 👋 Welcome to the team at *{restaurant_name}*!\n\n"
-                f"You've been invited to join us. Mizan AI will be your companion for schedules, tasks, and team updates. 🚀\n\n"
-                f"Ready to get started? Tap below to accept your invitation:\n\n"
-                f"{invite_link}\n\n"
-                f"We're excited to have you with us! ✨"
-            )
-
-            if support_contact:
-                message += f"\n\nIf you need help, contact support at: {support_contact}"
-
-            ok, wamid = self.send_whatsapp_text(clean_phone, message)
-            
-            return ok, {"method": "template+text", "wamid": wamid}
-
-        except Exception as e:
-            logger.error(f"Failed to send WhatsApp invitation: {e}")
-            return False, {"error": str(e)}
-
-    def send_whatsapp_template(self, to_phone, template_name, language_code="en_US", components=None):
-        """
-        Sends a WhatsApp Message Template. Required for initiating conversations (first contact).
-        """
-        try:
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
-            api_version = getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')
-
-            if not token or not phone_id:
-                return False, None
-
-            phone = ''.join(filter(str.isdigit, str(to_phone)))
-            url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
-            
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": phone,
-                "type": "template",
-                "template": {
-                    "name": template_name,
-                    "language": {
-                        "code": language_code
-                    }
-                }
-            }
-            
-            if components:
-                payload["template"]["components"] = components
-
-            resp = requests.post(
-                url,
-                headers={'Authorization': f"Bearer {token}"},
-                json=payload
-            )
-            
-            if resp.status_code not in (200, 201):
-                logger.error(f"Meta Template Error: {resp.status_code} - {resp.text}")
-                print(f"❌ Meta Template Error: {resp.status_code} - {resp.text}", file=sys.stderr)
-            
-            wamid = None
-            if resp.status_code in (200, 201):
-                try:
-                    wamid = resp.json().get('messages', [{}])[0].get('id')
-                except Exception:
-                    pass
-
-            return resp.status_code in (200, 201), wamid
-        except Exception as e:
-            logger.error(f"Exception in send_whatsapp_template: {e}")
-            return False, None
-
-    def send_whatsapp_text(self, to_phone, body):
-        try:
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
-            api_version = getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')
-            if not token or not phone_id:
-                return False, None
-            phone = ''.join(filter(str.isdigit, str(to_phone)))
-            url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": phone,
-                "text": {"preview_url": False, "body": str(body)}
-            }
-            resp = requests.post(
-                url,
-                headers={'Authorization': f"Bearer {token}"},
-                json=payload
-            )
-            if resp.status_code not in (200, 201):
-                logger.error(f"Meta Text Error: {resp.status_code} - {resp.text}")
-                print(f"❌ Meta Text Error: {resp.status_code} - {resp.text}", file=sys.stderr)
-            
-            wamid = None
-            if resp.status_code in (200, 201):
-                try:
-                    wamid = resp.json().get('messages', [{}])[0].get('id')
-                except Exception:
-                    pass
-
-            return resp.status_code in (200, 201), wamid
-        except Exception as e:
-            logger.error(f"Exception in send_whatsapp_text: {e}")
-            return False, None
-    
-    def send_whatsapp_buttons(self, to_phone, body_text, buttons):
-        """Sends native WhatsApp quick reply buttons (max 3)."""
-        try:
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
-            api_version = getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')
-            if not token or not phone_id:
-                return False, None
-            phone = ''.join(filter(str.isdigit, str(to_phone)))
-            url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
-            
-            action_buttons = []
-            for btn in buttons[:3]:
-                action_buttons.append({
-                    "type": "reply",
-                    "reply": {
-                        "id": str(btn.get("id")),
-                        "title": str(btn.get("title"))[:20]  # Title limit is 20 chars
-                    }
-                })
-
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": phone,
-                "type": "interactive",
-                "interactive": {
-                    "type": "button",
-                    "body": {"text": str(body_text)},
-                    "action": {"buttons": action_buttons}
-                }
-            }
-            resp = requests.post(
-                url,
-                headers={'Authorization': f"Bearer {token}"},
-                json=payload
-            )
-            if resp.status_code not in (200, 201):
-                logger.error(f"WhatsApp Buttons Error: {resp.status_code} - {resp.text}")
-            
-            wamid = None
-            if resp.status_code in (200, 201):
-                try:
-                    wamid = resp.json().get('messages', [{}])[0].get('id')
-                except Exception:
-                    pass
-
-            return resp.status_code in (200, 201), wamid
-        except Exception as e:
-            logger.error(f"Exception in send_whatsapp_buttons: {e}")
-            return False, None
-
-    def send_whatsapp_location_request(self, to_phone, body_text):
-        """Sends a native WhatsApp request for live/current location."""
-        try:
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
-            api_version = getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')
-            if not token or not phone_id:
-                return False, None
-            phone = ''.join(filter(str.isdigit, str(to_phone)))
-            url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
-            
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": phone,
-                "type": "interactive",
-                "interactive": {
-                    "type": "location_request_message",
-                    "body": {"text": str(body_text)},
-                    "action": {"name": "send_location"}
-                }
-            }
-            resp = requests.post(
-                url,
-                headers={'Authorization': f"Bearer {token}"},
-                json=payload
-            )
-            if resp.status_code not in (200, 201):
-                logger.error(f"WhatsApp Location Request Error: {resp.status_code} - {resp.text}")
-            
-            wamid = None
-            if resp.status_code in (200, 201):
-                try:
-                    wamid = resp.json().get('messages', [{}])[0].get('id')
-                except Exception:
-                    pass
-
-            return resp.status_code in (200, 201), wamid
-        except Exception as e:
-            logger.error(f"Exception in send_whatsapp_location_request: {e}")
-            return False, None
-    
-    def send_whatsapp_flow(self, to_phone, flow_id, flow_cta, flow_token="unused", screen_id="WELCOME", flow_data=None, header_text="", body_text="", footer_text=""):
-        """Sends a Meta WhatsApp Flow message."""
-        try:
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
-            api_version = getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')
-            if not token or not phone_id:
-                return False, None
-            
-            phone = ''.join(filter(str.isdigit, str(to_phone)))
-            url = f"https://graph.facebook.com/{api_version}/{phone_id}/messages"
-            
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": phone,
-                "type": "interactive",
-                "interactive": {
-                    "type": "flow",
-                    "header": {"type": "text", "text": header_text} if header_text else None,
-                    "body": {"text": body_text},
-                    "footer": {"text": footer_text} if footer_text else None,
-                    "action": {
-                        "name": "flow",
-                        "parameters": {
-                            "flow_token": flow_token,
-                            "flow_id": flow_id,
-                            "flow_cta": flow_cta,
-                            "flow_action": "navigate",
-                            "flow_action_payload": {
-                                "screen": screen_id,
-                                "data": flow_data or {}
-                            }
-                        }
-                    }
-                }
-            }
-            # Remove None values
-            if not payload["interactive"]["header"]: payload["interactive"].pop("header")
-            if not payload["interactive"]["footer"]: payload["interactive"].pop("footer")
-
-            resp = requests.post(
-                url,
-                headers={'Authorization': f"Bearer {token}"},
-                json=payload
-            )
-            
-            wamid = None
-            if resp.status_code in (200, 201):
-                try:
-                    wamid = resp.json().get('messages', [{}])[0].get('id')
-                except Exception:
-                    pass
-            else:
-                logger.error(f"WhatsApp Flow Error: {resp.status_code} - {resp.text}")
-
-            return resp.status_code in (200, 201), wamid
-        except Exception as e:
-            logger.error(f"Exception in send_whatsapp_flow: {e}")
-            return False, None
-    
-    def fetch_whatsapp_media_url(self, media_id):
-        try:
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            api_version = getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')
-            if not token:
-                return None
-            url = f"https://graph.facebook.com/{api_version}/{media_id}"
-            r = requests.get(url, headers={'Authorization': f"Bearer {token}"})
-            if r.status_code == 200:
-                data = r.json()
-                return data.get('url')
-            return None
-        except Exception:
-            return None
-    
-    def download_media_bytes(self, media_url):
-        try:
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            if not token or not media_url:
-                return None
-            r = requests.get(media_url, headers={'Authorization': f"Bearer {token}"})
-            if r.status_code == 200:
-                return r.content
-            return None
-        except Exception:
-            return None
-    
-    def transcribe_audio_bytes(self, audio_bytes, filename="audio.ogg"):
-        try:
-            api_key = getattr(settings, 'OPENAI_API_KEY', '')
-            if not api_key or not audio_bytes:
-                return None
-            import requests as _rq
-            files = {
-                'file': (filename, audio_bytes, 'audio/ogg')
-            }
-            data = {
-                'model': 'whisper-1'
-            }
-            headers = {
-                'Authorization': f'Bearer {api_key}'
-            }
-            resp = _rq.post('https://api.openai.com/v1/audio/transcriptions', headers=headers, data=data, files=files)
-            if resp.status_code == 200:
-                j = resp.json()
-                return j.get('text')
-            return None
-        except Exception:
-            return None
-    
-    def send_lua_incident(self, user, description, metadata=None):
-        try:
-            api_url = getattr(settings, 'LUA_API_URL', 'https://api.heylua.ai')
-            agent_id = getattr(settings, 'LUA_AGENT_ID', '')
-            api_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', '')
-            if not agent_id or not api_key:
-                return False, None
-            role_map = {
-                'WAITER': 'server',
-                'SERVER': 'server',
-                'MANAGER': 'manager',
-                'CHEF': 'chef',
-                'COOK': 'cook',
-                'BARTENDER': 'bartender',
-                'HOST': 'host',
-                'BUSSER': 'busser',
-                'DISHWASHER': 'dishwasher',
-            }
-            lua_role = role_map.get(getattr(user, 'role', '') or '', 'server')
-            url = f"{api_url}/webhooks/{agent_id}/staff-management-events"
-            body = {
-                "eventType": "incident_reported",
-                "staffId": str(user.id),
-                "staffName": user.get_full_name() or user.email,
-                "role": lua_role,
-                "details": {
-                    "incidentDescription": str(description)
-                },
-                "metadata": metadata or {},
-                "timestamp": timezone.now().isoformat()
-            }
-            headers = {
-                "x-api-key": api_key,
-                "x-role": lua_role,
-                "content-type": "application/json"
-            }
-            r = requests.post(url, json=body, headers=headers, timeout=15)
-            try:
-                j = r.json()
-            except Exception:
-                j = None
-            return r.status_code in (200, 201), j
-        except Exception:
-            return False, None
-
-    # ----------------------------------------------------------------------
-    
-    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link):
-        try:
-            api_url = getattr(settings, 'LUA_API_URL', 'https://api.heylua.ai')
-            agent_id = getattr(settings, 'LUA_AGENT_ID', '')
-            api_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', '')
-
-            if not agent_id or not api_key:
-                logger.error("Lua configuration missing for staff invitation")
-                return False, None
-
-            url = f"{api_url}/webhooks/{agent_id}/staff-management-events"
-            
-            body = {
-                "eventType": "staff_invite",
-                "staffId": invitation_token, # Using token as ID for potential correlation? Or strictly invited user.
-                "staffName": first_name,
-                "role": "server", # Default role for invite context, agent logic can clarify
-                "details": {
-                    "inviteLink": invite_link,
-                    "restaurantName": restaurant_name,
-                    "phone": phone
-                },
-                "timestamp": timezone.now().isoformat()
-            }
-            
-            headers = {
-                "x-api-key": api_key,
-                "x-role": "manager", # Invites triggered by system/manager context
-                "content-type": "application/json"
-            }
-            
-            r = requests.post(url, json=body, headers=headers, timeout=15)
-            try:
-                j = r.json()
-            except Exception:
-                j = None
-                
-            return r.status_code in (200, 201), j
-            
-        except Exception as e:
-            logger.error(f"Error sending Lua staff invite: {e}")
-            return False, None
-
-    # ----------------------------------------------------------------------
-    
-    def send_lua_invitation_accepted(self, invitation_token, phone, first_name, flow_data=None):
-        """Notify Lua agent that staff accepted invitation via WhatsApp."""
-        try:
-            api_url = getattr(settings, 'LUA_API_URL', 'https://api.heylua.ai')
-            agent_id = getattr(settings, 'LUA_AGENT_ID', '')
-            api_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', '')
-
-            if not agent_id or not api_key:
-                logger.error("Lua configuration missing for invitation acceptance")
-                return False, None
-
-            url = f"{api_url}/webhooks/{agent_id}/staff-management-events"
-            
-            body = {
-                "eventType": "staff_invitation_accepted",
-                "staffId": invitation_token,  # Token serves as temp ID
-                "staffName": first_name,
-                "role": "manager",  # Acceptance triggered by system/manager
-                "details": {
-                    "invitationToken": invitation_token,
-                    "phoneNumber": phone,
-                    "flowData": flow_data or {}
-                },
-                "timestamp": timezone.now().isoformat()
-            }
-            
-            headers = {
-                "x-api-key": api_key,
-                "x-role": "manager",
-                "content-type": "application/json"
-            }
-            
-            r = requests.post(url, json=body, headers=headers, timeout=15)
-            try:
-                j = r.json()
-            except Exception:
-                j = None
-                
-            return r.status_code in (200, 201), j
-            
-        except Exception as e:
-            logger.error(f"Error sending Lua invitation accepted: {e}")
-            return False, None
+            return False
 
     # ----------------------------------------------------------------------
 
@@ -802,6 +390,58 @@ class NotificationService:
         except Exception as e:
             logger.error(f"Email error: {e}")
             return False
+
+    def send_whatsapp_invitation(self, phone, first_name, restaurant_name, invite_link, support_contact):
+        try:
+            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            if not token or not phone_id or not phone:
+                return False, None
+            phone = ''.join(filter(str.isdigit, phone))
+            default_cc = getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '')
+            if phone.startswith('0'):
+                phone = phone.lstrip('0')
+            if not re.match(r"^\d{10,15}$", phone):
+                if default_cc and re.match(r"^\d{9,14}$", phone):
+                    phone = f"{default_cc}{phone}"
+            if not re.match(r"^\d{10,15}$", phone):
+                return False, {"error": "Invalid recipient phone format"}
+            url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
+            template_name = getattr(settings, 'WHATSAPP_TEMPLATE_INVITE', 'onboarding_invite_v1')
+            brand = getattr(settings, 'WHATSAPP_BRAND_NAME', 'Mizan AI')
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "template",
+                "template": {
+                    "name": template_name,
+                    "language": {"code": "en_US"},
+                    "components": [
+                        {
+                            "type": "body",
+                            "parameters": [
+                                {"type": "text", "text": brand},
+                                {"type": "text", "text": first_name or ''},
+                                {"type": "text", "text": invite_link},
+                                {"type": "text", "text": support_contact or ''},
+                            ]
+                        }
+                    ]
+                }
+            }
+            resp = requests.post(url, headers={'Authorization': f"Bearer {token}"}, json=payload)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"error": resp.text}
+            ok = resp.status_code == 200
+            external_id = None
+            if isinstance(data, dict):
+                external_id = str(data.get('messages', [{}])[0].get('id')) if data.get('messages') else None
+            return ok, {"status_code": resp.status_code, "data": data, "external_id": external_id}
+        except Exception as e:
+            logger.error(f"WhatsApp invitation error: {e}")
+            return False, {"error": str(e)}
 
     # ----------------------------------------------------------------------
     # PREFERENCE HELPERS
