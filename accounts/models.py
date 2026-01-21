@@ -442,26 +442,6 @@ class UserInvitation(models.Model):
         return invitation
 
 
-class InvitationDeliveryLog(models.Model):
-    STATUS_CHOICES = (
-        ('PENDING', 'Pending'),
-        ('SENT', 'Sent'),
-        ('DELIVERED', 'Delivered'),
-        ('FAILED', 'Failed'),
-    )
-    invitation = models.ForeignKey(UserInvitation, on_delete=models.CASCADE, related_name='delivery_logs')
-    channel = models.CharField(max_length=20)
-    recipient_address = models.CharField(max_length=255)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
-    external_id = models.CharField(max_length=255, blank=True, null=True)
-    response_data = models.JSONField(default=dict, blank=True)
-    error_message = models.TextField(blank=True, null=True)
-    attempt_count = models.IntegerField(default=1)
-    sent_at = models.DateTimeField(auto_now_add=True)
-    delivered_at = models.DateTimeField(null=True, blank=True)
-    class Meta:
-        db_table = 'invitation_delivery_logs'
-        ordering = ['-sent_at']
 
 
 class AuditLog(models.Model):
