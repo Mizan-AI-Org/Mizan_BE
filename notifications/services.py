@@ -160,8 +160,10 @@ class NotificationService:
         """
         try:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
+            import os
+            lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
             webhook_id = "9d44ed39-28c6-672h-d749-dhed1ba098e7" # staff-management-events
-            url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
+            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
             
             payload = {
                 "eventType": "staff_invite",
@@ -179,7 +181,9 @@ class NotificationService:
             
             headers = {
                 "Content-Type": "application/json",
-                "x-api-key": LUA_WEBHOOK_API_KEY
+                "Api-Key": lua_api_key,
+                "x-api-key": LUA_WEBHOOK_API_KEY,
+                "x-role": "manager"
             }
             
             logger.info(f"[LuaInvite] Calling webhook for {first_name} at {url}")
@@ -202,8 +206,10 @@ class NotificationService:
         """
         try:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
+            import os
+            lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
             webhook_id = "9d44ed39-28c6-672h-d749-dhed1ba098e7" # staff-management-events
-            url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
+            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
             
             payload = {
                 "eventType": "staff_invitation_accepted",
@@ -220,7 +226,9 @@ class NotificationService:
             
             headers = {
                 "Content-Type": "application/json",
-                "x-api-key": LUA_WEBHOOK_API_KEY
+                "Api-Key": lua_api_key,
+                "x-api-key": LUA_WEBHOOK_API_KEY,
+                "x-role": "manager"
             }
             
             logger.info(f"[LuaAccept] Calling webhook for {first_name} at {url}")
@@ -234,6 +242,57 @@ class NotificationService:
                 
         except Exception as e:
             logger.error(f"[LuaAccept] Unexpected error: {str(e)}")
+            return False, {"error": str(e)}
+
+    def send_lua_incident(self, user, description, metadata=None):
+        """
+        Forward incident report to Lua agent for analysis.
+        This allows Miya to analyze and respond to incidents.
+        """
+        try:
+            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
+            import os
+            lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
+            webhook_id = "9d44ed39-28c6-672h-d749-dhed1ba098e7"  # staff-management-events
+            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
+            
+            # Normalize role for the webhook
+            user_role = getattr(user, 'role', 'server')
+            if user_role:
+                user_role = user_role.lower()
+            else:
+                user_role = 'server'
+            
+            payload = {
+                "eventType": "incident_reported",
+                "staffId": str(user.id),
+                "staffName": user.get_full_name(),
+                "role": user_role,
+                "details": {
+                    "incidentDescription": description,
+                    **(metadata or {})
+                },
+                "timestamp": timezone.now().isoformat()
+            }
+            
+            headers = {
+                "Content-Type": "application/json",
+                "Api-Key": lua_api_key,
+                "x-api-key": LUA_WEBHOOK_API_KEY,
+                "x-role": user_role
+            }
+            
+            logger.info(f"[LuaIncident] Calling webhook for {user.get_full_name()} at {url}")
+            resp = requests.post(url, json=payload, headers=headers, timeout=5)
+            
+            if resp.status_code in (200, 201):
+                return True, resp.json()
+            else:
+                logger.warning(f"[LuaIncident] Failed: {resp.status_code} - {resp.text}")
+                return False, {"error": resp.text, "status_code": resp.status_code}
+                
+        except Exception as e:
+            logger.error(f"[LuaIncident] Unexpected error: {str(e)}")
             return False, {"error": str(e)}
 
     # ====================================================================================
