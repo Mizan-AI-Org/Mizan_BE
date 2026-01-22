@@ -1088,55 +1088,6 @@ def bulk_notification_actions(request):
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
-@api_view(['GET', 'POST'])
-@permission_classes([permissions.AllowAny])
-def whatsapp_webhook(request):
-    try:
-        from django.conf import settings as dj_settings
-        if request.method == 'GET':
-            verify_token = request.query_params.get('hub.verify_token') or request.GET.get('hub.verify_token')
-            challenge = request.query_params.get('hub.challenge') or request.GET.get('hub.challenge')
-            if verify_token and challenge and verify_token == getattr(dj_settings, 'WHATSAPP_WEBHOOK_VERIFY_TOKEN', ''):
-                return Response(challenge)
-            return Response({'error': 'verification_failed'}, status=status.HTTP_403_FORBIDDEN)
-
-        payload = request.data if isinstance(request.data, dict) else {}
-        entries = payload.get('entry', [])
-        updated = 0
-        for entry in entries:
-            changes = entry.get('changes', [])
-            for change in changes:
-                value = change.get('value', {})
-                statuses = value.get('statuses', [])
-                for s in statuses:
-                    msg_id = s.get('id')
-                    status_val = s.get('status')
-                    errors = s.get('errors')
-                    if msg_id:
-                        from accounts.models import InvitationDeliveryLog
-                        try:
-                            log = InvitationDeliveryLog.objects.filter(channel='whatsapp', external_id=msg_id).order_by('-sent_at').first()
-                            if log:
-                                if status_val == 'delivered':
-                                    from django.utils import timezone as dj_tz
-                                    log.status = 'DELIVERED'
-                                    log.delivered_at = dj_tz.now()
-                                elif status_val in ('failed', 'undelivered'):
-                                    log.status = 'FAILED'
-                                    if errors:
-                                        log.error_message = str(errors)
-                                elif status_val == 'sent':
-                                    log.status = 'SENT'
-                                log.response_data = {'webhook': s}
-                                log.save()
-                                updated += 1
-                        except Exception:
-                            pass
-
-        return Response({'success': True, 'updated': updated})
-    except Exception as e:
-        return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
 class NotificationPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = 'page_size'
