@@ -26,7 +26,7 @@ agent:
   welcomeMessage: ''
 skills:
   - name: staff-orchestrator
-    version: 1.0.23
+    version: 1.0.25
     skillId: f8f28466-4864-4f0c-be40-9fd977c487e7
   - name: predictive-analyst
     version: 1.0.28
