@@ -55,3 +55,6 @@ locale/**/*.mo
 
 # Lua Agent (Exclude from production backend push)
 my-agent/
+
+# Redis
+dump.rdb

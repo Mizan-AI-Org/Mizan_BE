@@ -48,13 +48,16 @@ export const tenantContextPreprocessor = new PreProcessor({
 
         // 0. Extract token from Lua profile session data (passed via LuaPop.init({ token }))
         const luaProfile = (user as any)._luaProfile || {};
-        const sessionToken = luaProfile.credentials?.accessToken ||
-            luaProfile.token ||
-            luaProfile.sessionToken ||
-            (user as any).token;
+        console.log(`[TenantContext] Profile debug keys: ${Object.keys(luaProfile).join(', ')}`);
 
-        if (sessionToken && !user.data?.token) {
-            console.log("[TenantContext] 🔐 Extracted session token from profile");
+        const sessionToken = (user as any).token ||
+            luaProfile.accessToken ||
+            luaProfile.credentials?.accessToken ||
+            luaProfile.token ||
+            luaProfile.sessionToken;
+
+        if (sessionToken && user.data?.token !== sessionToken) {
+            console.log(`[TenantContext] 🔐 Syncing token to user.data (length: ${sessionToken.length})`);
             user.data = { ...user.data, token: sessionToken };
         }
 
@@ -69,6 +72,7 @@ export const tenantContextPreprocessor = new PreProcessor({
             const restaurantMatch = text.match(/Restaurant:\s*([^(\n]+?)\s*\(ID:\s*([^)]+?)\)/i);
             const userMatch = text.match(/User:\s*([^(\n]+?)\s*\(ID:\s*([^)]+?)\)/i);
             const roleMatch = text.match(/Role:\s*([^,)\n]+)/i);
+            const tokenMatch = text.match(/Token:\s*([^,)\n]+)/i);
 
             if (restaurantMatch) {
                 detectedRestaurantName = restaurantMatch[1].trim();
@@ -86,19 +90,27 @@ export const tenantContextPreprocessor = new PreProcessor({
                 const role = roleMatch[1].trim();
                 user.data = { ...user.data, role };
             }
+            if (tokenMatch) {
+                // Support both "Token: <token>" and potential variations
+                const token = tokenMatch[1].trim();
+                if (token && token !== "undefined" && token !== "null" && user.data?.token !== token) {
+                    console.log(`[TenantContext] 🔑 Detected Token from message context (length: ${token.length})`);
+                    user.data = { ...user.data, token };
+                }
+            }
         }
 
         // 2. If we have context, inject/update the anchoring block
         if (detectedRestaurantId) {
             console.log(`[TenantContext] ⚓ Anchoring context for ${detectedRestaurantName} (${detectedRestaurantId})`);
 
-            // Only save if we actually updated something
-            if (user.data?.restaurantId === detectedRestaurantId) {
+            // Always attempt to save if user.data exists and was likely modified
+            if (user.data && Object.keys(user.data).length > 0) {
                 try {
                     await user.save();
-                    console.log("[TenantContext] ✅ User data persisted to cloud.");
+                    console.log("[TenantContext] ✅ User context persisted.");
                 } catch (e) {
-                    console.error("[TenantContext] ❌ Failed to save user data:", e);
+                    console.error("[TenantContext] ❌ Failed to persist context:", e);
                 }
             }
 

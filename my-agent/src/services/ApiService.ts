@@ -117,8 +117,6 @@ export default class ApiService {
 
     async getStaffProfiles(restaurantId: string, token: string) {
         try {
-            // This might go to a profile-specific endpoint or just a filtered staff list
-            // Assuming /api/staff/profiles/ exists or /api/staff/ returns enough info
             const response = await axios.get(`${this.baseUrl}/api/staff/`, {
                 timeout: this.timeout,
                 headers: {
@@ -127,13 +125,15 @@ export default class ApiService {
                 },
                 params: {
                     restaurant_id: restaurantId,
-                    include_profile: true // Hypothetical param to get Position, Skills, etc.
+                    include_profile: true
                 }
             });
             return response.data;
         } catch (error: any) {
-            console.error("[ApiService] Failed to fetch staff profiles:", error.message);
-            return [];
+            const status = error.response?.status;
+            const data = error.response?.data;
+            console.error(`[ApiService] Failed to fetch staff profiles: ${status} ${JSON.stringify(data || error.message)}`);
+            throw new Error(`API Error ${status || 'Unknown'}: ${data?.detail || data?.error || error.message}`);
         }
     }
 
