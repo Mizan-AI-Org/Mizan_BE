@@ -9,7 +9,6 @@ asgiref==3.10.0
 asttokens==3.0.0
 async-lru==2.0.4
 attrs==25.1.0
-audioop-lts==0.2.2
 autobahn==25.11.1
 Automat==25.4.16
 babel==2.17.0
