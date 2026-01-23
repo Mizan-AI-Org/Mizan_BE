@@ -366,7 +366,7 @@ class InvitationViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def resend(self, request, pk=None):
-        """Resend invitation email"""
+        """Resend invitation via email and/or WhatsApp"""
         invitation = self.get_object()
         
         if invitation.is_accepted:
@@ -381,15 +381,38 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Attempt to send invitation email and return status
-        success = UserManagementService._send_invitation_email(invitation)
+        email_success = False
+        whatsapp_success = False
         
-        if success:
-            return Response({'detail': 'Invitation email sent'})
+        # Send email if email address exists
+        if invitation.email:
+            email_success = UserManagementService._send_invitation_email(invitation)
+        
+        # Send WhatsApp if phone number exists
+        phone = (invitation.extra_data or {}).get('phone') or (invitation.extra_data or {}).get('phone_number')
+        if phone:
+            invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={invitation.invitation_token}"
+            send_whatsapp_invitation_task.delay(
+                invitation_id=invitation.id,
+                phone=phone,
+                first_name=invitation.first_name or "Staff",
+                restaurant_name=invitation.restaurant.name,
+                invite_link=invite_link,
+                support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
+            )
+            whatsapp_success = True
+        
+        if email_success or whatsapp_success:
+            channels = []
+            if email_success:
+                channels.append('email')
+            if whatsapp_success:
+                channels.append('WhatsApp')
+            return Response({'detail': f'Invitation sent via {", ".join(channels)}'})
         else:
             return Response(
-                {'detail': 'Failed to send email'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {'detail': 'No contact method available (email or phone)'},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
     @action(detail=False, methods=['get'])
