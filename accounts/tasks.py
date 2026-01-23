@@ -8,7 +8,9 @@ from notifications.services import notification_service
 def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_name, invite_link, support_contact):
     # Delegate to Lua Agent
     try:
-        token = UserInvitation.objects.get(id=invitation_id).invitation_token
+        invitation = UserInvitation.objects.get(id=invitation_id)
+        token = invitation.invitation_token
+        role = invitation.role
     except UserInvitation.DoesNotExist:
         return
 
@@ -17,10 +19,11 @@ def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_n
         phone=phone,
         first_name=first_name,
         restaurant_name=restaurant_name,
-        invite_link=invite_link
+        invite_link=invite_link,
+        role=role
     )
     try:
-        invitation = UserInvitation.objects.get(id=invitation_id)
+        # already fetched above, but for safety in case of refactor
         log = InvitationDeliveryLog(
             invitation=invitation,
             channel='whatsapp',

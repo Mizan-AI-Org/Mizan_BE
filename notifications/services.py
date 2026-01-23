@@ -153,7 +153,7 @@ class NotificationService:
     # LUA AGENT INTEGRATION
     # ------------------------------------------------------------------------------------
 
-    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link):
+    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link, role='staff'):
         """
         Notify Lua agent about a new staff invitation.
         This triggers Miya to send a WhatsApp template message.
@@ -167,9 +167,9 @@ class NotificationService:
             
             payload = {
                 "eventType": "staff_invite",
-                "staffId": "invitation_" + str(invitation_token)[:8],
-                "staffName": first_name,
-                "role": "server", # Default role for invite logic
+                "staffId": f"invite_{str(invitation_token)[:8]}",
+                "staffName": first_name or "New Staff",
+                "role": role.lower() if role else "staff",
                 "details": {
                     "phone": phone,
                     "inviteLink": invite_link,
