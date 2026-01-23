@@ -356,7 +356,7 @@ class MeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        serializer = CustomUserSerializer(request.user)
+        serializer = UserSerializer(request.user)
         return Response(serializer.data)
         
     def patch(self, request):
@@ -364,7 +364,7 @@ class MeView(APIView):
         profile_data = request.data.pop('profile', None)
         
         # Update user data
-        user_serializer = CustomUserSerializer(user, data=request.data, partial=True)
+        user_serializer = UserSerializer(user, data=request.data, partial=True)
         if not user_serializer.is_valid():
             return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         user_serializer.save()
@@ -383,7 +383,7 @@ class MeView(APIView):
                 return Response(profile_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
         # Return updated user data
-        serializer = CustomUserSerializer(user)
+        serializer = UserSerializer(user)
         return Response(serializer.data)
     
     def patch(self, request):
