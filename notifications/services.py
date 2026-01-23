@@ -162,8 +162,8 @@ class NotificationService:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "9d44ed39-28c6-672h-d749-dhed1ba098e7" # staff-management-events
-            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
+            webhook_id = "2c4e416e-3203-4a75-8c96-c1af923f85bd"  # staff-management-events
+            url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
             
             payload = {
                 "eventType": "staff_invite",
@@ -208,8 +208,8 @@ class NotificationService:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "9d44ed39-28c6-672h-d749-dhed1ba098e7" # staff-management-events
-            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
+            webhook_id = "2c4e416e-3203-4a75-8c96-c1af923f85bd"  # staff-management-events
+            url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
             
             payload = {
                 "eventType": "staff_invitation_accepted",
@@ -253,8 +253,8 @@ class NotificationService:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "9d44ed39-28c6-672h-d749-dhed1ba098e7"  # staff-management-events
-            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
+            webhook_id = "2c4e416e-3203-4a75-8c96-c1af923f85bd"  # staff-management-events
+            url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
             
             # Normalize role for the webhook
             user_role = getattr(user, 'role', 'server')
