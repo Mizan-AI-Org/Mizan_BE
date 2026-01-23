@@ -502,6 +502,89 @@ class NotificationService:
             logger.error(f"WhatsApp invitation error: {e}")
             return False, {"error": str(e)}
 
+    def send_whatsapp_text(self, phone, body):
+        """Send a plain text WhatsApp message via Meta Cloud API"""
+        try:
+            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            if not token or not phone_id or not phone:
+                return False, {"error": "WhatsApp not configured"}
+            
+            phone = ''.join(filter(str.isdigit, phone))
+            default_cc = getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '')
+            if phone.startswith('0'):
+                phone = phone.lstrip('0')
+            if not re.match(r"^\d{10,15}$", phone):
+                if default_cc and re.match(r"^\d{9,14}$", phone):
+                    phone = f"{default_cc}{phone}"
+            if not re.match(r"^\d{10,15}$", phone):
+                return False, {"error": "Invalid phone format"}
+            
+            url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "text",
+                "text": {"body": body}
+            }
+            
+            resp = requests.post(url, headers={'Authorization': f"Bearer {token}"}, json=payload)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"error": resp.text}
+            
+            ok = resp.status_code == 200
+            return ok, {"status_code": resp.status_code, "data": data}
+        except Exception as e:
+            logger.error(f"WhatsApp text error: {e}")
+            return False, {"error": str(e)}
+
+    def send_whatsapp_template(self, phone, template_name, language_code='en_US', components=None):
+        """Send a WhatsApp template message via Meta Cloud API"""
+        try:
+            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            if not token or not phone_id or not phone:
+                return False, {"error": "WhatsApp not configured"}
+            
+            phone = ''.join(filter(str.isdigit, phone))
+            default_cc = getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '')
+            if phone.startswith('0'):
+                phone = phone.lstrip('0')
+            if not re.match(r"^\d{10,15}$", phone):
+                if default_cc and re.match(r"^\d{9,14}$", phone):
+                    phone = f"{default_cc}{phone}"
+            if not re.match(r"^\d{10,15}$", phone):
+                return False, {"error": "Invalid phone format"}
+            
+            url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "template",
+                "template": {
+                    "name": template_name,
+                    "language": {"code": language_code},
+                    "components": components or []
+                }
+            }
+            
+            logger.info(f"Sending WhatsApp template '{template_name}' to {phone}")
+            resp = requests.post(url, headers={'Authorization': f"Bearer {token}"}, json=payload)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"error": resp.text}
+            
+            ok = resp.status_code == 200
+            if not ok:
+                logger.warning(f"WhatsApp template failed: {resp.status_code} - {data}")
+            return ok, {"status_code": resp.status_code, "data": data}
+        except Exception as e:
+            logger.error(f"WhatsApp template error: {e}")
+            return False, {"error": str(e)}
+
     # ----------------------------------------------------------------------
     # PREFERENCE HELPERS
     # ----------------------------------------------------------------------
@@ -517,3 +600,4 @@ class NotificationService:
     
 # SINGLETON INSTANCE
 notification_service = NotificationService()
+
