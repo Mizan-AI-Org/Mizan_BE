@@ -41,8 +41,8 @@ def sync_user_to_lua_agent(user, access_token):
     enabling Miya to make API calls on behalf of the user.
     """
     try:
-        # Use webhook.heylua.ai with webhook name (not api.heylua.ai/developer/webhooks)
-        webhook_url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/user-authenticated"
+        # Use the legacy UUID-based URL which is verified to work with the Api-Key
+        webhook_url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{LUA_USER_AUTH_WEBHOOK_ID}"
         
         # Get the Lua API key for Authorization header
         lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
@@ -67,7 +67,7 @@ def sync_user_to_lua_agent(user, access_token):
         
         headers = {
             "Content-Type": "application/json",
-            "Api-Key": lua_api_key,  # Common Lua API auth header
+            "Api-Key": lua_api_key,  # Legacy endpoint expects Api-Key
             "x-api-key": LUA_WEBHOOK_API_KEY  # Our webhook's internal validation
         }
         

@@ -168,7 +168,7 @@ class NotificationService:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "2c4e416e-3203-4a75-8c96-c1af923f85bd"  # staff-management-events
+            webhook_id = "7b22cb17-06a4-450f-b527-bfcb9d876c95"  # user-events
             url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
             
             payload = {
@@ -215,7 +215,7 @@ class NotificationService:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "2c4e416e-3203-4a75-8c96-c1af923f85bd"  # staff-management-events
+            webhook_id = "7b22cb17-06a4-450f-b527-bfcb9d876c95"  # user-events
             url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
             
             payload = {
@@ -260,7 +260,7 @@ class NotificationService:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "2c4e416e-3203-4a75-8c96-c1af923f85bd"  # staff-management-events
+            webhook_id = "7b22cb17-06a4-450f-b527-bfcb9d876c95"  # user-events
             url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
             
             # Normalize role for the webhook
