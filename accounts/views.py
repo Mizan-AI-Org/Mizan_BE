@@ -476,81 +476,26 @@ class InviteStaffView(APIView):
                     )
                 except Exception:
                     pass
-            if send_whatsapp and phone_number and settings.WHATSAPP_ACCESS_TOKEN and settings.WHATSAPP_PHONE_NUMBER_ID:
+            if send_whatsapp and phone_number:
                 from .tasks import send_whatsapp_invitation_task
-                delay = int(getattr(settings, 'WHATSAPP_INVITE_DELAY_SECONDS', 0))
-                if delay > 0:
-                    send_whatsapp_invitation_task.apply_async(
-                        args=[str(invitation.id), phone_number, request.data.get('first_name'), request.user.restaurant.name, invite_link, getattr(settings, 'SUPPORT_CONTACT', '')],
-                        countdown=delay
-                    )
-                    InvitationDeliveryLog.objects.create(
-                        invitation=invitation,
-                        channel='whatsapp',
-                        recipient_address=phone_number,
-                        status='PENDING'
-                    )
-                    try:
-                        AuditLog.create_log(
-                            restaurant=request.user.restaurant,
-                            user=request.user,
-                            action_type='CREATE',
-                            entity_type='INVITATION',
-                            entity_id=str(invitation.id),
-                            description='WhatsApp invitation scheduled',
-                            old_values={},
-                            new_values={'email': email, 'phone': phone_number}
-                        )
-                    except Exception:
-                        pass
-                else:
-                    ok, info = notification_service.send_whatsapp_invitation(
-                        phone=phone_number,
-                        first_name=request.data.get('first_name'),
-                        restaurant_name=request.user.restaurant.name,
-                        invite_link=invite_link,
-                        support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
-                    )
-                    log = InvitationDeliveryLog(
-                        invitation=invitation,
-                        channel='whatsapp',
-                        recipient_address=phone_number,
-                        status='SENT' if ok else 'FAILED',
-                        external_id=(info or {}).get('external_id'),
-                        response_data=info or {},
-                    )
-                    log.save()
-                    try:
-                        AuditLog.create_log(
-                            restaurant=request.user.restaurant,
-                            user=request.user,
-                            action_type='CREATE',
-                            entity_type='INVITATION',
-                            entity_id=str(invitation.id),
-                            description='WhatsApp invitation sent',
-                            old_values={},
-                            new_values={'email': email, 'phone': phone_number}
-                        )
-                    except Exception:
-                        pass
-            return Response({'message': 'Invitation sent successfully', 'token': token}, status=status.HTTP_201_CREATED)
-        except Exception:
-            pass
-        # For WhatsApp-only or after email handling
-        if send_whatsapp and phone_number and settings.WHATSAPP_ACCESS_TOKEN and settings.WHATSAPP_PHONE_NUMBER_ID:
-            from .tasks import send_whatsapp_invitation_task
-            delay = int(getattr(settings, 'WHATSAPP_INVITE_DELAY_SECONDS', 0))
-            if delay > 0:
-                send_whatsapp_invitation_task.apply_async(
-                    args=[str(invitation.id), phone_number, request.data.get('first_name'), request.user.restaurant.name, invite_link, getattr(settings, 'SUPPORT_CONTACT', '')],
-                    countdown=delay
+                # Always use background task for reliability and better UX (no hang)
+                send_whatsapp_invitation_task.delay(
+                    invitation_id=str(invitation.id),
+                    phone=phone_number,
+                    first_name=first_name or "Staff",
+                    restaurant_name=request.user.restaurant.name,
+                    invite_link=invite_link,
+                    support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
                 )
+                
+                # Mock a successful log entry as PENDING
                 InvitationDeliveryLog.objects.create(
                     invitation=invitation,
                     channel='whatsapp',
                     recipient_address=phone_number,
                     status='PENDING'
                 )
+                
                 try:
                     AuditLog.create_log(
                         restaurant=request.user.restaurant,
@@ -558,43 +503,17 @@ class InviteStaffView(APIView):
                         action_type='CREATE',
                         entity_type='INVITATION',
                         entity_id=str(invitation.id),
-                        description='WhatsApp invitation scheduled',
+                        description='WhatsApp invitation scheduled via Lua Agent',
                         old_values={},
                         new_values={'email': email, 'phone': phone_number}
                     )
                 except Exception:
                     pass
-            else:
-                ok, info = notification_service.send_whatsapp_invitation(
-                    phone=phone_number,
-                    first_name=request.data.get('first_name'),
-                    restaurant_name=request.user.restaurant.name,
-                    invite_link=invite_link,
-                    support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
-                )
-                log = InvitationDeliveryLog(
-                    invitation=invitation,
-                    channel='whatsapp',
-                    recipient_address=phone_number,
-                    status='SENT' if ok else 'FAILED',
-                    external_id=(info or {}).get('external_id'),
-                    response_data=info or {},
-                )
-                log.save()
-                try:
-                    AuditLog.create_log(
-                        restaurant=request.user.restaurant,
-                        user=request.user,
-                        action_type='CREATE',
-                        entity_type='INVITATION',
-                        entity_id=str(invitation.id),
-                        description='WhatsApp invitation sent',
-                        old_values={},
-                        new_values={'email': email, 'phone': phone_number}
-                    )
-                except Exception:
-                    pass
-        return Response({'message': 'Invitation created successfully', 'token': token}, status=status.HTTP_201_CREATED)
+
+            return Response({'message': 'Invitation processed successfully', 'token': token}, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            logger.error(f"InviteStaffView error: {str(e)}")
+            return Response({'error': 'An unexpected error occurred while processing the invitation.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class AcceptInvitationView(APIView):
     permission_classes = [permissions.AllowAny]

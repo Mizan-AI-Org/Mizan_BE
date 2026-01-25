@@ -87,6 +87,62 @@ def send_whatsapp(phone, message, template_name, language_code="en_US"):
     return {"status_code": response.status_code, "data": data}
 
 
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def get_invitation_by_phone(request):
+    """
+    Lookup a pending invitation by phone number.
+    Used by the agent to find the token for a user who clicked 'Accept' on WhatsApp.
+    """
+    try:
+        # Validate Agent Key
+        auth_header = request.headers.get('Authorization')
+        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        
+        if not expected_key:
+            return Response({'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+             
+        if not auth_header or auth_header != f"Bearer {expected_key}":
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+             
+        phone = request.query_params.get('phone')
+        if not phone:
+            return Response({'error': 'phone query parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Normalize phone (digits only)
+        clean_phone = ''.join(filter(str.isdigit, phone))
+        
+        # Search in extra_data
+        from .models import UserInvitation
+        from django.db.models import Q
+        
+        # Look for pending invitations where phone matches in extra_data
+        invitation = UserInvitation.objects.filter(
+            is_accepted=False,
+            expires_at__gt=timezone.now()
+        ).filter(
+            Q(extra_data__phone__icontains=clean_phone) | 
+            Q(extra_data__phone_number__icontains=clean_phone)
+        ).first()
+
+        if not invitation:
+            return Response({'error': 'No pending invitation found for this number'}, status=status.HTTP_404_NOT_FOUND)
+            
+        return Response({
+            'success': True,
+            'invitation': {
+                'token': invitation.invitation_token,
+                'first_name': invitation.first_name,
+                'last_name': invitation.last_name,
+                'role': invitation.role,
+                'restaurant_name': invitation.restaurant.name
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Invitation lookup error: {e}")
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])  # Authenticated via Agent Key
 def accept_invitation_from_agent(request):
@@ -121,14 +177,14 @@ def accept_invitation_from_agent(request):
              
         # Extract parameters
         invitation_token = request.data.get('invitation_token')
-        pin = request.data.get('pin')
+        pin = request.data.get('pin') or '0000' # Default PIN if not provided
         first_name = request.data.get('first_name', '')
         last_name = request.data.get('last_name', '')
         
-        if not invitation_token or not pin:
+        if not invitation_token:
             return Response({
                 'success': False,
-                'error': 'invitation_token and pin are required'
+                'error': 'invitation_token is required'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Accept invitation using existing service

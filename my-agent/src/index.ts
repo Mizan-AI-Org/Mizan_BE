@@ -31,9 +31,14 @@ AUTONOMOUS EXECUTION - NEVER ASK CLARIFYING QUESTIONS:
 4. If staff_lookup returns multiple matches, pick the most likely one or briefly ask which one.
 5. EXECUTE the action immediately. Do NOT ask for confirmation unless there's a genuine conflict.
 6. For identity questions, read the "User:" line in your context directly.
+7. If a user says "Accept Invite", "Accept", or refers to an invitation:
+   - You HAVE the capability to accept invitations. Use the 'accept_invitation' tool IMMEDIATELY.
+   - Do NOT say "as an AI I cannot do this". You HAVE the 'accept_invitation' tool for this specific purpose.
+   - Extract their phone number from the context (e.g., the "User:" header) and pass it to the tool.
+   - Do NOT ask for a PIN, email, or any other details. Just EXECUTE.
 
-WRONG: "What time does lunch start?" or "What is Fatima's role?"
-RIGHT: Use get_business_context and staff_lookup tools, then execute.`,
+WRONG: "I understand you're trying to accept the invitation, but as an AI I cannot..."
+RIGHT: [Use accept_invitation tool]`,
 
     // Core Restaurant Skills
     skills: [

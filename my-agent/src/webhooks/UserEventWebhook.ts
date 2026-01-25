@@ -25,7 +25,7 @@ const userEventWebhook = new LuaWebhook({
 
     execute: async (event: any) => {
         const { headers, body } = event;
-        console.log(`📥 [V3.0.2] Received ${body?.eventType} event`);
+        console.log(`📥 [V3.0.3] Received ${body?.eventType} event`);
 
         // Security: Validate API key
         const expectedKey = env('WEBHOOK_API_KEY');
@@ -59,7 +59,6 @@ const userEventWebhook = new LuaWebhook({
             const phone = body.details?.phone;
             const restaurantName = body.details?.restaurantName || 'Mizan';
             const firstName = body.staffName || "Staff Member";
-            const inviteLink = body.details?.inviteLink || "https://app.heymizan.ai";
 
             if (phone) {
                 console.log(`🚀 Sending WhatsApp invite to ${phone} via Lua Templates API`);
@@ -79,28 +78,28 @@ const userEventWebhook = new LuaWebhook({
                 console.log(`📱 Normalized phone: ${cleanPhone}`);
 
                 try {
-                    // Send template using Lua's native Templates.whatsapp.send()
-                    // Template components based on src/templates/whatsapp-templates.ts
+                    // Fetch template by name to get the ID and ensure it exists
+                    const listResult = await Templates.whatsapp.list(channelId, { search: 'staff_invitation_eng' });
+                    const template = listResult.templates.find(t => t.name === 'staff_invitation_eng' && t.status === 'APPROVED');
+
+                    if (!template) {
+                        console.error("❌ Template 'staff_invitation_eng' not found or not approved");
+                        return { success: false, error: "Template not found", phone: cleanPhone };
+                    }
+
+                    console.log(`🚀 Sending WhatsApp template '${template.name}' (ID: ${template.id}) to ${cleanPhone}`);
+
+                    // Send template using the explicit template ID
                     const result = await Templates.whatsapp.send(
                         channelId,
-                        'staff_invitation',
+                        template.id,
                         {
                             phoneNumbers: [cleanPhone],
                             values: {
-                                header: {
-                                    "1": restaurantName
-                                },
                                 body: {
-                                    "1": firstName,
-                                    "2": restaurantName
-                                },
-                                buttons: [
-                                    {
-                                        sub_type: 'URL',
-                                        index: '0',
-                                        text: inviteLink
-                                    }
-                                ]
+                                    "cutomer_name": firstName, // Note: Typo 'cutomer' preserved from template
+                                    "restaurant_name": restaurantName
+                                }
                             }
                         }
                     );
@@ -118,14 +117,14 @@ const userEventWebhook = new LuaWebhook({
                     }
 
                     // Success
-                    const messageId = result.results?.[0]?.messageId;
+                    const messageId = result.results?.[0]?.messages?.[0]?.id;
                     console.log(`✅ WhatsApp invite sent successfully! MessageID: ${messageId}`);
 
                     return {
                         success: true,
                         messageId: messageId,
                         phone: cleanPhone,
-                        template: 'staff_invitation'
+                        template: template.name
                     };
 
                 } catch (error: any) {
