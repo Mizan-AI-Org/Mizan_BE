@@ -26,33 +26,27 @@ agent:
   welcomeMessage: ''
 skills:
   - name: staff-orchestrator
-    version: 1.0.25
+    version: 1.0.36
     skillId: f8f28466-4864-4f0c-be40-9fd977c487e7
   - name: predictive-analyst
-    version: 1.0.28
+    version: 1.0.39
     skillId: 80c230d3-38e7-4020-9e74-2df61f48c520
   - name: restaurant-operations
-    version: 1.0.17
+    version: 1.0.28
     skillId: cb0eb026-6d53-4534-b763-9d3fed61006d
 webhooks:
-  - name: dining-experience-events
-    version: 3.0.1
-    webhookId: 7b22cb17-06a4-450f-b527-bfcb9d876c95
-  - name: kitchen-coordination
-    version: 2.0.0
-    webhookId: 8c33dc28-17b5-561g-c638-cgdc0a987d06
-  - name: staff-management-events
-    version: 2.0.0
-    webhookId: 9d44ed39-28c6-672h-d749-dhed1ba098e7
   - name: forecasting-events
     version: 1.0.0
     webhookId: 0e55fe4a-39d7-783i-e85a-eife2cb1a8f8
-  - name: user-events-dev
-    version: 1.0.1
-    webhookId: 6443d036-7c24-4e2e-9c3a-9f5df9d90ac2
+  - name: staff-management-events
+    version: 2.0.0
+    webhookId: 9d44ed39-28c6-672h-d749-dhed1ba098e7
   - name: user-authenticated
-    version: 1.0.18
+    version: 1.0.29
     webhookId: df2d840c-b80e-4e6b-98d8-af4e95c0d96a
+  - name: user-events
+    version: 1.0.4
+    webhookId: 77f06520-d115-41b1-865e-afe7814ce82d
 jobs:
   - jobId: 100b555b-4d19-4130-a879-92b5fbb594d3
     name: restaurant-health-check
@@ -145,7 +139,7 @@ preprocessors:
     preprocessorId: preprocessor_56cd07g9-58b5-7479-cg8h-8g6dd2c26a4h
     version: 1.0.0
   - name: tenant-context-validation
-    version: 2.2.6
+    version: 2.2.17
     preprocessorId: preprocessor_730e748f-9bde-49b5-8bb2-69bc9f84eca2
 postprocessors:
   - capabilities:

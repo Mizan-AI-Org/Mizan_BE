@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Lua Webhook Configuration
 LUA_AGENT_ID = "baseAgent_agent_1762796132079_ob3ln5fkl"
 LUA_USER_AUTH_WEBHOOK_ID = "df2d840c-b80e-4e6b-98d8-af4e95c0d96a"
-LUA_WEBHOOK_API_KEY = getattr(settings, 'LUA_WEBHOOK_API_KEY', 'mizan-agent-webhook-secret-2026')
+LUA_WEBHOOK_API_KEY = getattr(settings, 'LUA_WEBHOOK_API_KEY', None) or 'mizan-agent-webhook-secret-2026'
 
 
 def sync_user_to_lua_agent(user, access_token):

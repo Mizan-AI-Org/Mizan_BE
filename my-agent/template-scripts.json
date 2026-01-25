@@ -1,0 +1,5 @@
+{
+    "scripts": {
+        "create-templates": "ts-node src/templates/whatsapp-templates.ts"
+    }
+}
