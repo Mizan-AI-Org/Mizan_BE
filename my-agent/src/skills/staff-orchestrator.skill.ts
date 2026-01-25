@@ -4,6 +4,7 @@ import StaffSchedulerTool from "./tools/StaffSchedulerTool";
 import ChecklistStarterTool from "./tools/ChecklistStarterTool";
 import ChecklistResponseTool from "./tools/ChecklistResponseTool";
 import IdentityResolutionTool from "./tools/IdentityResolutionTool";
+import AcceptInvitationTool from "./tools/AcceptInvitationTool";
 
 export const staffOrchestratorSkill = new LuaSkill({
   name: "staff-orchestrator",
@@ -15,5 +16,6 @@ export const staffOrchestratorSkill = new LuaSkill({
     new ChecklistStarterTool(),
     new ChecklistResponseTool(),
     new IdentityResolutionTool(),
+    new AcceptInvitationTool(),
   ]
 });

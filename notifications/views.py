@@ -25,6 +25,7 @@ from scheduling.audit import AuditTrailService, AuditActionType, AuditSeverity
 from core.utils import build_tenant_context
 from .models import WhatsAppSession
 from accounts.models import CustomUser
+from accounts.services import UserManagementService, sync_user_to_lua_agent
 from timeclock.models import ClockEvent
 from scheduling.models import ShiftTask
 from django.conf import settings as dj_settings
@@ -648,22 +649,32 @@ def whatsapp_webhook(request):
                                                 invitation.first_name = entered_name
                                                 invitation.save(update_fields=['first_name'])
                                             
-                                            # Delegate to Lua Agent
-                                            ok, agent_response = notification_service.send_lua_invitation_accepted(
-                                                invitation_token=invitation.invitation_token,
-                                                phone=phone_digits,
+                                            # AUTOMATIC ACCEPTANCE: Create user account immediately
+                                            user, error = UserManagementService.accept_invitation(
+                                                token=invitation.invitation_token,
                                                 first_name=invitation.first_name,
-                                                flow_data=flow_data
+                                                last_name=invitation.last_name or "Staff"
                                             )
                                             
-                                            if ok:
-                                                logger.info(f"Invitation acceptance delegated to agent: {agent_response}")
+                                            if user:
+                                                logger.info(f"User {user.email} created automatically via WhatsApp accept")
+                                                # Log in for the user or just sync? 
+                                                # For now, we sync with a placeholder/empty token or none
+                                                # sync_user_to_lua_agent(user, access_token=None)
+                                                
+                                                # Delegate to Lua Agent for welcome message
+                                                ok, agent_response = notification_service.send_lua_invitation_accepted(
+                                                    invitation_token=invitation.invitation_token,
+                                                    phone=phone_digits,
+                                                    first_name=user.first_name,
+                                                    flow_data=flow_data
+                                                )
                                             else:
-                                                logger.error("Failed to delegate invitation acceptance to agent")
-                                                # Fallback: send error message
+                                                logger.error(f"Failed to automatically create user via WhatsApp: {error}")
+                                                ok = False
                                                 notification_service.send_whatsapp_text(
                                                     phone_digits,
-                                                    "Sorry, there was an issue processing your invitation. Please try again or contact support."
+                                                    f"Sorry, there was an issue creating your account: {error}. Please contact support."
                                                 )
                                             
                                             # Update delivery log
@@ -675,6 +686,56 @@ def whatsapp_webhook(request):
                             except Exception as e:
                                 logger.error(f"Flow response error: {e}")
                             continue
+
+                    # ══════════════════════════════════════════════════════════════════
+                    # 5. HANDLE TEXT MESSAGES (Accept Invitation Fallback)
+                    # ══════════════════════════════════════════════════════════════════
+                    if msg_type == 'text' and text_body:
+                        normalized_body = text_body.strip().lower()
+                        if normalized_body in ['accept invite', 'accept invitation', 'accept']:
+                            from accounts.models import UserInvitation
+                            from django.db.models import Q
+                            
+                            # Lookup pending invitation for this phone number
+                            # (Search in extra_data where we store invitation phone)
+                            invitation = UserInvitation.objects.filter(
+                                is_accepted=False,
+                                expires_at__gt=timezone.now()
+                            ).filter(
+                                Q(extra_data__phone__icontains=phone_digits[-9:]) | 
+                                Q(extra_data__phone_number__icontains=phone_digits[-9:])
+                            ).first()
+
+                            if invitation:
+                                logger.info(f"Found invitation for {phone_digits} via text command: {invitation.id}")
+                                
+                                # AUTOMATIC ACCEPTANCE
+                                user, error = UserManagementService.accept_invitation(
+                                    token=invitation.invitation_token,
+                                    first_name=invitation.first_name,
+                                    last_name=invitation.last_name or "Staff"
+                                )
+                                
+                                if user:
+                                    logger.info(f"User {user.email} created automatically via text command")
+                                    # Notify Lua Agent for welcome
+                                    notification_service.send_lua_invitation_accepted(
+                                        invitation_token=invitation.invitation_token,
+                                        phone=phone_digits,
+                                        first_name=user.first_name,
+                                        flow_data={'method': 'text_command'}
+                                    )
+                                    continue # Message handled
+                                else:
+                                    logger.error(f"Failed to auto-create user via text: {error}")
+                                    notification_service.send_whatsapp_text(
+                                        phone_digits,
+                                        f"Sorry, there was an issue creating your account: {error}. Please contact support."
+                                    )
+                                    continue
+                            else:
+                                logger.warning(f"No pending invitation found for {phone_digits} matching '{text_body}'")
+                                # Let it fall through to unrecognized or agent
 
                     # ------------------------------------------------------------------
                     # 2. HANDLE IMAGE (Verification)

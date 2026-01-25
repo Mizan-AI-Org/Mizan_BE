@@ -445,7 +445,7 @@ class UserManagementService:
             raise
     
     @staticmethod
-    def accept_invitation(token, password, first_name, last_name):
+    def accept_invitation(token, password=None, first_name=None, last_name=None):
         """
         Accept StaffInvitation and create user account (used by InvitationViewSet).
         Returns tuple: (user, error)
@@ -456,6 +456,10 @@ class UserManagementService:
             if invitation.expires_at < timezone.now():
                 return None, "Invitation has expired"
 
+            # Fallback for names if not provided
+            effective_first_name = first_name or invitation.first_name or ''
+            effective_last_name = last_name or invitation.last_name or ''
+
             # Guard against existing accounts for the same email to avoid
             # database IntegrityError and aborted transaction states
             if CustomUser.objects.filter(email=invitation.email).exists():
@@ -464,12 +468,17 @@ class UserManagementService:
                     "An account with this email already exists. Please log in instead or contact your admin."
                 )
 
+            # Auto-generate password if not provided (for WhatsApp automated flow)
+            if not password:
+                import secrets
+                password = secrets.token_urlsafe(12)
+
             with transaction.atomic():
                 user = CustomUser.objects.create_user(
                     email=invitation.email,
                     password=password,
-                    first_name=first_name or '',
-                    last_name=last_name or '',
+                    first_name=effective_first_name,
+                    last_name=effective_last_name,
                     is_verified=True,
                     is_active=True,
                     role=invitation.role,

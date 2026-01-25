@@ -37,41 +37,21 @@ def auto_send_whatsapp_invite(sender, instance: UserInvitation, created, **kwarg
 
         logger.info(f"Triggering WhatsApp invite for {instance.email} to {phone} (delay: {delay}s)")
 
-        if delay > 0:
-            from .tasks import send_whatsapp_invitation_task
-            send_whatsapp_invitation_task.apply_async(
-                args=[str(instance.id), phone, first_name, restaurant_name, invite_link, getattr(settings, 'SUPPORT_CONTACT', '')],
-                countdown=delay
-            )
-            InvitationDeliveryLog.objects.create(
-                invitation=instance,
-                channel='whatsapp',
-                recipient_address=phone,
-                status='PENDING'
-            )
-        else:
-            # Delegate to Lua Agent
-            ok, info = notification_service.send_lua_staff_invite(
-                invitation_token=instance.invitation_token,
-                phone=phone,
-                first_name=first_name,
-                restaurant_name=restaurant_name,
-                invite_link=invite_link
-            )
-            
-            logger.info(f"Lua Agent Response for {instance.email}: ok={ok}, info={info}")
-
-            log = InvitationDeliveryLog(
-                invitation=instance,
-                channel='whatsapp',
-                recipient_address=phone,
-                status='SENT' if ok else 'FAILED',
-                external_id=(info or {}).get('eventId'), 
-                response_data=info or {},
-            )
-            if not ok:
-                log.error_message = str(info) if info else "Unknown error from agent"
-            log.save()
+        from .tasks import send_whatsapp_invitation_task
+        send_whatsapp_invitation_task.delay(
+            invitation_id=str(instance.id),
+            phone=phone,
+            first_name=first_name,
+            restaurant_name=restaurant_name,
+            invite_link=invite_link,
+            support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
+        )
+        InvitationDeliveryLog.objects.create(
+            invitation=instance,
+            channel='whatsapp',
+            recipient_address=phone,
+            status='PENDING'
+        )
             
     except Exception as e:
         logger.error(f"Error in auto_send_whatsapp_invite: {str(e)}", exc_info=True)

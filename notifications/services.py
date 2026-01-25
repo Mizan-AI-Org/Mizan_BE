@@ -169,7 +169,9 @@ class NotificationService:
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
             webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"  # user-events production
-            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
+            url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
+            if not url:
+                url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
             
             payload = {
                 "eventType": "staff_invite",

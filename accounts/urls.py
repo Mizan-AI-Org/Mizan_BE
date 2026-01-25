@@ -9,7 +9,7 @@ from .views import (
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
 from .views_invitations import InvitationViewSet, UserManagementViewSet
-from .views_agent import AgentContextView, accept_invitation_from_agent
+from .views_agent import AgentContextView, accept_invitation_from_agent, get_invitation_by_phone
 
 router = DefaultRouter()
 router.register(r'settings', RestaurantSettingsViewSet, basename='settings')
@@ -44,4 +44,5 @@ urlpatterns = [
     
     # Agent Integration
     path('agent/accept-invitation/', accept_invitation_from_agent, name='agent_accept_invitation'),
+    path('agent/lookup-invitation/', get_invitation_by_phone, name='agent_lookup_invitation'),
 ]

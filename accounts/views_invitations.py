@@ -242,18 +242,27 @@ class InvitationViewSet(viewsets.ModelViewSet):
             headers = self.get_success_headers(StaffInvitationSerializer(invitation).data)
             response_data = StaffInvitationSerializer(invitation).data
             
-            if send_whatsapp or not email:
+            if send_whatsapp or (phone and not email):
                 # WhatsApp invitation - return token for frontend to generate link
                 # AND trigger the background task to send the message
                 if phone:
                     invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
                     send_whatsapp_invitation_task.delay(
-                        invitation_id=invitation.id,
+                        invitation_id=str(invitation.id),
                         phone=phone,
                         first_name=invitation.first_name,
                         restaurant_name=restaurant.name,
                         invite_link=invite_link,
                         support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
+                    )
+                    
+                    # Create the log entry as PENDING
+                    from .models import InvitationDeliveryLog
+                    InvitationDeliveryLog.objects.create(
+                        invitation=invitation,
+                        channel='whatsapp',
+                        recipient_address=phone,
+                        status='PENDING'
                     )
 
                 return Response(
@@ -399,6 +408,18 @@ class InvitationViewSet(viewsets.ModelViewSet):
                     restaurant_name=invitation.restaurant.name,
                     invite_link=invite_link,
                     support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
+                )
+                
+                # Update/Create log
+                from .models import InvitationDeliveryLog
+                InvitationDeliveryLog.objects.update_or_create(
+                    invitation=invitation,
+                    channel='whatsapp',
+                    defaults={
+                        'recipient_address': phone,
+                        'status': 'PENDING',
+                        'sent_at': timezone.now()
+                    }
                 )
                 whatsapp_success = True
             
