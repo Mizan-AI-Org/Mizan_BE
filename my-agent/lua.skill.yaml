@@ -45,7 +45,7 @@ webhooks:
     version: 1.0.29
     webhookId: df2d840c-b80e-4e6b-98d8-af4e95c0d96a
   - name: user-events
-    version: 1.0.4
+    version: 1.0.5
     webhookId: 77f06520-d115-41b1-865e-afe7814ce82d
 jobs:
   - jobId: 100b555b-4d19-4130-a879-92b5fbb594d3
