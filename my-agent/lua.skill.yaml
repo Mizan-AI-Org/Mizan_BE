@@ -26,7 +26,7 @@ agent:
   welcomeMessage: ''
 skills:
   - name: staff-orchestrator
-    version: 1.0.26
+    version: 1.0.25
     skillId: f8f28466-4864-4f0c-be40-9fd977c487e7
   - name: predictive-analyst
     version: 1.0.28
@@ -48,7 +48,7 @@ webhooks:
     version: 1.0.0
     webhookId: 0e55fe4a-39d7-783i-e85a-eife2cb1a8f8
   - name: user-events-dev
-    version: 1.0.0
+    version: 1.0.1
     webhookId: 6443d036-7c24-4e2e-9c3a-9f5df9d90ac2
   - name: user-authenticated
     version: 1.0.18

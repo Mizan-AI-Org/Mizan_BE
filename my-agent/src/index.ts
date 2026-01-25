@@ -3,6 +3,7 @@ import { tenantContextPreprocessor } from "./preprocessors/TenantContextPreproce
 import userAuthWebhook from "./webhooks/userAuthWebhook";
 import staffManagementWebhook from "./webhooks/staffManagementWebhook";
 import forecastingWebhook from "./webhooks/forcastingWebhook";
+import userEventWebhook from "./webhooks/UserEventWebhook";
 import ApiService from "./services/ApiService";
 import { restaurantOpsSkill } from "./skills/restaurant-ops.skill";
 import { staffOrchestratorSkill } from "./skills/staff-orchestrator.skill";
@@ -45,7 +46,8 @@ RIGHT: Use get_business_context and staff_lookup tools, then execute.`,
     webhooks: [
         forecastingWebhook,
         staffManagementWebhook,
-        userAuthWebhook  // User authentication & tenant provisioning
+        userAuthWebhook,  // User authentication & tenant provisioning
+        userEventWebhook
     ],
 
     // Scheduled Background Jobs
