@@ -128,11 +128,11 @@ export class StaffManagementModule {
 
         const agentKey = process.env.WEBHOOK_API_KEY || '';
 
-        // Using the 'staff_invitation' template seen in dashboard
+        // Using the 'staff_invitation_eng' template as requested
         await this.apiService.sendWhatsapp({
             phone: phone,
             type: 'template',
-            template_name: 'staff_invitation',
+            template_name: 'staff_invitation_eng',
             language_code: 'en_US',
             components: [
                 {
@@ -140,14 +140,6 @@ export class StaffManagementModule {
                     parameters: [
                         { type: 'text', text: staffName },
                         { type: 'text', text: restaurantName }
-                    ]
-                },
-                {
-                    type: 'button',
-                    sub_type: 'url',
-                    index: '0',
-                    parameters: [
-                        { type: 'text', text: inviteLink.split('token=')[1] } // Assuming button URL uses token as suffix
                     ]
                 }
             ]

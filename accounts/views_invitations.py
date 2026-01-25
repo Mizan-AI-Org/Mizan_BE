@@ -367,53 +367,69 @@ class InvitationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def resend(self, request, pk=None):
         """Resend invitation via email and/or WhatsApp"""
-        invitation = self.get_object()
-        
-        if invitation.is_accepted:
-            return Response(
-                {'detail': 'Invitation already accepted'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        if invitation.expires_at < timezone.now():
-            return Response(
-                {'detail': 'Invitation expired'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        email_success = False
-        whatsapp_success = False
-        
-        # Send email if email address exists
-        if invitation.email:
-            email_success = UserManagementService._send_invitation_email(invitation)
-        
-        # Send WhatsApp if phone number exists
-        phone = (invitation.extra_data or {}).get('phone') or (invitation.extra_data or {}).get('phone_number')
-        if phone:
-            invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={invitation.invitation_token}"
-            send_whatsapp_invitation_task.delay(
-                invitation_id=invitation.id,
-                phone=phone,
-                first_name=invitation.first_name or "Staff",
-                restaurant_name=invitation.restaurant.name,
-                invite_link=invite_link,
-                support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
-            )
-            whatsapp_success = True
-        
-        if email_success or whatsapp_success:
-            channels = []
-            if email_success:
-                channels.append('email')
-            if whatsapp_success:
-                channels.append('WhatsApp')
-            return Response({'detail': f'Invitation sent via {", ".join(channels)}'})
-        else:
-            return Response(
-                {'detail': 'No contact method available (email or phone)'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        try:
+            invitation = self.get_object()
+            
+            if invitation.is_accepted:
+                return Response(
+                    {'detail': 'Invitation already accepted'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            if invitation.expires_at < timezone.now():
+                # Automatically extend expiry on resend? 
+                invitation.expires_at = timezone.now() + timedelta(days=7)
+                invitation.save()
+            
+            email_success = False
+            whatsapp_success = False
+            
+            # Send email if email address exists
+            if invitation.email:
+                email_success = UserManagementService._send_invitation_email(invitation)
+            
+            # Send WhatsApp if phone number exists
+            phone = (invitation.extra_data or {}).get('phone') or (invitation.extra_data or {}).get('phone_number')
+            if phone:
+                invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={invitation.invitation_token}"
+                send_whatsapp_invitation_task.delay(
+                    invitation_id=str(invitation.id),
+                    phone=phone,
+                    first_name=invitation.first_name or "Staff",
+                    restaurant_name=invitation.restaurant.name,
+                    invite_link=invite_link,
+                    support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
+                )
+                whatsapp_success = True
+            
+            if email_success or whatsapp_success:
+                channels = []
+                if email_success:
+                    channels.append('email')
+                if whatsapp_success:
+                    channels.append('WhatsApp')
+                return Response({'detail': f'Invitation sent via {", ".join(channels)}'})
+            else:
+                return Response(
+                    {'detail': 'No contact method available (email or phone)'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        except Exception as e:
+            logger.error(f"Resend invitation error: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    def destroy(self, request, *args, **kwargs):
+        """Cancel/Delete invitation"""
+        try:
+            instance = self.get_object()
+            logger.info(f"Cancelling invitation {instance.id} for {instance.email or instance.extra_data.get('phone')}")
+            self.perform_destroy(instance)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except Exception as e:
+            logger.error(f"Delete invitation error: {str(e)}")
+            return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['get'])
     def stats(self, request):

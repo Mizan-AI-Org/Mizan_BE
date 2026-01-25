@@ -405,7 +405,6 @@ class UserInvitation(models.Model):
     accepted_at = models.DateTimeField(blank=True, null=True)
     accepted_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='invitations_accepted')
     invited_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='invitations_sent')
-    extra_data = models.JSONField(default=dict, blank=True)
     is_bulk_invite = models.BooleanField(default=False)
     bulk_batch_id = models.CharField(max_length=50, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)

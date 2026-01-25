@@ -47,9 +47,14 @@ def sync_user_to_lua_agent(user, access_token):
         # Get the Lua API key for Authorization header
         lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
         
+        # Normalize mobile number
+        mobile_number = getattr(user, 'phone', None)
+        if mobile_number:
+            mobile_number = ''.join(filter(str.isdigit, mobile_number))
+
         payload = {
             "emailAddress": user.email,
-            "mobileNumber": getattr(user, 'phone', None),
+            "mobileNumber": mobile_number,
             "fullName": f"{user.first_name} {user.last_name}".strip(),
             "restaurantId": str(user.restaurant.id) if user.restaurant else None,
             "restaurantName": user.restaurant.name if user.restaurant else None,

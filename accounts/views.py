@@ -6,7 +6,7 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.shortcuts import get_object_or_404
 from .serializers import (
     CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer,
-    PinLoginSerializer, StaffProfileSerializer, StaffSerializer
+    PinLoginSerializer, StaffProfileSerializer, StaffSerializer, UserSerializer
 )
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
@@ -209,7 +209,7 @@ class RestaurantOwnerSignupView(APIView):
 
         refresh = RefreshToken.for_user(user)
         return Response({
-            'user': CustomUserSerializer(user).data,
+            'user': UserSerializer(user).data,
             'restaurant': restaurant_serializer.data,
             'tokens': {
                 'refresh': str(refresh),
@@ -314,7 +314,7 @@ class LoginView(APIView):
                 pass  # Don't fail login if Lua sync fails
             
             return Response({
-                'user': CustomUserSerializer(authenticated_user).data,
+                'user': UserSerializer(authenticated_user).data,
                 'tokens': {
                     'refresh': str(refresh),
                     'access': access_token,
@@ -382,38 +382,10 @@ class MeView(APIView):
             else:
                 return Response(profile_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
-        # Return updated user data
+        # Return updated user data (refetched for consistency)
+        user.refresh_from_db()
         serializer = UserSerializer(user)
         return Response(serializer.data)
-    
-    def patch(self, request):
-        user = request.user
-        profile_data = request.data.pop('profile', None)
-        
-        # Update user data
-        user_serializer = CustomUserSerializer(user, data=request.data, partial=True)
-        if user_serializer.is_valid():
-            user_serializer.save()
-            
-            # Update or create profile data if provided
-            if profile_data:
-                profile = getattr(user, 'profile', None)
-                if not profile:
-                    # Create profile if it doesn't exist
-                    profile = StaffProfile.objects.create(user=user)
-                
-                profile_serializer = StaffProfileSerializer(profile, data=profile_data, partial=True)
-                if profile_serializer.is_valid():
-                    profile_serializer.save()
-                else:
-                    return Response(profile_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Re-fetch user to get updated data
-            updated_user = CustomUser.objects.get(pk=user.pk)
-            response_serializer = CustomUserSerializer(updated_user)
-            return Response(response_serializer.data)
-        
-        return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class InviteStaffView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
@@ -706,7 +678,7 @@ class AcceptInvitationView(APIView):
             refresh = RefreshToken.for_user(user)
 
             return Response({
-                'user': CustomUserSerializer(user).data,
+                'user': UserSerializer(user).data,
                 'tokens': {
                     'refresh': str(refresh),
                     'access': str(refresh.access_token),
