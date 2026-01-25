@@ -149,6 +149,12 @@ class NotificationService:
 
         return True, channels_used
 
+    def _normalize_phone(self, phone):
+        """Normalize phone number to digits only for Lua Agent."""
+        if not phone:
+            return ""
+        return ''.join(filter(str.isdigit, str(phone)))
+
     # ------------------------------------------------------------------------------------
     # LUA AGENT INTEGRATION
     # ------------------------------------------------------------------------------------
@@ -171,14 +177,14 @@ class NotificationService:
                 "staffName": first_name or "New Staff",
                 "role": role.lower() if role else "staff",
                 "details": {
-                    "phone": phone,
+                    "phone": self._normalize_phone(phone),
                     "inviteLink": invite_link,
                     "restaurantName": restaurant_name,
                     "invitationToken": invitation_token
                 },
                 "timestamp": timezone.now().isoformat()
             }
-            
+
             headers = {
                 "Content-Type": "application/json",
                 "Api-Key": lua_api_key,
@@ -188,6 +194,7 @@ class NotificationService:
             
             logger.info(f"[LuaInvite] Calling webhook for {first_name} at {url}")
             resp = requests.post(url, json=payload, headers=headers, timeout=5)
+
             
             if resp.status_code in (200, 201):
                 return True, resp.json()
@@ -217,7 +224,7 @@ class NotificationService:
                 "staffName": first_name,
                 "role": "server",
                 "details": {
-                    "phoneNumber": phone,
+                    "phoneNumber": self._normalize_phone(phone),
                     "invitationToken": invitation_token,
                     "flowData": flow_data or {}
                 },
@@ -270,6 +277,7 @@ class NotificationService:
                 "role": user_role,
                 "details": {
                     "incidentDescription": description,
+                    "phone": self._normalize_phone(getattr(user, 'phone', None)),
                     **(metadata or {})
                 },
                 "timestamp": timezone.now().isoformat()
