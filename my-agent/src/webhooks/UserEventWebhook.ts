@@ -2,9 +2,6 @@
 import { LuaWebhook, Data, Templates, env } from "lua-cli";
 import { z } from "zod";
 
-// WhatsApp Channel ID for sending templates via Lua
-const WHATSAPP_CHANNEL_ID = "930508853476059";
-
 const userEventWebhook = new LuaWebhook({
     name: "user-events",
     description: "Receives user events from Mizan Backend",
@@ -28,7 +25,7 @@ const userEventWebhook = new LuaWebhook({
 
     execute: async (event: any) => {
         const { headers, body } = event;
-        console.log(`📥 [V3.0.0] Received ${body?.eventType} event`);
+        console.log(`📥 [V3.0.2] Received ${body?.eventType} event`);
 
         // Security: Validate API key
         const expectedKey = env('WEBHOOK_API_KEY');
@@ -60,29 +57,50 @@ const userEventWebhook = new LuaWebhook({
         // Handle staff_invite event - Send WhatsApp template via Lua Templates API
         if (body?.eventType === 'staff_invite') {
             const phone = body.details?.phone;
-            const restaurantName = body.details?.restaurantName;
+            const restaurantName = body.details?.restaurantName || 'Mizan';
             const firstName = body.staffName || "Staff Member";
+            const inviteLink = body.details?.inviteLink || "https://app.heymizan.ai";
 
             if (phone) {
                 console.log(`🚀 Sending WhatsApp invite to ${phone} via Lua Templates API`);
 
+                const channelId = env('WHATSAPP_CHANNEL_ID');
+                if (!channelId) {
+                    console.error("❌ WHATSAPP_CHANNEL_ID not configured in agent environment");
+                    return {
+                        success: false,
+                        error: "WHATSAPP_CHANNEL_ID not configured",
+                        phone: phone
+                    };
+                }
+
                 // Normalize phone: remove all non-digit characters (no + or spaces)
-                // Example: "+220 373 6808" -> "2203736808"
                 const cleanPhone = String(phone).replace(/[^0-9]/g, '');
                 console.log(`📱 Normalized phone: ${cleanPhone}`);
 
                 try {
                     // Send template using Lua's native Templates.whatsapp.send()
+                    // Template components based on src/templates/whatsapp-templates.ts
                     const result = await Templates.whatsapp.send(
-                        WHATSAPP_CHANNEL_ID,
-                        'staff_invitation',  // Template name from Lua Admin
+                        channelId,
+                        'staff_invitation',
                         {
                             phoneNumbers: [cleanPhone],
                             values: {
+                                header: {
+                                    "1": restaurantName
+                                },
                                 body: {
-                                    customer_name: firstName,
-                                    restaurant_name: restaurantName || 'Mizan'
-                                }
+                                    "1": firstName,
+                                    "2": restaurantName
+                                },
+                                buttons: [
+                                    {
+                                        sub_type: 'URL',
+                                        index: '0',
+                                        text: inviteLink
+                                    }
+                                ]
                             }
                         }
                     );
