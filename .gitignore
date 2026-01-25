@@ -53,8 +53,8 @@ node_modules/
 # Localization compiled files
 locale/**/*.mo
 
-# Lua Agent (Exclude from production backend push)
-my-agent/
+# Lua Agent
+# my-agent/ (Un-ignored for dev branch tracking)
 
 # Redis
 dump.rdb
