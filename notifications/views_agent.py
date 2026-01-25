@@ -1,4 +1,4 @@
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework import status
@@ -10,11 +10,13 @@ logger = logging.getLogger(__name__)
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny]) # Authenticated via Agent Key
+@authentication_classes([]) # Bypass global JWT authentication
+@permission_classes([AllowAny]) # Authenticated via Agent Key manually in the view
 def send_whatsapp_from_agent(request):
     """
     Endpoint for Lua Agent to send WhatsApp messages/templates via the backend.
     """
+    logger.info(f"Incoming WhatsApp request from agent. Type: {request.data.get('type', 'text')}")
     try:
         # Validate Agent Key
         auth_header = request.headers.get('Authorization')
@@ -49,6 +51,7 @@ def send_whatsapp_from_agent(request):
                 return Response({'success': False, 'error': 'Body required'}, status=status.HTTP_400_BAD_REQUEST)
                 
             ok, resp = notification_service.send_whatsapp_text(phone, body)
+            logger.info(f"WhatsApp text sent: {ok}")
             return Response({'success': ok, 'provider_response': resp})
             
         else:
