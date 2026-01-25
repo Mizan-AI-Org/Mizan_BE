@@ -133,14 +133,23 @@ TEMPLATES = [
 ]
 
 
+# ---------------------------
+# Database Configuration
+# ---------------------------
+POSTGRES_DB = config('POSTGRES_DB', default=config('DB_NAME', default='mizan'))
+POSTGRES_USER = config('POSTGRES_USER', default=config('DB_USER', default='postgres'))
+POSTGRES_PASSWORD = config('POSTGRES_PASSWORD', default=config('DB_PASSWORD', default=''))
+POSTGRES_HOST = config('POSTGRES_HOST', default=config('DB_HOST', default='localhost'))
+POSTGRES_PORT = config('POSTGRES_PORT', default=config('DB_PORT', default='5432'))
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",
-        "NAME": config('DB_NAME', default=config('POSTGRES_DB', default=os.getenv('POSTGRES_DB'))),
-        "USER": config('DB_USER', default=config('POSTGRES_USER', default=os.getenv('POSTGRES_USER'))),
-        "PASSWORD": config('DB_PASSWORD', default=config('POSTGRES_PASSWORD', default=os.getenv('POSTGRES_PASSWORD'))),
-        "HOST": config('DB_HOST', default=config('POSTGRES_HOST', default=os.getenv('POSTGRES_HOST'))),
-        "PORT": config('DB_PORT', default=config('POSTGRES_PORT', default=os.getenv('POSTGRES_PORT'))),
+        "NAME": POSTGRES_DB,
+        "USER": POSTGRES_USER,
+        "PASSWORD": POSTGRES_PASSWORD,
+        "HOST": POSTGRES_HOST,
+        "PORT": POSTGRES_PORT,
     }
 }
 

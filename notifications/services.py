@@ -216,7 +216,7 @@ class NotificationService:
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
             webhook_id = "7b22cb17-06a4-450f-b527-bfcb9d876c95"  # user-events
-            url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
+            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
             
             payload = {
                 "eventType": "staff_invitation_accepted",
@@ -261,7 +261,7 @@ class NotificationService:
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
             webhook_id = "7b22cb17-06a4-450f-b527-bfcb9d876c95"  # user-events
-            url = f"https://api.heylua.ai/developer/webhooks/{LUA_AGENT_ID}/{webhook_id}"
+            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
             
             # Normalize role for the webhook
             user_role = getattr(user, 'role', 'server')
