@@ -29,7 +29,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production!')
-DEBUG = config('DEBUG', default=True, cast=bool)
+DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'app.heymizan.ai', 'api.heymizan.ai']
 
 # ---------------------------
@@ -339,8 +339,10 @@ OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', f'redis://{REDIS_HOST}:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', f'redis://{REDIS_HOST}:6379/0')
-CELERY_TASK_ALWAYS_EAGER = True
-CELERY_TASK_EAGER_PROPAGATES = True
+# In production, tasks should go to Celery worker (CELERY_TASK_ALWAYS_EAGER=False)
+# In development, tasks can run synchronously (CELERY_TASK_ALWAYS_EAGER=True)
+CELERY_TASK_ALWAYS_EAGER = str_to_bool(os.getenv('CELERY_TASK_ALWAYS_EAGER', 'False'))
+CELERY_TASK_EAGER_PROPAGATES = str_to_bool(os.getenv('CELERY_TASK_EAGER_PROPAGATES', 'False'))
 
 LUA_API_URL = config('LUA_API_URL', default='https://api.heylua.ai')
 LUA_API_KEY = config('LUA_API_KEY', default='')
