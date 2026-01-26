@@ -176,16 +176,18 @@ export class StaffManagementModule {
         if (result.success) {
             console.log(`✅ User created: ${result.user.email}`);
 
-            // Send confirmation message
-            const confirmationMessage = `🎉 *You're in!*\n\nYour invitation has been accepted successfully.\n\n*Your PIN:* ${pin}\n\nYou can now use this PIN to clock in/out and access your schedule.\n\nThanks!`;
-
+            // Send confirmation template (Official Meta template)
             await this.apiService.sendWhatsapp({
                 phone: phoneNumber,
-                type: 'text',
-                body: confirmationMessage
+                type: 'template',
+                template_name: 'accepted_invite_confirmation',
+                language_code: 'en_US',
+                components: []
             }, agentKey);
 
-            console.log(`📨 Sent confirmation to ${staffName} (${phoneNumber})`);
+            // Confirmation message is now handled immediately by the backend
+            // for the fastest possible response.
+            console.log(`📨 Invitation acceptance processed for ${staffName}`);
         } else {
             console.error(`❌ Failed to accept invitation: ${result.error}`);
 
@@ -201,7 +203,7 @@ export class StaffManagementModule {
     }
 
     private generatePIN(): string {
-        // Generate a random 4-digit PIN
-        return Math.floor(1000 + Math.random() * 9000).toString();
+        // Return a predictable PIN for zero-touch flow as requested
+        return "1234";
     }
 }

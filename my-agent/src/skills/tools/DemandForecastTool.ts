@@ -1,4 +1,4 @@
-import { LuaTool } from "lua-cli";
+import { LuaTool, User } from "lua-cli";
 import { z } from "zod";
 import ApiService from "../../services/ApiService";
 
@@ -17,20 +17,31 @@ export default class DemandForecastTool implements LuaTool {
         this.apiService = apiService || new ApiService();
     }
 
-    async execute(input: z.infer<typeof this.inputSchema>, context?: any) {
+    async execute(input: z.infer<typeof this.inputSchema>) {
+        const user = await User.get();
+        if (!user) {
+            return { status: "error", message: "I can't access your account context right now. Please try again in a moment." };
+        }
+        const userData = (user as any).data || {};
+        const profile = (user as any)._luaProfile || {};
+
         const restaurantId =
             input.restaurantId ||
-            (context?.get ? context.get("restaurantId") : undefined) ||
-            context?.user?.data?.restaurantId;
+            user.restaurantId ||
+            userData.restaurantId ||
+            profile.restaurantId;
 
         const token =
-            context?.metadata?.token ||
-            (context?.get ? context.get("token") : undefined) ||
-            context?.user?.data?.token ||
-            context?.user?.token;
+            user.token ||
+            userData.token ||
+            profile.token ||
+            profile.accessToken ||
+            profile.credentials?.accessToken;
+
+        console.log(`[DemandForecastTool] V7 Context debug: restaurantId=${!!restaurantId}, token=${!!token}`);
 
         if (!restaurantId || !token) {
-            return { status: "error", message: "No restaurant context found. Please ensure you are logged in." };
+            return { status: "error", message: "[V7 DIAGNOSTIC] No restaurant context found. (Keys: " + Object.keys(userData).join(',') + ")" };
         }
 
         try {

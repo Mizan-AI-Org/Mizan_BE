@@ -29,12 +29,12 @@ Extract the user's full name, restaurant name, and role from the context you hav
         role: z.string().optional().describe("The user's role (e.g., 'OWNER', 'MANAGER')"),
     });
 
-    async execute(input: z.infer<typeof this.inputSchema>, context?: any) {
-        console.log("[IdentityResolution] Capturing identity:", input);
+    async execute(input: z.infer<typeof this.inputSchema>) {
+        console.log("[IdentityResolution] V7 Capturing identity:", input);
 
         try {
-            // Get the current user from context if available
-            const user = context?.user;
+            // Use User.get() as discovered in the library source
+            const user = await User.get();
 
             if (user) {
                 // Persist the identity to user.data
@@ -44,10 +44,8 @@ Extract the user's full name, restaurant name, and role from the context you hav
                 user.role = input.role || 'OWNER';
                 user.identityVerifiedAt = new Date().toISOString();
 
-                if (user.save) {
-                    await user.save();
-                    console.log(`[IdentityResolution] ✅ Identity persisted for ${input.fullName} @ ${input.restaurantName}`);
-                }
+                await user.save();
+                console.log(`[IdentityResolution] ✅ Identity persisted for ${input.fullName} @ ${input.restaurantName}`);
             }
 
             return {

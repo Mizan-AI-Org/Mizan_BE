@@ -73,7 +73,8 @@ const userAuthWebhook = new LuaWebhook({
         // Metadata including token
         metadata: z.object({
             token: z.string().optional(),
-            userId: z.string().optional()
+            userId: z.string().optional(),
+            sessionId: z.string().optional(),
         }).optional()
     }).refine(data => data.emailAddress || data.mobileNumber, {
         message: "Either emailAddress or mobileNumber is required"
@@ -82,102 +83,75 @@ const userAuthWebhook = new LuaWebhook({
     execute: async ({ headers, body }) => {
         console.log(`🔐 [UserAuth] Processing auth for: ${body.emailAddress || body.mobileNumber}`);
 
-        // Validate API key
-        const expectedKey = env('WEBHOOK_API_KEY');
-        if (!expectedKey) {
-            throw new Error('WEBHOOK_API_KEY not configured');
-        }
+        // Validate API key (backend default matches `mizan-backend/accounts/services.py`)
+        const expectedKey =
+            env('WEBHOOK_API_KEY') ||
+            env('LUA_WEBHOOK_API_KEY') ||
+            'mizan-agent-webhook-secret-2026';
         if (!headers || headers['x-api-key'] !== expectedKey) {
             throw new Error('Unauthorized: Invalid API key');
         }
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // IMPLEMENTATION: Requires User.create() API (NOT YET AVAILABLE)
-        // ═══════════════════════════════════════════════════════════════════════
-        //
-        // When lua-cli adds User.create(), uncomment and use this implementation:
-        //
-        // Proposed User.create() API signature:
-        //   User.create({
-        //     emailAddress?: string,   // User's email address
-        //     mobileNumber?: string,   // User's phone number (E.164 format)
-        //     fullName?: string        // Optional display name
-        //   }): Promise<UserDataInstance>
-        //
-        // The API should:
-        //   - Create user if not exists (by emailAddress or mobileNumber)
-        //   - Return existing user if already exists
-        //   - Return the UserDataInstance for further modifications
+        // We can't create Lua users yet (no User.create()), but we *can* update an existing one.
+        // The frontend provides a deterministic `sessionId`; backend passes it in `metadata.sessionId`.
+        const tokenFromBackend = body.metadata?.token;
+        const sessionId = body.metadata?.sessionId;
 
-        /*
-        try {
-            // Create or get existing user by emailAddress/mobileNumber
-            const user = await User.create({
-                emailAddress: body.emailAddress,
-                mobileNumber: body.mobileNumber,
-                fullName: body.fullName
-            });
+        const normalizedMobile = (body.mobileNumber || '').replace(/[^\d+]/g, '');
 
-            // Set tenant context on the returned user instance
-            user.restaurantId = body.restaurantId;
-            user.restaurantName = body.restaurantName;
-            user.role = body.role;
-            user.permissions = body.permissions || [];
-            user.lastAuthAt = new Date().toISOString();
-            
-            // Store any additional metadata
-            if (body.metadata) {
-                user.metadata = body.metadata;
+        const candidates = [
+            sessionId,
+            body.emailAddress ? `email:${body.emailAddress}` : undefined,
+            body.emailAddress,
+            normalizedMobile ? `phone:${normalizedMobile}` : undefined,
+            normalizedMobile ? `whatsapp:${normalizedMobile}` : undefined,
+        ].filter(Boolean) as string[];
+
+        console.log(`[UserAuth] Attempting to locate Lua user. Candidates: ${candidates.join(' | ')}`);
+
+        let foundUid: string | null = null;
+        let luaUser: any = null;
+
+        for (const uid of candidates) {
+            try {
+                const maybe = await User.get(uid);
+                if (maybe) {
+                    luaUser = maybe;
+                    foundUid = uid;
+                    break;
+                }
+            } catch {
+                // Try next candidate
             }
-
-            // Persist changes
-            await user.save();
-
-            console.log(`✅ [UserAuth] User provisioned: ${user.id} @ ${body.restaurantName}`);
-
-            return {
-                success: true,
-                userId: user.id,
-                restaurantId: body.restaurantId,
-                message: `User ${body.emailAddress || body.mobileNumber} linked to ${body.restaurantName}`
-            };
-        } catch (error) {
-            console.error(`❌ [UserAuth] Failed to provision user:`, error);
-            throw error;
         }
-        */
 
-        // ═══════════════════════════════════════════════════════════════════════
-        // TEMPORARY: Return info about what would be created
-        // ═══════════════════════════════════════════════════════════════════════
-        // 
-        // Until User.create() is available, this webhook logs the request and
-        // returns a placeholder response. The actual user provisioning won't happen.
-        //
-        // WORKAROUND: Use the runtimeContext approach instead (see TenantContextPreprocessor.ts)
+        if (!luaUser) {
+            console.warn(`[UserAuth] No Lua user found to update (user likely hasn't opened chat yet).`);
+            return { success: false, pending: true, reason: "Lua user not found", candidates };
+        }
 
-        console.log(`⏳ [UserAuth] User.create() not yet available - logging request only`);
-        console.log(`   Would create/update user:`, {
-            identifier: body.emailAddress || body.mobileNumber,
-            fullName: body.fullName,
-            restaurant: `${body.restaurantName} (${body.restaurantId})`,
-            role: body.role
-        });
-
-        return {
-            success: false,
-            pending: true,
-            reason: "User.create() API not yet available in lua-cli",
-            workaround: "Use runtimeContext approach instead - pass context via LuaPop.init() or HTTP API",
-            requestedUser: {
-                emailAddress: body.emailAddress,
-                mobileNumber: body.mobileNumber,
-                fullName: body.fullName,
-                restaurantId: body.restaurantId,
-                restaurantName: body.restaurantName,
-                role: body.role
-            }
+        const nextData = {
+            ...(luaUser.data || {}),
+            restaurantId: body.restaurantId,
+            restaurantName: body.restaurantName,
+            role: body.role,
+            permissions: body.permissions || [],
+            userId: body.metadata?.userId,
+            token: tokenFromBackend || (luaUser.data || {}).token,
+            lastAuthAt: new Date().toISOString(),
         };
+
+        luaUser.data = nextData;
+        luaUser.restaurantId = body.restaurantId;
+        luaUser.restaurantName = body.restaurantName;
+        luaUser.role = body.role;
+        if (tokenFromBackend) luaUser.token = tokenFromBackend;
+
+        await luaUser.save();
+
+        console.log(`✅ [UserAuth] Updated Lua user (${foundUid}) with tenant context + token=${!!tokenFromBackend}`);
+
+        return { success: true, updatedUid: foundUid, restaurantId: body.restaurantId, hasToken: !!tokenFromBackend };
     }
 });
 

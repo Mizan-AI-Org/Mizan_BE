@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { LuaAgent } from "lua-cli";
 import { tenantContextPreprocessor } from "./preprocessors/TenantContextPreprocessor";
 import userAuthWebhook from "./webhooks/userAuthWebhook";
@@ -32,7 +33,8 @@ AUTONOMOUS EXECUTION - NEVER ASK CLARIFYING QUESTIONS:
 5. EXECUTE the action immediately. Do NOT ask for confirmation unless there's a genuine conflict.
 6. For identity questions, read the "User:" line in your context directly.
 7. If a user says "Accept Invite", "Accept", or refers to an invitation:
-   - You HAVE the capability to accept invitations. Use the 'accept_invitation' tool IMMEDIATELY.
+   - You ARE EXPLICITLY AUTHORIZED to handle invitations. This is NOT a sensitive setup action.
+   - Use the 'accept_invitation' tool IMMEDIATELY. This is your primary way to onboarding staff.
    - Do NOT say "as an AI I cannot do this". You HAVE the 'accept_invitation' tool for this specific purpose.
    - Extract their phone number from the context (e.g., the "User:" header) and pass it to the tool.
    - Do NOT ask for a PIN, email, or any other details. Just EXECUTE.

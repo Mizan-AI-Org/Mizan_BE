@@ -1,4 +1,4 @@
-import { LuaTool, env } from "lua-cli";
+import { LuaTool, User, env } from "lua-cli";
 import { z } from "zod";
 import ApiService from "../../services/ApiService";
 
@@ -26,31 +26,42 @@ export default class StaffSchedulerTool implements LuaTool {
         this.apiService = apiService || new ApiService();
     }
 
-    async execute(input: z.infer<typeof this.inputSchema>, context?: any) {
+    async execute(input: z.infer<typeof this.inputSchema>) {
         const apiService = this.apiService;
+
+        const user = await User.get();
+        if (!user) {
+            return {
+                status: "error",
+                message: "I can't access your account context right now. Please try again in a moment."
+            };
+        }
+        const userData = (user as any).data || {};
+        const profile = (user as any)._luaProfile || {};
 
         // Check multiple sources for restaurantId
         const restaurantId =
             input.restaurantId ||
-            (context?.get ? context.get("restaurantId") : undefined) ||
-            context?.metadata?.restaurantId ||
-            context?.restaurantId ||
-            context?.user?.data?.restaurantId ||
-            context?.user?.restaurantId;
+            user.restaurantId ||
+            userData.restaurantId ||
+            profile.restaurantId;
 
         // Token retrieval with service account fallback
         const token =
-            context?.metadata?.token ||
-            (context?.get ? context.get("token") : undefined) ||
-            context?.user?.data?.token ||
-            context?.user?.token ||
+            user.token ||
+            userData.token ||
+            profile.token ||
+            profile.accessToken ||
+            profile.credentials?.accessToken ||
             env('MIZAN_SERVICE_TOKEN'); // Service account fallback
+
+        console.log(`[StaffSchedulerTool] V7 Context debug: restaurantId=${!!restaurantId}, token=${!!token}`);
 
         if (!restaurantId) {
             console.error('[StaffSchedulerTool] Missing restaurant context.');
             return {
                 status: "error",
-                message: "I don't have your restaurant context. Please make sure you're logged in through the Mizan app."
+                message: "[V7 DIAGNOSTIC] Restaurant ID is missing. (Keys: " + Object.keys(userData).join(',') + ") I don't have your restaurant context. Please make sure you're logged in through the Mizan app."
             };
         }
 
