@@ -3,17 +3,35 @@ from django.conf import settings
 from django.utils import timezone
 from .models import UserInvitation, InvitationDeliveryLog
 from notifications.services import notification_service
+import sys
+
+
+def normalize_phone(phone):
+    """Normalize phone to digits only (no +, spaces, dashes)."""
+    if not phone:
+        return ""
+    return ''.join(filter(str.isdigit, str(phone)))
+
 
 @shared_task
 def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_name, invite_link, support_contact):
-    # Delegate to Lua Agent
+    """Send WhatsApp invitation via Lua Agent webhook."""
+    print(f"[Task] send_whatsapp_invitation_task started for {first_name} ({phone})", file=sys.stderr)
+    
+    # Normalize phone number: digits only, no + or spaces
+    phone = normalize_phone(phone)
+    print(f"[Task] Normalized phone: {phone}", file=sys.stderr)
+    
     try:
         invitation = UserInvitation.objects.get(id=invitation_id)
         token = invitation.invitation_token
         role = invitation.role
     except UserInvitation.DoesNotExist:
+        print(f"[Task] ERROR: Invitation {invitation_id} not found", file=sys.stderr)
         return
 
+    print(f"[Task] Calling Lua webhook for invitation {token[:8]}...", file=sys.stderr)
+    
     ok, info = notification_service.send_lua_staff_invite(
         invitation_token=token,
         phone=phone,
@@ -22,20 +40,22 @@ def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_n
         invite_link=invite_link,
         role=role
     )
+    
+    print(f"[Task] Lua webhook result: ok={ok}, info={info}", file=sys.stderr)
+    
     try:
-        # already fetched above, but for safety in case of refactor
         log = InvitationDeliveryLog(
             invitation=invitation,
             channel='whatsapp',
             recipient_address=phone,
             status='SENT' if ok else 'FAILED',
-
             external_id=(info or {}).get('eventId'),
             response_data=info or {},
         )
         log.save()
-    except UserInvitation.DoesNotExist:
-        pass
+        print(f"[Task] Delivery log saved: {log.status}", file=sys.stderr)
+    except Exception as e:
+        print(f"[Task] ERROR saving delivery log: {e}", file=sys.stderr)
 
 @shared_task
 def retry_failed_whatsapp_invites():

@@ -56,7 +56,7 @@ INSTALLED_APPS = [
 
     # Local apps
     'attendance', # Attendance module app
-    'accounts',
+    'accounts.apps.AccountsConfig',  # Use AppConfig to ensure signals are loaded
     'dashboard',
     'scheduling',
     'timeclock',

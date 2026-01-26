@@ -1,4 +1,5 @@
 from django.apps import AppConfig
+import sys
 
 
 class AccountsConfig(AppConfig):
@@ -8,5 +9,8 @@ class AccountsConfig(AppConfig):
     def ready(self):
         try:
             import accounts.signals  # noqa: F401
-        except Exception:
-            pass
+            print("[AccountsConfig] Signals loaded successfully", file=sys.stderr)
+        except Exception as e:
+            print(f"[AccountsConfig] ERROR loading signals: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
