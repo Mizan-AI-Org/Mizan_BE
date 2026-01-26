@@ -89,8 +89,10 @@ const userEventWebhook = new LuaWebhook({
                     }
 
                     console.log(`🚀 Sending WhatsApp template '${template.name}' (ID: ${template.id}) to ${cleanPhone}`);
+                    console.log(`📋 Template variables: firstName=${firstName}, restaurantName=${restaurantName}, inviteLink=${inviteLink}`);
 
                     // Send template using the explicit template ID
+                    // Try both named variables and numbered placeholders for compatibility
                     const result = await Templates.whatsapp.send(
                         channelId,
                         template.id,
@@ -98,9 +100,15 @@ const userEventWebhook = new LuaWebhook({
                             phoneNumbers: [cleanPhone],
                             values: {
                                 body: {
-                                    "cutomer_name": firstName, // Note: Typo 'cutomer' preserved from template
+                                    // Named variables (if template uses names)
+                                    "cutomer_name": firstName,
+                                    "customer_name": firstName,
                                     "restaurant_name": restaurantName,
-                                    "invite_link": inviteLink
+                                    "invite_link": inviteLink,
+                                    // Numbered placeholders (if template uses {{1}}, {{2}}, {{3}})
+                                    "1": firstName,
+                                    "2": restaurantName,
+                                    "3": inviteLink
                                 }
                             }
                         }
