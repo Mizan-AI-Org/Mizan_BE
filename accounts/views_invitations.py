@@ -25,6 +25,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def normalize_phone(phone):
+    """
+    Normalize phone number to digits only (no +, spaces, or dashes).
+    Format: 2203736808 (country code + local number, no +)
+    """
+    if not phone:
+        return ""
+    return ''.join(filter(str.isdigit, str(phone)))
+
+
 class StandardResultsSetPagination(pagination.PageNumberPagination):
     page_size = 10
     page_size_query_param = 'page_size'
@@ -246,10 +256,14 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 # WhatsApp invitation - return token for frontend to generate link
                 # AND trigger the background task to send the message
                 if phone:
+                    # Normalize phone: digits only, no + or spaces (e.g., "2203736808")
+                    clean_phone = normalize_phone(phone)
+                    print(f"[Invitation] Sending WhatsApp to {clean_phone} (raw: {phone})", file=sys.stderr)
+                    
                     invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
                     send_whatsapp_invitation_task.delay(
                         invitation_id=str(invitation.id),
-                        phone=phone,
+                        phone=clean_phone,
                         first_name=invitation.first_name,
                         restaurant_name=restaurant.name,
                         invite_link=invite_link,
@@ -261,7 +275,7 @@ class InvitationViewSet(viewsets.ModelViewSet):
                     InvitationDeliveryLog.objects.create(
                         invitation=invitation,
                         channel='whatsapp',
-                        recipient_address=phone,
+                        recipient_address=clean_phone,
                         status='PENDING'
                     )
 
@@ -398,12 +412,16 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 email_success = UserManagementService._send_invitation_email(invitation)
             
             # Send WhatsApp if phone number exists
-            phone = (invitation.extra_data or {}).get('phone') or (invitation.extra_data or {}).get('phone_number')
-            if phone:
+            raw_phone = (invitation.extra_data or {}).get('phone') or (invitation.extra_data or {}).get('phone_number')
+            if raw_phone:
+                # Normalize phone: digits only, no + or spaces (e.g., "2203736808")
+                clean_phone = normalize_phone(raw_phone)
+                print(f"[Resend] Sending WhatsApp to {clean_phone} (raw: {raw_phone})", file=sys.stderr)
+                
                 invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={invitation.invitation_token}"
                 send_whatsapp_invitation_task.delay(
                     invitation_id=str(invitation.id),
-                    phone=phone,
+                    phone=clean_phone,
                     first_name=invitation.first_name or "Staff",
                     restaurant_name=invitation.restaurant.name,
                     invite_link=invite_link,
@@ -416,7 +434,7 @@ class InvitationViewSet(viewsets.ModelViewSet):
                     invitation=invitation,
                     channel='whatsapp',
                     defaults={
-                        'recipient_address': phone,
+                        'recipient_address': clean_phone,
                         'status': 'PENDING',
                         'sent_at': timezone.now()
                     }
