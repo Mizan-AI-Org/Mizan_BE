@@ -3,42 +3,64 @@ from django.dispatch import receiver
 from django.conf import settings
 from .models import UserInvitation, InvitationDeliveryLog
 from notifications.services import notification_service
+import logging
+import sys
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_phone(phone):
+    """
+    Normalize phone number to digits only (no +, spaces, or dashes).
+    Format: 2203736808 (country code + local number, no +)
+    """
+    if not phone:
+        return ""
+    return ''.join(filter(str.isdigit, str(phone)))
+
 
 @receiver(post_save, sender=UserInvitation)
 def auto_send_whatsapp_invite(sender, instance: UserInvitation, created, **kwargs):
+    """Automatically send WhatsApp invitation when a new UserInvitation is created."""
     if not created:
         return
-        
-    import logging
-    logger = logging.getLogger(__name__)
     
     try:
-        if not getattr(settings, 'AUTO_WHATSAPP_INVITES', False):
+        auto_whatsapp = getattr(settings, 'AUTO_WHATSAPP_INVITES', True)
+        print(f"[Signal] AUTO_WHATSAPP_INVITES = {auto_whatsapp}", file=sys.stderr)
+        
+        if not auto_whatsapp:
             logger.info(f"Skipping WhatsApp invite for {instance.email}: AUTO_WHATSAPP_INVITES is False")
             return
 
         extra_data = instance.extra_data or {}
-        # Try all possible keys for phone
-        phone = extra_data.get('phone') or extra_data.get('phone_number') or extra_data.get('whatsapp') or getattr(instance, 'phone', None)
         
-        # Strip whitespace and check if it's there
-        if phone:
-            phone = str(phone).strip()
+        # Try all possible keys for phone
+        raw_phone = (
+            extra_data.get('phone') or 
+            extra_data.get('phone_number') or 
+            extra_data.get('whatsapp') or 
+            getattr(instance, 'phone', None)
+        )
+        
+        # Normalize phone: digits only, no + or spaces (e.g., "2203736808")
+        phone = normalize_phone(raw_phone)
+        
+        print(f"[Signal] Raw phone: {raw_phone} -> Normalized: {phone}", file=sys.stderr)
 
         if not phone:
             logger.warning(f"No phone number found for invitation {instance.id} (email: {instance.email})")
             return
 
         invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={instance.invitation_token}"
-        delay = int(getattr(settings, 'WHATSAPP_INVITE_DELAY_SECONDS', 0))
-        
-        first_name = instance.first_name or "Staff" # Fallback for template
+        first_name = instance.first_name or "Staff"
         restaurant_name = instance.restaurant.name if instance.restaurant else "Mizan AI"
 
-        logger.info(f"Triggering WhatsApp invite for {instance.email} to {phone} (delay: {delay}s)")
+        print(f"[Signal] Triggering WhatsApp invite for {first_name} to {phone}", file=sys.stderr)
+        logger.info(f"[Signal] Triggering WhatsApp invite for {instance.email} to {phone}")
 
         from .tasks import send_whatsapp_invitation_task
-        send_whatsapp_invitation_task.delay(
+        result = send_whatsapp_invitation_task.delay(
             invitation_id=str(instance.id),
             phone=phone,
             first_name=first_name,
@@ -46,6 +68,9 @@ def auto_send_whatsapp_invite(sender, instance: UserInvitation, created, **kwarg
             invite_link=invite_link,
             support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
         )
+        
+        print(f"[Signal] Task queued with ID: {result.id}", file=sys.stderr)
+        
         InvitationDeliveryLog.objects.create(
             invitation=instance,
             channel='whatsapp',
@@ -54,4 +79,5 @@ def auto_send_whatsapp_invite(sender, instance: UserInvitation, created, **kwarg
         )
             
     except Exception as e:
+        print(f"[Signal] ERROR: {str(e)}", file=sys.stderr)
         logger.error(f"Error in auto_send_whatsapp_invite: {str(e)}", exc_info=True)
