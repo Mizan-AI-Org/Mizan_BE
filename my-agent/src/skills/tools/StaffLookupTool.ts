@@ -1,4 +1,4 @@
-import { LuaTool } from "lua-cli";
+import { LuaTool, User } from "lua-cli";
 import { z } from "zod";
 import ApiService from "../../services/ApiService";
 
@@ -18,27 +18,35 @@ export default class StaffLookupTool implements LuaTool {
         this.apiService = apiService || new ApiService();
     }
 
-    async execute(input: z.infer<typeof this.inputSchema>, context?: any) {
+    async execute(input: z.infer<typeof this.inputSchema>) {
+        const user = await User.get();
+        if (!user) {
+            return { status: "error", message: "I can't access your account context right now. Please try again in a moment." };
+        }
+        const userData = (user as any).data || {};
+        const profile = (user as any)._luaProfile || {};
+
         const restaurantId =
             input.restaurantId ||
-            (context?.get ? context.get("restaurantId") : undefined) ||
-            context?.user?.data?.restaurantId ||
-            context?.metadata?.restaurantId;
+            user.restaurantId ||
+            userData.restaurantId ||
+            profile.restaurantId;
 
         const token =
-            context?.metadata?.token ||
-            (context?.get ? context.get("token") : undefined) ||
-            context?.user?.data?.token ||
-            context?.user?.token ||
+            user.token ||
+            userData.token ||
+            profile.token ||
+            profile.accessToken ||
+            profile.credentials?.accessToken ||
             process.env.MIZAN_SERVICE_TOKEN; // Fallback to service token
 
-        console.log(`[StaffLookupTool] Context debug: restaurantId=${!!restaurantId}, token=${!!token}, source=${token ? (context?.metadata?.token ? 'metadata' : context?.user?.data?.token ? 'user.data' : 'env') : 'none'}`);
+        console.log(`[StaffLookupTool] V7 Context debug: restaurantId=${!!restaurantId}, token=${!!token}`);
 
         if (!restaurantId) {
-            return { status: "error", message: "No restaurant ID found in context. Make sure you're logged into a restaurant." };
+            return { status: "error", message: "[V7 DIAGNOSTIC] No restaurant ID found in context. (Keys: " + Object.keys(userData).join(',') + ")" };
         }
         if (!token) {
-            return { status: "error", message: "No authentication token found. Please log in again or contact support." };
+            return { status: "error", message: "[V7 DIAGNOSTIC] No authentication token found. (Keys: " + Object.keys(userData).join(',') + ")" };
         }
 
         try {

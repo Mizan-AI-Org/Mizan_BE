@@ -39,10 +39,11 @@ export const tenantContextPreprocessor = new PreProcessor({
     priority: 100, // Run LATE in the pipeline to ensure our modifications stick
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
-        console.log("[TenantContext] Processing request", {
+        console.log("[TenantContext] V8 Processing request", {
             uid: user.uid,
             channel,
             hasUserData: !!user.data,
+            dataKeys: user.data ? Object.keys(user.data).join(',') : 'none',
             hasLuaProfile: !!(user as any)._luaProfile
         });
 
@@ -57,46 +58,69 @@ export const tenantContextPreprocessor = new PreProcessor({
             luaProfile.sessionToken;
 
         if (sessionToken && user.data?.token !== sessionToken) {
-            console.log(`[TenantContext] 🔐 Syncing token to user.data (length: ${sessionToken.length})`);
+            console.log(`[TenantContext] 🔐 Syncing token to user.data and instance (length: ${sessionToken.length})`);
             user.data = { ...user.data, token: sessionToken };
+            // Also sync directly to the user instance for maximum tool compatibility
+            (user as any).token = sessionToken;
+        } else if (!sessionToken) {
+            console.warn(`[TenantContext] ⚠️ No sessionToken (accessToken/token/sessionToken) found in profile.`);
         }
 
-        // 1. Detect context from messages (specifically the first one where runtimeContext sits)
+        // 1. Detect context from ALL messages (in case it's not the first one)
         let detectedRestaurantId = user.data?.restaurantId;
         let detectedRestaurantName = user.data?.restaurantName;
+        let detectedToken = user.data?.token;
 
-        const firstMessage = messages[0];
-        if (firstMessage && firstMessage.type === 'text') {
-            const text = firstMessage.text;
-            // Enhanced regex for: "Restaurant: Name (ID: id)", "User: Full Name (ID: id)", "Role: RO_LE"
-            const restaurantMatch = text.match(/Restaurant:\s*([^(\n]+?)\s*\(ID:\s*([^)]+?)\)/i);
-            const userMatch = text.match(/User:\s*([^(\n]+?)\s*\(ID:\s*([^)]+?)\)/i);
-            const roleMatch = text.match(/Role:\s*([^,)\n]+)/i);
-            const tokenMatch = text.match(/Token:\s*([^,)\n]+)/i);
+        for (const msg of messages) {
+            if (msg.type === 'text') {
+                const text = msg.text;
+                // Flexible regex for different formats
+                const restaurantMatch = text.match(/Restaurant:\s*([^(\n]+?)\s*\(ID:\s*([^)]+?)\)/i) || text.match(/RestaurantID:\s*([^,\n]+)/i);
+                const userMatch = text.match(/User:\s*([^(\n]+?)\s*\(ID:\s*([^)]+?)\)/i);
+                // JWT tokens can be very long and may be followed by commas in runtimeContext
+                // Match "Token: <jwt>" where jwt is base64url encoded (A-Za-z0-9-_ and .)
+                // Capture until we hit a comma, closing paren, newline, or end of line
+                const tokenMatch = text.match(/Token:\s*([A-Za-z0-9\-_\.]+(?:\.[A-Za-z0-9\-_\.]+)*)/i) || 
+                                   text.match(/accessToken:\s*([A-Za-z0-9\-_\.]+(?:\.[A-Za-z0-9\-_\.]+)*)/i);
 
-            if (restaurantMatch) {
-                detectedRestaurantName = restaurantMatch[1].trim();
-                detectedRestaurantId = restaurantMatch[2].trim();
-                console.log(`[TenantContext] 🏢 Detected Restaurant: ${detectedRestaurantName} (${detectedRestaurantId})`);
-                user.data = { ...user.data, restaurantId: detectedRestaurantId, restaurantName: detectedRestaurantName };
-            }
-            if (userMatch) {
-                const userName = userMatch[1].trim();
-                const userId = userMatch[2].trim();
-                console.log(`[TenantContext] 👤 Detected User: ${userName} (${userId})`);
-                user.data = { ...user.data, userName, userId };
-            }
-            if (roleMatch) {
-                const role = roleMatch[1].trim();
-                user.data = { ...user.data, role };
-            }
-            if (tokenMatch) {
-                // Support both "Token: <token>" and potential variations
-                const token = tokenMatch[1].trim();
-                if (token && token !== "undefined" && token !== "null" && user.data?.token !== token) {
-                    console.log(`[TenantContext] 🔑 Detected Token from message context (length: ${token.length})`);
-                    user.data = { ...user.data, token };
+                if (restaurantMatch) {
+                    detectedRestaurantName = restaurantMatch[1].trim();
+                    detectedRestaurantId = restaurantMatch[2] ? restaurantMatch[2].trim() : detectedRestaurantName;
+                    console.log(`[TenantContext] 🏢 Detected Restaurant: ${detectedRestaurantName} (${detectedRestaurantId})`);
                 }
+                if (userMatch) {
+                    const userName = userMatch[1].trim();
+                    const userId = userMatch[2].trim();
+                    console.log(`[TenantContext] 👤 Detected User: ${userName} (${userId})`);
+                    user.data = { ...user.data, userName, userId };
+                }
+                if (tokenMatch && tokenMatch[1]) {
+                    const t = tokenMatch[1].trim();
+                    if (t && t !== "undefined" && t !== "null" && t.length > 50) {
+                        // JWT tokens are typically 100+ characters, so this filters out false matches
+                        detectedToken = t;
+                        console.log(`[TenantContext] 🔑 Detected JWT Token from message (length: ${t.length})`);
+                    }
+                }
+            }
+        }
+
+        if (detectedRestaurantId) user.data = { ...user.data, restaurantId: detectedRestaurantId, restaurantName: detectedRestaurantName };
+        if (detectedToken) {
+            user.data = { ...user.data, token: detectedToken };
+            (user as any).token = detectedToken;
+            console.log(`[TenantContext] ✅ Token saved to user.data.token (length: ${detectedToken.length})`);
+        }
+
+        // Always save token if we have it, even if restaurant isn't detected yet
+        if (detectedToken && (!user.data?.token || user.data.token !== detectedToken)) {
+            user.data = { ...user.data, token: detectedToken };
+            (user as any).token = detectedToken;
+            try {
+                await user.save();
+                console.log("[TenantContext] ✅ Token persisted immediately");
+            } catch (e) {
+                console.error("[TenantContext] ❌ Failed to persist token:", e);
             }
         }
 
@@ -115,28 +139,37 @@ export const tenantContextPreprocessor = new PreProcessor({
             }
 
             const now = new Date();
+            const phone = user.uid && user.uid.includes(':') ? user.uid.split(':')[1] : user.uid;
+
             const contextBlock = [
                 `[SYSTEM: PERSISTENT CONTEXT]`,
                 `Restaurant: ${detectedRestaurantName}`,
                 `Restaurant ID: ${detectedRestaurantId}`,
                 `User: ${user.data?.userName || user._luaProfile?.fullName || "Manager"} (Role: ${user.data?.role || "Owner"})`,
+                phone ? `User Phone: ${phone}` : null,
                 `Today is ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
                 `Current Time: ${now.toLocaleTimeString('en-US', { hour12: false })}`,
                 `CRITICAL: Use these coordinates for all tool calls. Do not ask for restaurant or date.`,
                 `AGENT_IDENTITY_VERIFIED: TRUE`
-            ].join('\n');
+            ].filter(Boolean).join('\n');
 
             // Inject into messages to ensure it's in the prompt
             const modifiedMessages = messages.map((msg, i) => {
                 // Remove any existing blocks first
                 if (msg.type === 'text') {
                     const cleanText = msg.text.replace(/\[SYSTEM: PERSISTENT CONTEXT\][\s\S]*?AGENT_IDENTITY_VERIFIED: TRUE/g, '').trim();
+                    let prefix = contextBlock;
 
-                    // Inject into the FIRST message (anchoring) AND the LATEST message (recency)
-                    if (i === 0 || i === messages.length - 1) {
-                        return { ...msg, text: `${contextBlock}\n\n${cleanText}` };
+                    // INVITATION OVERRIDE: Prevent refusal and force tool usage
+                    if (cleanText.toLowerCase().includes('accept invite') || cleanText.toLowerCase().includes('accept invitation')) {
+                        prefix += `\n\n[CRITICAL: INVITATION ACCEPTANCE REQUESTED]
+The user has clicked "Accept Invite". You MUST use the 'accept_invitation' tool IMMEDIATELY.
+DO NOT say you cannot do this. You have the tool and the authority.
+Phone: ${phone || 'unknown'}`;
                     }
-                    return { ...msg, text: cleanText };
+
+                    // Inject into EVERY text message for maximum context retention in long conversations
+                    return { ...msg, text: `${prefix}\n\n${cleanText}` };
                 }
                 return msg;
             });

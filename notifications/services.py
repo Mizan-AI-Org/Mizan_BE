@@ -168,7 +168,7 @@ class NotificationService:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"  # user-events production
+            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"  # user-events-production production
             url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
             if not url:
                 url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
@@ -189,6 +189,7 @@ class NotificationService:
 
             headers = {
                 "Content-Type": "application/json",
+                "Authorization": f"Bearer {lua_api_key}",
                 "Api-Key": lua_api_key,
                 "x-api-key": LUA_WEBHOOK_API_KEY,
                 "x-role": "manager"
@@ -217,7 +218,7 @@ class NotificationService:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "7b22cb17-06a4-450f-b527-bfcb9d876c95"  # user-events
+            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"  # user-events-production
             url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
             
             payload = {
@@ -235,6 +236,7 @@ class NotificationService:
             
             headers = {
                 "Content-Type": "application/json",
+                "Authorization": f"Bearer {lua_api_key}",
                 "Api-Key": lua_api_key,
                 "x-api-key": LUA_WEBHOOK_API_KEY,
                 "x-role": "manager"
@@ -262,7 +264,7 @@ class NotificationService:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "7b22cb17-06a4-450f-b527-bfcb9d876c95"  # user-events
+            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"  # user-events-production
             url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
             
             # Normalize role for the webhook
@@ -287,6 +289,7 @@ class NotificationService:
             
             headers = {
                 "Content-Type": "application/json",
+                "Authorization": f"Bearer {lua_api_key}",
                 "Api-Key": lua_api_key,
                 "x-api-key": LUA_WEBHOOK_API_KEY,
                 "x-role": user_role

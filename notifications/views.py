@@ -649,6 +649,13 @@ def whatsapp_webhook(request):
                                                 invitation.first_name = entered_name
                                                 invitation.save(update_fields=['first_name'])
                                             
+                                            # IMMEDIATE FOLLOW-UP (Requested by user)
+                                            notification_service.send_whatsapp_template(
+                                                phone_digits,
+                                                template_name='accepted_invite_confirmation',
+                                                language_code='en_US'
+                                            )
+                                            
                                             # AUTOMATIC ACCEPTANCE: Create user account immediately
                                             user, error = UserManagementService.accept_invitation(
                                                 token=invitation.invitation_token,
@@ -696,18 +703,29 @@ def whatsapp_webhook(request):
                             from accounts.models import UserInvitation
                             from django.db.models import Q
                             
+                            print(f"DEBUG: WhatsApp Accept Text from {phone_digits}", file=sys.stderr)
+                            
                             # Lookup pending invitation for this phone number
                             # (Search in extra_data where we store invitation phone)
+                            # We search for the digits string itself in the JSON dump as a fallback
                             invitation = UserInvitation.objects.filter(
                                 is_accepted=False,
                                 expires_at__gt=timezone.now()
                             ).filter(
                                 Q(extra_data__phone__icontains=phone_digits[-9:]) | 
-                                Q(extra_data__phone_number__icontains=phone_digits[-9:])
+                                Q(extra_data__phone_number__icontains=phone_digits[-9:]) |
+                                Q(extra_data__icontains=phone_digits[-9:])
                             ).first()
 
                             if invitation:
-                                logger.info(f"Found invitation for {phone_digits} via text command: {invitation.id}")
+                                print(f"DEBUG: Found invitation {invitation.id}", file=sys.stderr)
+                                
+                                # IMMEDIATE FOLLOW-UP
+                                notification_service.send_whatsapp_template(
+                                    phone_digits,
+                                    template_name='accepted_invite_confirmation',
+                                    language_code='en_US'
+                                )
                                 
                                 # AUTOMATIC ACCEPTANCE
                                 user, error = UserManagementService.accept_invitation(

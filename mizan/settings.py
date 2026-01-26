@@ -339,11 +339,15 @@ OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', f'redis://{REDIS_HOST}:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', f'redis://{REDIS_HOST}:6379/0')
+CELERY_TASK_ALWAYS_EAGER = True
+CELERY_TASK_EAGER_PROPAGATES = True
 
 LUA_API_URL = config('LUA_API_URL', default='https://api.heylua.ai')
 LUA_API_KEY = config('LUA_API_KEY', default='')
 LUA_AGENT_ID = config('LUA_AGENT_ID', default='')
 LUA_WEBHOOK_API_KEY = config('LUA_WEBHOOK_API_KEY', default='')
+LUA_USER_EVENTS_WEBHOOK = config('LUA_USER_EVENTS_WEBHOOK', default='')
+LUA_USER_AUTHENTICATION_WEBHOOK = config('LUA_USER_AUTHENTICATION_WEBHOOK', default='')
 
 # WhatsApp Invitation Automation (Delegates to Lua Agent by default)
 AUTO_WHATSAPP_INVITES = str_to_bool(os.getenv('AUTO_WHATSAPP_INVITES', True))

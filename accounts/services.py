@@ -41,8 +41,10 @@ def sync_user_to_lua_agent(user, access_token):
     enabling Miya to make API calls on behalf of the user.
     """
     try:
-        # Use the legacy UUID-based URL which is verified to work with the Api-Key
-        webhook_url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{LUA_USER_AUTH_WEBHOOK_ID}"
+        # Use environment-based URL if available, otherwise fallback to legacy UUID
+        webhook_url = getattr(settings, 'LUA_USER_AUTHENTICATION_WEBHOOK', None)
+        if not webhook_url:
+            webhook_url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{LUA_USER_AUTH_WEBHOOK_ID}"
         
         # Get the Lua API key for Authorization header
         lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
@@ -52,6 +54,7 @@ def sync_user_to_lua_agent(user, access_token):
         if mobile_number:
             mobile_number = ''.join(filter(str.isdigit, mobile_number))
 
+        session_id = f"tenant-{str(user.restaurant.id) if user.restaurant else ''}-user-{str(user.id)}"
         payload = {
             "emailAddress": user.email,
             "mobileNumber": mobile_number,
@@ -62,11 +65,13 @@ def sync_user_to_lua_agent(user, access_token):
             "metadata": {
                 "token": access_token,
                 "userId": str(user.id),
+                "sessionId": session_id,
             }
         }
         
         headers = {
             "Content-Type": "application/json",
+            "Authorization": f"Bearer {lua_api_key}",
             "Api-Key": lua_api_key,  # Legacy endpoint expects Api-Key
             "x-api-key": LUA_WEBHOOK_API_KEY  # Our webhook's internal validation
         }
@@ -460,33 +465,51 @@ class UserManagementService:
             effective_first_name = first_name or invitation.first_name or ''
             effective_last_name = last_name or invitation.last_name or ''
 
-            # Guard against existing accounts for the same email to avoid
-            # database IntegrityError and aborted transaction states
-            if CustomUser.objects.filter(email=invitation.email).exists():
+            # Detect missing email and generate placeholder from phone if needed
+            email = invitation.email
+            phone = (invitation.extra_data or {}).get('phone') or (invitation.extra_data or {}).get('phone_number')
+            
+            if not email:
+                if phone:
+                    clean_phone = ''.join(filter(str.isdigit, phone))
+                    email = f"{clean_phone}@mizan.ai"
+                else:
+                    return None, "Invitation has no email and no phone number"
+
+            # Guard against existing accounts for the same email
+            if CustomUser.objects.filter(email=email).exists():
                 return (
                     None,
-                    "An account with this email already exists. Please log in instead or contact your admin."
+                    "An account with this email address already exists. Please log in instead or contact your admin."
                 )
 
-            # Auto-generate password if not provided (for WhatsApp automated flow)
+            # Auto-generate password if not provided
             if not password:
                 import secrets
                 password = secrets.token_urlsafe(12)
 
             with transaction.atomic():
-                user = CustomUser.objects.create_user(
-                    email=invitation.email,
-                    password=password,
-                    first_name=effective_first_name,
-                    last_name=effective_last_name,
-                    is_verified=True,
-                    is_active=True,
-                    role=invitation.role,
-                    restaurant=invitation.restaurant,
-                )
+                # Prepare arguments for user creation
+                user_kwargs = {
+                    'email': email,
+                    'first_name': effective_first_name,
+                    'last_name': effective_last_name,
+                    'is_verified': True,
+                    'is_active': True,
+                    'role': invitation.role,
+                    'restaurant': invitation.restaurant,
+                }
+                
+                # Check if this is a staff role and if password is a 4-digit PIN
+                is_staff = invitation.role not in ['SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER']
+                if is_staff and password and len(password) == 4 and password.isdigit():
+                    user_kwargs['pin_code'] = password
+                else:
+                    user_kwargs['password'] = password
 
-                # Set phone if provided in extra_data
-                phone = (invitation.extra_data or {}).get('phone')
+                user = CustomUser.objects.create_user(**user_kwargs)
+
+                # Set phone if provided
                 if phone:
                     user.phone = phone
                     user.save(update_fields=['phone'])
@@ -503,16 +526,19 @@ class UserManagementService:
                 invitation.is_accepted = True
                 invitation.status = 'ACCEPTED'
                 invitation.accepted_at = dj_tz.now()
-                invitation.save(update_fields=['is_accepted', 'status', 'accepted_at'])
+                # Ensure invitation record has the final email used
+                if not invitation.email:
+                    invitation.email = email
+                invitation.save(update_fields=['is_accepted', 'status', 'accepted_at', 'email'])
 
-                # Close any other pending invitations for the same email in this restaurant
+                # Close any other pending invitations for the same identifier
                 UserInvitation.objects.filter(
                     restaurant=invitation.restaurant,
-                    email=invitation.email,
+                    email=email,
                     is_accepted=False,
                 ).update(status='EXPIRED', expires_at=dj_tz.now())
 
-                # Notify Lua agent if phone is available for follow-up message
+                # Notify Lua agent if phone is available
                 if phone:
                     from notifications.services import notification_service
                     notification_service.send_lua_invitation_accepted(

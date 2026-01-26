@@ -1,4 +1,5 @@
 import axios from "axios";
+import { env } from "lua-cli";
 
 export default class ApiService {
     baseUrl: string;
@@ -6,7 +7,8 @@ export default class ApiService {
     axiosInstance: typeof axios;
 
     constructor() {
-        this.baseUrl = process.env.API_BASE_URL || "http://localhost:8000";
+        this.baseUrl = env('API_BASE_URL') || process.env.API_BASE_URL || "http://localhost:8000";
+        console.log(`[ApiService] Initialized with baseUrl: ${this.baseUrl}`);
         this.timeout = 5000;
         this.axiosInstance = axios;
     }
@@ -212,7 +214,12 @@ export default class ApiService {
 
     async optimizeSchedule(data: any, token: string) {
         try {
-            const response = await axios.post(`${this.baseUrl}/api/scheduling/weekly-schedules-v2/optimize/`, data, {
+            // IMPORTANT:
+            // The frontend calendar currently reads from v1 endpoints:
+            //   - /api/scheduling/weekly-schedules/
+            //   - /api/scheduling/weekly-schedules/<id>/assigned-shifts/
+            // To ensure Miya-generated schedules show up in the calendar, call the v1 optimizer route.
+            const response = await axios.post(`${this.baseUrl}/api/scheduling/auto-schedule/`, data, {
                 timeout: this.timeout * 2, // Optimization might take longer
                 headers: {
                     'Authorization': `Bearer ${token}`,
@@ -446,6 +453,25 @@ export default class ApiService {
             return response.data;
         } catch (error: any) {
             console.error("[ApiService] Failed to accept invitation:", error.message);
+            if (error.response && error.response.data) {
+                console.error(JSON.stringify(error.response.data));
+            }
+            return { success: false, error: error.message };
+        }
+    }
+
+    async createIncidentReport(data: { title: string; description: string; category?: string; priority?: string }, token: string) {
+        try {
+            const response = await axios.post(`${this.baseUrl}/api/reporting/agent/create-incident/`, data, {
+                timeout: this.timeout,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to create incident report:", error.message);
             if (error.response && error.response.data) {
                 console.error(JSON.stringify(error.response.data));
             }
