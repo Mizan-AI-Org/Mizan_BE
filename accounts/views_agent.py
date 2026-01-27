@@ -1,7 +1,7 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status, permissions
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from django.utils import timezone
 from .models import CustomUser
 from .serializers import CustomUserSerializer, RestaurantSerializer
@@ -89,6 +89,7 @@ def send_whatsapp(phone, message, template_name, language_code="en_US"):
 
 
 @api_view(['GET'])
+@authentication_classes([])  # Bypass default JWT auth - use manual API key validation
 @permission_classes([permissions.AllowAny])
 def get_invitation_by_phone(request):
     """
@@ -145,6 +146,7 @@ def get_invitation_by_phone(request):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
+@authentication_classes([])  # Bypass default JWT auth - use manual API key validation
 @permission_classes([permissions.AllowAny])  # Authenticated via Agent Key
 def accept_invitation_from_agent(request):
     """
