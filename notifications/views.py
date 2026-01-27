@@ -599,10 +599,17 @@ def whatsapp_webhook(request):
                                     else:
                                         session.state = 'awaiting_clock_in_location'
                                         session.save(update_fields=['state'])
-                                        notification_service.send_whatsapp_location_request(phone_digits, R(user, 'clockin_prompt'))
+                                        # Use clock_in_location_request template with "Send Location" button
+                                        notification_service.send_whatsapp_template(
+                                            phone=phone_digits,
+                                            template_name='clock_in_location_request',
+                                            language_code='en_US',
+                                            components=[]
+                                        )
                                 else:
                                     notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                                 continue
+
 
                             elif btn_id == 'clock_out_now':
                                 if user:
