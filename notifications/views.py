@@ -638,7 +638,83 @@ def whatsapp_webhook(request):
                                     notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                                 continue
 
-                        elif int_type == 'nfm_reply':
+                            # =====================================================
+                            # HANDLE CHECKLIST BUTTON RESPONSES (Yes/No/N/A)
+                            # =====================================================
+                            elif btn_id in ['yes', 'no', 'n_a', 'Yes', 'No', 'N/A'] and session.state == 'in_checklist':
+                                from scheduling.models import ShiftTask
+                                checklist = session.context.get('checklist', {})
+                                tasks = checklist.get('tasks', [])
+                                current_index = checklist.get('current_index', 0)
+                                responses = checklist.get('responses', {})
+                                
+                                if current_index < len(tasks):
+                                    current_task_id = tasks[current_index]
+                                    
+                                    # Record this response
+                                    response_value = btn_id.lower().replace('/', '_')  # 'N/A' -> 'n_a'
+                                    responses[current_task_id] = response_value
+                                    
+                                    # Update ShiftTask status based on response
+                                    try:
+                                        task = ShiftTask.objects.get(id=current_task_id)
+                                        if response_value == 'yes':
+                                            task.status = 'COMPLETED'
+                                            task.completed_at = timezone.now()
+                                        elif response_value == 'no':
+                                            task.status = 'IN_PROGRESS'  # Marked as needs attention
+                                            task.notes = f"Response: No - Needs follow-up ({timezone.now().strftime('%H:%M')})"
+                                        # N/A - keep as TODO but note it
+                                        elif response_value == 'n_a':
+                                            task.notes = f"Response: N/A - Not applicable ({timezone.now().strftime('%H:%M')})"
+                                        task.save()
+                                    except ShiftTask.DoesNotExist:
+                                        pass
+                                    
+                                    # Move to next task
+                                    current_index += 1
+                                    checklist['current_index'] = current_index
+                                    checklist['responses'] = responses
+                                    session.context['checklist'] = checklist
+                                    
+                                    if current_index < len(tasks):
+                                        # More tasks remaining - send next task with dynamic content
+                                        session.save(update_fields=['context'])
+                                        next_task_id = tasks[current_index]
+                                        try:
+                                            next_task = ShiftTask.objects.get(id=next_task_id)
+                                            task_msg = (
+                                                f"📋 *Task {current_index + 1}/{len(tasks)}*\n\n"
+                                                f"*{next_task.title}*\n"
+                                                f"{next_task.description or ''}\n\n"
+                                                "Is this complete?"
+                                            )
+                                            buttons = [
+                                                {"id": "yes", "title": "✅ Yes"},
+                                                {"id": "no", "title": "❌ No"},
+                                                {"id": "n_a", "title": "➖ N/A"}
+                                            ]
+                                            notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+                                        except ShiftTask.DoesNotExist:
+                                            pass
+                                    else:
+                                        # All tasks complete!
+                                        completed = sum(1 for r in responses.values() if r == 'yes')
+                                        total = len(tasks)
+                                        completion_msg = (
+                                            f"🎉 *Checklist Complete!*\n\n"
+                                            f"✅ {completed}/{total} items confirmed\n\n"
+                                            "Great job! Have a productive shift."
+                                        )
+                                        notification_service.send_whatsapp_text(phone_digits, completion_msg)
+                                        
+                                        # Clear checklist state
+                                        session.context.pop('checklist', None)
+                                        session.state = 'idle'
+                                        session.save(update_fields=['state', 'context'])
+                                continue
+
+
                             nfm_reply = interactive.get('nfm_reply', {})
                             response_json_str = nfm_reply.get('response_json', '{}')
                             try:
@@ -890,8 +966,62 @@ def whatsapp_webhook(request):
                                     location_encrypted=f"{lat},{lon}" # Populate required field
                                 )
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'clockin_ok', time=timezone.now().strftime('%H:%M')))
-                                session.state = 'idle'
-                                session.save(update_fields=['state'])
+                                
+                                # =====================================================
+                                # INITIATE CONVERSATIONAL CHECKLIST AFTER CLOCK-IN
+                                # =====================================================
+                                from scheduling.models import AssignedShift, ShiftTask
+                                
+                                # Find active shift for this user (started today, user is staff)
+                                now_today = timezone.now()
+                                active_shift = AssignedShift.objects.filter(
+                                    staff=user,
+                                    shift_date=now_today.date(),
+                                    status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS']
+                                ).first()
+                                
+                                if active_shift:
+                                    # Get all TODO tasks for this shift
+                                    tasks = ShiftTask.objects.filter(
+                                        shift=active_shift,
+                                        status='TODO'
+                                    ).order_by('created_at')
+                                    
+                                    task_ids = [str(t.id) for t in tasks]
+                                    
+                                    if task_ids:
+                                        # Store checklist state in session context
+                                        session.context['checklist'] = {
+                                            'shift_id': str(active_shift.id),
+                                            'tasks': task_ids,
+                                            'current_index': 0,
+                                            'responses': {},
+                                            'started_at': timezone.now().isoformat()
+                                        }
+                                        session.state = 'in_checklist'
+                                        session.save(update_fields=['state', 'context'])
+                                        
+                                        # Send first task using dynamic interactive buttons
+                                        first_task = tasks.first()
+                                        task_msg = (
+                                            f"📋 *Task 1/{len(task_ids)}*\n\n"
+                                            f"*{first_task.title}*\n"
+                                            f"{first_task.description or ''}\n\n"
+                                            "Is this complete?"
+                                        )
+                                        buttons = [
+                                            {"id": "yes", "title": "✅ Yes"},
+                                            {"id": "no", "title": "❌ No"},
+                                            {"id": "n_a", "title": "➖ N/A"}
+                                        ]
+                                        notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+                                    else:
+                                        # No tasks for this shift
+                                        session.state = 'idle'
+                                        session.save(update_fields=['state'])
+                                else:
+                                    session.state = 'idle'
+                                    session.save(update_fields=['state'])
                             else:
                                 notification_service.send_whatsapp_text(phone_digits, "You are already clocked in.")
                         else:
