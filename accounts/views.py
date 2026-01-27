@@ -1,4 +1,8 @@
 from rest_framework import status, permissions, generics, viewsets
+import logging
+
+logger = logging.getLogger(__name__)
+
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -37,7 +41,7 @@ class IsSuperAdmin(permissions.BasePermission):
 
 class IsManagerOrAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role in ['ADMIN', 'SUPER_ADMIN']
+        return request.user.is_authenticated and request.user.role in ['ADMIN', 'SUPER_ADMIN', 'MANAGER']
 
 def get_client_ip(request):
     """Get client IP address from request."""
@@ -285,8 +289,8 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        # Authenticate user
-        authenticated_user = authenticate(email=email, password=password)
+        # Authenticate user (pass request for backend compatibility)
+        authenticated_user = authenticate(request=request, email=email, password=password)
 
         if authenticated_user:
             # Reset failed attempts on successful login

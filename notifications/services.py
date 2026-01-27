@@ -1,4 +1,4 @@
-import requests
+import requests, json
 import re
 from django.conf import settings
 from django.utils import timezone
@@ -195,15 +195,21 @@ class NotificationService:
                 "x-role": "manager"
             }
             
-            logger.info(f"[LuaInvite] Calling webhook for {first_name} at {url}")
+            print(f"[LuaInvite] Calling webhook for {first_name} at {url}", file=sys.stderr)
+            print(f"[LuaInvite] Payload: {json.dumps(payload)}", file=sys.stderr)
             resp = requests.post(url, json=payload, headers=headers, timeout=5)
+            print(f"[LuaInvite] Response: {resp.status_code} - {resp.text}", file=sys.stderr)
 
-            
+            try:
+                info = resp.json()
+            except Exception:
+                info = {"error": "Invalid JSON response", "raw": resp.text}
+
             if resp.status_code in (200, 201):
-                return True, resp.json()
+                return True, info
             else:
                 logger.warning(f"[LuaInvite] Failed: {resp.status_code} - {resp.text}")
-                return False, {"error": resp.text, "status_code": resp.status_code}
+                return False, {"error": resp.text, "status_code": resp.status_code, "info": info}
                 
         except Exception as e:
             logger.error(f"[LuaInvite] Unexpected error: {str(e)}")
