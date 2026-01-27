@@ -404,6 +404,9 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 invitation.expires_at = timezone.now() + timedelta(days=7)
                 invitation.save()
             
+            email_success = False
+            whatsapp_success = False
+            
             print(f"[Resend] 1. invitation={invitation}", file=sys.stderr)
             if invitation.email:
                 print(f"[Resend] 2. sending email to {invitation.email}", file=sys.stderr)
