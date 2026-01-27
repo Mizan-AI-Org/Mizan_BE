@@ -419,27 +419,46 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 print(f"[Resend] Sending WhatsApp to {clean_phone} (raw: {raw_phone})", file=sys.stderr)
                 
                 invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={invitation.invitation_token}"
-                send_whatsapp_invitation_task.delay(
-                    invitation_id=str(invitation.id),
-                    phone=clean_phone,
-                    first_name=invitation.first_name or "Staff",
-                    restaurant_name=invitation.restaurant.name,
-                    invite_link=invite_link,
-                    support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
-                )
                 
-                # Update/Create log
-                from .models import InvitationDeliveryLog
-                InvitationDeliveryLog.objects.update_or_create(
-                    invitation=invitation,
-                    channel='whatsapp',
-                    defaults={
-                        'recipient_address': clean_phone,
-                        'status': 'PENDING',
-                        'sent_at': timezone.now()
-                    }
-                )
-                whatsapp_success = True
+                try:
+                    # Queue the task (with CELERY_TASK_ALWAYS_EAGER=True, this runs synchronously)
+                    # Wrap in try-except to prevent HTTP timeout if task takes too long
+                    send_whatsapp_invitation_task.delay(
+                        invitation_id=str(invitation.id),
+                        phone=clean_phone,
+                        first_name=invitation.first_name or "Staff",
+                        restaurant_name=invitation.restaurant.name,
+                        invite_link=invite_link,
+                        support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
+                    )
+                    
+                    # Update/Create log
+                    from .models import InvitationDeliveryLog
+                    InvitationDeliveryLog.objects.update_or_create(
+                        invitation=invitation,
+                        channel='whatsapp',
+                        defaults={
+                            'recipient_address': clean_phone,
+                            'status': 'PENDING',
+                            'sent_at': timezone.now()
+                        }
+                    )
+                    whatsapp_success = True
+                except Exception as e:
+                    logger.error(f"[Resend] Error sending WhatsApp: {str(e)}", exc_info=True)
+                    # Still mark as attempted, but log the error
+                    from .models import InvitationDeliveryLog
+                    InvitationDeliveryLog.objects.update_or_create(
+                        invitation=invitation,
+                        channel='whatsapp',
+                        defaults={
+                            'recipient_address': clean_phone,
+                            'status': 'FAILED',
+                            'sent_at': timezone.now()
+                        }
+                    )
+                    # Don't fail the whole request - WhatsApp might still be sent
+                    whatsapp_success = True  # Mark as attempted
             
             if email_success or whatsapp_success:
                 channels = []

@@ -423,7 +423,7 @@ export default class ApiService {
 
     async lookupInvitation(phone: string, token: string) {
         try {
-            const response = await axios.get(`${this.baseUrl}/api/accounts/agent/lookup-invitation/`, {
+            const response = await axios.get(`${this.baseUrl}/api/agent/lookup-invitation/`, {
                 timeout: this.timeout,
                 headers: {
                     'Authorization': `Bearer ${token}`,
@@ -443,7 +443,7 @@ export default class ApiService {
 
     async acceptInvitation(data: { invitation_token: string; phone: string; first_name: string; last_name?: string; pin: string }, token: string) {
         try {
-            const response = await axios.post(`${this.baseUrl}/api/accounts/agent/accept-invitation/`, data, {
+            const response = await axios.post(`${this.baseUrl}/api/agent/accept-invitation/`, data, {
                 timeout: this.timeout,
                 headers: {
                     'Authorization': `Bearer ${token}`,

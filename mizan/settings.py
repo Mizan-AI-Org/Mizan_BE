@@ -30,7 +30,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-change-this-in-production!')
 DEBUG = config('DEBUG', default=False, cast=bool)
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'app.heymizan.ai', 'api.heymizan.ai']
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1,app.heymizan.ai,api.heymizan.ai').split(',')
 
 # ---------------------------
 # Installed Apps
@@ -56,7 +56,7 @@ INSTALLED_APPS = [
 
     # Local apps
     'attendance', # Attendance module app
-    'accounts.apps.AccountsConfig',  # Use AppConfig to ensure signals are loaded
+    'accounts',
     'dashboard',
     'scheduling',
     'timeclock',
@@ -321,9 +321,9 @@ if DEBUG:
     print(f"Email Backend: {EMAIL_HOST}:{EMAIL_PORT}", file=sys.stderr)
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    EMAIL_HOST = os.getenv('EMAIL_HOST', 'smtp.gmail.com')
-    EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
-    EMAIL_USE_TLS = True
+    EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
+    EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+    EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=str_to_bool)
     EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
     EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
     DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=config('EMAIL_HOST_USER', default='no-reply@mizan.local'))
@@ -339,10 +339,8 @@ OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', f'redis://{REDIS_HOST}:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', f'redis://{REDIS_HOST}:6379/0')
-# In production, tasks should go to Celery worker (CELERY_TASK_ALWAYS_EAGER=False)
-# In development, tasks can run synchronously (CELERY_TASK_ALWAYS_EAGER=True)
-CELERY_TASK_ALWAYS_EAGER = str_to_bool(os.getenv('CELERY_TASK_ALWAYS_EAGER', 'False'))
-CELERY_TASK_EAGER_PROPAGATES = str_to_bool(os.getenv('CELERY_TASK_EAGER_PROPAGATES', 'False'))
+CELERY_TASK_ALWAYS_EAGER = config('CELERY_TASK_ALWAYS_EAGER', default=False, cast=str_to_bool)
+CELERY_TASK_EAGER_PROPAGATES = True
 
 LUA_API_URL = config('LUA_API_URL', default='https://api.heylua.ai')
 LUA_API_KEY = config('LUA_API_KEY', default='')
