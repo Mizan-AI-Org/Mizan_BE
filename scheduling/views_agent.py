@@ -266,13 +266,12 @@ def agent_create_shift(request):
 @permission_classes([permissions.AllowAny])
 def agent_send_shift_notification(request):
     """
-    Send WhatsApp notification about a scheduled shift.
+    Send WhatsApp notification about a scheduled shift using the staff_weekly_schedule template.
     
     Expected payload:
     {
         "shift_id": "uuid",
         "staff_id": "uuid",  # optional if shift_id provided
-        "message": "optional custom message"
     }
     """
     try:
@@ -284,7 +283,6 @@ def agent_send_shift_notification(request):
         data = request.data
         shift_id = data.get('shift_id')
         staff_id = data.get('staff_id')
-        custom_message = data.get('message')
         
         if not shift_id and not staff_id:
             return Response({
@@ -322,30 +320,55 @@ def agent_send_shift_notification(request):
                 'error': 'Staff member has no phone number'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Build message
+        # Send WhatsApp template message
+        from notifications.services import notification_service
+        
         if shift:
+            # Build template components for staff_weekly_schedule
             shift_date = shift.shift_date.strftime('%A, %B %d')
             start = shift.start_time.strftime('%H:%M') if hasattr(shift.start_time, 'strftime') else str(shift.start_time)[:5]
             end = shift.end_time.strftime('%H:%M') if hasattr(shift.end_time, 'strftime') else str(shift.end_time)[:5]
             restaurant_name = shift.schedule.restaurant.name
+            role = shift.role or 'Staff'
             
-            message = custom_message or (
-                f"Hi {staff.first_name}! 📅\n\n"
-                f"You've been scheduled for a shift at {restaurant_name}:\n\n"
-                f"📆 Date: {shift_date}\n"
-                f"⏰ Time: {start} - {end}\n"
-                f"👔 Role: {shift.role}\n\n"
-                f"Please reply 'CONFIRM' to confirm your availability."
+            # Template parameters: name, restaurant, date, start_time, end_time, role
+            components = [
+                {
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": staff.first_name or "Team Member"},
+                        {"type": "text", "text": restaurant_name},
+                        {"type": "text", "text": shift_date},
+                        {"type": "text", "text": start},
+                        {"type": "text", "text": end},
+                        {"type": "text", "text": role}
+                    ]
+                }
+            ]
+            
+            ok, resp = notification_service.send_whatsapp_template(
+                phone=phone,
+                template_name='staff_weekly_schedule',
+                language_code='en_US',
+                components=components
             )
+            
+            if not ok:
+                logger.warning(f"Template send failed, falling back to text: {resp}")
+                # Fallback to text message
+                fallback_message = (
+                    f"Hi {staff.first_name}! 📅\n\n"
+                    f"You've been scheduled for a shift at {restaurant_name}:\n\n"
+                    f"📆 Date: {shift_date}\n"
+                    f"⏰ Time: {start} - {end}\n"
+                    f"👔 Role: {role}\n\n"
+                    f"Please reply 'CONFIRM' to confirm your availability."
+                )
+                ok, resp = notification_service.send_whatsapp_text(phone=phone, body=fallback_message)
         else:
-            message = custom_message or f"Hi {staff.first_name}! You have new shift information."
-        
-        # Send WhatsApp message
-        from notifications.services import notification_service
-        result = notification_service.send_whatsapp_text(
-            phone=phone,
-            body=message
-        )
+            # No shift data, just send a generic text
+            message = f"Hi {staff.first_name}! You have new shift information."
+            ok, resp = notification_service.send_whatsapp_text(phone=phone, body=message)
         
         # Mark shift as notified
         if shift:
@@ -355,9 +378,9 @@ def agent_send_shift_notification(request):
             shift.save(update_fields=['notification_sent', 'notification_sent_at', 'notification_channels'])
         
         return Response({
-            'success': True,
-            'message': f"Notification sent to {staff.first_name}",
-            'whatsapp_result': list(result) if isinstance(result, tuple) else result
+            'success': ok,
+            'message': f"Notification sent to {staff.first_name}" if ok else "Failed to send notification",
+            'whatsapp_result': resp
         })
         
     except Exception as e:
@@ -366,6 +389,7 @@ def agent_send_shift_notification(request):
             'success': False,
             'error': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 @api_view(['POST'])
 @authentication_classes([])  # Bypass JWT auth
 @permission_classes([permissions.AllowAny])
@@ -432,3 +456,57 @@ def agent_optimize_schedule(request):
             'success': False,
             'error': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+@api_view(['GET'])
+@authentication_classes([])  # Bypass JWT auth
+@permission_classes([permissions.AllowAny])
+def agent_get_restaurant_details(request):
+    """
+    Get restaurant details for the agent.
+    Returns business hours, peaks, and other context.
+    """
+    try:
+        # Validate agent key
+        is_valid, error = validate_agent_key(request)
+        if not is_valid:
+            return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+        
+        restaurant_id = request.query_params.get('restaurant_id')
+        if not restaurant_id:
+            return Response(
+                {'error': 'restaurant_id query parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate restaurant exists
+        try:
+            restaurant = Restaurant.objects.get(id=restaurant_id)
+        except Restaurant.DoesNotExist:
+            return Response(
+                {'error': 'Restaurant not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Default peak definitions
+        peak_definitions = {
+            'lunch': {'start': '12:00', 'end': '15:00'},
+            'dinner': {'start': '19:00', 'end': '23:00'},
+            'breakfast': {'start': '07:00', 'end': '10:30'}
+        }
+        
+        # Build response data
+        data = {
+            'id': str(restaurant.id),
+            'name': restaurant.name,
+            'timezone': str(restaurant.timezone) if hasattr(restaurant, 'timezone') else 'Africa/Casablanca',
+            'operating_hours': getattr(restaurant, 'operating_hours', {}),
+            'general_settings': {
+                'peak_periods': getattr(restaurant, 'general_settings', {}).get('peak_periods', peak_definitions) if isinstance(getattr(restaurant, 'general_settings', None), dict) else peak_definitions
+            },
+            'break_duration': getattr(restaurant, 'break_duration', 30)
+        }
+        
+        return Response(data)
+        
+    except Exception as e:
+        logger.error(f"Agent restaurant details error: {e}")
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

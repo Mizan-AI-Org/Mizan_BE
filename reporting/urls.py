@@ -9,6 +9,7 @@ from .views import (
     IncidentListAPIView,
     IncidentCreateAPIView,
 )
+from .views_agent import agent_create_incident
 
 urlpatterns = [
     # Daily Sales Reports
@@ -26,4 +27,7 @@ urlpatterns = [
     # Incidents
     path('incidents/', IncidentListAPIView.as_view(), name='incident-list'),
     path('incidents/create/', IncidentCreateAPIView.as_view(), name='incident-create'),
+    
+    # Agent-Authenticated Incidents
+    path('agent/create-incident/', agent_create_incident, name='agent_create_incident'),
 ]
