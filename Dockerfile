@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-dev \
     libsndfile1-dev \
     portaudio19-dev \
+    ffmpeg \
     libboost-all-dev \
     binutils \
     libproj-dev \

@@ -14,6 +14,7 @@ from .models import AssignedShift, WeeklySchedule
 from .serializers import AssignedShiftSerializer
 from .services import SchedulingService
 import logging
+from core.utils import resolve_agent_restaurant_and_user
 
 logger = logging.getLogger(__name__)
 
@@ -49,21 +50,12 @@ def agent_list_staff(request):
         is_valid, error = validate_agent_key(request)
         if not is_valid:
             return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
-        
-        restaurant_id = request.query_params.get('restaurant_id')
-        if not restaurant_id:
+
+        restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
+        if not restaurant:
             return Response(
-                {'error': 'restaurant_id query parameter is required'},
+                {'error': 'Unable to resolve restaurant context (no restaurant_id/sessionId/userId/email/phone/token provided).'},
                 status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Validate restaurant exists
-        try:
-            restaurant = Restaurant.objects.get(id=restaurant_id)
-        except Restaurant.DoesNotExist:
-            return Response(
-                {'error': 'Restaurant not found'},
-                status=status.HTTP_404_NOT_FOUND
             )
         
         # Get staff for this restaurant
@@ -128,26 +120,32 @@ def agent_create_shift(request):
         data = request.data
         
         # Required fields
-        restaurant_id = data.get('restaurant_id')
+        restaurant_id = data.get('restaurant_id') or data.get('restaurantId')
         staff_id = data.get('staff_id')
         shift_date_str = data.get('shift_date')
         start_time_str = data.get('start_time')
         end_time_str = data.get('end_time')
         
-        if not all([restaurant_id, staff_id, shift_date_str, start_time_str, end_time_str]):
+        if not all([staff_id, shift_date_str, start_time_str, end_time_str]):
             return Response({
                 'success': False,
-                'error': 'Missing required fields: restaurant_id, staff_id, shift_date, start_time, end_time'
+                'error': 'Missing required fields: staff_id, shift_date, start_time, end_time'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Validate restaurant
-        try:
-            restaurant = Restaurant.objects.get(id=restaurant_id)
-        except Restaurant.DoesNotExist:
+        # Resolve restaurant context (restaurant_id optional)
+        restaurant = None
+        if restaurant_id:
+            try:
+                restaurant = Restaurant.objects.get(id=restaurant_id)
+            except Restaurant.DoesNotExist:
+                restaurant = None
+        if not restaurant:
+            restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=data)
+        if not restaurant:
             return Response({
                 'success': False,
-                'error': 'Restaurant not found'
-            }, status=status.HTTP_404_NOT_FOUND)
+                'error': 'Unable to resolve restaurant context (provide restaurant_id or include sessionId/userId/email/phone/token).'
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         # Validate staff
         try:
@@ -238,6 +236,18 @@ def agent_create_shift(request):
         
         # Add staff to staff_members M2M
         shift.staff_members.add(staff)
+
+        # Assign a deterministic "random" color per staff
+        try:
+            SchedulingService.ensure_shift_color(shift)
+        except Exception:
+            pass
+
+        # Immediately notify the assigned staff (WhatsApp + in-app), with audit logging
+        try:
+            SchedulingService.notify_shift_assignment(shift)
+        except Exception as e:
+            logger.warning(f"Agent create shift: notification failed: {e}")
         
         return Response({
             'success': True,
@@ -248,7 +258,8 @@ def agent_create_shift(request):
                 'shift_date': str(shift_date),
                 'start_time': start_time_str,
                 'end_time': end_time_str,
-                'role': role.upper()
+                'role': role.upper(),
+                'color': shift.color
             },
             'message': f"Successfully scheduled {staff.first_name} for {shift_date} from {start_time_str} to {end_time_str}"
         }, status=status.HTTP_201_CREATED)
@@ -412,24 +423,29 @@ def agent_optimize_schedule(request):
             return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
         
         data = request.data
-        restaurant_id = data.get('restaurant_id')
+        restaurant_id = data.get('restaurant_id') or data.get('restaurantId')
         week_start = data.get('week_start')
         department = data.get('department')
         
-        if not restaurant_id or not week_start:
+        if not week_start:
             return Response({
                 'success': False,
-                'error': 'Missing required fields: restaurant_id, week_start'
+                'error': 'Missing required fields: week_start'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Validate restaurant
-        try:
-            restaurant = Restaurant.objects.get(id=restaurant_id)
-        except Restaurant.DoesNotExist:
+        restaurant = None
+        if restaurant_id:
+            try:
+                restaurant = Restaurant.objects.get(id=restaurant_id)
+            except Restaurant.DoesNotExist:
+                restaurant = None
+        if not restaurant:
+            restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=data)
+        if not restaurant:
             return Response({
                 'success': False,
-                'error': 'Restaurant not found'
-            }, status=status.HTTP_404_NOT_FOUND)
+                'error': 'Unable to resolve restaurant context (provide restaurant_id or include sessionId/userId/email/phone/token).'
+            }, status=status.HTTP_400_BAD_REQUEST)
             
         # OptimizationService will handle the business logic
         from .services import OptimizationService
@@ -469,21 +485,12 @@ def agent_get_restaurant_details(request):
         is_valid, error = validate_agent_key(request)
         if not is_valid:
             return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
-        
-        restaurant_id = request.query_params.get('restaurant_id')
-        if not restaurant_id:
+
+        restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
+        if not restaurant:
             return Response(
-                {'error': 'restaurant_id query parameter is required'},
+                {'error': 'Unable to resolve restaurant context (no restaurant_id/sessionId/userId/email/phone/token provided).'},
                 status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Validate restaurant exists
-        try:
-            restaurant = Restaurant.objects.get(id=restaurant_id)
-        except Restaurant.DoesNotExist:
-            return Response(
-                {'error': 'Restaurant not found'},
-                status=status.HTTP_404_NOT_FOUND
             )
         
         # Default peak definitions

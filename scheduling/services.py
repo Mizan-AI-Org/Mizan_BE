@@ -7,6 +7,7 @@ from django.db.models import Q, Count, Avg
 from django.utils import timezone
 from .models import AssignedShift, WeeklySchedule, ScheduleTemplate, TemplateShift
 from accounts.models import CustomUser
+import hashlib
 
 
 class SchedulingService:
@@ -282,59 +283,189 @@ class SchedulingService:
         Send notification to staff about shift assignment
         """
         from notifications.models import Notification
-        from django.template.loader import render_to_string
-        from django.core.mail import send_mail
-        from django.conf import settings
-        from channels.layers import get_channel_layer
-        from asgiref.sync import async_to_sync
+        from notifications.services import notification_service
         
         try:
-            # Create in-app notification
-            message = f"You have been assigned a shift on {shift.shift_date} from {shift.start_time} to {shift.end_time}"
+            # Build human-friendly message
+            staff_name = shift.staff.get_full_name() if shift.staff else "Team Member"
+            rest_name = getattr(getattr(shift.schedule, 'restaurant', None), 'name', 'your restaurant')
+
+            start_dt = shift.start_time
+            end_dt = shift.end_time
+            try:
+                if start_dt:
+                    start_dt = timezone.localtime(start_dt)
+                if end_dt:
+                    end_dt = timezone.localtime(end_dt)
+            except Exception:
+                pass
+
+            shift_date_str = shift.shift_date.strftime('%a, %b %d, %Y') if shift.shift_date else '—'
+            start_str = start_dt.strftime('%I:%M %p').lstrip('0') if hasattr(start_dt, 'strftime') else str(shift.start_time)
+            end_str = end_dt.strftime('%I:%M %p').lstrip('0') if hasattr(end_dt, 'strftime') else str(shift.end_time)
+
+            role = (shift.role or '').upper() or 'STAFF'
+            dept = (shift.department or '').strip() if hasattr(shift, 'department') else ''
+
+            title = "Shift Assigned"
+            lines = [
+                f"✅ You have been successfully assigned a shift at {rest_name}.",
+                "",
+                f"📅 Date: {shift_date_str}",
+                f"⏰ Time: {start_str} – {end_str}",
+                f"👔 Role: {role}",
+            ]
+            if dept:
+                lines.append(f"🏷️ Department: {dept}")
+            message = "\n".join(lines)
+
             notification = Notification.objects.create(
+                recipient=shift.staff,
+                title=title,
+                message=message,
+                notification_type='SHIFT_ASSIGNED',
+                related_shift_id=shift.id,
+                data={
+                    'shift_id': str(shift.id),
+                    'shift_date': str(shift.shift_date),
+                    'start_time': start_str,
+                    'end_time': end_str,
+                    'role': role,
+                    'department': dept,
+                }
+            )
+
+            # Always send in-app immediately
+            ok, channels_used = notification_service.send_custom_notification(
                 recipient=shift.staff,
                 message=message,
                 notification_type='SHIFT_ASSIGNED',
-                related_shift_id=shift.id
-            )
-            
-            # Send email notification
-            subject = f"New Shift Assignment - {shift.shift_date}"
-            html_message = render_to_string('emails/shift_assigned.html', {
-                'staff_name': shift.staff.get_full_name(),
-                'shift_date': shift.shift_date,
-                'start_time': shift.start_time,
-                'end_time': shift.end_time,
-                'role': shift.role,
-                'restaurant_name': shift.schedule.restaurant.name,
-            })
-            
-            send_mail(
-                subject,
-                message,
-                settings.DEFAULT_FROM_EMAIL,
-                [shift.staff.email],
-                html_message=html_message,
-                fail_silently=True,
+                title=title,
+                channels=['app'],
+                notification=notification,
             )
 
-            # Broadcast websocket notification to user's group
-            channel_layer = get_channel_layer()
-            group_name = f'user_{shift.staff.id}_notifications'
-            event = {
-                'type': 'send_notification',
-                'notification': {
-                    'id': str(notification.id),
-                    'message': notification.message,
-                    'notification_type': notification.notification_type,
-                    'created_at': notification.created_at.isoformat(),
-                    'is_read': notification.is_read,
-                    'related_shift_id': str(shift.id),
-                }
-            }
-            async_to_sync(channel_layer.group_send)(group_name, event)
+            # WhatsApp: prefer your approved template (configurable), fallback to plain text
+            try:
+                should_whatsapp = notification_service._should_send_whatsapp(shift.staff)
+            except Exception:
+                should_whatsapp = True
+
+            if should_whatsapp and getattr(shift.staff, 'phone', None):
+                template_name = getattr(notification_service, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED', None)
+                # template name is stored in Django settings, not on the service instance
+                from django.conf import settings as dj_settings
+                template_name = getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED', '') or ''
+                template_lang = getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_LANGUAGE', 'en_US')
+
+                # Recommended parameter order (create this template in Lua/Meta to match):
+                # {{1}} staff_first_name
+                # {{2}} restaurant_name
+                # {{3}} shift_date (e.g. Tue, Jan 27, 2026)
+                # {{4}} start_time (e.g. 12:00 PM)
+                # {{5}} end_time (e.g. 03:00 PM)
+                # {{6}} role
+                # {{7}} department (or '—')
+                components = [
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": (shift.staff.first_name or staff_name)},
+                            {"type": "text", "text": rest_name},
+                            {"type": "text", "text": shift_date_str},
+                            {"type": "text", "text": start_str},
+                            {"type": "text", "text": end_str},
+                            {"type": "text", "text": role},
+                            {"type": "text", "text": dept or "—"},
+                        ],
+                    }
+                ]
+
+                wa_ok = False
+                wa_resp = None
+                if template_name:
+                    wa_ok, wa_resp = notification_service.send_whatsapp_template(
+                        phone=shift.staff.phone,
+                        template_name=template_name,
+                        language_code=template_lang,
+                        components=components,
+                        notification=notification,
+                    )
+
+                if not template_name or not wa_ok:
+                    wa_ok, wa_resp = notification_service.send_whatsapp_text(
+                        phone=shift.staff.phone,
+                        body=message,
+                        notification=notification,
+                    )
+
+                # Merge delivery status into Notification record (without overwriting app status)
+                try:
+                    ds = dict(notification.delivery_status or {})
+                    ds['whatsapp'] = {
+                        'status': 'SENT' if wa_ok else 'FAILED',
+                        'timestamp': timezone.now().isoformat(),
+                        'external_id': (wa_resp or {}).get('external_id') if isinstance(wa_resp, dict) else None,
+                    }
+                    notification.delivery_status = ds
+                    chans = list(notification.channels_sent or [])
+                    if wa_ok and 'whatsapp' not in chans:
+                        chans.append('whatsapp')
+                    notification.channels_sent = chans
+                    notification.save(update_fields=['delivery_status', 'channels_sent'])
+                except Exception:
+                    pass
+
+                # Track on shift for operational visibility
+                try:
+                    if wa_ok:
+                        shift.notification_sent = True
+                        shift.notification_sent_at = timezone.now()
+                        shift.notification_channels = list(set((shift.notification_channels or []) + ['whatsapp']))
+                        shift.save(update_fields=['notification_sent', 'notification_sent_at', 'notification_channels'])
+                except Exception:
+                    pass
         except Exception as e:
             print(f"Error notifying shift assignment: {e}")
+
+    @staticmethod
+    def staff_shift_color(staff_id: str) -> str:
+        """
+        Deterministic "random" color per staff member.
+        Produces a hex color like #3B82F6.
+        """
+        palette = [
+            '#3B82F6',  # blue
+            '#10B981',  # green
+            '#F59E0B',  # amber
+            '#EF4444',  # red
+            '#8B5CF6',  # violet
+            '#06B6D4',  # cyan
+            '#EC4899',  # pink
+            '#84CC16',  # lime
+            '#F97316',  # orange
+            '#14B8A6',  # teal
+        ]
+        try:
+            h = hashlib.md5(str(staff_id).encode('utf-8')).hexdigest()
+            idx = int(h[:8], 16) % len(palette)
+            return palette[idx]
+        except Exception:
+            return '#6b7280'
+
+    @staticmethod
+    def ensure_shift_color(shift: 'AssignedShift') -> None:
+        """Assign a staff-based color if missing/blank."""
+        try:
+            if getattr(shift, 'color', None):
+                return
+            staff_id = getattr(getattr(shift, 'staff', None), 'id', None)
+            if not staff_id:
+                return
+            shift.color = SchedulingService.staff_shift_color(str(staff_id))
+            shift.save(update_fields=['color'])
+        except Exception:
+            pass
     
     @staticmethod
     def notify_shift_cancellation(shift: 'AssignedShift') -> None:

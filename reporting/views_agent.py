@@ -9,6 +9,7 @@ from django.conf import settings
 from .models import Incident
 from accounts.models import Restaurant, CustomUser
 import logging
+from core.utils import resolve_agent_restaurant_and_user
 
 logger = logging.getLogger(__name__)
 
@@ -53,38 +54,41 @@ def agent_create_incident(request):
             return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
         
         data = request.data
-        restaurant_id = data.get('restaurant_id')
+        restaurant_id = data.get('restaurant_id') or data.get('restaurantId')
         title = data.get('title')
         description = data.get('description')
         category = data.get('category', 'General')
         priority = data.get('priority', 'MEDIUM')
         reporter_phone = data.get('reporter_phone')
-        
-        if not restaurant_id:
-            return Response(
-                {'error': 'restaurant_id is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
+
         if not title or not description:
             return Response(
                 {'error': 'title and description are required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Validate restaurant exists
-        try:
-            restaurant = Restaurant.objects.get(id=restaurant_id)
-        except Restaurant.DoesNotExist:
-            return Response(
-                {'error': 'Restaurant not found'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        
-        # Optionally find reporter by phone
+        # Resolve restaurant + reporter without requiring restaurant_id explicitly
+        restaurant = None
         reporter = None
-        if reporter_phone:
-            reporter = CustomUser.objects.filter(phone=reporter_phone).first()
+        if restaurant_id:
+            try:
+                restaurant = Restaurant.objects.get(id=restaurant_id)
+            except Restaurant.DoesNotExist:
+                restaurant = None
+
+        if not restaurant:
+            restaurant, reporter = resolve_agent_restaurant_and_user(request=request, payload=data)
+
+        if not reporter and reporter_phone:
+            reporter = CustomUser.objects.filter(phone__icontains=''.join(filter(str.isdigit, str(reporter_phone)))).first()
+
+        if not restaurant:
+            return Response(
+                {
+                    'error': 'Unable to resolve restaurant context. Provide restaurant_id, or include sessionId/userId/email/phone/token in the payload.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
         
         # Validate priority
         valid_priorities = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']
