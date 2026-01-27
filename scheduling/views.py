@@ -371,6 +371,8 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
         """Create shift and send notification"""
         shift = serializer.save()
         print(f"Created shift:{shift}", file=sys.stderr)
+        # Assign a deterministic "random" color per staff
+        SchedulingService.ensure_shift_color(shift)
         # Send notification to staff about the new shift
         SchedulingService.notify_shift_assignment(shift)
     

@@ -23,6 +23,14 @@ from .process_views import ProcessViewSet, ProcessTaskViewSet
 from .template_views import ScheduleTemplateViewSet, TemplateVersionViewSet
 from .audit_views import AuditLogViewSet
 from .views_enhanced import CalendarAPIViewSet
+from .views_agent import (
+    agent_list_staff, 
+    agent_create_shift, 
+    agent_send_shift_notification,
+    agent_optimize_schedule,
+    agent_get_restaurant_details,
+    agent_staff_by_phone
+)
 
 router = DefaultRouter()
 router.register(r'weekly-schedules-v2', WeeklyScheduleViewSet, basename='weekly-schedule-v2')
@@ -64,4 +72,12 @@ urlpatterns = [
 
     # Task Management
     path('', include(router.urls)),
+    
+    # Agent Integration (authenticated via LUA_WEBHOOK_API_KEY)
+    path('agent/staff/', agent_list_staff, name='agent_list_staff'),
+    path('agent/create-shift/', agent_create_shift, name='agent_create_shift'),
+    path('agent/notify-shift/', agent_send_shift_notification, name='agent_notify_shift'),
+    path('agent/optimize-schedule/', agent_optimize_schedule, name='agent_optimize_schedule'),
+    path('agent/restaurant-details/', agent_get_restaurant_details, name='agent_get_restaurant_details'),
+    path('agent/staff-by-phone/', agent_staff_by_phone, name='agent_staff_by_phone'),
 ]

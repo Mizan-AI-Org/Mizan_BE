@@ -10,6 +10,9 @@ from .models import Notification, DeviceToken, NotificationLog
 import firebase_admin
 from firebase_admin import messaging
 import logging, sys
+import tempfile
+import shutil
+import subprocess
 
 logger = logging.getLogger(__name__)
 
@@ -365,6 +368,7 @@ class NotificationService:
     def _send_whatsapp_notification(self, data):
         print(f"data for WhatsApp: {data}", flush=True, file=sys.stderr)
         try:
+            from .models import NotificationLog
             recipient = data['recipient']
             phone = getattr(recipient, 'phone', None)
             title = data['title']
@@ -380,26 +384,20 @@ class NotificationService:
             if not token or not phone_id:
                 return False
 
-            phone = ''.join(filter(str.isdigit, phone))
+            phone_digits = ''.join(filter(str.isdigit, phone))
             url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
             print(f"WhatsApp URL: {url}", flush=True)
+
+            # For general notifications, use plain text (templates are handled by dedicated methods)
+            body = message or ""
+            if title:
+                body = f"*{title}*\n\n{body}".strip()
+
             payload = {
                 "messaging_product": "whatsapp",
-                "to": phone,
-                "type": "template",
-                "template": {
-                    "name": getattr(settings, 'WHATSAPP_TEMPLATE_INVITE', 'onboarding_invite_v1'),
-                    "language": {"code": "en_US"},
-                    "components": [
-                        {
-                            "type": "body",
-                            "parameters": [
-                                {"type": "text", "text": title},
-                                {"type": "text", "text": message}
-                            ]
-                        }
-                    ]
-                }
+                "to": phone_digits,
+                "type": "text",
+                "text": {"body": body}
             }
 
             print(f"WhatsApp payload: {payload}", flush=True)
@@ -409,11 +407,51 @@ class NotificationService:
                 json=payload
             )
             print(f"WhatsApp response: {resp.status_code} - {resp.text}", flush=True)
-            return resp.status_code == 200
+            ok = resp.status_code == 200
+            external_id = None
+            response_data = {}
+            try:
+                response_data = resp.json()
+                if isinstance(response_data, dict):
+                    external_id = str(response_data.get('messages', [{}])[0].get('id')) if response_data.get('messages') else None
+            except Exception:
+                response_data = {"raw": resp.text}
+
+            # Audit log
+            try:
+                NotificationLog.objects.create(
+                    notification=data.get('notification'),
+                    channel='whatsapp',
+                    recipient_address=phone_digits,
+                    status='SENT' if ok else 'FAILED',
+                    external_id=external_id,
+                    response_data=response_data,
+                    error_message=None if ok else resp.text[:500]
+                )
+            except Exception:
+                pass
+
+            return ok
 
         except Exception as e:
             logger.error(f"WhatsApp error: {e}")
             print(f"WhatsApp exception: {e}", flush=True)
+            # Best-effort audit log
+            try:
+                from .models import NotificationLog
+                recipient = data.get('recipient')
+                phone = getattr(recipient, 'phone', None) if recipient else None
+                phone_digits = ''.join(filter(str.isdigit, str(phone or '')))
+                NotificationLog.objects.create(
+                    notification=data.get('notification'),
+                    channel='whatsapp',
+                    recipient_address=phone_digits or (str(phone) if phone else ''),
+                    status='FAILED',
+                    response_data={},
+                    error_message=str(e)[:500]
+                )
+            except Exception:
+                pass
             return False
 
     # ----------------------------------------------------------------------
@@ -521,9 +559,10 @@ class NotificationService:
             logger.error(f"WhatsApp invitation error: {e}")
             return False, {"error": str(e)}
 
-    def send_whatsapp_text(self, phone, body):
+    def send_whatsapp_text(self, phone, body, notification=None):
         """Send a plain text WhatsApp message via Meta Cloud API"""
         try:
+            from .models import NotificationLog
             token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
             phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
             if not token or not phone_id or not phone:
@@ -554,14 +593,45 @@ class NotificationService:
                 data = {"error": resp.text}
             
             ok = resp.status_code == 200
-            return ok, {"status_code": resp.status_code, "data": data}
+            external_id = None
+            if isinstance(data, dict):
+                external_id = str(data.get('messages', [{}])[0].get('id')) if data.get('messages') else None
+
+            # Audit log (best-effort)
+            try:
+                NotificationLog.objects.create(
+                    notification=notification,
+                    channel='whatsapp',
+                    recipient_address=phone,
+                    status='SENT' if ok else 'FAILED',
+                    external_id=external_id,
+                    response_data=data if isinstance(data, dict) else {"raw": str(data)},
+                    error_message=None if ok else str(data)[:500],
+                )
+            except Exception:
+                pass
+
+            return ok, {"status_code": resp.status_code, "data": data, "external_id": external_id}
         except Exception as e:
             logger.error(f"WhatsApp text error: {e}")
+            try:
+                from .models import NotificationLog
+                NotificationLog.objects.create(
+                    notification=notification,
+                    channel='whatsapp',
+                    recipient_address=''.join(filter(str.isdigit, str(phone or ''))),
+                    status='FAILED',
+                    response_data={},
+                    error_message=str(e)[:500],
+                )
+            except Exception:
+                pass
             return False, {"error": str(e)}
 
-    def send_whatsapp_template(self, phone, template_name, language_code='en_US', components=None):
+    def send_whatsapp_template(self, phone, template_name, language_code='en_US', components=None, notification=None):
         """Send a WhatsApp template message via Meta Cloud API"""
         try:
+            from .models import NotificationLog
             token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
             phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
             if not token or not phone_id or not phone:
@@ -599,21 +669,251 @@ class NotificationService:
             ok = resp.status_code == 200
             if not ok:
                 logger.warning(f"WhatsApp template failed: {resp.status_code} - {data}")
-            return ok, {"status_code": resp.status_code, "data": data}
+            external_id = None
+            if isinstance(data, dict):
+                external_id = str(data.get('messages', [{}])[0].get('id')) if data.get('messages') else None
+
+            # Audit log
+            try:
+                NotificationLog.objects.create(
+                    notification=notification,
+                    channel='whatsapp',
+                    recipient_address=phone,
+                    status='SENT' if ok else 'FAILED',
+                    external_id=external_id,
+                    response_data=data if isinstance(data, dict) else {"raw": str(data)},
+                    error_message=None if ok else str(data)[:500],
+                )
+            except Exception:
+                pass
+
+            return ok, {"status_code": resp.status_code, "data": data, "external_id": external_id}
         except Exception as e:
             logger.error(f"WhatsApp template error: {e}")
+            try:
+                from .models import NotificationLog
+                NotificationLog.objects.create(
+                    notification=notification,
+                    channel='whatsapp',
+                    recipient_address=''.join(filter(str.isdigit, str(phone or ''))),
+                    status='FAILED',
+                    response_data={},
+                    error_message=str(e)[:500],
+                )
+            except Exception:
+                pass
             return False, {"error": str(e)}
+
+    def send_whatsapp_buttons(self, phone, body, buttons):
+        """
+        Send an interactive WhatsApp message with up to 3 quick-reply buttons.
+        buttons: [{ "id": "yes", "title": "✅ Yes" }, ...]
+        """
+        try:
+            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            if not token or not phone_id or not phone:
+                return False, {"error": "WhatsApp not configured"}
+
+            phone = ''.join(filter(str.isdigit, phone))
+            default_cc = getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '')
+            if phone.startswith('0'):
+                phone = phone.lstrip('0')
+            if not re.match(r"^\d{10,15}$", phone):
+                if default_cc and re.match(r"^\d{9,14}$", phone):
+                    phone = f"{default_cc}{phone}"
+            if not re.match(r"^\d{10,15}$", phone):
+                return False, {"error": "Invalid phone format"}
+
+            btns = list(buttons or [])[:3]
+            action_buttons = []
+            for b in btns:
+                bid = str(b.get('id') or '')[:256]
+                title = str(b.get('title') or '')[:20]  # WhatsApp limit
+                if not bid or not title:
+                    continue
+                action_buttons.append({
+                    "type": "reply",
+                    "reply": {"id": bid, "title": title}
+                })
+
+            if not action_buttons:
+                # Fallback to plain text
+                return self.send_whatsapp_text(phone, body)
+
+            url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "interactive",
+                "interactive": {
+                    "type": "button",
+                    "body": {"text": body},
+                    "action": {"buttons": action_buttons}
+                }
+            }
+            resp = requests.post(url, headers={'Authorization': f"Bearer {token}"}, json=payload)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"error": resp.text}
+            ok = resp.status_code == 200
+            return ok, {"status_code": resp.status_code, "data": data}
+        except Exception as e:
+            logger.error(f"WhatsApp buttons error: {e}")
+            return False, {"error": str(e)}
+
+    def send_whatsapp_location_request(self, phone, body):
+        """
+        Prefer a pre-approved template that asks for live location.
+        Falls back to plain text prompt.
+        """
+        try:
+            # If you have a Meta template for this, use it:
+            ok, resp = self.send_whatsapp_template(
+                phone=phone,
+                template_name='clock_in_location_request',
+                language_code='en_US',
+                components=[]
+            )
+            if ok:
+                return ok, resp
+        except Exception:
+            pass
+        return self.send_whatsapp_text(phone, body)
+
+    # ----------------------------------------------------------------------
+    # WHATSAPP MEDIA + VOICE NOTE TRANSCRIPTION
+    # ----------------------------------------------------------------------
+
+    def fetch_whatsapp_media_url(self, media_id):
+        """
+        Fetch a temporary download URL for a WhatsApp media_id.
+        https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media
+        """
+        try:
+            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+            if not token or not media_id:
+                return None, None
+
+            url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{media_id}"
+            resp = requests.get(url, headers={'Authorization': f"Bearer {token}"}, timeout=10)
+            if resp.status_code != 200:
+                logger.warning(f"WhatsApp media lookup failed: {resp.status_code} - {resp.text}")
+                return None, None
+
+            data = resp.json()
+            return data.get('url'), data.get('mime_type')
+        except Exception as e:
+            logger.error(f"fetch_whatsapp_media_url error: {e}")
+            return None, None
+
+    def download_media_bytes(self, media_url):
+        """Download media bytes from a WhatsApp media URL."""
+        try:
+            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+            if not token or not media_url:
+                return None
+
+            resp = requests.get(media_url, headers={'Authorization': f"Bearer {token}"}, timeout=30)
+            if resp.status_code != 200:
+                logger.warning(f"WhatsApp media download failed: {resp.status_code} - {resp.text[:200]}")
+                return None
+            return resp.content
+        except Exception as e:
+            logger.error(f"download_media_bytes error: {e}")
+            return None
+
+    def transcribe_audio_bytes(self, audio_bytes, input_mime_type=None):
+        """
+        Transcribe voice-note audio bytes.
+
+        Current implementation uses OpenAI Whisper (`whisper-1`) via REST.
+        If the incoming audio is OGG/OPUS (common for WhatsApp), we attempt to convert
+        to WAV using ffmpeg when available.
+        """
+        if not audio_bytes:
+            return None
+
+        api_key = getattr(settings, 'OPENAI_API_KEY', '') or ''
+        if not api_key:
+            logger.warning("OPENAI_API_KEY not configured; skipping transcription")
+            return None
+
+        tmp_in = None
+        tmp_out = None
+        try:
+            # Write input audio to temp file
+            tmp_in = tempfile.NamedTemporaryFile(delete=False, suffix='.ogg')
+            tmp_in.write(audio_bytes)
+            tmp_in.flush()
+            tmp_in.close()
+
+            audio_path = tmp_in.name
+
+            # Convert if needed/possible (WhatsApp often sends audio/ogg; codecs=opus)
+            ffmpeg = shutil.which('ffmpeg')
+            if ffmpeg:
+                tmp_out = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+                tmp_out.close()
+                out_path = tmp_out.name
+
+                # -y overwrite, mono 16k improves STT reliability
+                cmd = [ffmpeg, '-y', '-i', audio_path, '-ac', '1', '-ar', '16000', out_path]
+                try:
+                    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    audio_path = out_path
+                except Exception as e:
+                    logger.warning(f"ffmpeg convert failed; falling back to original bytes: {e}")
+            else:
+                logger.info("ffmpeg not found; sending raw audio bytes to STT provider")
+
+            stt_url = "https://api.openai.com/v1/audio/transcriptions"
+            headers = {"Authorization": f"Bearer {api_key}"}
+            with open(audio_path, 'rb') as f:
+                files = {
+                    'file': (audio_path.split('/')[-1], f),
+                }
+                data = {
+                    'model': 'whisper-1',
+                    'response_format': 'json',
+                }
+                resp = requests.post(stt_url, headers=headers, files=files, data=data, timeout=60)
+            if resp.status_code != 200:
+                logger.warning(f"STT failed: {resp.status_code} - {resp.text[:300]}")
+                return None
+
+            payload = resp.json()
+            text = payload.get('text')
+            if text:
+                text = str(text).strip()
+            return text or None
+        except Exception as e:
+            logger.error(f"transcribe_audio_bytes error: {e}")
+            return None
+        finally:
+            # Cleanup temp files
+            try:
+                if tmp_in and tmp_in.name:
+                    shutil.os.unlink(tmp_in.name)
+            except Exception:
+                pass
+            try:
+                if tmp_out and tmp_out.name:
+                    shutil.os.unlink(tmp_out.name)
+            except Exception:
+                pass
 
     # ----------------------------------------------------------------------
     # PREFERENCE HELPERS
     # ----------------------------------------------------------------------
 
     def _should_send_whatsapp(self, user):
-        pref = getattr(user, 'notification_preference', None)
+        pref = getattr(user, 'notification_preferences', None) or getattr(user, 'notification_preference', None)
         return not pref or pref.whatsapp_enabled
 
     def _should_send_email(self, user):
-        pref = getattr(user, 'notification_preference', None)
+        pref = getattr(user, 'notification_preferences', None) or getattr(user, 'notification_preference', None)
         return not pref or pref.email_enabled
 
     

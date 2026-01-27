@@ -477,8 +477,10 @@ def whatsapp_webhook(request):
                 'task_completed': 'Task marked as completed.',
                 'task_verify_photo': 'Please send a photo as evidence to complete this task.',
                 'task_verify_done': 'Task completed with photo evidence.',
-                'incident_prompt': 'Please describe the incident or issue. You can send a text or voice note.',
-                'incident_recorded': 'Incident recorded. Ticket #{ticket_id}. A manager will be notified.',
+                'incident_prompt': 'Please describe the incident. Include: type (Safety/Maintenance/HR/Service/Other), what happened, and when it occurred. You can send text or a voice note.',
+                'incident_clarify_audio': 'Thanks — I couldn’t clearly understand that voice note. Please resend it, or reply with: incident type, a brief description, and the time it occurred.',
+                'incident_clarify_missing': 'Thanks — before I log this, please clarify: {missing}.',
+                'incident_recorded': '✅ Incident report received and logged.\n\nTicket: #{ticket_id}\nType: {incident_type}\nTime: {occurred_at}\n\nYour report has been received and shared with management.',
                 'incident_failed': 'Failed to record incident. Please try again.',
                 'unrecognized': 'Unrecognized command. Reply with "help" to see available options.',
             },
@@ -599,10 +601,17 @@ def whatsapp_webhook(request):
                                     else:
                                         session.state = 'awaiting_clock_in_location'
                                         session.save(update_fields=['state'])
-                                        notification_service.send_whatsapp_location_request(phone_digits, R(user, 'clockin_prompt'))
+                                        # Use clock_in_location_request template with "Send Location" button
+                                        notification_service.send_whatsapp_template(
+                                            phone=phone_digits,
+                                            template_name='clock_in_location_request',
+                                            language_code='en_US',
+                                            components=[]
+                                        )
                                 else:
                                     notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                                 continue
+
 
                             elif btn_id == 'clock_out_now':
                                 if user:
@@ -631,7 +640,202 @@ def whatsapp_webhook(request):
                                     notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                                 continue
 
-                        elif int_type == 'nfm_reply':
+                            # =====================================================
+                            # HANDLE CHECKLIST BUTTON RESPONSES (Yes/No/N/A)
+                            # =====================================================
+                            elif btn_id in ['yes', 'no', 'n_a', 'Yes', 'No', 'N/A'] and session.state == 'in_checklist':
+                                from scheduling.models import ShiftTask
+                                checklist = session.context.get('checklist', {})
+                                tasks = checklist.get('tasks', [])
+                                responses = checklist.get('responses', {})
+                                
+                                current_task_id = checklist.get('current_task_id')
+                                if not current_task_id:
+                                    current_index = int(checklist.get('current_index', 0) or 0)
+                                    if 0 <= current_index < len(tasks):
+                                        current_task_id = tasks[current_index]
+                                    
+                                    # Record this response
+                                    response_value = btn_id.lower().replace('/', '_')  # 'N/A' -> 'n_a'
+                                    responses[current_task_id] = response_value
+                                    
+                                    # Update ShiftTask status based on response
+                                    try:
+                                        task = ShiftTask.objects.get(id=current_task_id)
+                                        # Stop checklist if shift ended
+                                        try:
+                                            from scheduling.models import AssignedShift
+                                            sft = AssignedShift.objects.filter(id=checklist.get('shift_id')).first()
+                                            if sft and sft.end_time and timezone.now() > sft.end_time:
+                                                notification_service.send_whatsapp_text(phone_digits, "⏱️ Shift ended. Checklist paused.")
+                                                session.context.pop('checklist', None)
+                                                session.state = 'idle'
+                                                session.save(update_fields=['state', 'context'])
+                                                continue
+                                        except Exception:
+                                            pass
+
+                                        if response_value == 'yes':
+                                            # Photo verification required: request photo instead of completing
+                                            if getattr(task, 'verification_required', False) and str(getattr(task, 'verification_type', 'NONE')).upper() == 'PHOTO':
+                                                session.context['awaiting_verification_for_task_id'] = str(task.id)
+                                                session.state = 'awaiting_task_photo'
+                                                checklist['current_task_id'] = current_task_id
+                                                checklist['responses'] = responses
+                                                session.context['checklist'] = checklist
+                                                session.save(update_fields=['state', 'context'])
+                                                msg = (
+                                                    f"📸 Please send a photo to complete:\n\n"
+                                                    f"*{task.title}*\n{task.description or ''}"
+                                                )
+                                                notification_service.send_whatsapp_text(phone_digits, msg)
+                                                continue
+                                            task.status = 'COMPLETED'
+                                            task.completed_at = timezone.now()
+                                            task.save(update_fields=['status', 'completed_at'])
+                                        elif response_value == 'n_a':
+                                            task.status = 'CANCELLED'
+                                            task.notes = (task.notes or '') + f"\nN/A ({timezone.now().strftime('%H:%M')})"
+                                            task.save(update_fields=['status', 'notes'])
+                                        elif response_value == 'no':
+                                            task.status = 'IN_PROGRESS'
+                                            task.started_at = task.started_at or timezone.now()
+                                            task.notes = (task.notes or '') + f"\nNot complete ({timezone.now().strftime('%H:%M')})"
+                                            task.save(update_fields=['status', 'started_at', 'notes'])
+                                            checklist['pending_task_id'] = current_task_id
+                                            checklist['responses'] = responses
+                                            session.context['checklist'] = checklist
+                                            session.state = 'checklist_followup'
+                                            session.save(update_fields=['state', 'context'])
+                                            follow_msg = (
+                                                f"Got it — *{task.title}* isn’t complete yet.\n\n"
+                                                "What would you like to do?"
+                                            )
+                                            follow_buttons = [
+                                                {"id": "need_help", "title": "❓ Need help"},
+                                                {"id": "delay", "title": "⏳ Delay"},
+                                                {"id": "skip", "title": "⏭️ Skip"}
+                                            ]
+                                            notification_service.send_whatsapp_buttons(phone_digits, follow_msg, follow_buttons)
+                                            continue
+                                    except ShiftTask.DoesNotExist:
+                                        pass
+
+                                    # Advance to next pending task
+                                    checklist['responses'] = responses
+                                    session.context['checklist'] = checklist
+                                    session.save(update_fields=['context'])
+
+                                    pending_tasks = list(ShiftTask.objects.filter(id__in=tasks).exclude(status__in=['COMPLETED', 'CANCELLED']))
+                                    if not pending_tasks:
+                                        completed = sum(1 for r in responses.values() if r == 'yes')
+                                        total = len(tasks)
+                                        completion_msg = (
+                                            f"🎉 *Checklist Complete!*\n\n"
+                                            f"✅ {completed}/{total} items confirmed\n\n"
+                                            "Great job! Have a productive shift."
+                                        )
+                                        notification_service.send_whatsapp_text(phone_digits, completion_msg)
+                                        session.context.pop('checklist', None)
+                                        session.state = 'idle'
+                                        session.save(update_fields=['state', 'context'])
+                                        continue
+
+                                    pending_ids = {str(t.id) for t in pending_tasks}
+                                    next_task_id = None
+                                    for tid in tasks:
+                                        if str(tid) in pending_ids:
+                                            next_task_id = str(tid)
+                                            break
+                                    next_task_id = next_task_id or str(pending_tasks[0].id)
+                                    checklist['current_task_id'] = next_task_id
+                                    session.context['checklist'] = checklist
+                                    session.save(update_fields=['context'])
+
+                                    next_task = ShiftTask.objects.filter(id=next_task_id).first()
+                                    if next_task:
+                                        idx = (tasks.index(next_task_id) + 1) if next_task_id in tasks else 1
+                                        if getattr(next_task, 'verification_required', False) and str(getattr(next_task, 'verification_type', 'NONE')).upper() == 'PHOTO':
+                                            msg = (
+                                                f"📋 *Task {idx}/{len(tasks)}*\n\n"
+                                                f"*{next_task.title}*\n"
+                                                f"{next_task.description or ''}\n\n"
+                                                f"📸 Please complete this task and send a photo as evidence."
+                                            )
+                                            session.context['awaiting_verification_for_task_id'] = str(next_task.id)
+                                            session.state = 'awaiting_task_photo'
+                                            session.save(update_fields=['state', 'context'])
+                                            notification_service.send_whatsapp_text(phone_digits, msg)
+                                        else:
+                                            task_msg = (
+                                                f"📋 *Task {idx}/{len(tasks)}*\n\n"
+                                                f"*{next_task.title}*\n"
+                                                f"{next_task.description or ''}\n\n"
+                                                "Is this complete?"
+                                            )
+                                            buttons = [
+                                                {"id": "yes", "title": "✅ Yes"},
+                                                {"id": "no", "title": "❌ No"},
+                                                {"id": "n_a", "title": "➖ N/A"}
+                                            ]
+                                            notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+                                continue
+
+                            elif session.state == 'checklist_followup' and btn_id in ['need_help', 'delay', 'skip']:
+                                from scheduling.models import ShiftTask
+                                checklist = session.context.get('checklist', {})
+                                pending_task_id = checklist.get('pending_task_id')
+                                task = ShiftTask.objects.filter(id=pending_task_id).first() if pending_task_id else None
+                                if not task:
+                                    session.state = 'in_checklist'
+                                    session.save(update_fields=['state'])
+                                    continue
+                                if btn_id == 'need_help':
+                                    session.state = 'checklist_help_text'
+                                    session.save(update_fields=['state'])
+                                    notification_service.send_whatsapp_text(phone_digits, f"Tell me what you need help with for:\n\n*{task.title}*")
+                                    continue
+                                if btn_id == 'delay':
+                                    session.state = 'checklist_delay_eta'
+                                    session.save(update_fields=['state'])
+                                    eta_msg = "When do you expect to complete it?"
+                                    eta_buttons = [
+                                        {"id": "eta_10m", "title": "10 min"},
+                                        {"id": "eta_30m", "title": "30 min"},
+                                        {"id": "eta_1h", "title": "1 hour"},
+                                        {"id": "eta_later", "title": "Later"}
+                                    ]
+                                    notification_service.send_whatsapp_buttons(phone_digits, eta_msg, eta_buttons)
+                                    continue
+                                if btn_id == 'skip':
+                                    task.status = 'CANCELLED'
+                                    task.notes = (task.notes or '') + f"\nSkipped by staff ({timezone.now().strftime('%H:%M')})"
+                                    task.save(update_fields=['status', 'notes'])
+                                    checklist.pop('pending_task_id', None)
+                                    session.context['checklist'] = checklist
+                                    session.state = 'in_checklist'
+                                    session.save(update_fields=['state', 'context'])
+                                    notification_service.send_whatsapp_text(phone_digits, "Okay — skipping that item. Moving on.")
+                                    continue
+
+                            elif session.state == 'checklist_delay_eta' and btn_id in ['eta_10m', 'eta_30m', 'eta_1h', 'eta_later']:
+                                from scheduling.models import ShiftTask
+                                checklist = session.context.get('checklist', {})
+                                pending_task_id = checklist.get('pending_task_id')
+                                task = ShiftTask.objects.filter(id=pending_task_id).first() if pending_task_id else None
+                                if task:
+                                    mapping = {'eta_10m': '10 minutes', 'eta_30m': '30 minutes', 'eta_1h': '1 hour', 'eta_later': 'later'}
+                                    eta_txt = mapping.get(btn_id, 'later')
+                                    task.notes = (task.notes or '') + f"\nDelayed (ETA: {eta_txt}) at {timezone.now().strftime('%H:%M')}"
+                                    task.save(update_fields=['notes'])
+                                checklist.pop('pending_task_id', None)
+                                session.context['checklist'] = checklist
+                                session.state = 'in_checklist'
+                                session.save(update_fields=['state', 'context'])
+                                notification_service.send_whatsapp_text(phone_digits, "Thanks — marked as delayed. Continuing.")
+                                continue
+
+
                             nfm_reply = interactive.get('nfm_reply', {})
                             response_json_str = nfm_reply.get('response_json', '{}')
                             try:
@@ -788,8 +992,61 @@ def whatsapp_webhook(request):
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'unrecognized'))
                             
                             session.context.pop('awaiting_verification_for_task_id', None)
-                            session.state = 'idle'
-                            session.save(update_fields=['context', 'state'])
+                            # If we're in a shift checklist, resume it automatically
+                            checklist = session.context.get('checklist')
+                            if checklist:
+                                session.state = 'in_checklist'
+                                session.save(update_fields=['context', 'state'])
+                                try:
+                                    from scheduling.models import ShiftTask
+                                    task_ids = checklist.get('tasks', [])
+                                    responses = checklist.get('responses', {})
+                                    pending = list(ShiftTask.objects.filter(id__in=task_ids).exclude(status__in=['COMPLETED', 'CANCELLED']))
+                                    if pending:
+                                        # pick next in original order
+                                        next_id = None
+                                        pending_ids = {str(t.id) for t in pending}
+                                        for tid in task_ids:
+                                            if str(tid) in pending_ids:
+                                                next_id = str(tid)
+                                                break
+                                        next_id = next_id or str(pending[0].id)
+                                        checklist['current_task_id'] = next_id
+                                        checklist['responses'] = responses
+                                        session.context['checklist'] = checklist
+                                        session.save(update_fields=['context'])
+                                        nxt = ShiftTask.objects.filter(id=next_id).first()
+                                        if nxt:
+                                            idx = (task_ids.index(next_id) + 1) if next_id in task_ids else 1
+                                            if getattr(nxt, 'verification_required', False) and str(getattr(nxt, 'verification_type', 'NONE')).upper() == 'PHOTO':
+                                                msg = (
+                                                    f"📋 *Task {idx}/{len(task_ids)}*\n\n"
+                                                    f"*{nxt.title}*\n"
+                                                    f"{nxt.description or ''}\n\n"
+                                                    f"📸 Please complete this task and send a photo as evidence."
+                                                )
+                                                session.context['awaiting_verification_for_task_id'] = str(nxt.id)
+                                                session.state = 'awaiting_task_photo'
+                                                session.save(update_fields=['state', 'context'])
+                                                notification_service.send_whatsapp_text(phone_digits, msg)
+                                            else:
+                                                task_msg = (
+                                                    f"📋 *Task {idx}/{len(task_ids)}*\n\n"
+                                                    f"*{nxt.title}*\n"
+                                                    f"{nxt.description or ''}\n\n"
+                                                    "Is this complete?"
+                                                )
+                                                buttons = [
+                                                    {"id": "yes", "title": "✅ Yes"},
+                                                    {"id": "no", "title": "❌ No"},
+                                                    {"id": "n_a", "title": "➖ N/A"}
+                                                ]
+                                                notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+                                except Exception:
+                                    pass
+                            else:
+                                session.state = 'idle'
+                                session.save(update_fields=['context', 'state'])
                         else:
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'unrecognized'))
                             continue
@@ -801,50 +1058,162 @@ def whatsapp_webhook(request):
                     if msg_type == 'audio':
                         audio = msg.get('audio') or {}
                         media_id = audio.get('id')
-                        media_url = notification_service.fetch_whatsapp_media_url(media_id) if media_id else None
+                        media_url, mime_type = notification_service.fetch_whatsapp_media_url(media_id) if media_id else (None, None)
                         audio_bytes = notification_service.download_media_bytes(media_url) if media_url else None
-                        transcript = notification_service.transcribe_audio_bytes(audio_bytes) if audio_bytes else None
-                        
-                        text = transcript or "Audio incident report"
-                        
-                        if user:
-                            # Use new Incident model
-                            from reporting.models import Incident
-                            incident = Incident.objects.create(
-                                restaurant=user.restaurant,
-                                reporter=user,
-                                title=f"Voice Incident from {user.first_name}",
-                                description=text,
-                                audio_evidence=[media_url] if media_url else [],
-                                category='Safety', # Default or infer
-                                priority='MEDIUM'
-                            )
-                            
-                            # Send to Lua Agent for analysis/ticket updates if needed
-                            ok, data = notification_service.send_lua_incident(
-                                user,
-                                text,
-                                metadata={
-                                    'channel': 'whatsapp',
-                                    'phone': phone_digits,
-                                    'media_id': media_id,
-                                    'incident_id': str(incident.id)
-                                }
-                            )
-                            
-                            notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_recorded', ticket_id=str(incident.id)[:8]))
-                            
-                            # Notify Manager
+                        transcript = notification_service.transcribe_audio_bytes(audio_bytes, input_mime_type=mime_type) if audio_bytes else None
+
+                        if not user:
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            continue
+
+                        # If transcription failed / unclear, ask for clarification BEFORE creating a ticket
+                        if not transcript or len((transcript or '').strip()) < 8:
+                            session.state = 'awaiting_incident_clarification'
+                            session.context['pending_incident'] = {
+                                'source': 'voice',
+                                'audio_url': media_url,
+                                'media_id': media_id,
+                                'transcript': transcript,
+                            }
+                            session.save(update_fields=['state', 'context'])
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_clarify_audio'))
+                            continue
+
+                        # Extract structured incident details (no ticket if critical details are missing)
+                        from dateutil import parser as date_parser
+                        import re as _re
+                        from staff.models_task import SafetyConcernReport
+                        from scheduling.models import AssignedShift
+
+                        def _infer_incident_type(t):
+                            t_low = (t or '').lower()
+                            if any(k in t_low for k in ['injury', 'hurt', 'slip', 'fall', 'bleed', 'burn', 'fire', 'unsafe', 'hazard', 'accident']):
+                                return 'Safety'
+                            if any(k in t_low for k in ['broken', 'leak', 'maintenance', 'machine', 'equipment', 'fridge', 'freezer', 'oven', 'gas', 'water']):
+                                return 'Maintenance'
+                            if any(k in t_low for k in ['harassment', 'abuse', 'discrimination', 'fight', 'threat']):
+                                return 'HR'
+                            if any(k in t_low for k in ['customer', 'guest', 'complaint', 'service', 'refund']):
+                                return 'Service'
+                            return None
+
+                        def _extract_occurred_at(t, now):
+                            # Lightweight parse: look for "at 3pm", "3:15", "yesterday", etc.
+                            t_low = (t or '').lower()
+                            if 'yesterday' in t_low:
+                                base = now - timezone.timedelta(days=1)
+                            elif 'today' in t_low:
+                                base = now
+                            else:
+                                base = now
                             try:
-                                manager = CustomUser.objects.filter(restaurant=user.restaurant, role='MANAGER').order_by('id').first()
-                                if manager and getattr(manager, 'phone', None):
-                                    notif_msg = f"New Incident reported by {user.get_full_name()}.\nTicket #{str(incident.id)[:8]}\nDetails: {text[:100]}..."
-                                    notification_service.send_whatsapp_text(manager.phone, notif_msg)
+                                # dateutil will keep base date if only a time is present
+                                dt = date_parser.parse(t, fuzzy=True, default=base)
+                                # Heuristic: if parse returns something wildly in the future, treat as missing
+                                if dt > now + timezone.timedelta(days=7):
+                                    return None
+                                return timezone.make_aware(dt) if timezone.is_naive(dt) else dt
                             except Exception:
-                                pass
-                                
-                        else:
-                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                                return None
+
+                        def _infer_severity(t):
+                            t_low = (t or '').lower()
+                            if any(k in t_low for k in ['critical', 'life threatening', 'life-threatening', 'fire', 'gas leak']):
+                                return 'CRITICAL'
+                            if any(k in t_low for k in ['injury', 'bleeding', 'severe', 'danger', 'urgent']):
+                                return 'HIGH'
+                            if any(k in t_low for k in ['minor', 'small', 'low risk', 'low-risk']):
+                                return 'LOW'
+                            return 'MEDIUM'
+
+                        def _infer_shift(u, when_dt):
+                            try:
+                                qs = AssignedShift.objects.filter(
+                                    staff=u,
+                                    shift_date=when_dt.date(),
+                                    status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED']
+                                )
+                                # Prefer shifts that overlap the occurred time, else first shift that day.
+                                overlap = qs.filter(start_time__lte=when_dt, end_time__gte=when_dt).first()
+                                return overlap or qs.order_by('start_time').first()
+                            except Exception:
+                                return None
+
+                        now = timezone.now()
+                        incident_type = _infer_incident_type(transcript)
+                        occurred_at = _extract_occurred_at(transcript, now)
+
+                        missing = []
+                        if not incident_type:
+                            missing.append("incident type (Safety/Maintenance/HR/Service/Other)")
+                        if not occurred_at:
+                            missing.append("time of occurrence (e.g., today 3pm)")
+
+                        if missing:
+                            session.state = 'awaiting_incident_clarification'
+                            session.context['pending_incident'] = {
+                                'source': 'voice',
+                                'audio_url': media_url,
+                                'media_id': media_id,
+                                'transcript': transcript,
+                            }
+                            session.save(update_fields=['state', 'context'])
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                R(user, 'incident_clarify_missing', missing=", ".join(missing))
+                            )
+                            continue
+
+                        shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
+                        severity = _infer_severity(transcript)
+
+                        ticket = SafetyConcernReport.objects.create(
+                            restaurant=user.restaurant,
+                            reporter=user,
+                            is_anonymous=False,
+                            incident_type=incident_type,
+                            title=f"{incident_type} incident reported via voice",
+                            description=transcript.strip(),
+                            severity=severity,
+                            status='REPORTED',
+                            occurred_at=occurred_at,
+                            shift=shift_obj,
+                            audio_evidence=[media_url] if media_url else [],
+                        )
+
+                        # Send to Lua Agent for analysis/context if needed
+                        notification_service.send_lua_incident(
+                            user,
+                            transcript,
+                            metadata={
+                                'channel': 'whatsapp',
+                                'phone': phone_digits,
+                                'media_id': media_id,
+                                'ticket_id': str(ticket.id),
+                                'incident_type': incident_type,
+                            }
+                        )
+
+                        occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
+                        notification_service.send_whatsapp_text(
+                            phone_digits,
+                            R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=incident_type, occurred_at=occurred_str)
+                        )
+
+                        # Notify Manager (best-effort)
+                        try:
+                            manager = CustomUser.objects.filter(restaurant=user.restaurant, role__in=['MANAGER', 'ADMIN']).order_by('id').first()
+                            if manager and getattr(manager, 'phone', None):
+                                notif_msg = (
+                                    f"New Incident reported by {user.get_full_name()}.\n"
+                                    f"Ticket #{str(ticket.id)[:8]}\n"
+                                    f"Type: {incident_type}\n"
+                                    f"Time: {occurred_str}\n"
+                                    f"Details: {transcript[:150]}..."
+                                )
+                                notification_service.send_whatsapp_text(manager.phone, notif_msg)
+                        except Exception:
+                            pass
                         continue
 
                     # ------------------------------------------------------------------
@@ -883,8 +1252,130 @@ def whatsapp_webhook(request):
                                     location_encrypted=f"{lat},{lon}" # Populate required field
                                 )
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'clockin_ok', time=timezone.now().strftime('%H:%M')))
-                                session.state = 'idle'
-                                session.save(update_fields=['state'])
+                                
+                                # =====================================================
+                                # INITIATE CONVERSATIONAL CHECKLIST AFTER CLOCK-IN
+                                # =====================================================
+                                from scheduling.models import AssignedShift, ShiftTask
+                                
+                                # Find active shift for this user (started today, user is staff)
+                                now_today = timezone.now()
+                                active_qs = AssignedShift.objects.filter(
+                                    staff=user,
+                                    shift_date=now_today.date(),
+                                    status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS']
+                                )
+                                # Prefer shift overlapping now; fallback to earliest today
+                                active_shift = active_qs.filter(start_time__lte=now_today, end_time__gte=now_today).first() or active_qs.order_by('start_time').first()
+                                
+                                if active_shift:
+                                    def ensure_shift_tasks_from_templates(shift_obj):
+                                        """
+                                        If the shift has no ShiftTask rows yet, generate them from assigned task_templates.
+                                        This enables a step-by-step conversational checklist immediately after clock-in.
+                                        """
+                                        try:
+                                            if ShiftTask.objects.filter(shift=shift_obj).exists():
+                                                return
+                                        except Exception:
+                                            return
+                                        try:
+                                            templates = list(shift_obj.task_templates.all())
+                                        except Exception:
+                                            templates = []
+                                        for tpl in templates:
+                                            steps = []
+                                            try:
+                                                if getattr(tpl, 'sop_steps', None):
+                                                    steps = list(tpl.sop_steps or [])
+                                                elif getattr(tpl, 'tasks', None):
+                                                    steps = list(tpl.tasks or [])
+                                            except Exception:
+                                                steps = []
+                                            if not steps:
+                                                steps = [{"title": getattr(tpl, 'name', 'Task'), "description": getattr(tpl, 'description', '') or ''}]
+                                            for step in steps:
+                                                if isinstance(step, str):
+                                                    title = step.strip()[:255] or getattr(tpl, 'name', 'Task')
+                                                    desc = ''
+                                                elif isinstance(step, dict):
+                                                    title = (step.get('title') or step.get('name') or step.get('task') or getattr(tpl, 'name', 'Task'))[:255]
+                                                    desc = (step.get('description') or step.get('details') or '').strip()
+                                                else:
+                                                    title = getattr(tpl, 'name', 'Task')
+                                                    desc = ''
+                                                ShiftTask.objects.create(
+                                                    shift=shift_obj,
+                                                    title=title,
+                                                    description=desc,
+                                                    status='TODO',
+                                                    assigned_to=user,
+                                                    verification_required=bool(getattr(tpl, 'verification_required', False)),
+                                                    verification_type=getattr(tpl, 'verification_type', 'NONE') or 'NONE',
+                                                    verification_instructions=getattr(tpl, 'verification_instructions', None),
+                                                    verification_checklist=getattr(tpl, 'verification_checklist', []) or [],
+                                                )
+                                    
+                                    ensure_shift_tasks_from_templates(active_shift)
+
+                                    # Get all pending tasks for this shift (TODO + IN_PROGRESS)
+                                    tasks_qs = ShiftTask.objects.filter(shift=active_shift).exclude(status__in=['COMPLETED', 'CANCELLED'])
+                                    priority_order = {'URGENT': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3}
+                                    tasks = sorted(list(tasks_qs), key=lambda t: (priority_order.get((t.priority or 'MEDIUM').upper(), 2), t.created_at))
+                                    task_ids = [str(t.id) for t in tasks]
+                                    
+                                    if task_ids:
+                                        # Store checklist state in session context
+                                        session.context['checklist'] = {
+                                            'shift_id': str(active_shift.id),
+                                            'tasks': task_ids,
+                                            'current_task_id': task_ids[0],
+                                            'responses': {},
+                                            'started_at': timezone.now().isoformat()
+                                        }
+                                        session.state = 'in_checklist'
+                                        session.save(update_fields=['state', 'context'])
+
+                                        # If shift ended already, don't start
+                                        if active_shift.end_time and timezone.now() > active_shift.end_time:
+                                            notification_service.send_whatsapp_text(phone_digits, "⏱️ This shift has already ended. No checklist to run.")
+                                            session.context.pop('checklist', None)
+                                            session.state = 'idle'
+                                            session.save(update_fields=['state', 'context'])
+                                        else:
+                                            first_task = tasks[0]
+                                            # Photo verification tasks: request photo
+                                            if getattr(first_task, 'verification_required', False) and str(getattr(first_task, 'verification_type', 'NONE')).upper() == 'PHOTO':
+                                                msg = (
+                                                    f"📋 *Task 1/{len(task_ids)}*\n\n"
+                                                    f"*{first_task.title}*\n"
+                                                    f"{first_task.description or ''}\n\n"
+                                                    f"📸 Please complete this task and send a photo as evidence."
+                                                )
+                                                session.context['awaiting_verification_for_task_id'] = str(first_task.id)
+                                                session.state = 'awaiting_task_photo'
+                                                session.save(update_fields=['state', 'context'])
+                                                notification_service.send_whatsapp_text(phone_digits, msg)
+                                            else:
+                                                task_msg = (
+                                                    f"📋 *Task 1/{len(task_ids)}*\n\n"
+                                                    f"*{first_task.title}*\n"
+                                                    f"{first_task.description or ''}\n\n"
+                                                    "Is this complete?"
+                                                )
+                                                buttons = [
+                                                    {"id": "yes", "title": "✅ Yes"},
+                                                    {"id": "no", "title": "❌ No"},
+                                                    {"id": "n_a", "title": "➖ N/A"}
+                                                ]
+                                                notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+                                    else:
+                                        # No tasks for this shift
+                                        session.state = 'idle'
+                                        session.save(update_fields=['state'])
+                                else:
+                                    session.state = 'idle'
+                                    session.save(update_fields=['state'])
                             else:
                                 notification_service.send_whatsapp_text(phone_digits, "You are already clocked in.")
                         else:
@@ -894,10 +1385,213 @@ def whatsapp_webhook(request):
                     # ------------------------------------------------------------------
                     # 5. HANDLE TEXT COMMANDS & STATES
                     # ------------------------------------------------------------------
-                    body = (text_body or '').strip().lower() if text_body else ''
+                    raw_body = (text_body or '').strip() if text_body else ''
+                    body = raw_body.lower() if raw_body else ''
                     
                     if not body:
                         continue
+
+                    # Checklist help free-text (after user taps "Need help")
+                    if session.state == 'checklist_help_text':
+                        try:
+                            from scheduling.models import ShiftTask
+                            checklist = session.context.get('checklist', {})
+                            pending_task_id = checklist.get('pending_task_id')
+                            task = ShiftTask.objects.filter(id=pending_task_id).first() if pending_task_id else None
+                            if task:
+                                task.notes = (task.notes or '') + f"\nHelp requested: {raw_body} ({timezone.now().strftime('%H:%M')})"
+                                task.save(update_fields=['notes'])
+                            checklist.pop('pending_task_id', None)
+                            session.context['checklist'] = checklist
+                            session.state = 'in_checklist'
+                            session.save(update_fields=['state', 'context'])
+                            notification_service.send_whatsapp_text(phone_digits, "Thanks — noted. Continuing with the next task.")
+
+                            # Send next pending task immediately
+                            task_ids = checklist.get('tasks', [])
+                            pending = list(ShiftTask.objects.filter(id__in=task_ids).exclude(status__in=['COMPLETED', 'CANCELLED']))
+                            if not pending:
+                                session.context.pop('checklist', None)
+                                session.state = 'idle'
+                                session.save(update_fields=['state', 'context'])
+                                notification_service.send_whatsapp_text(phone_digits, "🎉 Checklist complete!")
+                            else:
+                                pending_ids = {str(t.id) for t in pending}
+                                next_id = None
+                                for tid in task_ids:
+                                    if str(tid) in pending_ids:
+                                        next_id = str(tid)
+                                        break
+                                next_id = next_id or str(pending[0].id)
+                                checklist['current_task_id'] = next_id
+                                session.context['checklist'] = checklist
+                                session.save(update_fields=['context'])
+                                nxt = ShiftTask.objects.filter(id=next_id).first()
+                                if nxt:
+                                    idx = (task_ids.index(next_id) + 1) if next_id in task_ids else 1
+                                    if getattr(nxt, 'verification_required', False) and str(getattr(nxt, 'verification_type', 'NONE')).upper() == 'PHOTO':
+                                        msg = (
+                                            f"📋 *Task {idx}/{len(task_ids)}*\n\n"
+                                            f"*{nxt.title}*\n"
+                                            f"{nxt.description or ''}\n\n"
+                                            f"📸 Please complete this task and send a photo as evidence."
+                                        )
+                                        session.context['awaiting_verification_for_task_id'] = str(nxt.id)
+                                        session.state = 'awaiting_task_photo'
+                                        session.save(update_fields=['state', 'context'])
+                                        notification_service.send_whatsapp_text(phone_digits, msg)
+                                    else:
+                                        task_msg = (
+                                            f"📋 *Task {idx}/{len(task_ids)}*\n\n"
+                                            f"*{nxt.title}*\n"
+                                            f"{nxt.description or ''}\n\n"
+                                            "Is this complete?"
+                                        )
+                                        buttons = [
+                                            {"id": "yes", "title": "✅ Yes"},
+                                            {"id": "no", "title": "❌ No"},
+                                            {"id": "n_a", "title": "➖ N/A"}
+                                        ]
+                                        notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+                        except Exception:
+                            # Fall back without breaking the chat
+                            session.state = 'in_checklist'
+                            session.save(update_fields=['state'])
+                        continue
+
+                    # Handle clarification flow for incidents (voice or incomplete report)
+                    if session.state == 'awaiting_incident_clarification':
+                        if not user:
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            continue
+
+                        pending = session.context.get('pending_incident') or {}
+                        base_text = (pending.get('transcript') or '').strip()
+                        combined_text = (base_text + ("\n\nClarification: " + raw_body if raw_body else "")).strip()
+
+                        from dateutil import parser as date_parser
+                        from staff.models_task import SafetyConcernReport
+                        from scheduling.models import AssignedShift
+
+                        def _infer_incident_type(t):
+                            t_low = (t or '').lower()
+                            # Explicit type (common in clarifications)
+                            if t_low.strip() in ['safety', 'maintenance', 'hr', 'service', 'other', 'general']:
+                                return t_low.strip().title() if t_low.strip() != 'hr' else 'HR'
+                            if 'maintenance' in t_low:
+                                return 'Maintenance'
+                            if 'safety' in t_low:
+                                return 'Safety'
+                            if 'service' in t_low:
+                                return 'Service'
+                            if 'hr' in t_low or 'harassment' in t_low:
+                                return 'HR'
+                            if any(k in t_low for k in ['injury', 'hurt', 'slip', 'fall', 'bleed', 'burn', 'fire', 'unsafe', 'hazard', 'accident']):
+                                return 'Safety'
+                            if any(k in t_low for k in ['broken', 'leak', 'machine', 'equipment', 'fridge', 'freezer', 'oven', 'gas', 'water']):
+                                return 'Maintenance'
+                            if any(k in t_low for k in ['customer', 'guest', 'complaint', 'refund']):
+                                return 'Service'
+                            return None
+
+                        def _extract_occurred_at(t, now):
+                            t_low = (t or '').lower()
+                            if 'yesterday' in t_low:
+                                base = now - timezone.timedelta(days=1)
+                            elif 'today' in t_low:
+                                base = now
+                            else:
+                                base = now
+                            try:
+                                dt = date_parser.parse(t, fuzzy=True, default=base)
+                                if dt > now + timezone.timedelta(days=7):
+                                    return None
+                                return timezone.make_aware(dt) if timezone.is_naive(dt) else dt
+                            except Exception:
+                                return None
+
+                        def _infer_severity(t):
+                            t_low = (t or '').lower()
+                            if any(k in t_low for k in ['critical', 'life threatening', 'life-threatening', 'fire', 'gas leak']):
+                                return 'CRITICAL'
+                            if any(k in t_low for k in ['injury', 'bleeding', 'severe', 'danger', 'urgent']):
+                                return 'HIGH'
+                            if any(k in t_low for k in ['minor', 'small', 'low risk', 'low-risk']):
+                                return 'LOW'
+                            return 'MEDIUM'
+
+                        def _infer_shift(u, when_dt):
+                            try:
+                                qs = AssignedShift.objects.filter(
+                                    staff=u,
+                                    shift_date=when_dt.date(),
+                                    status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED']
+                                )
+                                overlap = qs.filter(start_time__lte=when_dt, end_time__gte=when_dt).first()
+                                return overlap or qs.order_by('start_time').first()
+                            except Exception:
+                                return None
+
+                        now = timezone.now()
+                        incident_type = _infer_incident_type(combined_text)
+                        occurred_at = _extract_occurred_at(combined_text, now)
+
+                        missing = []
+                        if not incident_type:
+                            missing.append("incident type (Safety/Maintenance/HR/Service/Other)")
+                        if not occurred_at:
+                            missing.append("time of occurrence (e.g., today 3pm)")
+
+                        if missing:
+                            # Keep waiting; update transcript with clarification for better context
+                            session.context['pending_incident'] = {**pending, 'transcript': combined_text}
+                            session.save(update_fields=['context'])
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                R(user, 'incident_clarify_missing', missing=", ".join(missing))
+                            )
+                            continue
+
+                        shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
+                        severity = _infer_severity(combined_text)
+
+                        ticket = SafetyConcernReport.objects.create(
+                            restaurant=user.restaurant,
+                            reporter=user,
+                            is_anonymous=False,
+                            incident_type=incident_type,
+                            title=f"{incident_type} incident reported",
+                            description=combined_text.strip(),
+                            severity=severity,
+                            status='REPORTED',
+                            occurred_at=occurred_at,
+                            shift=shift_obj,
+                            audio_evidence=[pending.get('audio_url')] if pending.get('audio_url') else [],
+                        )
+
+                        notification_service.send_lua_incident(
+                            user,
+                            combined_text,
+                            metadata={
+                                'channel': 'whatsapp',
+                                'phone': phone_digits,
+                                'ticket_id': str(ticket.id),
+                                'incident_type': incident_type,
+                            }
+                        )
+
+                        occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
+                        notification_service.send_whatsapp_text(
+                            phone_digits,
+                            R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=incident_type, occurred_at=occurred_str)
+                        )
+
+                        # reset session state
+                        session.state = 'idle'
+                        session.context.pop('pending_incident', None)
+                        session.save(update_fields=['state', 'context'])
+                        continue
+                    
 
                     # Handle Awaiting Feedback state
                     if session.state == 'awaiting_feedback' and body.isdigit():
@@ -979,26 +1673,111 @@ def whatsapp_webhook(request):
                         
                     if session.state == 'awaiting_incident_text':
                         if user:
-                            from reporting.models import Incident
-                            incident = Incident.objects.create(
+                            # Use the same structured extraction + clarification rules as voice
+                            from dateutil import parser as date_parser
+                            from staff.models_task import SafetyConcernReport
+                            from scheduling.models import AssignedShift
+
+                            def _infer_incident_type(t):
+                                t_low = (t or '').lower()
+                                if any(k in t_low for k in ['injury', 'hurt', 'slip', 'fall', 'bleed', 'burn', 'fire', 'unsafe', 'hazard', 'accident']):
+                                    return 'Safety'
+                                if any(k in t_low for k in ['broken', 'leak', 'maintenance', 'machine', 'equipment', 'fridge', 'freezer', 'oven', 'gas', 'water']):
+                                    return 'Maintenance'
+                                if any(k in t_low for k in ['harassment', 'abuse', 'discrimination', 'fight', 'threat']):
+                                    return 'HR'
+                                if any(k in t_low for k in ['customer', 'guest', 'complaint', 'service', 'refund']):
+                                    return 'Service'
+                                return None
+
+                            def _extract_occurred_at(t, now):
+                                t_low = (t or '').lower()
+                                if 'yesterday' in t_low:
+                                    base = now - timezone.timedelta(days=1)
+                                elif 'today' in t_low:
+                                    base = now
+                                else:
+                                    base = now
+                                try:
+                                    dt = date_parser.parse(t, fuzzy=True, default=base)
+                                    if dt > now + timezone.timedelta(days=7):
+                                        return None
+                                    return timezone.make_aware(dt) if timezone.is_naive(dt) else dt
+                                except Exception:
+                                    return None
+
+                            def _infer_severity(t):
+                                t_low = (t or '').lower()
+                                if any(k in t_low for k in ['critical', 'life threatening', 'life-threatening', 'fire', 'gas leak']):
+                                    return 'CRITICAL'
+                                if any(k in t_low for k in ['injury', 'bleeding', 'severe', 'danger', 'urgent']):
+                                    return 'HIGH'
+                                if any(k in t_low for k in ['minor', 'small', 'low risk', 'low-risk']):
+                                    return 'LOW'
+                                return 'MEDIUM'
+
+                            def _infer_shift(u, when_dt):
+                                try:
+                                    qs = AssignedShift.objects.filter(
+                                        staff=u,
+                                        shift_date=when_dt.date(),
+                                        status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED']
+                                    )
+                                    overlap = qs.filter(start_time__lte=when_dt, end_time__gte=when_dt).first()
+                                    return overlap or qs.order_by('start_time').first()
+                                except Exception:
+                                    return None
+
+                            now = timezone.now()
+                            incident_type = _infer_incident_type(raw_body)
+                            occurred_at = _extract_occurred_at(raw_body, now)
+
+                            missing = []
+                            if not incident_type:
+                                missing.append("incident type (Safety/Maintenance/HR/Service/Other)")
+                            if not occurred_at:
+                                missing.append("time of occurrence (e.g., today 3pm)")
+
+                            if missing:
+                                session.state = 'awaiting_incident_clarification'
+                                session.context['pending_incident'] = {'source': 'text', 'transcript': raw_body}
+                                session.save(update_fields=['state', 'context'])
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    R(user, 'incident_clarify_missing', missing=", ".join(missing))
+                                )
+                                continue
+
+                            shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
+                            severity = _infer_severity(raw_body)
+
+                            ticket = SafetyConcernReport.objects.create(
                                 restaurant=user.restaurant,
                                 reporter=user,
-                                title=f"Incident from {user.first_name}",
-                                description=body,
-                                category='General',
-                                priority='MEDIUM'
+                                is_anonymous=False,
+                                incident_type=incident_type,
+                                title=f"{incident_type} incident reported",
+                                description=raw_body.strip(),
+                                severity=severity,
+                                status='REPORTED',
+                                occurred_at=occurred_at,
+                                shift=shift_obj,
                             )
-                            
-                            # Notify Agent
+
                             notification_service.send_lua_incident(
                                 user,
-                                body,
-                                metadata={'channel': 'whatsapp', 'phone': phone_digits, 'incident_id': str(incident.id)}
+                                raw_body,
+                                metadata={'channel': 'whatsapp', 'phone': phone_digits, 'ticket_id': str(ticket.id), 'incident_type': incident_type}
                             )
-                            
-                            notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_recorded', ticket_id=str(incident.id)[:8]))
+
+                            occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=incident_type, occurred_at=occurred_str)
+                            )
                             session.state = 'idle'
-                            session.save(update_fields=['state'])
+                            session.context.pop('pending_incident', None)
+                            session.save(update_fields=['state', 'context'])
                         else:
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                         continue

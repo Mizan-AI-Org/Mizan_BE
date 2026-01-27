@@ -95,6 +95,8 @@ class SafetyConcernReport(models.Model):
     """Model for anonymous safety concern reporting"""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='safety_concerns')
+    # Incident metadata (for agent/voice-note reporting)
+    incident_type = models.CharField(max_length=100, blank=True, default='General')
     title = models.CharField(max_length=255)
     description = models.TextField()
     location = models.CharField(max_length=255, blank=True, null=True)
@@ -104,6 +106,8 @@ class SafetyConcernReport(models.Model):
         ('HIGH', 'High'),
         ('CRITICAL', 'Critical'),
     ], default='MEDIUM')
+    occurred_at = models.DateTimeField(null=True, blank=True)
+    shift = models.ForeignKey('scheduling.AssignedShift', on_delete=models.SET_NULL, null=True, blank=True, related_name='safety_concerns')
     is_anonymous = models.BooleanField(default=True)
     reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='reported_concerns')
     status = models.CharField(max_length=20, choices=[
@@ -114,6 +118,7 @@ class SafetyConcernReport(models.Model):
         ('DISMISSED', 'Dismissed'),
     ], default='REPORTED')
     photo = models.ImageField(upload_to='safety_concerns/', null=True, blank=True)
+    audio_evidence = models.JSONField(default=list, blank=True)  # URLs to uploaded audio files (e.g., WhatsApp media URL)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     resolved_at = models.DateTimeField(null=True, blank=True)

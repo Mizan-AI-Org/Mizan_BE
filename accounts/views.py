@@ -517,7 +517,13 @@ class InviteStaffView(APIView):
             return Response({'message': 'Invitation processed successfully', 'token': token}, status=status.HTTP_201_CREATED)
         except Exception as e:
             logger.error(f"InviteStaffView error: {str(e)}")
-            return Response({'error': 'An unexpected error occurred while processing the invitation.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            # In development, surface the underlying error to speed up debugging.
+            if getattr(settings, 'DEBUG', False):
+                return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {'error': 'An unexpected error occurred while processing the invitation.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
 class AcceptInvitationView(APIView):
     permission_classes = [permissions.AllowAny]
