@@ -404,25 +404,42 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 invitation.expires_at = timezone.now() + timedelta(days=7)
                 invitation.save()
             
-            email_success = False
-            whatsapp_success = False
-            
-            # Send email if email address exists
+            print(f"[Resend] 1. invitation={invitation}", file=sys.stderr)
             if invitation.email:
+                print(f"[Resend] 2. sending email to {invitation.email}", file=sys.stderr)
                 email_success = UserManagementService._send_invitation_email(invitation)
             
             # Send WhatsApp if phone number exists
             raw_phone = (invitation.extra_data or {}).get('phone') or (invitation.extra_data or {}).get('phone_number')
+            print(f"[Resend] 3. raw_phone={raw_phone}", file=sys.stderr)
             if raw_phone:
                 # Normalize phone: digits only, no + or spaces (e.g., "2203736808")
                 clean_phone = normalize_phone(raw_phone)
-                print(f"[Resend] Sending WhatsApp to {clean_phone} (raw: {raw_phone})", file=sys.stderr)
+                print(f"[Resend] 4. normalized_phone={clean_phone}", file=sys.stderr)
                 
                 invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={invitation.invitation_token}"
+                print(f"[Resend] 5. invite_link={invite_link}", file=sys.stderr)
                 
                 try:
+                    print(f"[Resend] 6. Logging delivery for {clean_phone}", file=sys.stderr)
+                    # Update or create log first (filter-then-update avoids MultipleObjectsReturned when duplicates exist)
+                    from .models import InvitationDeliveryLog
+                    log = InvitationDeliveryLog.objects.filter(
+                        invitation=invitation, channel='whatsapp'
+                    ).order_by('-sent_at').first()
+                    if log:
+                        log.recipient_address = clean_phone
+                        log.status = 'PENDING'
+                        log.save(update_fields=['recipient_address', 'status'])
+                    else:
+                        InvitationDeliveryLog.objects.create(
+                            invitation=invitation,
+                            channel='whatsapp',
+                            recipient_address=clean_phone,
+                            status='PENDING',
+                        )
+                    print(f"[Resend] 7. Queueing task for invitation_id={invitation.id}", file=sys.stderr)
                     # Queue the task (with CELERY_TASK_ALWAYS_EAGER=True, this runs synchronously)
-                    # Wrap in try-except to prevent HTTP timeout if task takes too long
                     send_whatsapp_invitation_task.delay(
                         invitation_id=str(invitation.id),
                         phone=clean_phone,
@@ -431,33 +448,26 @@ class InvitationViewSet(viewsets.ModelViewSet):
                         invite_link=invite_link,
                         support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
                     )
-                    
-                    # Update/Create log
-                    from .models import InvitationDeliveryLog
-                    InvitationDeliveryLog.objects.update_or_create(
-                        invitation=invitation,
-                        channel='whatsapp',
-                        defaults={
-                            'recipient_address': clean_phone,
-                            'status': 'PENDING',
-                            'sent_at': timezone.now()
-                        }
-                    )
                     whatsapp_success = True
                 except Exception as e:
+                    print(f"[Resend] 8. Task error: {e}", file=sys.stderr)
                     logger.error(f"[Resend] Error sending WhatsApp: {str(e)}", exc_info=True)
-                    # Still mark as attempted, but log the error
+                    # Update existing log to FAILED if present
                     from .models import InvitationDeliveryLog
-                    InvitationDeliveryLog.objects.update_or_create(
-                        invitation=invitation,
-                        channel='whatsapp',
-                        defaults={
-                            'recipient_address': clean_phone,
-                            'status': 'FAILED',
-                            'sent_at': timezone.now()
-                        }
-                    )
-                    # Don't fail the whole request - WhatsApp might still be sent
+                    log = InvitationDeliveryLog.objects.filter(
+                        invitation=invitation, channel='whatsapp'
+                    ).order_by('-sent_at').first()
+                    if log:
+                        log.recipient_address = clean_phone
+                        log.status = 'FAILED'
+                        log.save(update_fields=['recipient_address', 'status'])
+                    else:
+                        InvitationDeliveryLog.objects.create(
+                            invitation=invitation,
+                            channel='whatsapp',
+                            recipient_address=clean_phone,
+                            status='FAILED',
+                        )
                     whatsapp_success = True  # Mark as attempted
             
             if email_success or whatsapp_success:
