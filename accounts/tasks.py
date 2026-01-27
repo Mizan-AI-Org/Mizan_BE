@@ -30,29 +30,45 @@ def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_n
         print(f"[Task] ERROR: Invitation {invitation_id} not found", file=sys.stderr)
         return
 
-    print(f"[Task] Calling Lua webhook for invitation {token[:8]}...", file=sys.stderr)
-    
-    ok, info = notification_service.send_lua_staff_invite(
-        invitation_token=token,
-        phone=phone,
-        first_name=first_name,
-        restaurant_name=restaurant_name,
-        invite_link=invite_link,
-        role=role
-    )
-    
-    print(f"[Task] Lua webhook result: ok={ok}, info={info}", file=sys.stderr)
+    print(f"[Task] Calling Lua webhook for invitation {token[:8]} via notification_service...", file=sys.stderr)
     
     try:
-        log = InvitationDeliveryLog(
-            invitation=invitation,
-            channel='whatsapp',
-            recipient_address=phone,
-            status='SENT' if ok else 'FAILED',
-            external_id=(info or {}).get('eventId'),
-            response_data=info or {},
+        ok, info = notification_service.send_lua_staff_invite(
+            invitation_token=token,
+            phone=phone,
+            first_name=first_name,
+            restaurant_name=restaurant_name,
+            invite_link=invite_link,
+            role=role
         )
-        log.save()
+    except Exception as e:
+        print(f"[Task] CRITICAL ERROR calling notification_service: {e}", file=sys.stderr)
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        return
+
+    print(f"[Task] Lua webhook call completed. ok={ok}, info={info}", file=sys.stderr)
+    
+    try:
+        # Update existing WhatsApp log if present (avoids duplicate logs; resend uses same)
+        log = InvitationDeliveryLog.objects.filter(
+            invitation=invitation, channel='whatsapp'
+        ).order_by('-sent_at').first()
+        if log:
+            log.recipient_address = phone
+            log.status = 'SENT' if ok else 'FAILED'
+            log.external_id = (info or {}).get('eventId')
+            log.response_data = info or {}
+            log.save(update_fields=['recipient_address', 'status', 'external_id', 'response_data'])
+        else:
+            log = InvitationDeliveryLog.objects.create(
+                invitation=invitation,
+                channel='whatsapp',
+                recipient_address=phone,
+                status='SENT' if ok else 'FAILED',
+                external_id=(info or {}).get('eventId'),
+                response_data=info or {},
+            )
         print(f"[Task] Delivery log saved: {log.status}", file=sys.stderr)
     except Exception as e:
         print(f"[Task] ERROR saving delivery log: {e}", file=sys.stderr)
