@@ -49,6 +49,10 @@ def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_n
 
     print(f"[Task] Lua webhook call completed. ok={ok}, info={info}", file=sys.stderr)
     
+    # Ensure info is a dictionary for logging
+    if not isinstance(info, dict):
+        info = {"raw_response": str(info)}
+
     try:
         # Update existing WhatsApp log if present (avoids duplicate logs; resend uses same)
         log = InvitationDeliveryLog.objects.filter(
@@ -57,8 +61,8 @@ def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_n
         if log:
             log.recipient_address = phone
             log.status = 'SENT' if ok else 'FAILED'
-            log.external_id = (info or {}).get('eventId')
-            log.response_data = info or {}
+            log.external_id = info.get('eventId') or info.get('external_id')
+            log.response_data = info
             log.save(update_fields=['recipient_address', 'status', 'external_id', 'response_data'])
         else:
             log = InvitationDeliveryLog.objects.create(

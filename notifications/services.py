@@ -200,11 +200,16 @@ class NotificationService:
             resp = requests.post(url, json=payload, headers=headers, timeout=5)
             print(f"[LuaInvite] Response: {resp.status_code} - {resp.text}", file=sys.stderr)
 
+            try:
+                info = resp.json()
+            except Exception:
+                info = {"error": "Invalid JSON response", "raw": resp.text}
+
             if resp.status_code in (200, 201):
-                return True, resp.json()
+                return True, info
             else:
                 logger.warning(f"[LuaInvite] Failed: {resp.status_code} - {resp.text}")
-                return False, {"error": resp.text, "status_code": resp.status_code}
+                return False, {"error": resp.text, "status_code": resp.status_code, "info": info}
                 
         except Exception as e:
             logger.error(f"[LuaInvite] Unexpected error: {str(e)}")
