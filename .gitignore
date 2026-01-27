@@ -53,8 +53,8 @@ node_modules/
 # Localization compiled files
 locale/**/*.mo
 
-# Lua Agent
-# my-agent/ (Un-ignored for dev branch tracking)
+# Lua Agent (deployed separately via Lua CLI, not to EC2)
+my-agent/
 
 # Redis
 dump.rdb
