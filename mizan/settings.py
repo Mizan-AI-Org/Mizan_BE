@@ -301,32 +301,33 @@ if not DEBUG:
 # ---------------------------
 # Email Configuration
 # ---------------------------
-# Use a reliable local SMTP sink (Mailhog) in development, SMTP in production
+# Uses SMTP when EMAIL_HOST is provided (Zoho/Gmail/etc). In DEBUG, defaults to a local
+# SMTP sink like Mailhog unless overridden by env vars.
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+
+EMAIL_HOST = config('EMAIL_HOST', default='localhost' if DEBUG else 'smtp.gmail.com')
+EMAIL_PORT = config('EMAIL_PORT', default=1025 if DEBUG else 587, cast=int)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+
+# TLS vs SSL:
+# - Zoho supports TLS on 587 and SSL on 465.
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=(False if DEBUG else True), cast=str_to_bool)
+EMAIL_USE_SSL = config('EMAIL_USE_SSL', default=False, cast=str_to_bool)
+if EMAIL_USE_SSL:
+    EMAIL_USE_TLS = False
+
+# Prevent hanging SMTP connections (seconds). Django's SMTP backend reads this.
+EMAIL_TIMEOUT = config('EMAIL_TIMEOUT', default=20, cast=int)
+
+DEFAULT_FROM_EMAIL = config(
+    'DEFAULT_FROM_EMAIL',
+    default=(EMAIL_HOST_USER if EMAIL_HOST_USER else 'no-reply@mizan.local')
+)
+
 if DEBUG:
     print("Using development email settings", file=sys.stderr)
-    EMAIL_HOST = config('EMAIL_HOST', default='localhost')
-    EMAIL_PORT = config('EMAIL_PORT', default=1025, cast=int)
-    EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
-    EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-    EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=False, cast=str_to_bool)
-    
-    # Custom logic: if user is provided but host is local, assume Gmail
-    if EMAIL_HOST_USER and EMAIL_HOST == 'localhost':
-        EMAIL_HOST = 'smtp.gmail.com'
-        EMAIL_PORT = 587
-        EMAIL_USE_TLS = True
-        
-    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='no-reply@mizan.local')
-    print(f"Email Backend: {EMAIL_HOST}:{EMAIL_PORT}", file=sys.stderr)
-else:
-    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-    EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-    EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=str_to_bool)
-    EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
-    EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-    DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default=config('EMAIL_HOST_USER', default='no-reply@mizan.local'))
+    print(f"Email Backend: {EMAIL_HOST}:{EMAIL_PORT} tls={EMAIL_USE_TLS} ssl={EMAIL_USE_SSL}", file=sys.stderr)
 
 
 WHATSAPP_ACCESS_TOKEN = config('WHATSAPP_ACCESS_TOKEN', default='')
