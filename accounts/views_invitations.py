@@ -1,6 +1,10 @@
 """
 User Management and Invitation API Views
 """
+import sys
+sys.stderr.write("[DEBUG] accounts/views_invitations.py is loading...\n")
+sys.stderr.flush()
+
 from rest_framework import viewsets, status, pagination
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -390,8 +394,12 @@ class InvitationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def resend(self, request, pk=None):
         """Resend invitation via email and/or WhatsApp"""
+        sys.stderr.write(f"\n[INVITE_VIEWSET] resend() called with pk={pk}\n")
+        sys.stderr.flush()
         try:
+            print(f"[Resend] 0. invitation lookup starting", file=sys.stderr)
             invitation = self.get_object()
+            print(f"[Resend] 1. invitation found: {invitation}", file=sys.stderr)
             
             if invitation.is_accepted:
                 return Response(
@@ -400,14 +408,11 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 )
             
             if invitation.expires_at < timezone.now():
-                # Automatically extend expiry on resend? 
                 invitation.expires_at = timezone.now() + timedelta(days=7)
                 invitation.save()
             
             email_success = False
             whatsapp_success = False
-            
-            print(f"[Resend] 1. invitation={invitation}", file=sys.stderr)
             if invitation.email:
                 print(f"[Resend] 2. sending email to {invitation.email}", file=sys.stderr)
                 email_success = UserManagementService._send_invitation_email(invitation)
