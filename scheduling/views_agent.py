@@ -510,3 +510,76 @@ def agent_get_restaurant_details(request):
     except Exception as e:
         logger.error(f"Agent restaurant details error: {e}")
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([])  # Bypass JWT auth
+@permission_classes([permissions.AllowAny])
+def agent_staff_by_phone(request):
+    """
+    Look up a staff member by their phone number.
+    Returns staff info including their restaurant ID.
+    
+    Query params:
+    - phone: Phone number (required)
+    """
+    try:
+        # Validate agent key
+        is_valid, error = validate_agent_key(request)
+        if not is_valid:
+            return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+        
+        phone = request.query_params.get('phone')
+        if not phone:
+            return Response(
+                {'success': False, 'error': 'phone query parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Normalize phone number (remove common prefixes)
+        phone_digits = ''.join(filter(str.isdigit, phone))
+        
+        # Try to find staff by phone - check multiple phone formats
+        staff = None
+        possible_patterns = [
+            phone_digits,
+            phone_digits[-10:] if len(phone_digits) > 10 else phone_digits,
+            '+' + phone_digits,
+        ]
+        
+        for pattern in possible_patterns:
+            try:
+                staff = CustomUser.objects.filter(
+                    phone__icontains=pattern,
+                    is_active=True
+                ).exclude(role='SUPER_ADMIN').first()
+                if staff:
+                    break
+            except Exception:
+                continue
+        
+        if not staff:
+            return Response({
+                'success': False,
+                'found': False,
+                'error': 'No staff member found with this phone number'
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        return Response({
+            'success': True,
+            'found': True,
+            'staff': {
+                'id': str(staff.id),
+                'first_name': staff.first_name,
+                'last_name': staff.last_name,
+                'email': staff.email,
+                'phone': staff.phone,
+                'role': staff.role,
+                'restaurant_id': str(staff.restaurant_id) if staff.restaurant_id else None,
+                'restaurant_name': staff.restaurant.name if staff.restaurant else None
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Agent staff by phone error: {e}")
+        return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
