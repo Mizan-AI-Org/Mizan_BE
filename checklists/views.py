@@ -26,7 +26,8 @@ from .serializers import (
     ChecklistExecutionCreateSerializer, ChecklistExecutionUpdateSerializer,
     ChecklistStepResponseSerializer, ChecklistStepResponseUpdateSerializer,
     ChecklistEvidenceSerializer, ChecklistActionSerializer,
-    ChecklistSyncSerializer
+    ChecklistSyncSerializer,
+    ChecklistSubmissionListSerializer
 )
 from .services import ChecklistSyncService, ChecklistValidationService, ChecklistNotificationService
 from accounts.permissions import IsAdminOrSuperAdmin, IsAdminOrManager
@@ -592,7 +593,12 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
         if str(getattr(user, 'role', '')).upper() not in allowed_roles:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
-        qs = ChecklistExecution.objects.filter(template__restaurant=restaurant, status='COMPLETED')
+        qs = (
+            ChecklistExecution.objects
+            .filter(template__restaurant=restaurant, status='COMPLETED')
+            .select_related('template', 'assigned_to', 'approved_by')
+            .prefetch_related('step_responses__step', 'step_responses__evidence', 'actions')
+        )
 
         # Optional date filter
         date_str = request.query_params.get('date')
@@ -610,10 +616,10 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
 
         page = self.paginate_queryset(qs)
         if page is not None:
-            serializer = self.get_serializer(page, many=True)
+            serializer = ChecklistSubmissionListSerializer(page, many=True, context={'request': request})
             return self.get_paginated_response(serializer.data)
 
-        serializer = self.get_serializer(qs, many=True)
+        serializer = ChecklistSubmissionListSerializer(qs, many=True, context={'request': request})
         return Response(serializer.data)
 
     @action(detail=True, methods=['post'])

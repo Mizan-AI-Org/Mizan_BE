@@ -372,17 +372,9 @@ CELERY_BEAT_SCHEDULE = {
         "task": "scheduling.tasks.check_upcoming_tasks",
         "schedule": 5,
     },
-    "shift_reminders_30min": {
-        "task": "scheduling.reminder_tasks.send_shift_reminders_30min",
-        "schedule": crontab(minute='*/5'),  # Every 5 minutes
-    },
     "checklist_reminders": {
         "task": "scheduling.reminder_tasks.send_checklist_reminders",
         "schedule": crontab(minute='*/10'),  # Every 10 minutes
-    },
-    "clock_in_reminders": {
-        "task": "scheduling.reminder_tasks.send_clock_in_reminders",
-        "schedule": crontab(minute='*/5'),  # Every 5 minutes
     },
 }
 

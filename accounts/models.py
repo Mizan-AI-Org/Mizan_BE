@@ -117,6 +117,18 @@ class CustomUser(AbstractUser):
     password_reset_token = models.CharField(max_length=64, blank=True, null=True)
     password_reset_expires = models.DateTimeField(blank=True, null=True)
 
+    # Language preference (optional; if unset, fall back to restaurant.language)
+    preferred_language = models.CharField(
+        max_length=10,
+        choices=[
+            ('en', 'English'),
+            ('fr', 'French'),
+            ('ar', 'Arabic'),
+        ],
+        blank=True,
+        null=True,
+    )
+
     
     # Remove username and use email instead
     username = None

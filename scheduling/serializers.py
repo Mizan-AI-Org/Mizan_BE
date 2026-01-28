@@ -10,6 +10,7 @@ from django.utils import timezone
 from datetime import datetime
 from django.db.models import Q
 import sys
+from core.i18n import get_effective_language, normalize_language
 
 
 class TemplateShiftSerializer(serializers.ModelSerializer):
@@ -123,11 +124,46 @@ class ShiftTaskSerializer(serializers.ModelSerializer):
         return []
 
 class TaskTemplateSerializer(serializers.ModelSerializer):
+    localized_name = serializers.SerializerMethodField()
+    localized_description = serializers.SerializerMethodField()
+    localized_tasks = serializers.SerializerMethodField()
+
     class Meta:
         model = TaskTemplate
         fields = '__all__'
         # Ensure server sets these so clients don't need to send them
         read_only_fields = ['id', 'restaurant', 'created_by', 'created_at', 'updated_at']
+
+    def _lang(self) -> str:
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request else None
+        restaurant = getattr(user, "restaurant", None) if user and getattr(user, "is_authenticated", False) else None
+        return get_effective_language(user=user if user and user.is_authenticated else None, restaurant=restaurant)
+
+    def _i18n_block(self, obj: TaskTemplate, lang: str) -> dict:
+        try:
+            raw = getattr(obj, "i18n", None) or {}
+            if isinstance(raw, dict):
+                return raw.get(lang) if isinstance(raw.get(lang), dict) else {}
+        except Exception:
+            pass
+        return {}
+
+    def get_localized_name(self, obj: TaskTemplate):
+        lang = normalize_language(self._lang())
+        block = self._i18n_block(obj, lang)
+        return block.get("name") or obj.name
+
+    def get_localized_description(self, obj: TaskTemplate):
+        lang = normalize_language(self._lang())
+        block = self._i18n_block(obj, lang)
+        return block.get("description") or obj.description
+
+    def get_localized_tasks(self, obj: TaskTemplate):
+        lang = normalize_language(self._lang())
+        block = self._i18n_block(obj, lang)
+        tasks = block.get("tasks")
+        return tasks if isinstance(tasks, list) else obj.tasks
 
     def validate_frequency(self, value):
         """Normalize frequency to match backend choices (uppercase keys).

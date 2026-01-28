@@ -15,6 +15,7 @@ import shutil
 import subprocess
 
 logger = logging.getLogger(__name__)
+from core.i18n import get_effective_language, whatsapp_language_code, tr
 
 
 class NotificationService:
@@ -29,6 +30,8 @@ class NotificationService:
             recipient = shift.staff
             if not recipient:
                 return False
+            restaurant = getattr(getattr(shift, 'schedule', None), 'restaurant', None) or getattr(recipient, 'restaurant', None)
+            lang = get_effective_language(user=recipient, restaurant=restaurant)
                 
             title = "Shift Update"
             message = ""
@@ -37,21 +40,21 @@ class NotificationService:
             start_str = shift.start_time.strftime('%a, %b %d at %H:%M') if shift.start_time else "Unknown time"
             
             if notification_type == 'SHIFT_ASSIGNED':
-                title = "New Shift Assigned"
-                message = f"You have been assigned a new shift on {start_str}."
+                title = tr("notify.shift.assigned.title", lang)
+                message = tr("notify.shift.assigned.body", lang, start=start_str)
                 channels.append('email')
                 channels.append('whatsapp')
             elif notification_type == 'SHIFT_UPDATED':
-                title = "Shift Updated"
-                message = f"Your shift on {start_str} has been updated."
+                title = tr("notify.shift.updated.title", lang)
+                message = tr("notify.shift.updated.body", lang, start=start_str)
             elif notification_type == 'SHIFT_CANCELLED':
-                title = "Shift Cancelled"
-                message = f"Your shift on {start_str} has been cancelled."
+                title = tr("notify.shift.cancelled.title", lang)
+                message = tr("notify.shift.cancelled.body", lang, start=start_str)
                 channels.append('email')
                 channels.append('whatsapp')
             elif notification_type == 'SHIFT_REMINDER':
-                title = "Upcoming Shift Reminder"
-                message = f"Reminder: You have a shift starting soon on {start_str}."
+                title = tr("notify.shift.reminder.title", lang)
+                message = tr("notify.shift.reminder.body", lang, start=start_str)
                 channels.append('whatsapp')
                 
             return self.send_custom_notification(
@@ -162,7 +165,7 @@ class NotificationService:
     # LUA AGENT INTEGRATION
     # ------------------------------------------------------------------------------------
 
-    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link, role='staff'):
+    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link, role='staff', language='en'):
         """
         Notify Lua agent about a new staff invitation.
         This triggers Miya to send a WhatsApp template message.
@@ -185,7 +188,9 @@ class NotificationService:
                     "phone": self._normalize_phone(phone),
                     "inviteLink": invite_link,
                     "restaurantName": restaurant_name,
-                    "invitationToken": invitation_token
+                    "invitationToken": invitation_token,
+                    # Let Miya send the invite in the right language
+                    "language": get_effective_language(user=None, restaurant=None, fallback=language),
                 },
                 "timestamp": timezone.now().isoformat()
             }
@@ -218,7 +223,7 @@ class NotificationService:
             logger.error(f"[LuaInvite] Unexpected error: {str(e)}")
             return False, {"error": str(e)}
 
-    def send_lua_invitation_accepted(self, invitation_token, phone, first_name, flow_data=None):
+    def send_lua_invitation_accepted(self, invitation_token, phone, first_name, flow_data=None, language='en'):
         """
         Notify Lua agent that an invitation was accepted.
         This allows Miya to send a 'Welcome' message with the staff person's PIN.
@@ -238,7 +243,8 @@ class NotificationService:
                 "details": {
                     "phoneNumber": self._normalize_phone(phone),
                     "invitationToken": invitation_token,
-                    "flowData": flow_data or {}
+                    "flowData": flow_data or {},
+                    "language": get_effective_language(user=None, restaurant=None, fallback=language),
                 },
                 "timestamp": timezone.now().isoformat()
             }

@@ -26,6 +26,7 @@ from .tasks import send_whatsapp_invitation_task
 import requests
 
 logger = logging.getLogger(__name__)
+from core.i18n import get_effective_language
 
 
 # Lua Webhook Configuration
@@ -55,6 +56,7 @@ def sync_user_to_lua_agent(user, access_token):
             mobile_number = ''.join(filter(str.isdigit, mobile_number))
 
         session_id = f"tenant-{str(user.restaurant.id) if user.restaurant else ''}-user-{str(user.id)}"
+        effective_lang = get_effective_language(user=user, restaurant=getattr(user, 'restaurant', None))
         payload = {
             "emailAddress": user.email,
             "mobileNumber": mobile_number,
@@ -62,10 +64,13 @@ def sync_user_to_lua_agent(user, access_token):
             "restaurantId": str(user.restaurant.id) if user.restaurant else None,
             "restaurantName": user.restaurant.name if user.restaurant else None,
             "role": user.role.lower() if user.role else "staff",
+            "language": effective_lang,
+            "rtl": True if effective_lang == "ar" else False,
             "metadata": {
                 "token": access_token,
                 "userId": str(user.id),
                 "sessionId": session_id,
+                "language": effective_lang,
             }
         }
         
@@ -541,11 +546,13 @@ class UserManagementService:
                 # Notify Lua agent if phone is available
                 if phone:
                     from notifications.services import notification_service
+                    lang = get_effective_language(user=user, restaurant=invitation.restaurant)
                     notification_service.send_lua_invitation_accepted(
                         invitation_token=invitation.invitation_token,
                         phone=phone,
                         first_name=user.first_name,
-                        flow_data={'last_name': user.last_name, 'email': user.email}
+                        flow_data={'last_name': user.last_name, 'email': user.email},
+                        language=lang,
                     )
 
                 return user, None

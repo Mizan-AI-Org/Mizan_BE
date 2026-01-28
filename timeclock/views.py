@@ -404,7 +404,9 @@ def restaurant_location(request):
             'address': restaurant.address,
             'latitude': float(restaurant.latitude),
             'longitude': float(restaurant.longitude),
-            'geofence_radius': float(restaurant.radius) if restaurant.radius else 100  # meters (5-100m range)
+            'geofence_radius': float(restaurant.radius) if restaurant.radius else 100,  # meters (5-100m range)
+            'language': getattr(restaurant, 'language', 'en') or 'en',
+            'timezone': getattr(restaurant, 'timezone', None),
         }
     })
 

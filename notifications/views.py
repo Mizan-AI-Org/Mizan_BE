@@ -29,6 +29,7 @@ from accounts.services import UserManagementService, sync_user_to_lua_agent
 from timeclock.models import ClockEvent
 from scheduling.models import ShiftTask
 from django.conf import settings as dj_settings
+from core.i18n import whatsapp_language_code
 
 
 class NotificationPagination(PageNumberPagination):
@@ -857,7 +858,7 @@ def whatsapp_webhook(request):
                                             notification_service.send_whatsapp_template(
                                                 phone_digits,
                                                 template_name='accepted_invite_confirmation',
-                                                language_code='en_US'
+                                                language_code=whatsapp_language_code(getattr(invitation.restaurant, 'language', 'en'))
                                             )
                                             
                                             # AUTOMATIC ACCEPTANCE: Create user account immediately
@@ -878,7 +879,8 @@ def whatsapp_webhook(request):
                                                     invitation_token=invitation.invitation_token,
                                                     phone=phone_digits,
                                                     first_name=user.first_name,
-                                                    flow_data=flow_data
+                                                    flow_data=flow_data,
+                                                    language=getattr(invitation.restaurant, 'language', 'en')
                                                 )
                                             else:
                                                 logger.error(f"Failed to automatically create user via WhatsApp: {error}")
@@ -928,7 +930,7 @@ def whatsapp_webhook(request):
                                 notification_service.send_whatsapp_template(
                                     phone_digits,
                                     template_name='accepted_invite_confirmation',
-                                    language_code='en_US'
+                                    language_code=whatsapp_language_code(getattr(invitation.restaurant, 'language', 'en'))
                                 )
                                 
                                 # AUTOMATIC ACCEPTANCE
@@ -945,7 +947,8 @@ def whatsapp_webhook(request):
                                         invitation_token=invitation.invitation_token,
                                         phone=phone_digits,
                                         first_name=user.first_name,
-                                        flow_data={'method': 'text_command'}
+                                        flow_data={'method': 'text_command'},
+                                        language=getattr(invitation.restaurant, 'language', 'en')
                                     )
                                     continue # Message handled
                                 else:

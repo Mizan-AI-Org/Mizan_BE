@@ -111,6 +111,7 @@ class AssignedShift(models.Model):
     last_modified_by = models.ForeignKey('accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='modified_shifts')
     
     # Reminders and alerts
+    shift_reminder_sent = models.BooleanField(default=False)
     clock_in_reminder_sent = models.BooleanField(default=False)
     clock_out_reminder_sent = models.BooleanField(default=False)
     check_list_reminder_sent = models.BooleanField(default=False)
