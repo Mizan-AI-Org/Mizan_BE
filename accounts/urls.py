@@ -5,7 +5,7 @@ from .views import (
     PasswordResetConfirmView, RestaurantDetailView, RestaurantUpdateView, StaffInvitationListView, 
     StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView,
     LoginView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView, pin_login,
-    StaffListView, StaffPasswordResetView
+    StaffListView, StaffPasswordResetView, InviteStaffBulkCsvView
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
 from .views_invitations import InvitationViewSet, UserManagementViewSet
@@ -38,6 +38,7 @@ urlpatterns = [
     path('auth/pin-login/', StaffPinLoginView.as_view(), name='pin_login'),
     path('auth/me/', MeView.as_view(), name='me'),
     path('staff/invite/', InviteStaffView.as_view(), name='invite_staff'),
+    path('staff/invite-bulk-csv/', InviteStaffBulkCsvView.as_view(), name='invite_staff_bulk_csv'),
     path('staff/accept-invitation/', AcceptInvitationView.as_view(), name='accept_invitation'),
     path('staff/login/', StaffPinLoginView.as_view(), name='pin_login'),
     path('auth/agent-context/', AgentContextView.as_view(), name='agent_context'),

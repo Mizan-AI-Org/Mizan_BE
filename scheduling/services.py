@@ -306,15 +306,19 @@ class SchedulingService:
 
             role = (shift.role or '').upper() or 'STAFF'
             dept = (shift.department or '').strip() if hasattr(shift, 'department') else ''
+            shift_title = (getattr(shift, 'notes', '') or '').strip()
 
             title = "Shift Assigned"
             lines = [
                 f"✅ You have been successfully assigned a shift at {rest_name}.",
                 "",
+                f"🧾 Shift: {shift_title}" if shift_title else "",
                 f"📅 Date: {shift_date_str}",
                 f"⏰ Time: {start_str} – {end_str}",
                 f"👔 Role: {role}",
             ]
+            # Remove any empty lines caused by missing title
+            lines = [ln for ln in lines if ln != ""]
             if dept:
                 lines.append(f"🏷️ Department: {dept}")
             message = "\n".join(lines)

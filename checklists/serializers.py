@@ -7,6 +7,7 @@ from .models import (
     ChecklistStepResponse, ChecklistEvidence, ChecklistAction
 )
 from accounts.serializers import CustomUserSerializer
+from django.utils import timezone
 
 
 class ChecklistStepSerializer(serializers.ModelSerializer):
@@ -107,10 +108,13 @@ class ChecklistExecutionSerializer(serializers.ModelSerializer):
     """Serializer for checklist executions"""
     template = ChecklistTemplateSerializer(read_only=True)
     assigned_to = CustomUserSerializer(read_only=True)
+    assigned_shift_id = serializers.SerializerMethodField()
+    assigned_shift_info = serializers.SerializerMethodField()
     current_step = ChecklistStepSerializer(read_only=True)
     step_responses = ChecklistStepResponseSerializer(many=True, read_only=True)
     actions = ChecklistActionSerializer(many=True, read_only=True)
     approved_by = CustomUserSerializer(read_only=True)
+    compiled_summary = serializers.SerializerMethodField()
     
     class Meta:
         model = ChecklistExecution
@@ -118,6 +122,8 @@ class ChecklistExecutionSerializer(serializers.ModelSerializer):
             'id', 'template', 'assigned_to', 'status', 'started_at', 'completed_at',
             'due_date', 'current_step', 'progress_percentage', 'completion_notes',
             'supervisor_approved', 'approved_by', 'approved_at',
+            'assigned_shift_id', 'assigned_shift_info',
+            'compiled_summary',
             'step_responses', 'actions', 'created_at', 'updated_at',
             'last_synced_at', 'sync_version'
         ]
@@ -125,6 +131,196 @@ class ChecklistExecutionSerializer(serializers.ModelSerializer):
             'id', 'progress_percentage', 'created_at', 'updated_at',
             'last_synced_at', 'sync_version'
         ]
+
+    def get_assigned_shift_id(self, obj):
+        try:
+            return str(obj.assigned_shift_id) if obj.assigned_shift_id else None
+        except Exception:
+            return None
+
+    def get_assigned_shift_info(self, obj):
+        shift = getattr(obj, 'assigned_shift', None)
+        if not shift:
+            return None
+        try:
+            start_dt = shift.start_time
+            end_dt = shift.end_time
+            try:
+                if start_dt:
+                    start_dt = timezone.localtime(start_dt)
+                if end_dt:
+                    end_dt = timezone.localtime(end_dt)
+            except Exception:
+                pass
+            return {
+                'id': str(shift.id),
+                'shift_date': shift.shift_date.isoformat() if getattr(shift, 'shift_date', None) else None,
+                'start_time': start_dt.isoformat() if start_dt else None,
+                'end_time': end_dt.isoformat() if end_dt else None,
+                'role': getattr(shift, 'role', None),
+                'department': getattr(shift, 'department', None),
+            }
+        except Exception:
+            return None
+
+    def get_compiled_summary(self, obj):
+        """
+        Lightweight "manager summary" compiled from step responses/actions.
+        """
+        try:
+            srs = list(getattr(obj, 'step_responses', []).all()) if hasattr(getattr(obj, 'step_responses', None), 'all') else (obj.step_responses or [])
+        except Exception:
+            srs = []
+        try:
+            acts = list(getattr(obj, 'actions', []).all()) if hasattr(getattr(obj, 'actions', None), 'all') else (obj.actions or [])
+        except Exception:
+            acts = []
+
+        total_steps = len(srs)
+        completed_steps = 0
+        skipped_steps = 0
+        failed_steps = 0
+        required_missing = 0
+        evidence_items = 0
+        signature_items = 0
+        notes_items = 0
+        out_of_range_measurements = 0
+
+        for sr in srs:
+            try:
+                if getattr(sr, 'is_completed', False) or str(getattr(sr, 'status', '')).upper() == 'COMPLETED':
+                    completed_steps += 1
+                st = str(getattr(sr, 'status', '')).upper()
+                if st == 'SKIPPED':
+                    skipped_steps += 1
+                if st == 'FAILED':
+                    failed_steps += 1
+
+                step = getattr(sr, 'step', None)
+                if step and getattr(step, 'is_required', False):
+                    if not getattr(sr, 'is_completed', False) and st not in ('COMPLETED',):
+                        required_missing += 1
+
+                if getattr(sr, 'notes', None):
+                    notes_items += 1
+                if getattr(sr, 'signature_data', None):
+                    signature_items += 1
+
+                ev = getattr(sr, 'evidence', None)
+                if ev is not None and hasattr(ev, 'count'):
+                    evidence_items += int(ev.count())
+                elif isinstance(ev, list):
+                    evidence_items += len(ev)
+
+                # Out-of-range measurement checks
+                mv = getattr(sr, 'measurement_value', None)
+                if mv is not None and step:
+                    try:
+                        min_v = getattr(step, 'min_value', None)
+                        max_v = getattr(step, 'max_value', None)
+                        if min_v is not None and mv < min_v:
+                            out_of_range_measurements += 1
+                        if max_v is not None and mv > max_v:
+                            out_of_range_measurements += 1
+                    except Exception:
+                        pass
+            except Exception:
+                continue
+
+        duration_minutes = None
+        if getattr(obj, 'started_at', None) and getattr(obj, 'completed_at', None):
+            try:
+                duration_minutes = int((obj.completed_at - obj.started_at).total_seconds() / 60)
+            except Exception:
+                duration_minutes = None
+
+        actions_open = 0
+        actions_resolved = 0
+        for a in acts:
+            st = str(getattr(a, 'status', '')).upper()
+            if st in ('OPEN', 'IN_PROGRESS'):
+                actions_open += 1
+            if st == 'RESOLVED':
+                actions_resolved += 1
+
+        completion_rate = int((completed_steps / total_steps) * 100) if total_steps else 0
+
+        return {
+            'total_steps': total_steps,
+            'completed_steps': completed_steps,
+            'skipped_steps': skipped_steps,
+            'failed_steps': failed_steps,
+            'required_missing': required_missing,
+            'completion_rate': completion_rate,
+            'duration_minutes': duration_minutes,
+            'evidence_items': evidence_items,
+            'notes_items': notes_items,
+            'signature_items': signature_items,
+            'out_of_range_measurements': out_of_range_measurements,
+            'actions_open': actions_open,
+            'actions_resolved': actions_resolved,
+        }
+
+
+class ChecklistSubmissionListSerializer(serializers.ModelSerializer):
+    """
+    Lightweight serializer for manager "Submitted Checklists" table.
+    Avoids sending step_responses payload for every row.
+    """
+    template = serializers.SerializerMethodField()
+    submitted_by = serializers.SerializerMethodField()
+    submitted_at = serializers.SerializerMethodField()
+    notes = serializers.CharField(source='completion_notes', allow_null=True, required=False)
+    compiled_summary = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ChecklistExecution
+        fields = [
+            'id',
+            'template',
+            'submitted_by',
+            'submitted_at',
+            'status',
+            'supervisor_approved',
+            'approved_at',
+            'notes',
+            'compiled_summary',
+        ]
+
+    def get_template(self, obj):
+        tpl = getattr(obj, 'template', None)
+        if not tpl:
+            return None
+        return {
+            'id': str(tpl.id),
+            'name': getattr(tpl, 'name', None),
+            'description': getattr(tpl, 'description', None),
+            'category': getattr(tpl, 'category', None),
+        }
+
+    def get_submitted_by(self, obj):
+        u = getattr(obj, 'assigned_to', None)
+        if not u:
+            return None
+        name = None
+        try:
+            name = u.get_full_name()
+        except Exception:
+            name = f"{getattr(u, 'first_name', '')} {getattr(u, 'last_name', '')}".strip()
+        return {'id': str(u.id), 'name': name or getattr(u, 'email', None)}
+
+    def get_submitted_at(self, obj):
+        dt = getattr(obj, 'completed_at', None) or getattr(obj, 'updated_at', None)
+        if not dt:
+            return None
+        try:
+            return timezone.localtime(dt).isoformat()
+        except Exception:
+            return dt.isoformat()
+
+    def get_compiled_summary(self, obj):
+        # Reuse the compiled summary from the full serializer
+        return ChecklistExecutionSerializer(context=self.context).get_compiled_summary(obj)
 
 
 class ChecklistExecutionCreateSerializer(serializers.ModelSerializer):

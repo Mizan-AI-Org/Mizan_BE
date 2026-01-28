@@ -15,6 +15,7 @@ from .serializers import AssignedShiftSerializer
 from .services import SchedulingService
 import logging
 from core.utils import resolve_agent_restaurant_and_user
+from .shift_auto_templates import auto_attach_templates_and_tasks, detect_shift_context, generate_shift_title
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +141,7 @@ def agent_create_shift(request):
             except Restaurant.DoesNotExist:
                 restaurant = None
         if not restaurant:
-            restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=data)
+            restaurant, acting_user = resolve_agent_restaurant_and_user(request=request, payload=data)
         if not restaurant:
             return Response({
                 'success': False,
@@ -184,6 +185,10 @@ def agent_create_shift(request):
         
         # Determine role
         role = data.get('role') or staff.role or 'SERVER'
+
+        # Optional metadata to improve titles/context
+        department = data.get('department') or None
+        workspace_location = data.get('workspace_location') or data.get('workspaceLocation') or None
         
         # Get or create weekly schedule for this date
         # Calculate week start (Monday)
@@ -222,6 +227,25 @@ def agent_create_shift(request):
                 'conflicts': conflicts
             }, status=status.HTTP_409_CONFLICT)
         
+        # Optional shift title/context (used for auto template association)
+        shift_title = data.get('shift_title') or data.get('shiftTitle') or data.get('title')
+        shift_notes = data.get('notes', '') or ''
+
+        # Auto-generate a descriptive title if not provided
+        if not shift_title:
+            inferred_context = detect_shift_context(
+                shift_title=None,
+                shift_notes=shift_notes,
+                start_dt=start_datetime,
+                end_dt=end_datetime,
+            )
+            shift_title = generate_shift_title(
+                shift_context=inferred_context,
+                staff_role=role.upper(),
+                department=department,
+                workspace_location=workspace_location,
+            )
+
         # Create the shift
         shift = AssignedShift.objects.create(
             schedule=schedule,
@@ -230,7 +254,12 @@ def agent_create_shift(request):
             start_time=start_datetime,
             end_time=end_datetime,
             role=role.upper(),
-            notes=data.get('notes', ''),
+            # Frontend calendar uses `notes` as the visible shift title.
+            notes=shift_title,
+            # Keep instructions separate so the title stays clean.
+            preparation_instructions=shift_notes,
+            department=department,
+            workspace_location=workspace_location,
             status='SCHEDULED'
         )
         
@@ -242,6 +271,22 @@ def agent_create_shift(request):
             SchedulingService.ensure_shift_color(shift)
         except Exception:
             pass
+
+        # Auto-attach relevant Process/Task templates and generate tasks/checklists
+        attach_result = None
+        try:
+            attach_result = auto_attach_templates_and_tasks(
+                shift=shift,
+                restaurant=restaurant,
+                assignee=staff,
+                staff_role=role.upper(),
+                shift_title=shift_title,
+                instructions=shift_notes,
+                created_by=acting_user,
+            )
+        except Exception as e:
+            # Do not fail shift creation if automation fails; log for observability
+            logger.warning(f"Agent create shift: auto-attach templates failed: {e}")
 
         # Immediately notify the assigned staff (WhatsApp + in-app), with audit logging
         try:
@@ -259,8 +304,17 @@ def agent_create_shift(request):
                 'start_time': start_time_str,
                 'end_time': end_time_str,
                 'role': role.upper(),
-                'color': shift.color
+                'color': shift.color,
+                'title': shift_title,
+                'task_templates': [str(t.id) for t in (shift.task_templates.all() if hasattr(shift, 'task_templates') else [])],
             },
+            'auto_association': ({
+                'shift_context': attach_result.shift_context,
+                'used_fallback_custom_template': attach_result.used_fallback_custom_template,
+                'attached_template_names': [t.name for t in attach_result.used_templates],
+                'created_shift_tasks': attach_result.created_shift_tasks,
+                'created_checklist_executions': attach_result.created_checklist_executions,
+            } if attach_result else None),
             'message': f"Successfully scheduled {staff.first_name} for {shift_date} from {start_time_str} to {end_time_str}"
         }, status=status.HTTP_201_CREATED)
         

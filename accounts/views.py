@@ -30,6 +30,8 @@ from django.conf import settings
 from notifications.services import notification_service
 from .models import InvitationDeliveryLog
 from .services import sync_user_to_lua_agent
+from django.db.models import Q
+import secrets
 
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
@@ -524,6 +526,207 @@ class InviteStaffView(APIView):
                 {'error': 'An unexpected error occurred while processing the invitation.'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class InviteStaffBulkCsvView(APIView):
+    """
+    Bulk invite staff from a CSV-derived list (WhatsApp or Email).
+
+    Expected payload (JSON):
+    {
+      "staff_list": [
+        {"first_name": "John", "last_name": "Doe", "role": "CHEF", "phone_number": "2126..."},
+        ...
+      ],
+      "invitation_method": "whatsapp" | "email"
+    }
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
+
+    @staticmethod
+    def _normalize_phone(phone: str) -> str:
+        if not phone:
+            return ""
+        return ''.join(filter(str.isdigit, str(phone)))
+
+    @staticmethod
+    def _normalize_role(role: str) -> str:
+        role = (role or '').strip()
+        if not role:
+            return ""
+        role = role.upper().replace(' ', '_').replace('-', '_')
+        return role
+
+    def post(self, request):
+        try:
+            staff_list = request.data.get('staff_list') or []
+            invitation_method = (request.data.get('invitation_method') or 'whatsapp').lower()
+
+            if not isinstance(staff_list, list) or len(staff_list) == 0:
+                return Response({'error': 'staff_list is required and must be a non-empty list.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if invitation_method not in ('whatsapp', 'email'):
+                return Response({'error': "invitation_method must be 'whatsapp' or 'email'."}, status=status.HTTP_400_BAD_REQUEST)
+
+            restaurant = getattr(request.user, 'restaurant', None)
+            if not restaurant:
+                return Response({'error': 'No restaurant context for current user.'}, status=status.HTTP_400_BAD_REQUEST)
+
+            valid_roles = {k for k, _ in getattr(CustomUser, 'ROLE_CHOICES', [])}
+            batch_id = secrets.token_hex(8)
+
+            created = 0
+            failed = 0
+            errors = []
+            invitation_ids = []
+
+            for idx, item in enumerate(staff_list, start=2):  # assume header row is 1 in CSV
+                try:
+                    first_name = (item.get('first_name') or '').strip()
+                    last_name = (item.get('last_name') or '').strip()
+                    role = self._normalize_role(item.get('role'))
+
+                    phone = ""
+                    email = ""
+                    if invitation_method == 'whatsapp':
+                        # Accept several possible keys for phone
+                        raw_phone = (
+                            item.get('phone_number')
+                            or item.get('whatsapp_number')
+                            or item.get('whatsapp')
+                            or item.get('phone')
+                            or item.get('contact')
+                            or ''
+                        )
+                        phone = self._normalize_phone(raw_phone)
+                        if not phone:
+                            failed += 1
+                            errors.append(f"Row {idx}: Missing WhatsApp number")
+                            continue
+                    else:
+                        raw_email = (
+                            item.get('email')
+                            or item.get('email_address')
+                            or item.get('contact')
+                            or ''
+                        )
+                        email = (raw_email or '').strip().lower()
+                        if not email or '@' not in email:
+                            failed += 1
+                            errors.append(f"Row {idx}: Invalid email '{raw_email}'")
+                            continue
+
+                    if not role or (valid_roles and role not in valid_roles):
+                        failed += 1
+                        errors.append(f"Row {idx}: Invalid role '{item.get('role')}'")
+                        continue
+
+                    # Skip if a pending invitation already exists for this contact
+                    base_qs = UserInvitation.objects.filter(
+                        restaurant=restaurant,
+                        is_accepted=False,
+                        expires_at__gt=timezone.now()
+                    )
+                    if invitation_method == 'whatsapp':
+                        existing = base_qs.filter(
+                            Q(extra_data__phone=phone)
+                            | Q(extra_data__phone_number=phone)
+                            | Q(extra_data__whatsapp=phone)
+                        ).first()
+                    else:
+                        # Skip if user already exists
+                        if CustomUser.objects.filter(email=email).exists():
+                            failed += 1
+                            errors.append(f"Row {idx}: User already exists for {email}")
+                            continue
+                        existing = base_qs.filter(email=email).first()
+                    if existing:
+                        failed += 1
+                        errors.append(f"Row {idx}: Invitation already pending for {phone if invitation_method=='whatsapp' else email}")
+                        continue
+
+                    token = get_random_string(64)
+                    expires_at = timezone.now() + timezone.timedelta(days=7)
+
+                    extra = {
+                        'first_name': first_name or None,
+                        'last_name': last_name or None,
+                        'source': 'bulk_csv',
+                    }
+                    if invitation_method == 'whatsapp':
+                        extra.update({'phone_number': phone, 'phone': phone})
+
+                    invitation = UserInvitation.objects.create(
+                        email=(email if invitation_method == 'email' else ''),
+                        role=role,
+                        invited_by=request.user,
+                        restaurant=restaurant,
+                        invitation_token=token,
+                        expires_at=expires_at,
+                        is_bulk_invite=True,
+                        bulk_batch_id=batch_id,
+                        first_name=first_name or None,
+                        last_name=last_name or None,
+                        extra_data=extra
+                    )
+
+                    if invitation_method == 'email':
+                        invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
+                        html_message = render_to_string('emails/staff_invite.html', {
+                            'invite_link': invite_link,
+                            'restaurant_name': restaurant.name,
+                            'year': timezone.now().year
+                        })
+                        plain_message = strip_tags(html_message)
+
+                        try:
+                            send_mail(
+                                "You've been invited to join Mizan AI!",
+                                plain_message,
+                                settings.DEFAULT_FROM_EMAIL,
+                                [email],
+                                html_message=html_message,
+                                fail_silently=False,
+                            )
+                            status_value = 'SENT'
+                        except Exception as mail_e:
+                            status_value = 'FAILED'
+                            errors.append(f"Row {idx}: Email send failed for {email} - {str(mail_e)}")
+
+                        email_log = InvitationDeliveryLog(
+                            invitation=invitation,
+                            channel='email',
+                            recipient_address=email,
+                            status=status_value
+                        )
+                        if status_value == 'SENT':
+                            email_log.delivered_at = timezone.now()
+                        email_log.save()
+
+                    created += 1
+                    invitation_ids.append(str(invitation.id))
+
+                except Exception as row_e:
+                    failed += 1
+                    errors.append(f"Row {idx}: {str(row_e)}")
+
+            return Response(
+                {
+                    'batch_id': batch_id,
+                    'created': created,
+                    'failed': failed,
+                    'errors': errors,
+                    'invitation_ids': invitation_ids,
+                },
+                status=status.HTTP_201_CREATED if created > 0 else status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.error(f"InviteStaffBulkCsvView error: {str(e)}")
+            if getattr(settings, 'DEBUG', False):
+                return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': 'Failed to process bulk invitations.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 class AcceptInvitationView(APIView):
     permission_classes = [permissions.AllowAny]

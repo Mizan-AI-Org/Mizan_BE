@@ -26,6 +26,7 @@ def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_n
         invitation = UserInvitation.objects.get(id=invitation_id)
         token = invitation.invitation_token
         role = invitation.role
+        language = getattr(invitation.restaurant, 'language', 'en') if getattr(invitation, 'restaurant', None) else 'en'
     except UserInvitation.DoesNotExist:
         print(f"[Task] ERROR: Invitation {invitation_id} not found", file=sys.stderr)
         return
@@ -39,7 +40,8 @@ def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_n
             first_name=first_name,
             restaurant_name=restaurant_name,
             invite_link=invite_link,
-            role=role
+            role=role,
+            language=language,
         )
     except Exception as e:
         print(f"[Task] CRITICAL ERROR calling notification_service: {e}", file=sys.stderr)
@@ -84,12 +86,14 @@ def retry_failed_whatsapp_invites():
         inv = log.invitation
         phone = log.recipient_address
         invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={inv.invitation_token}"
+        language = getattr(inv.restaurant, 'language', 'en') if getattr(inv, 'restaurant', None) else 'en'
         ok, info = notification_service.send_lua_staff_invite(
             invitation_token=inv.invitation_token,
             phone=phone,
             first_name=inv.first_name,
             restaurant_name=inv.restaurant.name,
-            invite_link=invite_link
+            invite_link=invite_link,
+            language=language,
         )
         log.attempt_count = getattr(log, 'attempt_count', 1) + 1
         log.status = 'SENT' if ok else 'FAILED'

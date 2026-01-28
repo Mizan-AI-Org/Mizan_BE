@@ -47,6 +47,14 @@ class TaskTemplate(models.Model):
     
     # Template content stored as JSON
     tasks = models.JSONField(default=list)
+
+    # Optional translations payload:
+    # {
+    #   "fr": {"name": "...", "description": "...", "tasks": [...]},
+    #   "ar": {"name": "...", "description": "...", "tasks": [...]}
+    # }
+    # When missing, the system falls back to English fields above.
+    i18n = models.JSONField(default=dict, blank=True)
     
     # Frequency settings
     FREQUENCY_CHOICES = (

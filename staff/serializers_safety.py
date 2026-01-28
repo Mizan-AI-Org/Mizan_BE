@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from accounts.models import CustomUser, Restaurant
 from accounts.serializers import UserSerializer, RestaurantSerializer
-from staff.models_safety import (
+from staff.models_task import (
     StandardOperatingProcedure,
     SafetyChecklist,
     ScheduleTask,

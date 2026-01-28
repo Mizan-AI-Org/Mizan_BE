@@ -5,7 +5,7 @@ from django.db.models import Sum, Count
 from django.utils import timezone
 
 from accounts.models import Restaurant
-from staff.models_safety import (
+from staff.models_task import (
     StandardOperatingProcedure,
     SafetyChecklist,
     ScheduleTask,
