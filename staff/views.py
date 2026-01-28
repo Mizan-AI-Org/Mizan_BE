@@ -10,10 +10,12 @@ from datetime import datetime, timedelta
 import logging
 from django.db.models import Q
 from accounts.models import CustomUser
+from typing import Optional, Dict
 
 from .models import (
     Schedule, StaffProfile, StaffDocument, ScheduleChange, 
-    ScheduleNotification, StaffAvailability, PerformanceMetric
+    ScheduleNotification, StaffAvailability, PerformanceMetric,
+    StaffRequest, StaffRequestComment
 )
 from .models_task import (
     StandardOperatingProcedure, SafetyChecklist, ScheduleTask,
@@ -23,10 +25,181 @@ from .serializers import (
     ScheduleSerializer, StaffProfileSerializer, StaffDocumentSerializer, ScheduleChangeSerializer,
     ScheduleNotificationSerializer, StaffAvailabilitySerializer, PerformanceMetricSerializer,
     StandardOperatingProcedureSerializer, SafetyChecklistSerializer, ScheduleTaskSerializer,
-    SafetyConcernReportSerializer, SafetyRecognitionSerializer
+    SafetyConcernReportSerializer, SafetyRecognitionSerializer,
+    StaffRequestSerializer, StaffRequestCommentSerializer
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_manager(user: CustomUser) -> bool:
+    return bool(getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'OWNER'])
+
+
+class StaffRequestViewSet(viewsets.ModelViewSet):
+    """
+    Manager-first inbox for staff requests.
+    - Managers/Admins see all requests for their restaurant
+    - Staff can only see their own requests (if any are created in-app later)
+    """
+    serializer_class = StaffRequestSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['subject', 'description', 'staff_name', 'staff_phone', 'external_id']
+    ordering_fields = ['created_at', 'updated_at', 'priority', 'status']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = StaffRequest.objects.all()
+        if getattr(user, 'restaurant', None):
+            qs = qs.filter(restaurant=user.restaurant)
+        status_q = self.request.query_params.get('status')
+        if status_q:
+            qs = qs.filter(status=str(status_q).upper())
+        if not _is_manager(user):
+            # Staff view: only their own
+            qs = qs.filter(Q(staff=user) | Q(staff_phone__icontains=''.join(filter(str.isdigit, str(getattr(user, 'phone', '') or '')))))
+        return qs
+
+    def perform_create(self, serializer):
+        """
+        In-app creation (optional). Staff request creation should typically come from agent ingestion.
+        """
+        user = self.request.user
+        staff_name = f"{user.first_name} {user.last_name}".strip()
+        staff_phone = getattr(user, 'phone', '') or ''
+        serializer.save(
+            restaurant=user.restaurant,
+            staff=user,
+            staff_name=staff_name,
+            staff_phone=staff_phone,
+            source='web',
+            status='PENDING',
+        )
+
+    def _add_comment(self, req: StaffRequest, author: CustomUser, body: str, kind: str = 'comment', metadata: Optional[Dict] = None):
+        StaffRequestComment.objects.create(
+            request=req,
+            author=author,
+            kind=kind,
+            body=body or '',
+            metadata=metadata or {},
+        )
+
+    def _notify_managers(self, req: StaffRequest):
+        """
+        Send real-time in-app notifications to managers/admins for this restaurant.
+        """
+        try:
+            from notifications.models import Notification
+            from notifications.services import notification_service
+
+            managers = CustomUser.objects.filter(
+                restaurant=req.restaurant,
+                role__in=['MANAGER', 'ADMIN', 'SUPER_ADMIN', 'OWNER'],
+                is_active=True,
+            )
+            for m in managers:
+                notif = Notification.objects.create(
+                    recipient=m,
+                    title="New Staff Request",
+                    message=(req.subject or "Staff request") + (f" — {req.staff_name}" if req.staff_name else ""),
+                    notification_type='STAFF_REQUEST',
+                    priority=req.priority,
+                    data={
+                        'staff_request_id': str(req.id),
+                        'route': f"/dashboard/staff-requests/{req.id}",
+                        'status': req.status,
+                        'category': req.category,
+                    }
+                )
+                notification_service.send_custom_notification(
+                    recipient=m,
+                    notification=notif,
+                    message=notif.message,
+                    notification_type='STAFF_REQUEST',
+                    title=notif.title,
+                    channels=['app'],
+                )
+        except Exception:
+            # Best-effort: do not fail request creation due to notification issues
+            pass
+
+    @action(detail=True, methods=['post'])
+    def comment(self, request, pk=None):
+        req = self.get_object()
+        body = str(request.data.get('body') or '').strip()
+        if not body:
+            return Response({'success': False, 'error': 'body is required'}, status=status.HTTP_400_BAD_REQUEST)
+        self._add_comment(req, request.user, body, kind='comment')
+        return Response({'success': True, 'request': self.get_serializer(req).data})
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        req = self.get_object()
+        if not _is_manager(request.user):
+            return Response({'success': False, 'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        old = req.status
+        req.status = 'APPROVED'
+        req.reviewed_by = request.user
+        req.reviewed_at = timezone.now()
+        req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
+        self._add_comment(req, request.user, f"Approved by {request.user.get_full_name()}", kind='status_change', metadata={'from': old, 'to': 'APPROVED'})
+        return Response({'success': True, 'request': self.get_serializer(req).data})
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        req = self.get_object()
+        if not _is_manager(request.user):
+            return Response({'success': False, 'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        reason = str(request.data.get('reason') or '').strip()
+        old = req.status
+        req.status = 'REJECTED'
+        req.reviewed_by = request.user
+        req.reviewed_at = timezone.now()
+        req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
+        self._add_comment(
+            req,
+            request.user,
+            f"Rejected by {request.user.get_full_name()}" + (f": {reason}" if reason else ""),
+            kind='status_change',
+            metadata={'from': old, 'to': 'REJECTED', 'reason': reason},
+        )
+        return Response({'success': True, 'request': self.get_serializer(req).data})
+
+    @action(detail=True, methods=['post'])
+    def escalate(self, request, pk=None):
+        req = self.get_object()
+        if not _is_manager(request.user):
+            return Response({'success': False, 'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        note = str(request.data.get('note') or '').strip()
+        old = req.status
+        req.status = 'ESCALATED'
+        req.reviewed_by = request.user
+        req.reviewed_at = timezone.now()
+        req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
+        self._add_comment(
+            req,
+            request.user,
+            f"Escalated by {request.user.get_full_name()}" + (f": {note}" if note else ""),
+            kind='status_change',
+            metadata={'from': old, 'to': 'ESCALATED', 'note': note},
+        )
+        return Response({'success': True, 'request': self.get_serializer(req).data})
+
+    @action(detail=True, methods=['post'])
+    def close(self, request, pk=None):
+        req = self.get_object()
+        if not _is_manager(request.user):
+            return Response({'success': False, 'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        old = req.status
+        req.status = 'CLOSED'
+        req.reviewed_by = request.user
+        req.reviewed_at = timezone.now()
+        req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
+        self._add_comment(req, request.user, f"Closed by {request.user.get_full_name()}", kind='status_change', metadata={'from': old, 'to': 'CLOSED'})
+        return Response({'success': True, 'request': self.get_serializer(req).data})
 
 # Task Management ViewSets
 class StandardOperatingProcedureViewSet(viewsets.ModelViewSet):

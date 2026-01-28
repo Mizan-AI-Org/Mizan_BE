@@ -390,6 +390,57 @@ class InvitationViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_201_CREATED)
         else:
             return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['get'], permission_classes=[AllowAny], url_path='by-token')
+    def by_token(self, request):
+        """
+        Lightweight lookup for invitation metadata by token.
+
+        Used by the public Accept Invitation page to decide whether the flow
+        should use a password (admins/managers) or a PIN (frontline staff),
+        without requiring authentication.
+        """
+        token = request.query_params.get('token')
+        if not token:
+            return Response(
+                {'detail': 'token query parameter is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            invitation = UserInvitation.objects.get(invitation_token=token)
+        except UserInvitation.DoesNotExist:
+            return Response(
+                {'detail': 'Invitation not found'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Basic expiry check – front-end can still show a nicer message
+        if invitation.expires_at <= timezone.now():
+            return Response(
+                {
+                    'detail': 'Invitation has expired',
+                    'status': invitation.status,
+                    'is_expired': True,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        extra = invitation.extra_data or {}
+        phone = extra.get('phone') or extra.get('phone_number')
+
+        return Response(
+            {
+                'id': str(invitation.id),
+                'email': invitation.email,
+                'role': invitation.role,
+                'first_name': invitation.first_name,
+                'last_name': invitation.last_name,
+                'status': invitation.status,
+                'is_accepted': invitation.is_accepted,
+                'has_phone': bool(phone),
+            }
+        )
     
     @action(detail=True, methods=['post'])
     def resend(self, request, pk=None):

@@ -109,18 +109,12 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         user = self.request.user
-        if user.is_staff or user.is_superuser:
-            return SafetyConcernReport.objects.all()
-        
-        # Staff can see reports for their restaurants, but not anonymous ones from others
-        restaurants = Restaurant.objects.filter(staff=user)
-        return SafetyConcernReport.objects.filter(
-            restaurant__in=restaurants
-        ).exclude(
-            is_anonymous=True, 
-            reporter__isnull=False,
-            reporter__id__ne=user.id
-        )
+        qs = SafetyConcernReport.objects.all()
+        if not (user.is_staff or user.is_superuser):
+            # Restrict to incidents for restaurants the user is associated with
+            restaurants = Restaurant.objects.filter(staff=user)
+            qs = qs.filter(restaurant__in=restaurants)
+        return qs
     
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated, IsManagerOrReadOnly])
     def update_status(self, request, pk=None):

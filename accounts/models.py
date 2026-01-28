@@ -7,6 +7,7 @@ from django.contrib.auth.hashers import make_password, check_password
 from django.conf import settings
 from django.utils import timezone
 from datetime import timedelta
+from core.crypto import encrypt_json, decrypt_json
 
 class CustomUserManager(BaseUserManager):
     def create_user(self, email, password=None, **extra_fields):
@@ -81,6 +82,8 @@ class Restaurant(models.Model):
     pos_provider = models.CharField(max_length=50, choices=[
         ('STRIPE', 'Stripe'),
         ('SQUARE', 'Square'),
+        ('TOAST', 'Toast'),
+        ('LIGHTSPEED', 'Lightspeed'),
         ('CLOVER', 'Clover'),
         ('CUSTOM', 'Custom API'),
         ('NONE', 'Not Configured')
@@ -88,12 +91,50 @@ class Restaurant(models.Model):
     pos_merchant_id = models.CharField(max_length=255, blank=True, null=True)
     pos_api_key = models.CharField(max_length=255, blank=True, null=True)
     pos_is_connected = models.BooleanField(default=False)
+    # OAuth-based POS credentials (encrypted). Stored as JSON; currently used for Square.
+    pos_oauth_data = models.TextField(blank=True, null=True)
+    # Provider location identifier (e.g. Square location_id)
+    pos_location_id = models.CharField(max_length=255, blank=True, null=True)
+    # Access token expiry for OAuth providers (best-effort; source of truth is provider)
+    pos_token_expires_at = models.DateTimeField(blank=True, null=True)
     
     class Meta:
         db_table = 'restaurants'
     
     def __str__(self):
         return self.name
+
+    def get_pos_oauth(self) -> dict:
+        """Return decrypted POS OAuth payload dict (or {})."""
+        if not self.pos_oauth_data:
+            return {}
+        try:
+            return decrypt_json(self.pos_oauth_data)
+        except Exception:
+            return {}
+
+    def set_pos_oauth(self, payload: dict) -> None:
+        """Encrypt and store POS OAuth payload dict."""
+        self.pos_oauth_data = encrypt_json(payload or {})
+
+    # --- Square helpers (provider-specific) ---
+    def get_square_oauth(self) -> dict:
+        return (self.get_pos_oauth() or {}).get("square", {}) or {}
+
+    def set_square_oauth(self, square_payload: dict) -> None:
+        root = self.get_pos_oauth() or {}
+        root["square"] = square_payload or {}
+        self.set_pos_oauth(root)
+
+    def get_square_access_token(self) -> str:
+        """Prefer OAuth access token; fall back to legacy pos_api_key."""
+        sq = self.get_square_oauth()
+        token = sq.get("access_token") or ""
+        return token or (self.pos_api_key or "")
+
+    def get_square_refresh_token(self) -> str:
+        sq = self.get_square_oauth()
+        return sq.get("refresh_token") or ""
 
 class CustomUser(AbstractUser):
     ROLE_CHOICES = settings.STAFF_ROLES_CHOICES

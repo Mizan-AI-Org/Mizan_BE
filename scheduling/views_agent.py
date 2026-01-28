@@ -8,6 +8,10 @@ from rest_framework import status, permissions
 from django.conf import settings
 from django.utils import timezone
 from datetime import datetime, time, timedelta
+from django.db.models import Q
+import re
+import unicodedata
+from difflib import SequenceMatcher
 
 from accounts.models import CustomUser, Restaurant
 from .models import AssignedShift, WeeklySchedule
@@ -65,25 +69,115 @@ def agent_list_staff(request):
             is_active=True
         ).exclude(role='SUPER_ADMIN')
         
-        # Optional name filter
-        name_filter = request.query_params.get('name')
+        def _norm(s: str) -> str:
+            # Normalize for fuzzy matching: lowercase, strip diacritics, collapse spaces.
+            s = (s or "").strip().lower()
+            s = unicodedata.normalize("NFKD", s)
+            s = "".join(ch for ch in s if not unicodedata.combining(ch))
+            s = re.sub(r"\s+", " ", s)
+            return s
+
+        # Optional name filter (supports full names like "First Last" or just "First")
+        name_filter = (request.query_params.get("name") or "").strip()
+        fuzzy_mode = False
+        token_query = None
         if name_filter:
-            name_filter = name_filter.lower()
-            queryset = queryset.filter(
-                first_name__icontains=name_filter
-            ) | queryset.filter(
-                last_name__icontains=name_filter
-            )
+            tokens = [t for t in re.split(r"\s+", name_filter) if t]
+            token_query = tokens[:]  # keep for ranking/response metadata
+            filtered = queryset
+            # AND across tokens, OR across fields (first/last/email/phone)
+            for tok in tokens:
+                filtered = filtered.filter(
+                    Q(first_name__icontains=tok)
+                    | Q(last_name__icontains=tok)
+                    | Q(email__icontains=tok)
+                    | Q(phone__icontains=tok)
+                )
+
+            # If token filter yields no results, fall back to fuzzy suggestions.
+            if filtered.exists():
+                queryset = filtered
+            else:
+                fuzzy_mode = True
+
+        # If fuzzy_mode is enabled, return best matches (so the agent can confirm)
+        if fuzzy_mode:
+            query_n = _norm(name_filter)
+            candidates = []
+            for staff in queryset[:500]:
+                full_a = _norm(f"{staff.first_name} {staff.last_name}")
+                full_b = _norm(f"{staff.last_name} {staff.first_name}")
+                email_n = _norm(staff.email or "")
+                score = max(
+                    SequenceMatcher(None, query_n, full_a).ratio(),
+                    SequenceMatcher(None, query_n, full_b).ratio(),
+                    SequenceMatcher(None, query_n, email_n).ratio(),
+                )
+                # Only keep reasonably close matches
+                if score >= 0.72:
+                    candidates.append((score, staff))
+
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            queryset = [s for _, s in candidates[:8]]
         
+        # If we have a name filter and a lot of matches, rank them in Python so the agent can
+        # confidently pick the best match (especially for first-name-only queries).
+        ranked = None
+        if name_filter and not fuzzy_mode:
+            toks = token_query or [name_filter]
+            toks_n = [_norm(t) for t in toks if t]
+
+            def _rank_staff(staff):
+                fn = _norm(staff.first_name or "")
+                ln = _norm(staff.last_name or "")
+                full = (fn + " " + ln).strip()
+                score = 0
+                # Higher weight for first-name matches for single-token queries
+                if len(toks_n) == 1:
+                    t = toks_n[0]
+                    if fn == t:
+                        score += 100
+                    elif fn.startswith(t):
+                        score += 70
+                    elif t in fn:
+                        score += 50
+                    if ln == t:
+                        score += 40
+                    elif ln.startswith(t):
+                        score += 25
+                    elif t in ln:
+                        score += 15
+                    if full == t:
+                        score += 20
+                    elif full.startswith(t):
+                        score += 10
+                else:
+                    # Multi-token: reward when all tokens appear in full name
+                    if all(t in full for t in toks_n):
+                        score += 80
+                    # Bonus for token order (e.g. "first last" vs "last first")
+                    joined = " ".join(toks_n)
+                    if joined and joined in full:
+                        score += 20
+                return score
+
+            # Cap initial DB fetch to keep it cheap
+            candidates = list(queryset[:200])
+            candidates.sort(key=_rank_staff, reverse=True)
+            ranked = candidates[:25]
+
         staff_list = []
-        for staff in queryset:
+        iterable = ranked if ranked is not None else queryset
+        for staff in iterable:
             staff_list.append({
                 'id': str(staff.id),
                 'first_name': staff.first_name,
                 'last_name': staff.last_name,
+                'full_name': f"{(staff.first_name or '').strip()} {(staff.last_name or '').strip()}".strip(),
                 'email': staff.email,
                 'role': staff.role,
                 'phone': staff.phone or '',
+                'match_mode': 'fuzzy' if fuzzy_mode else 'exact',
             })
         
         return Response(staff_list)
@@ -261,6 +355,9 @@ def agent_create_shift(request):
             department=department,
             workspace_location=workspace_location,
             status='SCHEDULED'
+            ,
+            created_by=acting_user,
+            last_modified_by=acting_user,
         )
         
         # Add staff to staff_members M2M
@@ -290,7 +387,8 @@ def agent_create_shift(request):
 
         # Immediately notify the assigned staff (WhatsApp + in-app), with audit logging
         try:
-            SchedulingService.notify_shift_assignment(shift)
+            # For agent-created shifts, force WhatsApp delivery (bypass user prefs).
+            SchedulingService.notify_shift_assignment(shift, force_whatsapp=True)
         except Exception as e:
             logger.warning(f"Agent create shift: notification failed: {e}")
         
@@ -590,24 +688,46 @@ def agent_staff_by_phone(request):
         if not is_valid:
             return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
         
-        phone = request.query_params.get('phone')
+        # Accept multiple common parameter names used by WhatsApp/Lua
+        phone = (
+            request.query_params.get('phone')
+            or request.query_params.get('phoneNumber')
+            or request.query_params.get('from')
+        )
         if not phone:
             return Response(
-                {'success': False, 'error': 'phone query parameter is required'},
+                {'success': False, 'error': 'phone (or phoneNumber/from) query parameter is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
         # Normalize phone number (remove common prefixes)
         phone_digits = ''.join(filter(str.isdigit, phone))
+        default_cc = ''.join(filter(str.isdigit, str(getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '') or '')))
         
         # Try to find staff by phone - check multiple phone formats
         staff = None
-        possible_patterns = [
-            phone_digits,
-            phone_digits[-10:] if len(phone_digits) > 10 else phone_digits,
-            '+' + phone_digits,
-        ]
+        possible_patterns = []
+        if phone_digits:
+            possible_patterns.extend([phone_digits, f"+{phone_digits}"])
+            # Try last 10 digits (common DB storage pattern)
+            if len(phone_digits) > 10:
+                possible_patterns.append(phone_digits[-10:])
+                possible_patterns.append(f"+{phone_digits[-10:]}")
+            # If we have a default country code, try stripping it and/or adding local leading zero
+            if default_cc and phone_digits.startswith(default_cc):
+                local = phone_digits[len(default_cc):]
+                if local:
+                    possible_patterns.extend([local, f"0{local}", f"+{default_cc}{local}"])
+            # If starts with 0, try without 0
+            if phone_digits.startswith('0') and len(phone_digits) > 1:
+                possible_patterns.append(phone_digits.lstrip('0'))
+                if default_cc:
+                    possible_patterns.append(f"{default_cc}{phone_digits.lstrip('0')}")
         
+        # Deduplicate while preserving order
+        seen = set()
+        possible_patterns = [p for p in possible_patterns if p and not (p in seen or seen.add(p))]
+
         for pattern in possible_patterns:
             try:
                 staff = CustomUser.objects.filter(
@@ -643,4 +763,192 @@ def agent_staff_by_phone(request):
         
     except Exception as e:
         logger.error(f"Agent staff by phone error: {e}")
+        return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([])  # Bypass JWT auth
+@permission_classes([permissions.AllowAny])
+def agent_get_my_shifts(request):
+    """
+    Get a staff member's shifts for this week and next week (default), resolving the staff via:
+    - staff_id
+    - phone / phoneNumber / from (WhatsApp sender)
+    - sessionId/userId/email/token via resolve_agent_restaurant_and_user
+
+    Query params:
+    - staff_id: UUID (optional)
+    - phone|phoneNumber|from: phone number (optional)
+    - weeks: int (optional, default 2)
+    - start_date / end_date: YYYY-MM-DD (optional override)
+    - when: "today" | "tomorrow" | "<weekday>" (optional override)
+    - day: alias for when (optional)
+    """
+    try:
+        is_valid, error = validate_agent_key(request)
+        if not is_valid:
+            return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+
+        qp = dict(request.query_params)
+        # Flatten QueryDict values
+        qp = {k: (v[0] if isinstance(v, list) and v else v) for k, v in qp.items()}
+
+        staff_id = qp.get('staff_id') or qp.get('staffId') or qp.get('userId') or qp.get('user_id')
+        phone = qp.get('phone') or qp.get('phoneNumber') or qp.get('from')
+
+        staff = None
+        restaurant = None
+
+        # 1) staff_id direct
+        if staff_id:
+            try:
+                staff = CustomUser.objects.filter(id=staff_id, is_active=True).exclude(role='SUPER_ADMIN').select_related('restaurant').first()
+            except Exception:
+                staff = None
+            if staff:
+                restaurant = staff.restaurant
+
+        # 2) Resolve via phone (WhatsApp sender)
+        if not staff and phone:
+            phone_digits = ''.join(filter(str.isdigit, str(phone)))
+            default_cc = ''.join(filter(str.isdigit, str(getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '') or '')))
+            patterns = []
+            if phone_digits:
+                patterns.extend([phone_digits, f"+{phone_digits}"])
+                if len(phone_digits) > 10:
+                    patterns.extend([phone_digits[-10:], f"+{phone_digits[-10:]}"])
+                if default_cc and phone_digits.startswith(default_cc):
+                    local = phone_digits[len(default_cc):]
+                    if local:
+                        patterns.extend([local, f"0{local}", f"+{default_cc}{local}"])
+                if phone_digits.startswith('0') and len(phone_digits) > 1:
+                    stripped = phone_digits.lstrip('0')
+                    patterns.append(stripped)
+                    if default_cc:
+                        patterns.append(f"{default_cc}{stripped}")
+            seen = set()
+            patterns = [p for p in patterns if p and not (p in seen or seen.add(p))]
+            for p in patterns:
+                staff = CustomUser.objects.filter(phone__icontains=p, is_active=True).exclude(role='SUPER_ADMIN').select_related('restaurant').first()
+                if staff:
+                    restaurant = staff.restaurant
+                    break
+
+        # 3) Fallback: resolve via sessionId/email/token etc
+        if not staff:
+            restaurant, staff = resolve_agent_restaurant_and_user(request=request, payload=qp)
+
+        if not staff:
+            return Response({
+                'success': False,
+                'error': 'Unable to resolve staff profile from this request (missing/unknown phone or staff_id).'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        if not restaurant:
+            restaurant = getattr(staff, 'restaurant', None)
+
+        # Determine date range
+        # - default: this week + next week
+        # - override: start_date/end_date
+        # - override: when/day = today|tomorrow|monday|tuesday|...
+        start_date = qp.get('start_date')
+        end_date = qp.get('end_date')
+        when = (qp.get('when') or qp.get('day') or '').strip().lower()
+        try:
+            weeks = int(qp.get('weeks') or 2)
+        except Exception:
+            weeks = 2
+        weeks = max(1, min(8, weeks))
+
+        today = timezone.localdate()
+        week_start = today - timedelta(days=today.weekday())
+        range_start = week_start
+        range_end = week_start + timedelta(days=(7 * weeks) - 1)
+
+        # "when" override
+        if when:
+            weekday_map = {
+                'mon': 0, 'monday': 0,
+                'tue': 1, 'tues': 1, 'tuesday': 1,
+                'wed': 2, 'wednesday': 2,
+                'thu': 3, 'thur': 3, 'thurs': 3, 'thursday': 3,
+                'fri': 4, 'friday': 4,
+                'sat': 5, 'saturday': 5,
+                'sun': 6, 'sunday': 6,
+            }
+            if when in ('today', 'now'):
+                range_start = today
+                range_end = today
+            elif when in ('tomorrow',):
+                range_start = today + timedelta(days=1)
+                range_end = range_start
+            elif when in weekday_map:
+                target = weekday_map[when]
+                # Next occurrence (including today)
+                delta = (target - today.weekday()) % 7
+                range_start = today + timedelta(days=delta)
+                range_end = range_start
+            # else: ignore unknown value and fall back to default/week range
+
+        if start_date:
+            try:
+                range_start = datetime.strptime(start_date, '%Y-%m-%d').date()
+            except Exception:
+                pass
+        if end_date:
+            try:
+                range_end = datetime.strptime(end_date, '%Y-%m-%d').date()
+            except Exception:
+                pass
+
+        shifts_qs = AssignedShift.objects.filter(
+            schedule__restaurant=restaurant,
+            shift_date__gte=range_start,
+            shift_date__lte=range_end,
+        ).filter(Q(staff=staff) | Q(staff_members=staff)).select_related('schedule__restaurant').order_by('shift_date', 'start_time')
+
+        shifts = []
+        for s in shifts_qs:
+            try:
+                start_dt = timezone.localtime(s.start_time) if s.start_time else None
+                end_dt = timezone.localtime(s.end_time) if s.end_time else None
+            except Exception:
+                start_dt = s.start_time
+                end_dt = s.end_time
+            shifts.append({
+                'id': str(s.id),
+                'restaurant_id': str(restaurant.id) if restaurant else None,
+                'restaurant_name': restaurant.name if restaurant else None,
+                'shift_date': s.shift_date.isoformat() if s.shift_date else None,
+                'start_time': start_dt.strftime('%H:%M') if hasattr(start_dt, 'strftime') else (str(start_dt)[:5] if start_dt else None),
+                'end_time': end_dt.strftime('%H:%M') if hasattr(end_dt, 'strftime') else (str(end_dt)[:5] if end_dt else None),
+                'role': (s.role or '').upper(),
+                'title': (getattr(s, 'notes', '') or '').strip(),
+                'department': (getattr(s, 'department', '') or '').strip(),
+                'workspace_location': (getattr(s, 'workspace_location', '') or '').strip(),
+                'instructions': (getattr(s, 'preparation_instructions', '') or '').strip(),
+                'status': s.status,
+            })
+
+        return Response({
+            'success': True,
+            'staff': {
+                'id': str(staff.id),
+                'first_name': staff.first_name,
+                'last_name': staff.last_name,
+                'phone': staff.phone,
+                'restaurant_id': str(getattr(staff, 'restaurant_id', '') or ''),
+                'restaurant_name': getattr(getattr(staff, 'restaurant', None), 'name', None),
+            },
+            'range': {
+                'start_date': range_start.isoformat(),
+                'end_date': range_end.isoformat(),
+                'weeks': weeks,
+            },
+            'count': len(shifts),
+            'shifts': shifts,
+        })
+
+    except Exception as e:
+        logger.error(f"Agent get my shifts error: {e}")
         return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

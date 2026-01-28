@@ -307,6 +307,96 @@ class PerformanceMetric(models.Model):
     class Meta:
         ordering = ['-date']
 
+
+class StaffRequest(models.Model):
+    """
+    Manager-facing staff requests inbox item.
+    Created from WhatsApp/Lua agent ingestion (and can later be created from in-app staff UI).
+    """
+    STATUS_CHOICES = (
+        ('PENDING', 'Pending'),
+        ('APPROVED', 'Approved'),
+        ('REJECTED', 'Rejected'),
+        ('ESCALATED', 'Escalated'),
+        ('CLOSED', 'Closed'),
+    )
+
+    PRIORITY_CHOICES = (
+        ('LOW', 'Low'),
+        ('MEDIUM', 'Medium'),
+        ('HIGH', 'High'),
+        ('URGENT', 'Urgent'),
+    )
+
+    CATEGORY_CHOICES = (
+        ('DOCUMENT', 'Document'),
+        ('HR', 'HR'),
+        ('SCHEDULING', 'Scheduling'),
+        ('PAYROLL', 'Payroll'),
+        ('OPERATIONS', 'Operations'),
+        ('OTHER', 'Other'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='staff_requests')
+
+    # Best-effort staff linkage (phone-only requests are common on WhatsApp)
+    staff = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='staff_requests')
+    staff_name = models.CharField(max_length=255, blank=True, default='')
+    staff_phone = models.CharField(max_length=32, blank=True, default='')
+
+    category = models.CharField(max_length=20, choices=CATEGORY_CHOICES, default='OTHER')
+    priority = models.CharField(max_length=10, choices=PRIORITY_CHOICES, default='MEDIUM')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+
+    subject = models.CharField(max_length=255, blank=True, default='')
+    description = models.TextField(blank=True, default='')
+
+    source = models.CharField(max_length=30, blank=True, default='whatsapp', help_text="Origin channel: whatsapp/lua/web")
+    external_id = models.CharField(max_length=128, blank=True, default='', help_text="External inquiry/ticket id if applicable")
+    metadata = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    reviewed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_staff_requests')
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['restaurant', 'status']),
+            models.Index(fields=['restaurant', 'created_at']),
+            models.Index(fields=['staff_phone']),
+        ]
+
+    def __str__(self):
+        return f"StaffRequest {str(self.id)[:8]} - {self.status}"
+
+
+class StaffRequestComment(models.Model):
+    """
+    Request timeline item: comments + status changes.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    request = models.ForeignKey(StaffRequest, on_delete=models.CASCADE, related_name='comments')
+    author = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='staff_request_comments')
+
+    kind = models.CharField(max_length=20, default='comment', help_text="comment|status_change|system")
+    body = models.TextField(blank=True, default='')
+    metadata = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['created_at']
+        indexes = [
+            models.Index(fields=['request', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f"StaffRequestComment {str(self.id)[:8]}"
+
 @receiver(pre_save, sender=Schedule)
 def log_schedule_changes(sender, instance, **kwargs):
     """Log changes to schedules before saving"""

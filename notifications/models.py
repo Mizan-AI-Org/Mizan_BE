@@ -15,6 +15,7 @@ class Notification(models.Model):
         ('AVAILABILITY_REQUEST', 'Availability Request'),
         ('AVAILABILITY_APPROVED', 'Availability Approved'),
         ('AVAILABILITY_DENIED', 'Availability Denied'),
+        ('STAFF_REQUEST', 'Staff Request'),
         ('COMPLIANCE_ALERT', 'Compliance Alert'),
         ('SAFETY_BRIEFING', 'Safety Briefing'),
         ('ANNOUNCEMENT', 'Announcement'),

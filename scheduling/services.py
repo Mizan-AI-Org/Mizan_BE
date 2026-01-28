@@ -278,7 +278,7 @@ class SchedulingService:
         }
     
     @staticmethod
-    def notify_shift_assignment(shift: 'AssignedShift') -> None:
+    def notify_shift_assignment(shift: 'AssignedShift', force_whatsapp: bool = False) -> None:
         """
         Send notification to staff about shift assignment
         """
@@ -349,41 +349,77 @@ class SchedulingService:
                 notification=notification,
             )
 
-            # WhatsApp: prefer your approved template (configurable), fallback to plain text
+            # WhatsApp: prefer your approved template (configurable), fallback to plain text.
+            # For agent-created shifts, pass force_whatsapp=True to bypass user preferences
+            # (the user explicitly expects WhatsApp delivery).
             try:
-                should_whatsapp = notification_service._should_send_whatsapp(shift.staff)
+                should_whatsapp = True if force_whatsapp else notification_service._should_send_whatsapp(shift.staff)
             except Exception:
                 should_whatsapp = True
 
             if should_whatsapp and getattr(shift.staff, 'phone', None):
-                template_name = getattr(notification_service, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED', None)
-                # template name is stored in Django settings, not on the service instance
                 from django.conf import settings as dj_settings
-                template_name = getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED', '') or ''
-                template_lang = getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_LANGUAGE', 'en_US')
 
-                # Recommended parameter order (create this template in Lua/Meta to match):
-                # {{1}} staff_first_name
-                # {{2}} restaurant_name
-                # {{3}} shift_date (e.g. Tue, Jan 27, 2026)
-                # {{4}} start_time (e.g. 12:00 PM)
-                # {{5}} end_time (e.g. 03:00 PM)
-                # {{6}} role
-                # {{7}} department (or '—')
-                components = [
-                    {
+                # Prefer a dedicated detailed template if configured; otherwise default to the
+                # existing `staff_weekly_schedule` template (widely used elsewhere in this repo).
+                template_name = (getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED', '') or '').strip()
+                template_lang = getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED_LANGUAGE', None)
+                if not template_name:
+                    template_name = (getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED', '') or '').strip() or 'staff_weekly_schedule'
+                    template_lang = getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_LANGUAGE', 'en_US')
+                template_lang = template_lang or 'en_US'
+
+                workspace_location = (getattr(shift, 'workspace_location', '') or '').strip()
+                instructions = (getattr(shift, 'preparation_instructions', '') or '').strip()
+                shift_title = (getattr(shift, 'notes', '') or '').strip()
+                break_minutes = None
+                try:
+                    bd = getattr(shift, 'break_duration', None)
+                    if bd:
+                        break_minutes = int(bd.total_seconds() // 60)
+                except Exception:
+                    break_minutes = None
+
+                def _cap(s: str, n: int) -> str:
+                    s = str(s or '').strip()
+                    return s if len(s) <= n else (s[: max(0, n - 1)] + "…")
+
+                # Templates are strict about parameter count/order. We support:
+                # - `staff_weekly_schedule`-style (6 params): name, restaurant, date, start, end, role
+                # - detailed template (10 params) if you configure it on the WhatsApp/Meta side:
+                #   {{1}} first_name, {{2}} restaurant, {{3}} date, {{4}} start, {{5}} end,
+                #   {{6}} role, {{7}} department, {{8}} shift_title, {{9}} workspace, {{10}} instructions
+                detailed = template_name == (getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED', '') or '').strip()
+
+                if detailed:
+                    components = [{
                         "type": "body",
                         "parameters": [
-                            {"type": "text", "text": (shift.staff.first_name or staff_name)},
-                            {"type": "text", "text": rest_name},
-                            {"type": "text", "text": shift_date_str},
-                            {"type": "text", "text": start_str},
-                            {"type": "text", "text": end_str},
-                            {"type": "text", "text": role},
-                            {"type": "text", "text": dept or "—"},
+                            {"type": "text", "text": _cap((shift.staff.first_name or staff_name), 30)},
+                            {"type": "text", "text": _cap(rest_name, 60)},
+                            {"type": "text", "text": _cap(shift_date_str, 40)},
+                            {"type": "text", "text": _cap(start_str, 20)},
+                            {"type": "text", "text": _cap(end_str, 20)},
+                            {"type": "text", "text": _cap(role, 30)},
+                            {"type": "text", "text": _cap(dept or "—", 40)},
+                            {"type": "text", "text": _cap(shift_title or "—", 80)},
+                            {"type": "text", "text": _cap(workspace_location or "—", 60)},
+                            {"type": "text", "text": _cap(instructions or "—", 120)},
                         ],
-                    }
-                ]
+                    }]
+                else:
+                    # Standard template: keep it compatible with `agent_send_shift_notification`
+                    components = [{
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": _cap((shift.staff.first_name or staff_name), 30)},
+                            {"type": "text", "text": _cap(rest_name, 60)},
+                            {"type": "text", "text": _cap(shift_date_str, 40)},
+                            {"type": "text", "text": _cap(start_str, 20)},
+                            {"type": "text", "text": _cap(end_str, 20)},
+                            {"type": "text", "text": _cap(role, 30)},
+                        ],
+                    }]
 
                 wa_ok = False
                 wa_resp = None

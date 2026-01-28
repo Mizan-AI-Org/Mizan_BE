@@ -1153,19 +1153,23 @@ def whatsapp_webhook(request):
                             missing.append("time of occurrence (e.g., today 3pm)")
 
                         if missing:
-                            session.state = 'awaiting_incident_clarification'
-                            session.context['pending_incident'] = {
-                                'source': 'voice',
-                                'audio_url': media_url,
-                                'media_id': media_id,
-                                'transcript': transcript,
-                            }
-                            session.save(update_fields=['state', 'context'])
-                            notification_service.send_whatsapp_text(
-                                phone_digits,
-                                R(user, 'incident_clarify_missing', missing=", ".join(missing))
-                            )
-                            continue
+                            # Only require clarification if we couldn't infer an incident type.
+                            if not incident_type:
+                                session.state = 'awaiting_incident_clarification'
+                                session.context['pending_incident'] = {
+                                    'source': 'voice',
+                                    'audio_url': media_url,
+                                    'media_id': media_id,
+                                    'transcript': transcript,
+                                }
+                                session.save(update_fields=['state', 'context'])
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    R(user, 'incident_clarify_missing', missing=", ".join(missing))
+                                )
+                                continue
+                            # If only time is missing, default to "now" so the incident is still recorded.
+                            occurred_at = occurred_at or now
 
                         shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
                         severity = _infer_severity(transcript)
@@ -1546,14 +1550,17 @@ def whatsapp_webhook(request):
                             missing.append("time of occurrence (e.g., today 3pm)")
 
                         if missing:
-                            # Keep waiting; update transcript with clarification for better context
-                            session.context['pending_incident'] = {**pending, 'transcript': combined_text}
-                            session.save(update_fields=['context'])
-                            notification_service.send_whatsapp_text(
-                                phone_digits,
-                                R(user, 'incident_clarify_missing', missing=", ".join(missing))
-                            )
-                            continue
+                            # If we still don't know what kind of incident this is, keep clarifying.
+                            if not incident_type:
+                                session.context['pending_incident'] = {**pending, 'transcript': combined_text}
+                                session.save(update_fields=['context'])
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    R(user, 'incident_clarify_missing', missing=", ".join(missing))
+                                )
+                                continue
+                            # Otherwise, default missing time to "now" so we still log the ticket.
+                            occurred_at = occurred_at or now
 
                         shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
                         severity = _infer_severity(combined_text)
@@ -1741,7 +1748,9 @@ def whatsapp_webhook(request):
                             if not occurred_at:
                                 missing.append("time of occurrence (e.g., today 3pm)")
 
-                            if missing:
+                        if missing:
+                            # If we couldn't infer any incident type, ask for clarification.
+                            if not incident_type:
                                 session.state = 'awaiting_incident_clarification'
                                 session.context['pending_incident'] = {'source': 'text', 'transcript': raw_body}
                                 session.save(update_fields=['state', 'context'])
@@ -1750,6 +1759,8 @@ def whatsapp_webhook(request):
                                     R(user, 'incident_clarify_missing', missing=", ".join(missing))
                                 )
                                 continue
+                            # If we only lack a precise time, default to "now" and still record the report.
+                            occurred_at = occurred_at or now
 
                             shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
                             severity = _infer_severity(raw_body)
@@ -1785,8 +1796,94 @@ def whatsapp_webhook(request):
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                         continue
 
-                    # Fallback
-                    notification_service.send_whatsapp_text(phone_digits, R(user, 'unrecognized'))
+                    # Fallback: if the message looks like an incident description, log it directly.
+                    if user:
+                        from staff.models_task import SafetyConcernReport
+                        from scheduling.models import AssignedShift
+                        from dateutil import parser as date_parser
+
+                        def _infer_incident_type_text(t):
+                            t_low = (t or '').lower()
+                            if any(k in t_low for k in ['injury', 'hurt', 'slip', 'fall', 'bleed', 'burn', 'fire', 'unsafe', 'hazard', 'accident']):
+                                return 'Safety'
+                            if any(k in t_low for k in ['broken', 'leak', 'maintenance', 'machine', 'equipment', 'fridge', 'freezer', 'oven', 'gas', 'water']):
+                                return 'Maintenance'
+                            if any(k in t_low for k in ['harassment', 'abuse', 'discrimination', 'fight', 'threat']):
+                                return 'HR'
+                            if any(k in t_low for k in ['customer', 'guest', 'complaint', 'service', 'refund']):
+                                return 'Service'
+                            return None
+
+                        def _infer_severity_text(t):
+                            t_low = (t or '').lower()
+                            if any(k in t_low for k in ['critical', 'life threatening', 'life-threatening', 'fire', 'gas leak']):
+                                return 'CRITICAL'
+                            if any(k in t_low for k in ['injury', 'bleeding', 'severe', 'danger', 'urgent']):
+                                return 'HIGH'
+                            if any(k in t_low for k in ['minor', 'small', 'low risk', 'low-risk']):
+                                return 'LOW'
+                            return 'MEDIUM'
+
+                        incident_type = _infer_incident_type_text(raw_body)
+                        if incident_type:
+                            now = timezone.now()
+                            occurred_at = now
+
+                            def _infer_shift_text(u, when_dt):
+                                try:
+                                    qs = AssignedShift.objects.filter(
+                                        staff=u,
+                                        shift_date=when_dt.date(),
+                                        status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED']
+                                    )
+                                    overlap = qs.filter(start_time__lte=when_dt, end_time__gte=when_dt).first()
+                                    return overlap or qs.order_by('start_time').first()
+                                except Exception:
+                                    return None
+
+                            shift_obj = _infer_shift_text(user, occurred_at)
+                            severity = _infer_severity_text(raw_body)
+
+                            try:
+                                ticket = SafetyConcernReport.objects.create(
+                                    restaurant=user.restaurant,
+                                    reporter=user,
+                                    is_anonymous=False,
+                                    incident_type=incident_type,
+                                    title=f"{incident_type} incident reported",
+                                    description=raw_body.strip(),
+                                    severity=severity,
+                                    status='REPORTED',
+                                    occurred_at=occurred_at,
+                                    shift=shift_obj,
+                                )
+
+                                notification_service.send_lua_incident(
+                                    user,
+                                    raw_body,
+                                    metadata={
+                                        'channel': 'whatsapp',
+                                        'phone': phone_digits,
+                                        'ticket_id': str(ticket.id),
+                                        'incident_type': incident_type,
+                                    }
+                                )
+
+                                occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M')
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=incident_type, occurred_at=occurred_str)
+                                )
+                                session.state = 'idle'
+                                session.context.pop('pending_incident', None)
+                                session.save(update_fields=['state', 'context'])
+                                return Response({'success': True})
+                            except Exception:
+                                # Fall through to generic unrecognized response if anything fails
+                                pass
+
+                    # Final fallback when no flows matched
+                    notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed' if 'chair' in raw_body.lower() or 'broken' in raw_body.lower() else 'unrecognized'))
 
         return Response({'success': True})
     except Exception as e:

@@ -1,9 +1,17 @@
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.utils import timezone
 import requests
+import secrets
+from django.conf import settings
+from django.utils.http import urlencode
+from django.utils.dateparse import parse_datetime
+from django.shortcuts import redirect
+from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
+import base64
+import json
 from .models import POSIntegration, AIAssistantConfig, Restaurant, StaffProfile
 from .serializers_extended import (
     POSIntegrationSerializer,
@@ -389,16 +397,35 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
         # Test connection based on provider
         try:
             if restaurant.pos_provider == 'STRIPE':
-                # Test Stripe connection
-                headers = {'Authorization': f'Bearer {restaurant.pos_api_key}'}
-                response = requests.get('https://api.stripe.com/v1/account', headers=headers)
-                connected = response.status_code == 200
+                return Response({
+                    'connected': False,
+                    'provider': restaurant.pos_provider,
+                    'message': 'Coming soon'
+                })
             
             elif restaurant.pos_provider == 'SQUARE':
                 # Test Square connection
-                headers = {'Authorization': f'Bearer {restaurant.pos_api_key}'}
-                response = requests.get('https://connect.squareupsandbox.com/v2/locations', headers=headers)
+                token = restaurant.get_square_access_token()
+                headers = {'Authorization': f'Bearer {token}'}
+                base = 'https://connect.squareup.com' if getattr(settings, 'SQUARE_ENV', 'production') == 'production' else 'https://connect.squareupsandbox.com'
+                response = requests.get(f'{base}/v2/locations', headers=headers, timeout=10)
                 connected = response.status_code == 200
+                if connected:
+                    try:
+                        data = response.json() or {}
+                        locs = data.get('locations') or []
+                        if locs and not restaurant.pos_location_id:
+                            restaurant.pos_location_id = locs[0].get('id')
+                            restaurant.save(update_fields=['pos_location_id'])
+                    except Exception:
+                        pass
+
+            elif restaurant.pos_provider in ('TOAST', 'LIGHTSPEED', 'CLOVER', 'CUSTOM'):
+                return Response({
+                    'connected': False,
+                    'provider': restaurant.pos_provider,
+                    'message': 'Coming soon'
+                })
             
             else:
                 # Custom API test
@@ -420,6 +447,192 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                 'connected': False,
                 'error': str(e)
             }, status=status.HTTP_400_BAD_REQUEST)
+
+    # ---------------------------------------------------------------------
+    # Square OAuth (production-ready, reusable across tenants)
+    # ---------------------------------------------------------------------
+    @action(detail=False, methods=['get'], url_path='square/oauth/authorize')
+    def square_oauth_authorize(self, request):
+        """Return Square OAuth authorization URL for the current restaurant."""
+        if not request.user.restaurant:
+            return Response({'error': 'No restaurant associated'}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.is_admin_role():
+            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        if not settings.SQUARE_APPLICATION_ID or not settings.SQUARE_REDIRECT_URI:
+            return Response({'error': 'Square OAuth is not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        restaurant = request.user.restaurant
+        nonce = secrets.token_urlsafe(24)
+        state_payload = {
+            "restaurant_id": str(restaurant.id),
+            "user_id": str(request.user.id),
+            "nonce": nonce,
+        }
+        signer = TimestampSigner()
+        packed = base64.urlsafe_b64encode(json.dumps(state_payload, separators=(",", ":")).encode("utf-8")).decode("utf-8")
+        state = signer.sign(packed)
+        base = 'https://connect.squareup.com' if settings.SQUARE_ENV == 'production' else 'https://connect.squareupsandbox.com'
+        scopes = [s.strip() for s in (settings.SQUARE_SCOPES or '').split(',') if s.strip()]
+        params = {
+            'client_id': settings.SQUARE_APPLICATION_ID,
+            'scope': ' '.join(scopes),
+            'session': 'false',
+            'state': state,
+            'redirect_uri': settings.SQUARE_REDIRECT_URI,
+        }
+        return Response({'authorization_url': f"{base}/oauth2/authorize?{urlencode(params)}"})
+
+    @action(detail=False, methods=['get'], url_path='square/oauth/callback', permission_classes=[AllowAny])
+    def square_oauth_callback(self, request):
+        """Handle Square OAuth callback; stores encrypted tokens server-side and redirects to frontend."""
+        code = request.query_params.get('code')
+        state = request.query_params.get('state')
+        error = request.query_params.get('error')
+        error_description = request.query_params.get('error_description')
+
+        frontend_base = getattr(settings, 'FRONTEND_URL', '').rstrip('/')
+        frontend_target = f"{frontend_base}/dashboard/settings?tab=integrations"
+
+        if error:
+            qs = urlencode({'square': 'error', 'message': error_description or error})
+            return redirect(f"{frontend_target}&{qs}")
+
+        if not code or not state:
+            qs = urlencode({'square': 'error', 'message': 'Missing code/state'})
+            return redirect(f"{frontend_target}&{qs}")
+
+        signer = TimestampSigner()
+        try:
+            packed = signer.unsign(state, max_age=10 * 60)
+        except SignatureExpired:
+            qs = urlencode({'square': 'error', 'message': 'OAuth state expired'})
+            return redirect(f"{frontend_target}&{qs}")
+        except BadSignature:
+            qs = urlencode({'square': 'error', 'message': 'Invalid OAuth state'})
+            return redirect(f"{frontend_target}&{qs}")
+
+        try:
+            st = json.loads(base64.urlsafe_b64decode(packed.encode("utf-8")).decode("utf-8"))
+        except Exception:
+            qs = urlencode({'square': 'error', 'message': 'Invalid OAuth state payload'})
+            return redirect(f"{frontend_target}&{qs}")
+
+        restaurant_id = st.get('restaurant_id')
+        try:
+            restaurant = Restaurant.objects.get(id=restaurant_id)
+        except Restaurant.DoesNotExist:
+            qs = urlencode({'square': 'error', 'message': 'Restaurant not found'})
+            return redirect(f"{frontend_target}&{qs}")
+
+        base = 'https://connect.squareup.com' if settings.SQUARE_ENV == 'production' else 'https://connect.squareupsandbox.com'
+        token_url = f"{base}/oauth2/token"
+        payload = {
+            'client_id': settings.SQUARE_APPLICATION_ID,
+            'client_secret': settings.SQUARE_APPLICATION_SECRET,
+            'code': code,
+            'grant_type': 'authorization_code',
+            'redirect_uri': settings.SQUARE_REDIRECT_URI,
+        }
+        try:
+            resp = requests.post(token_url, json=payload, timeout=15)
+            data = resp.json() if resp.content else {}
+            if resp.status_code >= 400:
+                msg = data.get('message') or data.get('error_description') or 'Token exchange failed'
+                qs = urlencode({'square': 'error', 'message': msg})
+                return redirect(f"{frontend_target}&{qs}")
+        except Exception as e:
+            qs = urlencode({'square': 'error', 'message': str(e)})
+            return redirect(f"{frontend_target}&{qs}")
+
+        access_token = data.get('access_token') or ''
+        refresh_token = data.get('refresh_token') or ''
+        merchant_id = data.get('merchant_id') or ''
+        expires_at = data.get('expires_at') or None
+        expires_dt = parse_datetime(expires_at) if isinstance(expires_at, str) else None
+
+        # Fetch locations to pick a default location_id
+        location_id = None
+        try:
+            loc_resp = requests.get(
+                f"{base}/v2/locations",
+                headers={'Authorization': f'Bearer {access_token}'},
+                timeout=10,
+            )
+            if loc_resp.status_code == 200:
+                locs = (loc_resp.json() or {}).get('locations') or []
+                if locs:
+                    location_id = locs[0].get('id')
+        except Exception:
+            location_id = None
+
+        # Store encrypted OAuth payload under pos_oauth_data
+        square_payload = {
+            'access_token': access_token,
+            'refresh_token': refresh_token,
+            'merchant_id': merchant_id,
+            'expires_at': expires_at,
+            'environment': settings.SQUARE_ENV,
+            'scopes': (settings.SQUARE_SCOPES or ''),
+        }
+        restaurant.set_square_oauth(square_payload)
+        restaurant.pos_provider = 'SQUARE'
+        if merchant_id:
+            restaurant.pos_merchant_id = merchant_id
+        if location_id:
+            restaurant.pos_location_id = location_id
+        restaurant.pos_token_expires_at = expires_dt
+        restaurant.pos_is_connected = True
+        restaurant.save()
+
+        # Ensure POSIntegration exists and mark connected
+        try:
+            pos_integration, _ = POSIntegration.objects.get_or_create(restaurant=restaurant)
+            pos_integration.sync_status = 'CONNECTED'
+            pos_integration.last_sync_time = timezone.now()
+            pos_integration.save(update_fields=['sync_status', 'last_sync_time'])
+        except Exception:
+            pass
+
+        qs = urlencode({'square': 'connected'})
+        return redirect(f"{frontend_target}&{qs}")
+
+    @action(detail=False, methods=['post'], url_path='square/oauth/disconnect')
+    def square_oauth_disconnect(self, request):
+        """Revoke Square token (best-effort) and clear stored credentials."""
+        if not request.user.restaurant:
+            return Response({'error': 'No restaurant associated'}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.is_admin_role():
+            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        restaurant = request.user.restaurant
+        sq = restaurant.get_square_oauth() or {}
+        token = sq.get('access_token') or restaurant.pos_api_key or ''
+        base = 'https://connect.squareup.com' if settings.SQUARE_ENV == 'production' else 'https://connect.squareupsandbox.com'
+        try:
+            if token and settings.SQUARE_APPLICATION_ID:
+                requests.post(
+                    f"{base}/oauth2/revoke",
+                    json={'client_id': settings.SQUARE_APPLICATION_ID, 'access_token': token},
+                    timeout=10,
+                )
+        except Exception:
+            pass
+
+        restaurant.set_square_oauth({})
+        restaurant.pos_is_connected = False
+        restaurant.pos_location_id = None
+        restaurant.pos_token_expires_at = None
+        restaurant.save(update_fields=['pos_oauth_data', 'pos_is_connected', 'pos_location_id', 'pos_token_expires_at'])
+
+        try:
+            pos_integration, _ = POSIntegration.objects.get_or_create(restaurant=restaurant)
+            pos_integration.sync_status = 'DISCONNECTED'
+            pos_integration.save(update_fields=['sync_status'])
+        except Exception:
+            pass
+
+        return Response({'success': True})
     
     @action(detail=False, methods=['get', 'post'])
     def ai_assistant_config(self, request):

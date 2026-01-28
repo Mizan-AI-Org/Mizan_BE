@@ -1,5 +1,15 @@
 from rest_framework import serializers
-from .models import Schedule, StaffProfile, StaffDocument, ScheduleChange, ScheduleNotification, StaffAvailability, PerformanceMetric
+from .models import (
+    Schedule,
+    StaffProfile,
+    StaffDocument,
+    ScheduleChange,
+    ScheduleNotification,
+    StaffAvailability,
+    PerformanceMetric,
+    StaffRequest,
+    StaffRequestComment,
+)
 from .models_task import StandardOperatingProcedure, SafetyChecklist, ScheduleTask, SafetyConcernReport, SafetyRecognition
 from accounts.serializers import CustomUserSerializer, RestaurantSerializer
 import decimal
@@ -140,6 +150,55 @@ class SafetyRecognitionSerializer(serializers.ModelSerializer):
         model = SafetyRecognition
         fields = '__all__'
         read_only_fields = ('created_at',)
+
+
+class StaffRequestCommentSerializer(serializers.ModelSerializer):
+    author_details = CustomUserSerializer(source='author', read_only=True)
+
+    class Meta:
+        model = StaffRequestComment
+        fields = ['id', 'kind', 'body', 'metadata', 'created_at', 'author', 'author_details']
+        read_only_fields = ['id', 'created_at', 'author', 'author_details']
+
+
+class StaffRequestSerializer(serializers.ModelSerializer):
+    staff_details = CustomUserSerializer(source='staff', read_only=True)
+    comments = StaffRequestCommentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = StaffRequest
+        fields = [
+            'id',
+            'restaurant',
+            'staff',
+            'staff_details',
+            'staff_name',
+            'staff_phone',
+            'category',
+            'priority',
+            'status',
+            'subject',
+            'description',
+            'source',
+            'external_id',
+            'metadata',
+            'created_at',
+            'updated_at',
+            'reviewed_by',
+            'reviewed_at',
+            'comments',
+        ]
+        read_only_fields = [
+            'id',
+            'restaurant',
+            'staff',
+            'staff_details',
+            'created_at',
+            'updated_at',
+            'reviewed_by',
+            'reviewed_at',
+            'comments',
+        ]
         
     def create(self, validated_data):
         request = self.context.get('request')

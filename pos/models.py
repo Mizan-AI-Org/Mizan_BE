@@ -375,3 +375,61 @@ class ReceiptSetting(models.Model):
     
     def __str__(self):
         return f"Receipt Settings - {self.restaurant.name}"
+
+
+class POSExternalEvent(models.Model):
+    """Immutable log of external POS webhook/events for idempotency + audit."""
+    PROVIDER_CHOICES = (
+        ('SQUARE', 'Square'),
+        ('TOAST', 'Toast'),
+        ('CLOVER', 'Clover'),
+        ('CUSTOM', 'Custom'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='pos_external_events')
+    provider = models.CharField(max_length=20, choices=PROVIDER_CHOICES)
+    external_event_id = models.CharField(max_length=255)
+    event_type = models.CharField(max_length=255)
+    payload = models.JSONField(default=dict)
+    received_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'pos_external_events'
+        indexes = [
+            models.Index(fields=['restaurant', 'provider', 'received_at']),
+            models.Index(fields=['provider', 'external_event_id']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['restaurant', 'provider', 'external_event_id'],
+                name='uniq_pos_external_event',
+            )
+        ]
+
+
+class POSExternalObject(models.Model):
+    """Latest known representation of an external POS object (order/payment/item/etc)."""
+    PROVIDER_CHOICES = POSExternalEvent.PROVIDER_CHOICES
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='pos_external_objects')
+    provider = models.CharField(max_length=20, choices=PROVIDER_CHOICES)
+    object_type = models.CharField(max_length=100)   # e.g. 'order', 'payment', 'catalog_item'
+    object_id = models.CharField(max_length=255)     # provider object id
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'pos_external_objects'
+        indexes = [
+            models.Index(fields=['restaurant', 'provider', 'object_type']),
+            models.Index(fields=['provider', 'object_type', 'object_id']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['restaurant', 'provider', 'object_type', 'object_id'],
+                name='uniq_pos_external_object',
+            )
+        ]
