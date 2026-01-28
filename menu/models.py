@@ -1,6 +1,7 @@
 from django.db import models
 import uuid
 from django.conf import settings
+from django.db.models import Q
 
 class MenuCategory(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -9,6 +10,9 @@ class MenuCategory(models.Model):
     description = models.TextField(blank=True, null=True)
     is_active = models.BooleanField(default=True)
     display_order = models.IntegerField(default=0)
+    # External provider mapping (e.g. Square category id)
+    external_provider = models.CharField(max_length=50, blank=True, null=True, db_index=True)
+    external_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -16,6 +20,13 @@ class MenuCategory(models.Model):
         verbose_name_plural = "Menu Categories"
         ordering = ['display_order', 'name']
         unique_together = ['restaurant', 'name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['restaurant', 'external_provider', 'external_id'],
+                name='uniq_menucategory_external',
+                condition=Q(external_provider__isnull=False, external_id__isnull=False),
+            ),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.restaurant.name})"
@@ -29,6 +40,10 @@ class MenuItem(models.Model):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     is_active = models.BooleanField(default=True)
     image = models.ImageField(upload_to='menu_items/', blank=True, null=True)
+    # External provider mapping (e.g. Square variation id)
+    external_provider = models.CharField(max_length=50, blank=True, null=True, db_index=True)
+    external_id = models.CharField(max_length=255, blank=True, null=True, db_index=True)
+    external_metadata = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -36,6 +51,13 @@ class MenuItem(models.Model):
         verbose_name_plural = "Menu Items"
         ordering = ['name']
         unique_together = ['restaurant', 'name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['restaurant', 'external_provider', 'external_id'],
+                name='uniq_menuitem_external',
+                condition=Q(external_provider__isnull=False, external_id__isnull=False),
+            ),
+        ]
 
     def __str__(self):
         return f"{self.name} ({self.category.name if self.category else 'No Category'})"

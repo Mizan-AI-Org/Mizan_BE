@@ -6,8 +6,10 @@ from .views import (
     StandardOperatingProcedureViewSet, SafetyChecklistViewSet, ScheduleTaskViewSet,
     SafetyConcernReportViewSet, SafetyRecognitionViewSet,
     update_staff_profile_by_user_id,
-    StaffDocumentViewSet
+    StaffDocumentViewSet,
+    StaffRequestViewSet,
 )
+from .views_agent import agent_ingest_staff_request
 
 router = DefaultRouter()
 router.register(r'schedules', ScheduleViewSet)
@@ -22,8 +24,10 @@ router.register(r'schedule-tasks', ScheduleTaskViewSet, basename='schedule-task'
 router.register(r'safety-concerns', SafetyConcernReportViewSet, basename='safety-concern')
 router.register(r'safety-recognitions', SafetyRecognitionViewSet, basename='safety-recognition')
 router.register(r'documents', StaffDocumentViewSet, basename='document')
+router.register(r'requests', StaffRequestViewSet, basename='staff-request')
 
 urlpatterns = [
     path('', include(router.urls)),
     path('profile/<str:staff_id>/update/', update_staff_profile_by_user_id, name='update-staff-profile-by-user'),
+    path('agent/requests/ingest/', agent_ingest_staff_request, name='agent-ingest-staff-request'),
 ]

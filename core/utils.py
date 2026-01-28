@@ -138,6 +138,39 @@ def resolve_agent_restaurant_and_user(request=None, payload=None):
 
     meta = data.get('metadata') if isinstance(data.get('metadata'), dict) else {}
 
+    def _extract_whatsapp_sender_phone(d: dict):
+        """
+        Best-effort extraction for WhatsApp/Lua payloads.
+        Common shapes:
+        - {"from": "2126..."}
+        - {"phoneNumber": "..."}
+        - {"messages": [{"from": "..."}]}
+        - {"contacts": [{"wa_id": "..."}]}
+        - {"contacts": [{"waId": "..."}]}
+        """
+        try:
+            if not isinstance(d, dict):
+                return None
+            if d.get('from'):
+                return d.get('from')
+            if d.get('phoneNumber'):
+                return d.get('phoneNumber')
+            msgs = d.get('messages')
+            if isinstance(msgs, list) and msgs:
+                m0 = msgs[0] if isinstance(msgs[0], dict) else {}
+                if m0.get('from'):
+                    return m0.get('from')
+            contacts = d.get('contacts')
+            if isinstance(contacts, list) and contacts:
+                c0 = contacts[0] if isinstance(contacts[0], dict) else {}
+                if c0.get('wa_id'):
+                    return c0.get('wa_id')
+                if c0.get('waId'):
+                    return c0.get('waId')
+        except Exception:
+            return None
+        return None
+
     def _get_first(*keys):
         for k in keys:
             v = data.get(k)
@@ -198,7 +231,10 @@ def resolve_agent_restaurant_and_user(request=None, payload=None):
             pass
 
     # 5) Phone
-    phone = _get_first('phone', 'mobileNumber', 'reporter_phone', 'reporterPhone')
+    phone = _get_first('phone', 'phoneNumber', 'mobileNumber', 'reporter_phone', 'reporterPhone', 'from', 'wa_id', 'waId')
+    if not phone:
+        # Try to extract from common nested WhatsApp webhook shapes
+        phone = _extract_whatsapp_sender_phone(data) or _extract_whatsapp_sender_phone(meta)
     if phone:
         digits = ''.join(filter(str.isdigit, str(phone)))
         patterns = [digits, digits[-10:] if len(digits) > 10 else digits, f"+{digits}"]

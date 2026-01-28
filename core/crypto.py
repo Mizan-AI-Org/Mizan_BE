@@ -27,3 +27,15 @@ def decrypt_json(token: str) -> Dict[str, Any]:
     """Decrypt a base64 token to a JSON dict."""
     data = _fernet().decrypt(token.encode('utf-8'))
     return json.loads(data.decode('utf-8'))
+
+
+def encrypt_text(value: str) -> str:
+    """Encrypt plaintext to a base64 token."""
+    data = (value or "").encode("utf-8")
+    return _fernet().encrypt(data).decode("utf-8")
+
+
+def decrypt_text(token: str) -> str:
+    """Decrypt base64 token to plaintext."""
+    data = _fernet().decrypt((token or "").encode("utf-8"))
+    return data.decode("utf-8")

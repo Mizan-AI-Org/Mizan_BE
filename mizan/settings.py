@@ -364,6 +364,24 @@ STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY', default='')
 STRIPE_PUBLISHABLE_KEY = config('STRIPE_PUBLISHABLE_KEY', default='')
 STRIPE_WEBHOOK_SECRET = config('STRIPE_WEBHOOK_SECRET', default='')
 
+# ---------------------------
+# Square POS Configuration
+# ---------------------------
+SQUARE_ENV = config('SQUARE_ENV', default=('sandbox' if DEBUG else 'production'))  # 'sandbox' or 'production'
+SQUARE_APPLICATION_ID = config('SQUARE_APPLICATION_ID', default='')
+SQUARE_APPLICATION_SECRET = config('SQUARE_APPLICATION_SECRET', default='')
+SQUARE_REDIRECT_URI = config('SQUARE_REDIRECT_URI', default='')
+SQUARE_SCOPES = config(
+    'SQUARE_SCOPES',
+    default='PAYMENTS_READ,ORDERS_READ,ITEMS_READ,MERCHANT_PROFILE_READ',
+)
+SQUARE_API_VERSION = config('SQUARE_API_VERSION', default='2024-01-18')
+SQUARE_WEBHOOK_SIGNATURE_KEY = config('SQUARE_WEBHOOK_SIGNATURE_KEY', default='')
+SQUARE_WEBHOOK_NOTIFICATION_URL = config('SQUARE_WEBHOOK_NOTIFICATION_URL', default='')
+# Optional template for tenant-scoped webhook endpoints, e.g.
+# https://api.heymizan.ai/api/pos/webhooks/square/{restaurant_id}/
+SQUARE_WEBHOOK_NOTIFICATION_URL_TEMPLATE = config('SQUARE_WEBHOOK_NOTIFICATION_URL_TEMPLATE', default='')
+
 
 from celery.schedules import crontab
 

@@ -55,15 +55,20 @@ def agent_create_incident(request):
         
         data = request.data
         restaurant_id = data.get('restaurant_id') or data.get('restaurantId')
-        title = data.get('title')
-        description = data.get('description')
+        title = (data.get('title') or '').strip()
+        description = (data.get('description') or '').strip()
         category = data.get('category', 'General')
         priority = data.get('priority', 'MEDIUM')
         reporter_phone = data.get('reporter_phone')
 
+        # Allow payloads with only description or only title.
+        if not description and title:
+            description = title
+        if not title and description:
+            title = (description[:80] + '…') if len(description) > 80 else description
         if not title or not description:
             return Response(
-                {'error': 'title and description are required'},
+                {'error': 'title or description is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -90,12 +95,23 @@ def agent_create_incident(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Validate priority
+        # Auto-infer priority from description if not provided or invalid
+        def _infer_priority(text: str) -> str:
+            t = (text or '').lower()
+            if any(k in t for k in ['life threatening', 'life-threatening', 'fire', 'gas leak', 'explosion']):
+                return 'CRITICAL'
+            if any(k in t for k in ['injury', 'hurt', 'bleeding', 'severe', 'danger', 'urgent', 'emergency']):
+                return 'HIGH'
+            if any(k in t for k in ['minor', 'small issue', 'low risk', 'low-risk']):
+                return 'LOW'
+            return 'MEDIUM'
+
         valid_priorities = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']
-        if priority.upper() not in valid_priorities:
-            priority = 'MEDIUM'
+        priority_upper = str(priority or '').upper()
+        if priority_upper not in valid_priorities:
+            priority = _infer_priority(f"{title}\n{description}")
         else:
-            priority = priority.upper()
+            priority = priority_upper
         
         # Create the incident
         incident = Incident.objects.create(

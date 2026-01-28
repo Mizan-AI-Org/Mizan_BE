@@ -8,7 +8,12 @@ from django.conf import settings
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional
 from .models import Order, OrderLineItem, Payment
-from menu.models import MenuItem
+from menu.models import MenuItem, MenuCategory
+from django.utils import timezone
+from datetime import timedelta
+import time
+import random
+import uuid
 
 
 class BasePOSIntegration(ABC):
@@ -18,6 +23,7 @@ class BasePOSIntegration(ABC):
         self.restaurant = restaurant
         self.api_key = restaurant.pos_api_key
         self.merchant_id = restaurant.pos_merchant_id
+        self.location_id = getattr(restaurant, "pos_location_id", None)
         
     @abstractmethod
     def sync_menu_items(self) -> Dict:
@@ -61,12 +67,13 @@ class ToastIntegration(BasePOSIntegration):
                 for item in group.get('items', []):
                     menu_item, created = MenuItem.objects.update_or_create(
                         restaurant=self.restaurant,
+                        external_provider="TOAST",
                         external_id=item['guid'],
                         defaults={
                             'name': item['name'],
                             'description': item.get('description', ''),
                             'price': item.get('price', 0) / 100,  # Toast uses cents
-                            'is_available': item.get('visibility') == 'AVAILABLE'
+                            'is_active': item.get('visibility') == 'AVAILABLE'
                         }
                     )
                     synced_items.append(menu_item.id)
@@ -109,7 +116,7 @@ class ToastIntegration(BasePOSIntegration):
                         'quantity': item.quantity,
                         'price': int(item.unit_price * 100)
                     }
-                    for item in order.items.all()
+                    for item in order.line_items.all()
                 ]
             }]
         }
@@ -130,38 +137,161 @@ class ToastIntegration(BasePOSIntegration):
 
 class SquareIntegration(BasePOSIntegration):
     """Square POS Integration"""
-    BASE_URL = "https://connect.squareup.com/v2"
+    def _base_url(self) -> str:
+        env = getattr(settings, "SQUARE_ENV", "production")
+        host = "https://connect.squareup.com" if env == "production" else "https://connect.squareupsandbox.com"
+        return f"{host}/v2"
+
+    def _square_version(self) -> str:
+        return getattr(settings, "SQUARE_API_VERSION", "2024-01-18")
+
+    def _oauth_base(self) -> str:
+        env = getattr(settings, "SQUARE_ENV", "production")
+        return "https://connect.squareup.com" if env == "production" else "https://connect.squareupsandbox.com"
+
+    def _refresh_oauth_token(self) -> None:
+        """Refresh Square OAuth access token when expiring (best-effort)."""
+        refresh_token = self.restaurant.get_square_refresh_token()
+        if not refresh_token:
+            return
+        if not getattr(settings, "SQUARE_APPLICATION_ID", ""):
+            return
+        # Server-side apps should use client_secret; keep optional for PKCE.
+        payload = {
+            "client_id": settings.SQUARE_APPLICATION_ID,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "redirect_uri": getattr(settings, "SQUARE_REDIRECT_URI", ""),
+        }
+        if getattr(settings, "SQUARE_APPLICATION_SECRET", ""):
+            payload["client_secret"] = settings.SQUARE_APPLICATION_SECRET
+
+        try:
+            resp = requests.post(f"{self._oauth_base()}/oauth2/token", json=payload, timeout=15)
+            data = resp.json() if resp.content else {}
+            resp.raise_for_status()
+        except Exception:
+            return
+
+        access_token = data.get("access_token") or ""
+        new_refresh = data.get("refresh_token") or ""
+        expires_at = data.get("expires_at") or None
+        try:
+            from django.utils.dateparse import parse_datetime
+            expires_dt = parse_datetime(expires_at) if isinstance(expires_at, str) else None
+        except Exception:
+            expires_dt = None
+
+        sq = self.restaurant.get_square_oauth() or {}
+        if access_token:
+            sq["access_token"] = access_token
+        if new_refresh:
+            sq["refresh_token"] = new_refresh
+        if expires_at:
+            sq["expires_at"] = expires_at
+
+        self.restaurant.set_square_oauth(sq)
+        self.restaurant.pos_token_expires_at = expires_dt
+        # Keep connected unless refresh fully fails
+        self.restaurant.save(update_fields=["pos_oauth_data", "pos_token_expires_at"])
+
+    def _auth_token(self) -> str:
+        # Prefer OAuth token; fall back to legacy api_key field.
+        # Refresh shortly before expiry (5 minutes).
+        try:
+            exp = getattr(self.restaurant, "pos_token_expires_at", None)
+            if exp and timezone.now() >= (exp - timedelta(minutes=5)):
+                self._refresh_oauth_token()
+        except Exception:
+            pass
+        return self.restaurant.get_square_access_token()
+
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._auth_token()}",
+            "Square-Version": self._square_version(),
+        }
+
+    def _request(self, method: str, path: str, *, params=None, json=None, timeout=20, max_retries=5):
+        url = f"{self._base_url()}{path}"
+        for attempt in range(max_retries):
+            resp = requests.request(method, url, headers=self._headers(), params=params, json=json, timeout=timeout)
+            # Rate limit handling
+            if resp.status_code == 429:
+                delay = min(1 * (2 ** attempt), 30)
+                jitter = random.uniform(0, delay * 0.1)
+                time.sleep(delay + jitter)
+                continue
+            # Token expiry/revocation surfaces as 401; mark disconnected best-effort
+            if resp.status_code == 401:
+                try:
+                    self.restaurant.pos_is_connected = False
+                    self.restaurant.save(update_fields=["pos_is_connected"])
+                except Exception:
+                    pass
+            resp.raise_for_status()
+            return resp
+        resp.raise_for_status()
     
     def sync_menu_items(self) -> Dict:
         """Sync menu from Square"""
         try:
-            headers = {
-                'Authorization': f'Bearer {self.api_key}',
-                'Square-Version': '2024-01-18'
-            }
-            response = requests.get(
-                f"{self.BASE_URL}/catalog/list",
-                headers=headers,
-                params={'types': 'ITEM'}
+            response = self._request(
+                "GET",
+                "/catalog/list",
+                params={"types": "ITEM,CATEGORY"},
             )
-            response.raise_for_status()
-            
-            catalog =response.json()
+            catalog = response.json() or {}
             synced_items = []
-            
-            for obj in catalog.get('objects', []):
-                if obj['type'] == 'ITEM':
-                    item_data = obj['item_data']
-                    for variation in item_data.get('variations', []):
-                        var_data = variation['item_variation_data']
-                        menu_item, created = MenuItem.objects.update_or_create(
+            synced_categories = 0
+
+            # Categories
+            categories_by_id = {}
+            for obj in catalog.get("objects", []) or []:
+                if obj.get("type") == "CATEGORY":
+                    cat_data = obj.get("category_data") or {}
+                    name = cat_data.get("name") or "Uncategorized"
+                    category, _ = MenuCategory.objects.update_or_create(
+                        restaurant=self.restaurant,
+                        external_provider="SQUARE",
+                        external_id=obj.get("id"),
+                        defaults={
+                            "name": name,
+                            "description": cat_data.get("description") or "",
+                            "is_active": not bool(obj.get("is_deleted", False)),
+                        },
+                    )
+                    categories_by_id[obj.get("id")] = category
+                    synced_categories += 1
+
+            for obj in catalog.get('objects', []) or []:
+                if obj.get('type') == 'ITEM':
+                    item_data = obj.get('item_data') or {}
+                    cat_id = item_data.get("category_id")
+                    category = categories_by_id.get(cat_id) if cat_id else None
+                    for variation in item_data.get('variations', []) or []:
+                        var_data = variation.get('item_variation_data') or {}
+                        price_amount = int((var_data.get('price_money') or {}).get('amount', 0) or 0)
+                        variation_name = var_data.get("name") or ""
+                        name = item_data.get("name") or "Item"
+                        if variation_name and variation_name.lower() not in ("regular", "default"):
+                            name = f"{name} ({variation_name})"
+
+                        menu_item, _ = MenuItem.objects.update_or_create(
                             restaurant=self.restaurant,
-                            external_id=variation['id'],
+                            external_provider="SQUARE",
+                            external_id=variation.get('id'),
                             defaults={
-                                'name': item_data['name'],
+                                'category': category,
+                                'name': name,
                                 'description': item_data.get('description', ''),
-                                'price': int(var_data.get('price_money', {}).get('amount', 0)) / 100,
-                                'is_available': not item_data.get('is_deleted', False)
+                                'price': price_amount / 100,
+                                'is_active': not bool(obj.get('is_deleted', False)),
+                                'external_metadata': {
+                                    "square_item_id": obj.get("id"),
+                                    "square_variation_id": variation.get("id"),
+                                    "square_version": self._square_version(),
+                                },
                             }
                         )
                         synced_items.append(menu_item.id)
@@ -169,6 +299,7 @@ class SquareIntegration(BasePOSIntegration):
             return {
                 'success': True,
                 'items_synced': len(synced_items),
+                'categories_synced': synced_categories,
                 'provider': 'Square'
             }
         except Exception as e:
@@ -176,62 +307,52 @@ class SquareIntegration(BasePOSIntegration):
     
     def sync_orders(self, start_date=None, end_date=None) -> List[Dict]:
         """Sync orders from Square"""
-        headers = {
-            'Authorization': f'Bearer {self.api_key}',
-            'Square-Version': '2024-01-18'
-        }
-        
-        query = {'location_ids': [self.merchant_id]}
+        location_id = self.location_id or self.merchant_id
+        query = {'location_ids': [location_id]} if location_id else {}
         if start_date:
-            query['start_at'] = start_date.isoformat()
+            query['start_at'] = start_date.isoformat() if hasattr(start_date, "isoformat") else str(start_date)
         if end_date:
-            query['end_at'] = end_date.isoformat()
-        
-        response = requests.post(
-            f"{self.BASE_URL}/orders/search",
-            headers=headers,
-            json={'query': query}
-        )
-        response.raise_for_status()
-        return response.json().get('orders', [])
+            query['end_at'] = end_date.isoformat() if hasattr(end_date, "isoformat") else str(end_date)
+
+        body = {'query': query} if query else {}
+        response = self._request("POST", "/orders/search", json=body)
+        return (response.json() or {}).get('orders', [])
     
     def create_order(self, order: Order) -> Dict:
         """Push order to Square"""
-        headers = {
-            'Authorization': f'Bearer {self.api_key}',
-            'Square-Version': '2024-01-18',
-            'Content-Type': 'application/json'
-        }
-        
+        location_id = self.location_id or self.merchant_id
+        if not location_id:
+            raise ValueError("Square location_id is not configured for this restaurant")
+
         order_data = {
-            'idempotency_key': str(order.id),
+            'idempotency_key': str(uuid.uuid4()),
             'order': {
-                'location_id': self.merchant_id,
+                'location_id': location_id,
                 'line_items': [
                     {
                         'quantity': str(item.quantity),
-                        'catalog_object_id': str(item.menu_item.external_id),
+                        **(
+                            {'catalog_object_id': str(getattr(item.menu_item, "external_id", "") or "")}
+                            if (getattr(item.menu_item, "external_provider", None) == "SQUARE" and getattr(item.menu_item, "external_id", None))
+                            else {'name': getattr(item.menu_item, "name", "Item")}
+                        ),
                         'base_price_money': {
                             'amount': int(item.unit_price * 100),
-                            'currency': 'USD'
+                            'currency': getattr(self.restaurant, "currency", "USD")
                         }
                     }
-                    for item in order.items.all()
+                    for item in order.line_items.all()
                 ]
             }
         }
-        
-        response = requests.post(
-            f"{self.BASE_URL}/orders",
-            headers=headers,
-            json=order_data
-        )
-        response.raise_for_status()
-        return response.json()
+        response = self._request("POST", "/orders", json=order_data)
+        return response.json() or {}
     
     def process_payment(self, payment: Payment) -> Dict:
         """Process payment through Square"""
-        return {'success': True, 'transaction_id': f'SQUARE_{payment.id}'}
+        # Payment capture requires a source_id from Square (nonce/card on file). That is not available in this flow.
+        # Keep placeholder response and ensure callers treat it as unsupported unless a Square source_id is provided.
+        return {'success': False, 'error': 'Square payment processing requires a Square source_id (not implemented)'}
 
 
 class CloverIntegration(BasePOSIntegration):
@@ -254,12 +375,13 @@ class CloverIntegration(BasePOSIntegration):
             for item in items:
                 menu_item, created = MenuItem.objects.update_or_create(
                     restaurant=self.restaurant,
+                    external_provider="CLOVER",
                     external_id=item['id'],
                     defaults={
                         'name': item['name'],
                         'description': item.get('description', ''),
                         'price': item.get('price', 0) / 100,  # Clover uses cents
-                        'is_available': not item.get('hidden', False)
+                        'is_active': not item.get('hidden', False)
                     }
                 )
                 synced_items.append(menu_item.id)
@@ -302,7 +424,7 @@ class CloverIntegration(BasePOSIntegration):
                     'unitQty': item.quantity,
                     'price': int(item.unit_price * 100)
                 }
-                for item in order.items.all()
+                for item in order.line_items.all()
             ]
         }
         
@@ -319,6 +441,22 @@ class CloverIntegration(BasePOSIntegration):
         return {'success': True, 'transaction_id': f'CLOVER_{payment.id}'}
 
 
+class LightspeedIntegration(BasePOSIntegration):
+    """Lightspeed POS Integration (Coming soon)."""
+
+    def sync_menu_items(self) -> Dict:
+        return {'success': False, 'error': 'Lightspeed integration is coming soon'}
+
+    def sync_orders(self, start_date=None, end_date=None) -> List[Dict]:
+        raise NotImplementedError("Lightspeed integration is coming soon")
+
+    def create_order(self, order: Order) -> Dict:
+        raise NotImplementedError("Lightspeed integration is coming soon")
+
+    def process_payment(self, payment: Payment) -> Dict:
+        return {'success': False, 'error': 'Lightspeed integration is coming soon'}
+
+
 class IntegrationManager:
     """Main manager for handling POS integrations"""
     
@@ -326,7 +464,11 @@ class IntegrationManager:
         'TOAST': ToastIntegration,
         'SQUARE': SquareIntegration,
         'CLOVER': CloverIntegration,
+        'LIGHTSPEED': LightspeedIntegration,
     }
+
+    # Only Square is active at launch; others are intentionally disabled.
+    ACTIVE_PROVIDERS = {'SQUARE'}
     
     @classmethod
     def get_integration(cls, restaurant):
@@ -334,6 +476,9 @@ class IntegrationManager:
         provider = restaurant.pos_provider
         
         if provider == 'NONE' or not provider:
+            return None
+
+        if provider not in cls.ACTIVE_PROVIDERS:
             return None
         
         integration_class = cls.PROVIDERS.get(provider)
@@ -347,6 +492,8 @@ class IntegrationManager:
         """Sync menu items for a restaurant"""
         integration = cls.get_integration(restaurant)
         if not integration:
+            if restaurant.pos_provider and restaurant.pos_provider != 'NONE':
+                return {'success': False, 'error': f"{restaurant.pos_provider} integration is coming soon"}
             return {'success': False, 'error': 'No POS integration configured'}
         
         return integration.sync_menu_items()
@@ -356,6 +503,8 @@ class IntegrationManager:
         """Sync orders for a restaurant"""
         integration = cls.get_integration(restaurant)
         if not integration:
+            if restaurant.pos_provider and restaurant.pos_provider != 'NONE':
+                return {'success': False, 'error': f"{restaurant.pos_provider} integration is coming soon"}
             return {'success': False, 'error': 'No POS integration configured'}
         
         try:
@@ -374,5 +523,18 @@ class IntegrationManager:
         try:
             result = integration.create_order(order)
             return {'success': True, 'result': result}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    @classmethod
+    def process_payment(cls, payment: Payment) -> Dict:
+        """Process a payment via the external POS provider"""
+        integration = cls.get_integration(payment.restaurant)
+        if not integration:
+            return {'success': False, 'error': 'No POS integration configured'}
+
+        try:
+            result = integration.process_payment(payment)
+            return {'success': True, 'result': result} if result.get('success') else result
         except Exception as e:
             return {'success': False, 'error': str(e)}

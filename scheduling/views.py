@@ -374,7 +374,8 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
         # Assign a deterministic "random" color per staff
         SchedulingService.ensure_shift_color(shift)
         # Send notification to staff about the new shift
-        SchedulingService.notify_shift_assignment(shift)
+        # Guarantee WhatsApp delivery for manually created shifts as well.
+        SchedulingService.notify_shift_assignment(shift, force_whatsapp=True)
     
     def perform_destroy(self, instance):
         """Delete shift and send notification"""
