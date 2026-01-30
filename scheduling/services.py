@@ -562,6 +562,7 @@ class SchedulingService:
                     pass
         except Exception as e:
             # logger.error(f"Error notifying shift assignment: {e}")
+            pass
 
 
     @staticmethod
@@ -660,6 +661,7 @@ class SchedulingService:
             async_to_sync(channel_layer.group_send)(group_name, event)
         except Exception as e:
             # logger.error(f"Error notifying shift cancellation: {e}")
+            pass
 
 
 

@@ -412,6 +412,7 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
             except Exception as e:
                 # Log error and continue? Or fail? Better to log for now during diagnosis
                 # logger.error(f"Error creating task for shift: {e}")
+                pass
 
                 
         return shift
@@ -459,6 +460,7 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
                         new_task_ids.append(str(new_task.id))
                     except Exception as e:
                         # logger.error(f"Error creating task in update: {e}")
+                        pass
 
             
             # Delete tasks that weren't in the update list
