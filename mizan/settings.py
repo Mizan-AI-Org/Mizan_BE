@@ -90,6 +90,7 @@ if not firebase_admin._apps and FIREBASE_SERVICE_ACCOUNT_KEY != '{}':
 
     except Exception as e:
         # logger.error(f"Error initializing Firebase Admin SDK: {e}")
+        pass
 
 
 # ---------------------------
