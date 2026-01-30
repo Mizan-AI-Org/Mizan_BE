@@ -331,6 +331,7 @@ DEFAULT_FROM_EMAIL = config(
 if DEBUG:
     # print("Using development email settings", file=sys.stderr)
     # print(f"Email Backend: {EMAIL_HOST}:{EMAIL_PORT} tls={EMAIL_USE_TLS} ssl={EMAIL_USE_SSL}", file=sys.stderr)
+    pass
 
 
 

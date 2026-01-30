@@ -188,12 +188,14 @@ def inform_staff(sender, instance, created, **kwargs):
             status_code = shift_create_notification(instance)
             if status_code == 200:
                 # Shift created successfully
+                pass
 
             else:
                 # Shift creation failed
-
+                pass
     else:
         # Staff phone number not available
+        pass
 
 
 @receiver(pre_save, sender=AssignedShift)
@@ -234,12 +236,15 @@ def inform_staff_before_save(sender, instance, **kwargs):
             status_code = shift_create_notification(instance)
             if status_code == 200:
                 # Shift created successfully
+                pass
 
             else:
                 # Shift creation failed
+                pass
 
         else:
             # Staff phone number not available
+            pass
 
         
         if hasattr(old_instance.staff, 'phone') and old_instance.staff.phone:
