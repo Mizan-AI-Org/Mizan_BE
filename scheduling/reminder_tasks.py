@@ -19,10 +19,11 @@ def send_shift_reminders_30min():
     """
     now = timezone.now()
     upcoming_shifts = AssignedShift.objects.filter(
-        start_time__gte=now,
+        start_time__gte=now + timedelta(minutes=25),
         start_time__lte=now + timedelta(minutes=35),
-        shift_date=now.date()
-    ).select_related('staff', 'weekly_schedule__restaurant')
+        shift_date=now.date(),
+        shift_reminder_sent=False
+    ).select_related('staff', 'schedule__restaurant')
     
     service = NotificationService()
     count = 0
@@ -31,6 +32,8 @@ def send_shift_reminders_30min():
         if shift.staff.phone:
             try:
                 service.send_shift_notification(shift, notification_type='SHIFT_REMINDER')
+                shift.shift_reminder_sent = True
+                shift.save(update_fields=['shift_reminder_sent'])
                 count += 1
                 logger.info(f"Sent 30-min reminder to {shift.staff.email} for shift {shift.id}")
             except Exception as e:
@@ -84,7 +87,7 @@ def send_clock_in_reminders():
         start_time__lte=now + timedelta(minutes=15),
         shift_date=now.date(),
         clock_in_reminder_sent=False
-    ).select_related('staff', 'weekly_schedule__restaurant')
+    ).select_related('staff', 'schedule__restaurant')
     
     service = NotificationService()
     count = 0

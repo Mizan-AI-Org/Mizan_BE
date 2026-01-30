@@ -252,8 +252,8 @@ class WeeklyScheduleViewSet(viewsets.ModelViewSet):
         if success:
             return Response({'detail': message})
         else:
-            return Response({'detail': message}, status=status.HTTP_400_BAD_REQUEST)
-
+            pass # Message trace removed for production
+    
     @action(detail=False, methods=['post'])
     def optimize(self, request):
         """
@@ -370,7 +370,6 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Create shift and send notification"""
         shift = serializer.save()
-        print(f"Created shift:{shift}", file=sys.stderr)
         # Assign a deterministic "random" color per staff
         SchedulingService.ensure_shift_color(shift)
         # Send notification to staff about the new shift
@@ -562,7 +561,7 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
         for shift in shifts:
             for template in shift.task_templates.all():
                 # We allow the same template to appear multiple times if it's on different shifts
-                # But for the same shift, it should be unique (handled by set logic if needed, but here we iterate shifts)
+                # it should be unique (handled by set logic if needed, but here we iterate shifts)
                 # Actually, if we want to show it per shift, we shouldn't dedup by template ID globally, but per shift?
                 # The previous logic deduped globally: "if template.id not in seen_template_ids".
                 # This means if I have the same template on Monday and Tuesday, I only see it once?
@@ -722,7 +721,7 @@ class ShiftTaskViewSet(viewsets.ModelViewSet):
                 'priority': self.request.data.get('priority'),
                 'category': self.request.data.get('category'),
             }
-            logger.info("Creating ShiftTask payload=%s user=%s", payload, self.request.user.id)
+            # logger.info("Creating ShiftTask payload=%s user=%s", payload, self.request.user.id)
         except Exception:
             # Avoid blocking creation on logging issues
             pass
@@ -730,13 +729,14 @@ class ShiftTaskViewSet(viewsets.ModelViewSet):
         instance = serializer.save(created_by=self.request.user)
 
         try:
-            logger.info(
-                "ShiftTask created id=%s shift=%s assigned_to=%s priority=%s",
-                getattr(instance, 'id', None),
-                getattr(instance, 'shift_id', None),
-                getattr(getattr(instance, 'assigned_to', None), 'id', None),
-                getattr(instance, 'priority', None),
-            )
+            # logger.info(
+            #     "ShiftTask created id=%s shift=%s assigned_to=%s priority=%s",
+            #     getattr(instance, 'id', None),
+            #     getattr(instance, 'shift_id', None),
+            #     getattr(getattr(instance, 'assigned_to', None), 'id', None),
+            #     getattr(instance, 'priority', None),
+            # )
+            pass
         except Exception:
             pass
 
@@ -914,11 +914,12 @@ class ShiftTaskViewSet(viewsets.ModelViewSet):
     def my_tasks(self, request):
         """Get tasks assigned to the current user"""
         try:
-            logger.info(
-                "Fetching my_tasks for user=%s restaurant=%s",
-                request.user.id,
-                getattr(request.user, 'restaurant_id', None)
-            )
+            # logger.info(
+            #     "Fetching my_tasks for user=%s restaurant=%s",
+            #     request.user.id,
+            #     getattr(request.user, 'restaurant_id', None)
+            # )
+            pass
         except Exception:
             pass
         tasks = ShiftTask.objects.filter(

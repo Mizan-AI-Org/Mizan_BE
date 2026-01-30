@@ -29,7 +29,10 @@ from .serializers import (
     ChecklistSyncSerializer,
     ChecklistSubmissionListSerializer
 )
-from .services import ChecklistSyncService, ChecklistValidationService, ChecklistNotificationService
+from .services import (
+    ChecklistSyncService, ChecklistValidationService, 
+    ChecklistNotificationService
+)
 from accounts.permissions import IsAdminOrSuperAdmin, IsAdminOrManager
 from accounts.models import AuditLog, CustomUser
 from core.permissions import IsRestaurantOwnerOrManager

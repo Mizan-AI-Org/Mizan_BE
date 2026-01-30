@@ -77,8 +77,16 @@ def agent_list_staff(request):
             s = re.sub(r"\s+", " ", s)
             return s
 
+        def _strip_titles(s: str) -> str:
+            # Strip common titles so "Mr Ayoub" / "Mr. Ayoub" becomes "Ayoub" for lookup.
+            s = (s or "").strip()
+            s = re.sub(r"^(?:mr\.?|mrs\.?|ms\.?|miss\.?|dr\.?|prof\.?|sir|madam|mx\.?)\s+", "", s, flags=re.IGNORECASE)
+            return s.strip()
+
         # Optional name filter (supports full names like "First Last" or just "First")
-        name_filter = (request.query_params.get("name") or "").strip()
+        # Strip titles so Miya/lua can pass "Mr Ayoub" and we still find "Ayoub"
+        raw_name = (request.query_params.get("name") or "").strip()
+        name_filter = _strip_titles(raw_name) or raw_name
         fuzzy_mode = False
         token_query = None
         if name_filter:
@@ -183,8 +191,11 @@ def agent_list_staff(request):
         return Response(staff_list)
         
     except Exception as e:
-        logger.error(f"Agent staff list error: {e}")
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.exception("Agent staff list error")
+        err = str(e).strip() if e else "Unable to list staff"
+        if len(err) > 200:
+            err = err[:197] + "..."
+        return Response({'error': err}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])
@@ -229,6 +240,7 @@ def agent_create_shift(request):
         
         # Resolve restaurant context (restaurant_id optional)
         restaurant = None
+        acting_user = None
         if restaurant_id:
             try:
                 restaurant = Restaurant.objects.get(id=restaurant_id)
@@ -307,17 +319,22 @@ def agent_create_shift(request):
             end_datetime = timezone.make_aware(end_datetime)
         
         # Check for conflicts
+        workspace_location = data.get('workspace_location') or data.get('workspaceLocation')
         conflicts = SchedulingService.detect_scheduling_conflicts(
             staff_id,
             shift_date,
             start_time,
-            end_time
+            end_time,
+            workspace_location=workspace_location
         )
         
         if conflicts:
+            # Use the descriptive message from the first conflict
+            conflict = conflicts[0]
+            message = conflict.get('message', f"{staff.first_name} has a conflict at this time")
             return Response({
                 'success': False,
-                'error': f"Schedule conflict detected: {staff.first_name} already has a shift at this time",
+                'error': f"Scheduling conflict: {message}",
                 'conflicts': conflicts
             }, status=status.HTTP_409_CONFLICT)
         
@@ -332,6 +349,7 @@ def agent_create_shift(request):
                 shift_notes=shift_notes,
                 start_dt=start_datetime,
                 end_dt=end_datetime,
+                restaurant=restaurant,
             )
             shift_title = generate_shift_title(
                 shift_context=inferred_context,
@@ -417,10 +435,19 @@ def agent_create_shift(request):
         }, status=status.HTTP_201_CREATED)
         
     except Exception as e:
-        logger.error(f"Agent create shift error: {e}")
+        logger.exception("Agent create shift error")
+        # Return a short, agent-friendly message so Miya doesn't show "try again later"
+        err = str(e).strip() if e else "Unknown error"
+        if "conflict" in err.lower() or "already has" in err.lower():
+            return Response({'success': False, 'error': err}, status=status.HTTP_409_CONFLICT)
+        if "not found" in err.lower() or "does not exist" in err.lower():
+            return Response({'success': False, 'error': err}, status=status.HTTP_404_NOT_FOUND)
+        # Keep message brief for the agent to relay
+        if len(err) > 200:
+            err = err[:197] + "..."
         return Response({
             'success': False,
-            'error': str(e)
+            'error': f"Could not create shift: {err}"
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -658,6 +685,9 @@ def agent_get_restaurant_details(request):
             'name': restaurant.name,
             'timezone': str(restaurant.timezone) if hasattr(restaurant, 'timezone') else 'Africa/Casablanca',
             'operating_hours': getattr(restaurant, 'operating_hours', {}),
+            'restaurant_type': getattr(restaurant, 'restaurant_type', 'CASUAL_DINING'),
+            'max_weekly_hours': float(getattr(restaurant, 'max_weekly_hours', 40.0)),
+            'min_rest_hours': float(getattr(restaurant, 'min_rest_hours', 11.0)),
             'general_settings': {
                 'peak_periods': getattr(restaurant, 'general_settings', {}).get('peak_periods', peak_definitions) if isinstance(getattr(restaurant, 'general_settings', None), dict) else peak_definitions
             },
@@ -668,6 +698,67 @@ def agent_get_restaurant_details(request):
         
     except Exception as e:
         logger.error(f"Agent restaurant details error: {e}")
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+ 
+ 
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_get_operational_advice(request):
+    """
+    Get operational advice for staffing levels and shift structures.
+    Used by Miya to suggest optimal staffing.
+    """
+    try:
+        is_valid, error = validate_agent_key(request)
+        if not is_valid:
+            return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+
+        restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
+        if not restaurant:
+            return Response({'error': 'Restaurant context not found.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        date_str = request.query_params.get('date')
+        if not date_str:
+            date_str = timezone.now().date().isoformat()
+        
+        from .ai_scheduler import AIScheduler
+        scheduler = AIScheduler(restaurant)
+        
+        # Get demand forecast for the day
+        day_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        demand_forecast = scheduler._get_demand_forecast(day_date)
+        day_name = day_date.strftime('%A')
+        current_demand = demand_forecast.get(day_name, 'MEDIUM')
+        
+        # Calculate required roles based on demand
+        historical_patterns = scheduler._get_historical_patterns(day_date)
+        required_roles = scheduler._calculate_required_roles(current_demand, historical_patterns)
+        
+        # Advice on shift splits
+        shift_splits = []
+        if current_demand == 'HIGH':
+            shift_splits = [
+                {'type': 'LUNCH_PEAK', 'time': '11:00-15:00', 'reason': 'High volume expected during lunch.'},
+                {'type': 'DINNER_PEAK', 'time': '18:00-22:00', 'reason': 'High volume expected during dinner.'}
+            ]
+        
+        return Response({
+            'status': 'success',
+            'date': date_str,
+            'demand_level': current_demand,
+            'optimal_staffing': required_roles,
+            'shift_split_suggestions': shift_splits,
+            'restaurant_type': getattr(restaurant, 'restaurant_type', 'CASUAL_DINING'),
+            'best_practices': [
+                "Schedule your strongest team for peak hours.",
+                "Ensure at least 11 hours of rest between shifts (clopening prevention).",
+                f"For {getattr(restaurant, 'restaurant_type', 'CASUAL_DINING').lower()} style, focus on { 'service consistency' if restaurant.restaurant_type == 'FINE_DINING' else 'speed of service' }."
+            ]
+        })
+
+    except Exception as e:
+        logger.error(f"Agent operational advice error: {e}")
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -952,3 +1043,55 @@ def agent_get_my_shifts(request):
     except Exception as e:
         logger.error(f"Agent get my shifts error: {e}")
         return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_detect_conflicts(request):
+    """
+    Detect scheduling conflicts for the agent.
+    Bypasses JWT auth - uses agent key.
+    """
+    try:
+        is_valid, error = validate_agent_key(request)
+        if not is_valid:
+            return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+
+        data = request.query_params
+        staff_id = data.get('staff_id')
+        shift_date_str = data.get('shift_date')
+        start_time_str = data.get('start_time')
+        end_time_str = data.get('end_time')
+        workspace_location = data.get('workspace_location') or data.get('workspaceLocation')
+
+        if not all([staff_id, shift_date_str, start_time_str, end_time_str]):
+            return Response({'error': 'Missing required fields'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            shift_date = datetime.strptime(shift_date_str, '%Y-%m-%d').date()
+            # Handle both HH:MM and HH:MM:SS
+            if len(start_time_str) == 5:
+                start_time = datetime.strptime(start_time_str, '%H:%M').time()
+            else:
+                start_time = datetime.strptime(start_time_str, '%H:%M:%S').time()
+                
+            if len(end_time_str) == 5:
+                end_time = datetime.strptime(end_time_str, '%H:%M').time()
+            else:
+                end_time = datetime.strptime(end_time_str, '%H:%M:%S').time()
+        except ValueError:
+            return Response({'error': 'Invalid date/time format'}, status=status.HTTP_400_BAD_REQUEST)
+
+        conflicts = SchedulingService.detect_scheduling_conflicts(
+            staff_id, shift_date, start_time, end_time, workspace_location=workspace_location
+        )
+        
+        return Response({
+            'has_conflicts': len(conflicts) > 0,
+            'conflicts': conflicts
+        })
+
+    except Exception as e:
+        logger.error(f"Agent detect conflicts error: {e}")
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

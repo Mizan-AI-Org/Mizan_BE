@@ -354,6 +354,61 @@ class SquareIntegration(BasePOSIntegration):
         # Keep placeholder response and ensure callers treat it as unsupported unless a Square source_id is provided.
         return {'success': False, 'error': 'Square payment processing requires a Square source_id (not implemented)'}
 
+    def get_daily_sales_summary(self, date=None) -> Dict:
+        """Get summarized sales data for a specific date (default today)."""
+        if not date:
+            date = timezone.now().date()
+        
+        start_at = timezone.make_aware(datetime.combine(date, datetime.min.time()))
+        end_at = timezone.make_aware(datetime.combine(date, datetime.max.time()))
+        
+        try:
+            orders = self.sync_orders(start_date=start_at, end_date=end_at)
+            
+            total_revenue = 0
+            total_orders = len(orders)
+            total_tips = 0
+            
+            for o in orders:
+                total_money = (o.get("total_money") or {}).get("amount") or 0
+                total_tip = (o.get("total_tip_money") or {}).get("amount") or 0
+                total_revenue += total_money
+                total_tips += total_tip
+                
+            return {
+                "success": True,
+                "date": date.isoformat(),
+                "total_revenue": total_revenue / 100,
+                "total_orders": total_orders,
+                "total_tips": total_tips / 100,
+                "currency": getattr(self.restaurant, "currency", "USD")
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def get_top_selling_items(self, days=7, limit=10) -> Dict:
+        """Fetch and aggregate top-selling items from Square orders over N days."""
+        end_at = timezone.now()
+        start_at = end_at - timedelta(days=days)
+        
+        try:
+            orders = self.sync_orders(start_date=start_at, end_date=end_at)
+            item_counts = {}
+            for o in orders:
+                for line in o.get("line_items", []) or []:
+                    name = line.get("name") or "Unknown"
+                    qty = int(line.get("quantity") or 0)
+                    item_counts[name] = item_counts.get(name, 0) + qty
+            
+            sorted_items = sorted(item_counts.items(), key=lambda x: x[1], reverse=True)[:limit]
+            return {
+                "success": True,
+                "days": days,
+                "top_items": [{"name": k, "quantity": v} for k, v in sorted_items]
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
 
 class CloverIntegration(BasePOSIntegration):
     """Clover POS Integration"""
@@ -538,3 +593,19 @@ class IntegrationManager:
             return {'success': True, 'result': result} if result.get('success') else result
         except Exception as e:
             return {'success': False, 'error': str(e)}
+
+    @classmethod
+    def get_daily_sales_summary(cls, restaurant, date=None) -> Dict:
+        """Get summarized sales data for a specific date."""
+        integration = cls.get_integration(restaurant)
+        if not integration or not hasattr(integration, 'get_daily_sales_summary'):
+            return {'success': False, 'error': 'Provider does not support sales summary'}
+        return integration.get_daily_sales_summary(date)
+
+    @classmethod
+    def get_top_selling_items(cls, restaurant, days=7, limit=10) -> Dict:
+        """Fetch top-selling items from external POS."""
+        integration = cls.get_integration(restaurant)
+        if not integration or not hasattr(integration, 'get_top_selling_items'):
+            return {'success': False, 'error': 'Provider does not support top items'}
+        return integration.get_top_selling_items(days, limit)

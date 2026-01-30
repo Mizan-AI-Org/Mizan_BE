@@ -27,7 +27,8 @@ def auto_send_whatsapp_invite(sender, instance: UserInvitation, created, **kwarg
     
     try:
         auto_whatsapp = getattr(settings, 'AUTO_WHATSAPP_INVITES', True)
-        print(f"[Signal] AUTO_WHATSAPP_INVITES = {auto_whatsapp}", file=sys.stderr)
+        # logger.info(f"[Signal] AUTO_WHATSAPP_INVITES = {auto_whatsapp}")
+
         
         if not auto_whatsapp:
             logger.info(f"Skipping WhatsApp invite for {instance.email}: AUTO_WHATSAPP_INVITES is False")
@@ -46,7 +47,8 @@ def auto_send_whatsapp_invite(sender, instance: UserInvitation, created, **kwarg
         # Normalize phone: digits only, no + or spaces (e.g., "2203736808")
         phone = normalize_phone(raw_phone)
         
-        print(f"[Signal] Raw phone: {raw_phone} -> Normalized: {phone}", file=sys.stderr)
+        # logger.info(f"[Signal] Raw phone: {raw_phone} -> Normalized: {phone}")
+
 
         if not phone:
             logger.warning(f"No phone number found for invitation {instance.id} (email: {instance.email})")
@@ -56,7 +58,8 @@ def auto_send_whatsapp_invite(sender, instance: UserInvitation, created, **kwarg
         first_name = instance.first_name or "Staff"
         restaurant_name = instance.restaurant.name if instance.restaurant else "Mizan AI"
 
-        print(f"[Signal] Triggering WhatsApp invite for {first_name} to {phone}", file=sys.stderr)
+        # logger.info(f"[Signal] Triggering WhatsApp invite for {first_name} to {phone}")
+
         logger.info(f"[Signal] Triggering WhatsApp invite for {instance.email} to {phone}")
 
         from .tasks import send_whatsapp_invitation_task
@@ -69,7 +72,8 @@ def auto_send_whatsapp_invite(sender, instance: UserInvitation, created, **kwarg
             support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
         )
         
-        print(f"[Signal] Task queued with ID: {result.id}", file=sys.stderr)
+        # logger.info(f"[Signal] Task queued with ID: {result.id}")
+
         
         InvitationDeliveryLog.objects.create(
             invitation=instance,
@@ -79,5 +83,6 @@ def auto_send_whatsapp_invite(sender, instance: UserInvitation, created, **kwarg
         )
             
     except Exception as e:
-        print(f"[Signal] ERROR: {str(e)}", file=sys.stderr)
+        # logger.error(f"[Signal] ERROR: {str(e)}")
+
         logger.error(f"Error in auto_send_whatsapp_invite: {str(e)}", exc_info=True)

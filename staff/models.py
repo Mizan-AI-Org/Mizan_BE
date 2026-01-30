@@ -193,7 +193,7 @@ class StaffAvailability(models.Model):
     ]
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    staff = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='availability')
+    staff = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='staff_availability')
     
     # Availability type and status
     availability_type = models.CharField(max_length=20, choices=AVAILABILITY_TYPE_CHOICES, default='REGULAR')

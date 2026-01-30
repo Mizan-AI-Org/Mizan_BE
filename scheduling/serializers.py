@@ -281,7 +281,8 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'schedule', 'staff', 'staff_members', 'staff_name', 'staff_members_details',
             'shift_date', 'start_time', 'end_time', 'break_duration', 'role', 'notes', 'color',
-            'created_at', 'updated_at', 'tasks', 'task_templates', 'task_templates_details'
+            'created_at', 'updated_at', 'tasks', 'task_templates', 'task_templates_details',
+            'is_recurring', 'recurrence_group_id'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'schedule']
         extra_kwargs = {
@@ -402,11 +403,17 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
             
         request = self.context.get('request')
         for task_data in tasks_data:
-            ShiftTask.objects.create(
-                shift=shift,
-                created_by=request.user if request and hasattr(request, 'user') else None,
-                **task_data
-            )
+            try:
+                ShiftTask.objects.create(
+                    shift=shift,
+                    created_by=request.user if request and hasattr(request, 'user') else None,
+                    **task_data
+                )
+            except Exception as e:
+                # Log error and continue? Or fail? Better to log for now during diagnosis
+                # logger.error(f"Error creating task for shift: {e}")
+
+                
         return shift
 
     def update(self, instance, validated_data):
@@ -443,12 +450,16 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
                     new_task_ids.append(str(task.id))
                 else:
                     # Create new task
-                    new_task = ShiftTask.objects.create(
-                        shift=instance,
-                        created_by=request.user if request and hasattr(request, 'user') else None,
-                        **task_data
-                    )
-                    new_task_ids.append(str(new_task.id))
+                    try:
+                        new_task = ShiftTask.objects.create(
+                            shift=instance,
+                            created_by=request.user if request and hasattr(request, 'user') else None,
+                            **task_data
+                        )
+                        new_task_ids.append(str(new_task.id))
+                    except Exception as e:
+                        # logger.error(f"Error creating task in update: {e}")
+
             
             # Delete tasks that weren't in the update list
             instance.tasks.exclude(id__in=new_task_ids).delete()

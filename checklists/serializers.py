@@ -123,7 +123,7 @@ class ChecklistExecutionSerializer(serializers.ModelSerializer):
             'due_date', 'current_step', 'progress_percentage', 'completion_notes',
             'supervisor_approved', 'approved_by', 'approved_at',
             'assigned_shift_id', 'assigned_shift_info',
-            'compiled_summary',
+            'compiled_summary', 'analysis_results',
             'step_responses', 'actions', 'created_at', 'updated_at',
             'last_synced_at', 'sync_version'
         ]
@@ -285,6 +285,7 @@ class ChecklistSubmissionListSerializer(serializers.ModelSerializer):
             'approved_at',
             'notes',
             'compiled_summary',
+            'analysis_results',
         ]
 
     def get_template(self, obj):

@@ -86,9 +86,11 @@ if not firebase_admin._apps and FIREBASE_SERVICE_ACCOUNT_KEY != '{}':
     try:
         cred = credentials.Certificate(json.loads(FIREBASE_SERVICE_ACCOUNT_KEY))
         firebase_admin.initialize_app(cred)
-        print("Firebase Admin SDK initialized successfully.")
+        # logger.info("Firebase Admin SDK initialized successfully.")
+
     except Exception as e:
-        print(f"Error initializing Firebase Admin SDK: {e}")
+        # logger.error(f"Error initializing Firebase Admin SDK: {e}")
+
 
 # ---------------------------
 # Middleware
@@ -326,8 +328,9 @@ DEFAULT_FROM_EMAIL = config(
 )
 
 if DEBUG:
-    print("Using development email settings", file=sys.stderr)
-    print(f"Email Backend: {EMAIL_HOST}:{EMAIL_PORT} tls={EMAIL_USE_TLS} ssl={EMAIL_USE_SSL}", file=sys.stderr)
+    # print("Using development email settings", file=sys.stderr)
+    # print(f"Email Backend: {EMAIL_HOST}:{EMAIL_PORT} tls={EMAIL_USE_TLS} ssl={EMAIL_USE_SSL}", file=sys.stderr)
+
 
 
 WHATSAPP_ACCESS_TOKEN = config('WHATSAPP_ACCESS_TOKEN', default='')
@@ -400,4 +403,5 @@ CELERY_BEAT_SCHEDULE = {
 from django.utils import timezone
 
 now = timezone.now()
-print("Now:", now.strftime("%Y-%m-%d %H:%M:%S"), file=sys.stderr)
+# print("Now:", now.strftime("%Y-%m-%d %H:%M:%S"), file=sys.stderr)
+

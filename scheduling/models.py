@@ -102,8 +102,10 @@ class AssignedShift(models.Model):
     notification_sent_at = models.DateTimeField(null=True, blank=True)
     notification_channels = models.JSONField(default=list, help_text="Channels used for notification (whatsapp, email, app)")
     
-    # Timezone support
+    # Timezone and Recurrence support
     timezone = models.CharField(max_length=50, default='UTC', help_text="Timezone for shift times")
+    is_recurring = models.BooleanField(default=False, help_text="Whether this shift was created as part of a recurring series")
+    recurrence_group_id = models.UUIDField(null=True, blank=True, help_text="ID to group shifts created in the same recurring series")
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -191,7 +193,10 @@ class AssignedShift(models.Model):
                 else:
                     existing_end = timezone.datetime.combine(existing_shift.shift_date, existing_shift.end_time)
                 if shift_start < existing_end and shift_end > existing_start:
-                    raise ValidationError(f"Staff member {staff_member} has overlapping shift from {existing_shift.start_time} to {existing_shift.end_time}")
+                    staff_name = f"{staff_member.first_name} {staff_member.last_name}" or str(staff_member)
+                    raise ValidationError({
+                        'staff': f"Staff member {staff_name} has an overlapping shift on {self.shift_date} from {timezone.localtime(existing_shift.start_time).strftime('%H:%M')} to {timezone.localtime(existing_shift.end_time).strftime('%H:%M')}"
+                    })
     
     def save(self, *args, **kwargs):
         # Convert time to datetime if needed
@@ -600,6 +605,78 @@ class TemplateVersion(models.Model):
     def __str__(self):
         return f"{self.template.name} v{self.version_number}"
     
+class StaffAvailability(models.Model):
+    DAY_CHOICES = (
+        (0, 'Monday'),
+        (1, 'Tuesday'),
+        (2, 'Wednesday'),
+        (3, 'Thursday'),
+        (4, 'Friday'),
+        (5, 'Saturday'),
+        (6, 'Sunday'),
+    )
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    staff = models.ForeignKey('accounts.CustomUser', on_delete=models.CASCADE, related_name='scheduling_availability')
+    day_of_week = models.IntegerField(choices=DAY_CHOICES)
+    is_available = models.BooleanField(default=True)
+    start_time = models.TimeField(null=True, blank=True)
+    end_time = models.TimeField(null=True, blank=True)
+    notes = models.TextField(blank=True, null=True)
+
+    class Meta:
+        db_table = 'staff_availability'
+        unique_together = ['staff', 'day_of_week', 'start_time', 'end_time']
+
+    def __str__(self):
+        return f"{self.staff.get_full_name()} - {self.get_day_of_week_display()}"
+
+class TimeOffRequest(models.Model):
+    STATUS_CHOICES = (
+        ('PENDING', 'Pending'),
+        ('APPROVED', 'Approved'),
+        ('DENIED', 'Denied'),
+        ('CANCELLED', 'Cancelled'),
+    )
+    TYPE_CHOICES = (
+        ('VACATION', 'Vacation'),
+        ('SICK', 'Sick Leave'),
+        ('PERSONAL', 'Personal Day'),
+        ('OTHER', 'Other'),
+    )
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    staff = models.ForeignKey('accounts.CustomUser', on_delete=models.CASCADE, related_name='time_off_requests')
+    start_date = models.DateField()
+    end_date = models.DateField()
+    request_type = models.CharField(max_length=20, choices=TYPE_CHOICES, default='VACATION')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    reason = models.TextField(blank=True, null=True)
+    approved_by = models.ForeignKey('accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_time_off')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'time_off_requests'
+        ordering = ['-start_date']
+
+    def __str__(self):
+        return f"{self.staff.get_full_name()} - {self.start_date} to {self.end_date} ({self.status})"
+
+class Holiday(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='holidays')
+    name = models.CharField(max_length=100)
+    date = models.DateField()
+    is_closed = models.BooleanField(default=False)
+    notes = models.TextField(blank=True, null=True)
+
+    class Meta:
+        db_table = 'restaurant_holidays'
+        unique_together = ['restaurant', 'date']
+        ordering = ['date']
+
+    def __str__(self):
+        return f"{self.name} on {self.date} ({self.restaurant.name})"
+
 # Ensure task template models are registered with Django
 # This import loads models defined in scheduling/task_templates.py without circular imports
 from . import task_templates  # noqa: F401

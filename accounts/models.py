@@ -78,6 +78,18 @@ class Restaurant(models.Model):
     general_settings = models.JSONField(default=dict)
     settings_schema_version = models.IntegerField(default=1)
     
+    # Scheduling Policy
+    restaurant_type = models.CharField(max_length=50, choices=[
+        ('FINE_DINING', 'Fine Dining'),
+        ('CASUAL_DINING', 'Casual Dining'),
+        ('FAST_FOOD', 'Fast Food'),
+        ('CAFE', 'Cafe/Bakery'),
+        ('BAR', 'Bar/Lounge'),
+        ('OTHER', 'Other')
+    ], default='CASUAL_DINING')
+    max_weekly_hours = models.DecimalField(max_digits=5, decimal_places=2, default=40.0)
+    min_rest_hours = models.DecimalField(max_digits=4, decimal_places=2, default=11.0)
+    
     # POS Integration Fields
     pos_provider = models.CharField(max_length=50, choices=[
         ('STRIPE', 'Stripe'),

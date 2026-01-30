@@ -69,7 +69,8 @@ def shift_reminder(task):
             duration_text = "—"
         
     except Exception as e:
-        print(f"Error preparing reminder for shift {task.id}: {e}", file=sys.stderr)
+        # logger.error(f"Error preparing reminder for shift {task.id}: {e}")
+
         return None
 
     if not hasattr(staff, 'phone') or not staff.phone:
@@ -108,13 +109,15 @@ def send_shift_reminder_30min():
         status__in=['SCHEDULED', 'CONFIRMED']
     )
 
-    print(f"Found {upcoming_tasks.count()} upcoming shifts for 30-min reminders.", file=sys.stderr)
+    # logger.info(f"Found {upcoming_tasks.count()} upcoming shifts for 30-min reminders.")
+
 
     for shift in upcoming_tasks:
         if shift_reminder(shift) == 200:
             shift.shift_reminder_sent = True
             shift.save(update_fields=['shift_reminder_sent'])
-            print(f"Marked shift_reminder_sent=True for shift {shift.id}", file=sys.stderr)
+            # logger.info(f"Marked shift_reminder_sent=True for shift {shift.id}")
+
 
 
 def clock_in_reminder(task):
@@ -151,7 +154,8 @@ def clock_in_reminder(task):
 
         location = getattr(restaurant, 'address', None) or getattr(restaurant, 'name', None) or "Restaurant"
     except Exception as e:
-        print(f"Error preparing clock-in reminder for shift {task.id}: {e}", file=sys.stderr)
+        # logger.error(f"Error preparing clock-in reminder for shift {task.id}: {e}")
+
         return None
 
     if not hasattr(staff, 'phone') or not staff.phone:
@@ -188,13 +192,15 @@ def send_clock_in_reminder_10min():
         status__in=['SCHEDULED', 'CONFIRMED']
     )
 
-    print(f"Found {upcoming_tasks.count()} upcoming shifts for 10-min clock-in reminders.", file=sys.stderr)
+    # logger.info(f"Found {upcoming_tasks.count()} upcoming shifts for 10-min clock-in reminders.")
+
 
     for shift in upcoming_tasks:
         if clock_in_reminder(shift) == 200:
             shift.clock_in_reminder_sent = True
             shift.save(update_fields=['clock_in_reminder_sent'])
-            print(f"Marked clock_in_reminder_sent=True for shift {shift.id}", file=sys.stderr)
+            # logger.info(f"Marked clock_in_reminder_sent=True for shift {shift.id}")
+
 
 
 def clock_out_reminder(task):
@@ -237,11 +243,13 @@ def send_clock_out_reminder():
         if clock_out_reminder(shift) == 200:
             shift.clock_out_reminder_sent = True
             shift.save(update_fields=['clock_out_reminder_sent'])
-            print(f"Marked clock_out_reminder_sent=True for shift {shift.id}", file=sys.stderr)
+            # logger.info(f"Marked clock_out_reminder_sent=True for shift {shift.id}")
+
 
 
 def check_list_reminder(shift):
-    print(f"Preparing checklist reminder for shift {shift.id}", file=sys.stderr)
+    # logger.info(f"Preparing checklist reminder for shift {shift.id}")
+
     staff = shift.staff
     first_name = staff.first_name
     restaurant = getattr(getattr(shift, 'schedule', None), 'restaurant', None)

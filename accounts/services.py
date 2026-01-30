@@ -134,7 +134,8 @@ class UserManagementService:
                 phone = (row.get('phone') or row.get('whatsapp') or row.get('phonenumber') or '').strip()
 
                 # Check if pending invitation already exists
-                print(f"Row {idx}: checking existing invitation for {email}", file=sys.stderr)
+                    # logger.info(f"Row {idx}: checking existing invitation for {email}")
+
                 try:
                     existing_invite = UserInvitation.objects.filter(
                         restaurant=restaurant,
@@ -146,7 +147,8 @@ class UserManagementService:
                     import traceback
                     results['failed'] += 1
                     results['errors'].append(f"Row {idx}: DB query failed for {email} - {str(e)}")
-                    print(f"❌ ERROR in DB query (row {idx}): {e}", file=sys.stderr)
+                    # logger.error(f"❌ ERROR in DB query (row {idx}): {e}")
+
                     print(traceback.format_exc(), file=sys.stderr)
                     continue  # skip this row
 
@@ -179,7 +181,8 @@ class UserManagementService:
                         last_name=last_name,
                         extra_data=extra_data,
                     )
-                    print(f"Row {idx}: invitation created for {email}", file=sys.stderr)
+                    # logger.info(f"Row {idx}: invitation created for {email}")
+
 
                     # Send invitation email
                     try:
