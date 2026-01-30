@@ -113,7 +113,8 @@ from django.core.files.base import ContentFile  # <--- ADD THIS IMPORT
 @permission_classes([permissions.IsAuthenticated])
 def web_clock_in(request):
     """Clock-in for React frontend with geolocation"""
-    # print(request.data, file=sys.stderr),
+    # Removed for production
+
     user = request.user
     
     # Get geolocation data from request

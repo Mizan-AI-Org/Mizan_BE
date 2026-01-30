@@ -5,8 +5,8 @@ from datetime import datetime, timedelta, time
 from typing import Dict, List, Tuple
 from django.db.models import Q, Count, Avg
 from django.utils import timezone
-from .models import AssignedShift, WeeklySchedule, ScheduleTemplate, TemplateShift
-from accounts.models import CustomUser
+from .models import AssignedShift, WeeklySchedule, ScheduleTemplate, TemplateShift, StaffAvailability, TimeOffRequest, Holiday
+from accounts.models import CustomUser, Restaurant
 import hashlib
 
 
@@ -70,58 +70,153 @@ class SchedulingService:
         }
     
     @staticmethod
-    def detect_scheduling_conflicts(staff_id: str, shift_date, start_time, end_time) -> List[Dict]:
+    def detect_scheduling_conflicts(staff_id: str, shift_date, start_time, end_time, ignore_shift_id=None, workspace_location=None) -> List[Dict]:
         """
-        Detect scheduling conflicts for a staff member
-        
-        Args:
-            start_time, end_time: Can be either time or datetime objects
-        
-        Returns:
-            List of conflicting shifts
+        Detect scheduling conflicts for a staff member including:
+        - Overlapping shifts
+        - Availability preferences
+        - Approved time off
+        - Restaurant holidays
+        - Weekly hour limits
+        - Minimum rest periods (Clopening)
+        - Location/Station overcapacity
         """
         conflicts = []
         
         try:
             staff = CustomUser.objects.get(id=staff_id)
+            restaurant = staff.restaurant
         except CustomUser.DoesNotExist:
             return conflicts
         
-        # Find overlapping shifts
+        # 0. Convert times to datetime objects for comparison
+        from datetime import time as time_type
+        if isinstance(start_time, time_type):
+            shift_start = timezone.make_aware(timezone.datetime.combine(shift_date, start_time))
+            end_date = shift_date
+            if end_time < start_time:
+                end_date = shift_date + timedelta(days=1)
+            shift_end = timezone.make_aware(timezone.datetime.combine(end_date, end_time))
+        else:
+            shift_start = start_time
+            shift_end = end_time
+
+        # 1. Check for OVERLAPPING shifts for THIS staff
         existing_shifts = AssignedShift.objects.filter(
             staff=staff,
             shift_date=shift_date,
             status__in=['SCHEDULED', 'CONFIRMED']
         )
-        
-        # Convert start_time and end_time to datetime if they are time objects
-        from datetime import time as time_type
-        if isinstance(start_time, time_type):
-            shift_start = timezone.make_aware(timezone.datetime.combine(shift_date, start_time))
-            shift_end = timezone.make_aware(timezone.datetime.combine(shift_date, end_time))
-        else:
-            shift_start = start_time
-            shift_end = end_time
+        if ignore_shift_id:
+            existing_shifts = existing_shifts.exclude(id=ignore_shift_id)
         
         for existing in existing_shifts:
-            # AssignedShift.start_time and end_time are DateTimeFields
-            # But handle both cases for robustness
-            if isinstance(existing.start_time, time_type):
-                existing_start = timezone.make_aware(timezone.datetime.combine(existing.shift_date, existing.start_time))
-                existing_end = timezone.make_aware(timezone.datetime.combine(existing.shift_date, existing.end_time))
-            else:
-                existing_start = existing.start_time
-                existing_end = existing.end_time
-            
-            if shift_start < existing_end and shift_end > existing_start:
+            if shift_start < existing.end_time and shift_end > existing.start_time:
                 conflicts.append({
-                    'shift_id': str(existing.id),
-                    'start_time': str(existing.start_time),
-                    'end_time': str(existing.end_time),
-                    'role': existing.role,
-                    'status': existing.status
+                    'type': 'OVERLAP',
+                    'message': f"Overlaps with existing shift: {existing.start_time.strftime('%H:%M')}-{existing.end_time.strftime('%H:%M')}",
+                    'shift_id': str(existing.id)
                 })
-        
+
+        # 2. Check for TIME OFF
+        time_off = TimeOffRequest.objects.filter(
+            staff=staff,
+            status='APPROVED',
+            start_date__lte=shift_date,
+            end_date__gte=shift_date
+        )
+        for tor in time_off:
+            conflicts.append({
+                'type': 'TIME_OFF',
+                'message': f"Staff has approved time off ({tor.get_request_type_display()})",
+                'request_id': str(tor.id)
+            })
+
+        # 3. Check for AVAILABILITY
+        availability = StaffAvailability.objects.filter(
+            staff=staff,
+            day_of_week=shift_date.weekday()
+        )
+        if availability.exists():
+            is_pref_available = False
+            for pref in availability:
+                if pref.is_available:
+                    if pref.start_time and pref.end_time:
+                        if start_time >= pref.start_time and end_time <= pref.end_time:
+                            is_pref_available = True
+                            break
+                    else:
+                        is_pref_available = True
+                        break
+            
+            if not is_pref_available:
+                conflicts.append({
+                    'type': 'AVAILABILITY',
+                    'message': "Outside of staff's preferred availability"
+                })
+
+        # 4. Check for HOLIDAYS
+        if restaurant:
+            holidays = Holiday.objects.filter(restaurant=restaurant, date=shift_date, is_closed=True)
+            for holiday in holidays:
+                conflicts.append({
+                    'type': 'HOLIDAY',
+                    'message': f"Restaurant is closed for holiday: {holiday.name}"
+                })
+
+        # 5. Check for WEEKLY HOURS LIMIT
+        if restaurant and restaurant.max_weekly_hours:
+            week_start = shift_date - timedelta(days=shift_date.weekday())
+            week_end = week_start + timedelta(days=6)
+            week_stats = SchedulingService.calculate_staff_hours(staff_id, week_start, week_end)
+            current_hours = float(week_stats.get('total_hours', 0))
+            new_shift_hours = (shift_end - shift_start).total_seconds() / 3600
+            
+            if current_hours + new_shift_hours > float(restaurant.max_weekly_hours):
+                conflicts.append({
+                    'type': 'WEEKLY_LIMIT',
+                    'message': f"Exceeds max weekly hours ({restaurant.max_weekly_hours}h). Total would be {current_hours + new_shift_hours:.1f}h"
+                })
+
+        # 6. Check for MINIMUM REST PERIOD (Clopening)
+        if restaurant and restaurant.min_rest_hours:
+            # Check previous day's last shift
+            prev_day = shift_date - timedelta(days=1)
+            last_shift = AssignedShift.objects.filter(
+                staff=staff, 
+                shift_date=prev_day,
+                status__in=['SCHEDULED', 'CONFIRMED', 'COMPLETED']
+            ).order_by('-end_time').first()
+            
+            if last_shift:
+                rest_duration = (shift_start - last_shift.end_time).total_seconds() / 3600
+                if rest_duration < float(restaurant.min_rest_hours):
+                    conflicts.append({
+                        'type': 'REST_PERIOD',
+                        'message': f"Less than {restaurant.min_rest_hours}h rest since previous shift (only {rest_duration:.1f}h rest)"
+                    })
+
+        # 7. Check for LOCATION OVERCAPACITY
+        if workspace_location and restaurant:
+            location_conflicts = AssignedShift.objects.filter(
+                schedule__restaurant=restaurant,
+                shift_date=shift_date,
+                workspace_location=workspace_location,
+                status__in=['SCHEDULED', 'CONFIRMED']
+            )
+            if ignore_shift_id:
+                location_conflicts = location_conflicts.exclude(id=ignore_shift_id)
+            
+            for loc_shift in location_conflicts:
+                if shift_start < loc_shift.end_time and shift_end > loc_shift.start_time:
+                    conflicts.append({
+                        'type': 'LOCATION',
+                        'message': f"Station '{workspace_location}' is already occupied by {loc_shift.staff.get_full_name()}",
+                        'shift_id': str(loc_shift.id)
+                    })
+
+        return conflicts
+
         return conflicts
     
     @staticmethod
@@ -466,7 +561,8 @@ class SchedulingService:
                 except Exception:
                     pass
         except Exception as e:
-            print(f"Error notifying shift assignment: {e}")
+            # logger.error(f"Error notifying shift assignment: {e}")
+
 
     @staticmethod
     def staff_shift_color(staff_id: str) -> str:
@@ -563,7 +659,8 @@ class SchedulingService:
             }
             async_to_sync(channel_layer.group_send)(group_name, event)
         except Exception as e:
-            print(f"Error notifying shift cancellation: {e}")
+            # logger.error(f"Error notifying shift cancellation: {e}")
+
 
 
 class OptimizationService:

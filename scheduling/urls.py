@@ -29,8 +29,10 @@ from .views_agent import (
     agent_send_shift_notification,
     agent_optimize_schedule,
     agent_get_restaurant_details,
+    agent_get_operational_advice,
     agent_staff_by_phone,
     agent_get_my_shifts,
+    agent_detect_conflicts,
 )
 
 router = DefaultRouter()
@@ -80,6 +82,8 @@ urlpatterns = [
     path('agent/notify-shift/', agent_send_shift_notification, name='agent_notify_shift'),
     path('agent/optimize-schedule/', agent_optimize_schedule, name='agent_optimize_schedule'),
     path('agent/restaurant-details/', agent_get_restaurant_details, name='agent_get_restaurant_details'),
+    path('agent/operational-advice/', agent_get_operational_advice, name='agent_get_operational_advice'),
     path('agent/staff-by-phone/', agent_staff_by_phone, name='agent_staff_by_phone'),
     path('agent/my-shifts/', agent_get_my_shifts, name='agent_get_my_shifts'),
+    path('agent/detect-conflicts/', agent_detect_conflicts, name='agent_detect_conflicts'),
 ]

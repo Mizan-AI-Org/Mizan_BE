@@ -150,7 +150,8 @@ def log_schedule_template_delete(sender, instance, **kwargs):
 @receiver(post_save, sender=TemplateShift)
 def log_template_shift_save(sender, instance, created, **kwargs):
     """Log template shift creation and updates"""
-    print("Logging template shift save",file=sys.stderr)
+    # Logging template shift save removed for production
+
     user = get_current_user()
     request = get_current_request()
     
@@ -186,11 +187,14 @@ def inform_staff(sender, instance, created, **kwargs):
                 return False
             status_code = shift_create_notification(instance)
             if status_code == 200:
-                print(f"✅ Shift for date {instance.shift_date} created", file=sys.stderr)
+                # Shift created successfully
+
             else:
-                print("❌ Shift didn't create, something went wrong", file=sys.stderr)
+                # Shift creation failed
+
     else:
-        print("❌ Staff phone number not available", file=sys.stderr)
+        # Staff phone number not available
+
 
 @receiver(pre_save, sender=AssignedShift)
 def inform_staff_before_save(sender, instance, **kwargs):
@@ -222,17 +226,21 @@ def inform_staff_before_save(sender, instance, **kwargs):
         return
 
     # If something changed → send notification
-    print("Shift changed — sending notification!")
+    # Shift change notification logic
+
     # Check if staff changed (reassignment)
     if old_instance.staff != instance.staff:
         if hasattr(instance.staff, 'phone') and instance.staff.phone:
             status_code = shift_create_notification(instance)
             if status_code == 200:
-                print(f"✅ Shift for date {instance.shift_date} created", file=sys.stderr)
+                # Shift created successfully
+
             else:
-                print("❌ Shift didn't create, something went wrong", file=sys.stderr)
+                # Shift creation failed
+
         else:
-            print("❌ Staff phone number not available", file=sys.stderr)
+            # Staff phone number not available
+
         
         if hasattr(old_instance.staff, 'phone') and old_instance.staff.phone:
             print(f"✅ Hello {old_instance.staff.first_name}, your shift on {old_instance.shift_date} has been reassigned.", file=sys.stderr)

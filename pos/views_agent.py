@@ -120,3 +120,70 @@ def agent_get_external_objects(request):
         }
     )
 
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_get_pos_sales_summary(request):
+    """Get summarized sales data for the agent."""
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
+
+    restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
+    if not restaurant:
+        return Response({"error": "Unable to resolve restaurant context."}, status=status.HTTP_400_BAD_REQUEST)
+
+    date_str = request.query_params.get("date")
+    from django.utils.dateparse import parse_date
+    date = parse_date(date_str) if date_str else None
+
+    result = IntegrationManager.get_daily_sales_summary(restaurant, date)
+    return Response(result)
+
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_get_top_items(request):
+    """Fetch top-selling items for the agent."""
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
+
+    restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
+    if not restaurant:
+        return Response({"error": "Unable to resolve restaurant context."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        days = int(request.query_params.get("days") or 7)
+        limit = int(request.query_params.get("limit") or 10)
+    except Exception:
+        days, limit = 7, 10
+
+    result = IntegrationManager.get_top_selling_items(restaurant, days, limit)
+    return Response(result)
+
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_get_pos_status(request):
+    """Check POS connection status for the agent."""
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
+
+    restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
+    if not restaurant:
+        return Response({"error": "Unable to resolve restaurant context."}, status=status.HTTP_400_BAD_REQUEST)
+
+    return Response({
+        "success": True,
+        "provider": restaurant.pos_provider,
+        "is_connected": restaurant.pos_is_connected,
+        "last_sync": restaurant.pos_token_expires_at.isoformat() if restaurant.pos_token_expires_at else None,
+        "merchant_id": restaurant.pos_merchant_id,
+        "location_id": restaurant.pos_location_id,
+    })
+

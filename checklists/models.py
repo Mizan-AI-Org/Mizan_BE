@@ -143,6 +143,8 @@ class ChecklistExecution(models.Model):
     approved_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='approved_checklists')
     approved_at = models.DateTimeField(null=True, blank=True)
     
+    analysis_results = models.JSONField(default=dict, blank=True, help_text="AI or automated analysis of the checklist execution results")
+    
     # Metadata
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

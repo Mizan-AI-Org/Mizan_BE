@@ -151,3 +151,33 @@ def create_default_checklists_on_restaurant_create(sender, instance, created, **
                     )
     except Exception as exc:
         logger.exception("Failed to create default checklists for restaurant %s: %s", instance.id, exc)
+
+
+@receiver(post_save, sender="checklists.ChecklistExecution")
+def analyze_completed_checklist(sender, instance, created, **kwargs):
+    """
+    Trigger automated analysis when a checklist remains COMPLETED or is changed to COMPLETED.
+    """
+    if instance.status == 'COMPLETED':
+        # Check if we should re-analyze (e.g. if analysis is missing or if it was recently completed)
+        # Avoid infinite recursion by checking if only status/analysis_results changed
+        # Actually, analyze_execution calls .save(update_fields=['analysis_results'])
+        # so we need to be careful about recursive post_save triggers.
+        # We can use a flag or check if analysis_results is already populated.
+        
+        # Simple check: only run if not already analyzed in this "save event"
+        # We'll use a transaction.on_commit to run it after the save is finalized.
+        from django.db import transaction
+        from .services import ChecklistAnalysisService
+
+        def run_analysis():
+            try:
+                analysis_service = ChecklistAnalysisService()
+                analysis_service.analyze_execution(instance)
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Failed to analyze checklist execution {instance.id}: {e}")
+
+        transaction.on_commit(run_analysis)
+

@@ -57,8 +57,12 @@ def infer_shift_area_label(*, staff_role: str, department: str | None = None, wo
             return "Bar"
         if "kitchen" in combined:
             return "Kitchen"
-        if "front" in combined or "foh" in combined or "floor" in combined:
+        if "front" in combined or "foh" in combined or "floor" in combined or "service" in combined:
             return "Front of House"
+        if "dining" in combined:
+            return "Dining Room"
+        if "reception" in combined:
+            return "Reception"
         # Use provided department/workspace as-is if it looks like a label
         # (keep short; title-case it)
         if len(dept) <= 30 and dept:
@@ -123,6 +127,7 @@ def detect_shift_context(
     shift_notes: str | None,
     start_dt,
     end_dt,
+    restaurant=None,
 ) -> str:
     """
     Identify the shift context from title/notes first, then time heuristics.

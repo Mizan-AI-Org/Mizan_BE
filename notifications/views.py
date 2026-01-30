@@ -655,10 +655,17 @@ def whatsapp_webhook(request):
                                     current_index = int(checklist.get('current_index', 0) or 0)
                                     if 0 <= current_index < len(tasks):
                                         current_task_id = tasks[current_index]
+                                
+                                # Fallback if still no current_task_id
+                                if not current_task_id and tasks:
+                                    current_task_id = tasks[0]
                                     
+                                if current_task_id:
                                     # Record this response
                                     response_value = btn_id.lower().replace('/', '_')  # 'N/A' -> 'n_a'
                                     responses[current_task_id] = response_value
+                                    checklist['responses'] = responses
+                                    session.context['checklist'] = checklist
                                     
                                     # Update ShiftTask status based on response
                                     try:
@@ -723,8 +730,6 @@ def whatsapp_webhook(request):
                                         pass
 
                                     # Advance to next pending task
-                                    checklist['responses'] = responses
-                                    session.context['checklist'] = checklist
                                     session.save(update_fields=['context'])
 
                                     pending_tasks = list(ShiftTask.objects.filter(id__in=tasks).exclude(status__in=['COMPLETED', 'CANCELLED']))
@@ -1311,16 +1316,21 @@ def whatsapp_webhook(request):
                                                 else:
                                                     title = getattr(tpl, 'name', 'Task')
                                                     desc = ''
+                                                v_req = bool(step.get('verification_required', False)) or bool(getattr(tpl, 'verification_required', False))
+                                                v_type = step.get('verification_type') or getattr(tpl, 'verification_type', 'NONE') or 'NONE'
+                                                v_inst = step.get('verification_instructions') or getattr(tpl, 'verification_instructions', None)
+                                                v_cl = step.get('verification_checklist') or getattr(tpl, 'verification_checklist', []) or []
+                                                
                                                 ShiftTask.objects.create(
                                                     shift=shift_obj,
                                                     title=title,
                                                     description=desc,
                                                     status='TODO',
                                                     assigned_to=user,
-                                                    verification_required=bool(getattr(tpl, 'verification_required', False)),
-                                                    verification_type=getattr(tpl, 'verification_type', 'NONE') or 'NONE',
-                                                    verification_instructions=getattr(tpl, 'verification_instructions', None),
-                                                    verification_checklist=getattr(tpl, 'verification_checklist', []) or [],
+                                                    verification_required=v_req,
+                                                    verification_type=v_type,
+                                                    verification_instructions=v_inst,
+                                                    verification_checklist=v_cl,
                                                 )
                                     
                                     ensure_shift_tasks_from_templates(active_shift)

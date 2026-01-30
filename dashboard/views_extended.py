@@ -523,7 +523,7 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             schedule__restaurant=user.restaurant,
             shift_date=today,
             status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED', 'NO_SHOW']
-        ).select_related('staff')
+        ).select_related('staff').prefetch_related('staff_members')
         
         # 2. Fetch Today's Clock Events
         events = ClockEvent.objects.filter(
@@ -545,17 +545,26 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         
         # Initialize staff map with shifts
         for shift in shifts:
-            staff_id = shift.staff.id
-            staff_map[staff_id] = {
-                'staff': {
-                    'id': staff_id,
-                    'name': f"{shift.staff.first_name} {shift.staff.last_name}",
-                    'role': shift.staff.role,
-                    'avatar': None
-                },
+            # Get all assigned staff members for this shift
+            assigned_staff_list = list(shift.staff_members.all())
+            if shift.staff and shift.staff not in assigned_staff_list:
+                assigned_staff_list.append(shift.staff)
+                
+            for staff in assigned_staff_list:
+                staff_id = staff.id
+                if staff_id in staff_map:
+                    continue # Avoid double entry if overlap exists
+                    
+                staff_map[staff_id] = {
+                    'staff': {
+                        'id': staff_id,
+                        'name': f"{staff.first_name} {staff.last_name}",
+                        'role': staff.role,
+                        'avatar': None
+                    },
                 'shift': {
-                    'start': shift.start_time.strftime('%H:%M') if shift.start_time else None,
-                    'end': shift.end_time.strftime('%H:%M') if shift.end_time else None,
+                    'start': timezone.localtime(shift.start_time).strftime('%H:%M') if shift.start_time else None,
+                    'end': timezone.localtime(shift.end_time).strftime('%H:%M') if shift.end_time else None,
                     'status': shift.status
                 },
                 'clock_in': None,
@@ -589,7 +598,7 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                 }
 
             data = staff_map[staff_id]
-            time_str = event.timestamp.strftime('%H:%M')
+            time_str = timezone.localtime(event.timestamp).strftime('%H:%M')
             data['timeline'].append({'time': time_str, 'type': event.event_type})
             
             if event.event_type in ['in', 'CLOCK_IN']:
@@ -689,7 +698,7 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                     'id': str(e.id),
                     'staff_name': f"{e.staff.first_name} {e.staff.last_name}",
                     'event': e.get_event_type_display(),
-                    'time': e.timestamp.strftime('%H:%M'),
+                    'time': timezone.localtime(e.timestamp).strftime('%H:%M'),
                     'location': 'Front Desk' # Placeholder or e.location_name
                 } for e in events.reverse()[:10]
             ]

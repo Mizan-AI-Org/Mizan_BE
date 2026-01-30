@@ -24,11 +24,13 @@ def shift_create_notification( shift_instance):
                 {"type": "text", "text": next_shift_date},
                 {"type": "text", "text": next_shift_time}
             ]
-            print(f"Prepared message: {message}", flush=True, file=sys.stderr)
+            # logger.info(f"Prepared message: {message}")
+
             resp_code = send_whatsapp(phone, message, "schedule_publication_reminder", 'en')
             return  resp_code['status_code']
     except Exception as e:
-        print(f"Error: {e}", flush=True, file=sys.stderr)
+        # logger.error(f"Error: {e}")
+
         start_week = "N/A"
 
 # def check_if_shift_changed(old_shift, new_shift):
@@ -75,10 +77,8 @@ def send_whatsapp(phone, message, template_name, language_code="en_US"):
 import sys
 
 def get_tasks(max_tasks=3, shift=None, task_templates=[], tasks=[]):
-    print("Getting tasks for shift:", file=sys.stderr)
-    print(shift.id, file=sys.stderr)
-    print(task_templates, file=sys.stderr)
-    print(tasks, file=sys.stderr)
+    # logger.info("Getting tasks for shift")
+
 
     task_titles = ""
     count = 0

@@ -34,4 +34,7 @@ urlpatterns = [
     path('agent/sync/menu/', views_agent.agent_sync_menu, name='agent-pos-sync-menu'),
     path('agent/sync/orders/', views_agent.agent_sync_orders, name='agent-pos-sync-orders'),
     path('agent/external/', views_agent.agent_get_external_objects, name='agent-pos-external-objects'),
+    path('agent/sales-summary/', views_agent.agent_get_pos_sales_summary, name='agent-pos-sales-summary'),
+    path('agent/top-items/', views_agent.agent_get_top_items, name='agent-pos-top-items'),
+    path('agent/status/', views_agent.agent_get_pos_status, name='agent-pos-status'),
 ]

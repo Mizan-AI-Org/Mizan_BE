@@ -535,3 +535,85 @@ class ChecklistReportingService:
             })
         
         return usage_stats
+
+class ChecklistAnalysisService:
+    """Service for generating automated insights and analysis for checklist executions"""
+    
+    def analyze_execution(self, execution: ChecklistExecution) -> Dict[str, Any]:
+        """
+        Perform a comprehensive analysis of a completed checklist execution
+        """
+        results = {
+            'summary': '',
+            'highlights': [],
+            'anomalies': [],
+            'performance': {},
+            'analyzed_at': timezone.now().isoformat()
+        }
+        
+        step_responses = execution.step_responses.all()
+        template = execution.template
+        
+        # 1. Analyze Measurements & Anomalies
+        for sr in step_responses:
+            if sr.measurement_value is not None:
+                step = sr.step
+                if step.min_value is not None and sr.measurement_value < step.min_value:
+                    results['anomalies'].append({
+                        'step_title': step.title,
+                        'value': float(sr.measurement_value),
+                        'issue': 'Below minimum',
+                        'threshold': float(step.min_value)
+                    })
+                if step.max_value is not None and sr.measurement_value > step.max_value:
+                    results['anomalies'].append({
+                        'step_title': step.title,
+                        'value': float(sr.measurement_value),
+                        'issue': 'Above maximum',
+                        'threshold': float(step.max_value)
+                    })
+        
+        # 2. Analyze Completion & Skipping
+        skipped_count = step_responses.filter(status='SKIPPED').count()
+        if skipped_count > 0:
+            results['highlights'].append(f"{skipped_count} steps were skipped during this execution.")
+            
+        # 3. Time Analysis
+        if execution.started_at and execution.completed_at:
+            duration = execution.completed_at - execution.started_at
+            duration_mins = duration.total_seconds() / 60
+            results['performance']['duration_minutes'] = round(duration_mins, 1)
+            
+            if template.estimated_duration:
+                est_mins = template.estimated_duration.total_seconds() / 60
+                if duration_mins > est_mins * 1.5:
+                    results['highlights'].append(f"Execution took significantly longer than estimated ({round(duration_mins)}m vs {round(est_mins)}m).")
+                elif duration_mins < est_mins * 0.5:
+                    results['highlights'].append(f"Execution was completed much faster than expected ({round(duration_mins)}m vs {round(est_mins)}m).")
+        
+        # 4. Action Summary
+        action_count = execution.actions.count()
+        if action_count > 0:
+            results['highlights'].append(f"{action_count} follow-up actions were created.")
+            
+        # 5. Generate Summary Text
+        total_steps = step_responses.count()
+        completed_steps = step_responses.filter(status='COMPLETED').count()
+        
+        summary_parts = [
+            f"Checklist '{template.name}' was completed by {execution.assigned_to.get_full_name()}.",
+            f"Completion rate: {completed_steps}/{total_steps} ({round(completed_steps/total_steps*100) if total_steps else 0}%)."
+        ]
+        
+        if results['anomalies']:
+            summary_parts.append(f"⚠️ {len(results['anomalies'])} measurement anomalies detected.")
+        else:
+            summary_parts.append("✅ All measurements were within target ranges.")
+            
+        results['summary'] = " ".join(summary_parts)
+        
+        # Save results to execution
+        execution.analysis_results = results
+        execution.save(update_fields=['analysis_results'])
+        
+        return results

@@ -126,6 +126,25 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
             # Best-effort: do not fail request creation due to notification issues
             pass
 
+    @action(detail=False, methods=['get'])
+    def counts(self, request):
+        user = self.request.user
+        qs = StaffRequest.objects.all()
+        if getattr(user, 'restaurant', None):
+            qs = qs.filter(restaurant=user.restaurant)
+        
+        if not _is_manager(user):
+            qs = qs.filter(Q(staff=user) | Q(staff_phone__icontains=''.join(filter(str.isdigit, str(getattr(user, 'phone', '') or '')))))
+            
+        from django.db.models import Count
+        status_counts = qs.values('status').annotate(total=Count('id'))
+        # Get status choices from model
+        counts = {s: 0 for s, _ in StaffRequest.STATUS_CHOICES}
+        for item in status_counts:
+            counts[item['status']] = item['total']
+            
+        return Response({'success': True, 'counts': counts})
+
     @action(detail=True, methods=['post'])
     def comment(self, request, pk=None):
         req = self.get_object()
