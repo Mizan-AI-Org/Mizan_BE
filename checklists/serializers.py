@@ -430,8 +430,16 @@ class ChecklistSyncSerializer(serializers.Serializer):
         """Validate that execution exists and user has access"""
         try:
             execution = ChecklistExecution.objects.get(id=value)
+            
+            # For agent authenticated requests, we skip the user check
+            if self.context.get('bypass_user_check', False):
+                return value
+                
             if execution.assigned_to != self.context['request'].user:
                 raise serializers.ValidationError("Access denied to this checklist execution")
             return value
         except ChecklistExecution.DoesNotExist:
             raise serializers.ValidationError("Checklist execution not found")
+        except KeyError:
+            # Context might not have 'request' in some cases
+            return value

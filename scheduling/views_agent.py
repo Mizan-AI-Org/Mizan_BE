@@ -1095,3 +1095,51 @@ def agent_detect_conflicts(request):
     except Exception as e:
         logger.error(f"Agent detect conflicts error: {e}")
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_list_shifts(request):
+    """
+    List assigned shifts for a restaurant.
+    Used by the Lua agent to show schedules and find who is on duty.
+    """
+    try:
+        # Validate agent key
+        is_valid, error = validate_agent_key(request)
+        if not is_valid:
+            return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+
+        restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
+        if not restaurant:
+            return Response(
+                {'error': 'Unable to resolve restaurant context.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        queryset = AssignedShift.objects.filter(weekly_schedule__restaurant=restaurant)
+
+        # Filters
+        date_from = request.query_params.get('date_from')
+        date_to = request.query_params.get('date_to')
+        staff_id = request.query_params.get('staff_id')
+        role = request.query_params.get('role')
+
+        if date_from:
+            queryset = queryset.filter(shift_date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(shift_date__lte=date_to)
+        if staff_id:
+            queryset = queryset.filter(staff_id=staff_id)
+        if role:
+            queryset = queryset.filter(role=role)
+
+        queryset = queryset.select_related('staff').order_by('shift_date', 'start_time')
+        
+        serializer = AssignedShiftSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+    except Exception as e:
+        logger.exception("Agent list shifts error")
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

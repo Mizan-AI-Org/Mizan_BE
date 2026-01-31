@@ -1,5 +1,6 @@
 from rest_framework import status, permissions
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from django.conf import settings
 from rest_framework.response import Response
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
@@ -884,6 +885,96 @@ def agent_clock_out(request):
         )
         
         return Response(ClockEventSerializer(clock_event).data)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_attendance_report(request):
+    """
+    Get attendance and punctuality report for the agent.
+    Shows who is on duty, who has clocked in, and who is late.
+    """
+    try:
+        # Validate agent key
+        auth_header = request.headers.get('Authorization')
+        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        
+        if not expected_key:
+            return Response({'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+             
+        if not auth_header or auth_header != f"Bearer {expected_key}":
+            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        restaurant_id = request.query_params.get('restaurant_id')
+        date_str = request.query_params.get('date') or timezone.now().date().isoformat()
+        
+        if not restaurant_id:
+            return Response({'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            report_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 1. Get all scheduled shifts for today
+        shifts = AssignedShift.objects.filter(
+            weekly_schedule__restaurant_id=restaurant_id,
+            shift_date=report_date
+        ).select_related('staff')
+
+        # 2. Get all clock-in events for today
+        clock_ins = ClockEvent.objects.filter(
+            staff__restaurant_id=restaurant_id,
+            timestamp__date=report_date,
+            event_type='in'
+        )
+
+        # Map clock-ins by staff_id
+        staff_clock_ins = {str(c.staff_id): c.timestamp for c in clock_ins}
+
+        report = []
+        for shift in shifts:
+            staff = shift.staff
+            clock_in_time = staff_clock_ins.get(str(staff.id))
+            
+            status_text = "Scheduled"
+            lateness_minutes = 0
+            
+            if clock_in_time:
+                status_text = "Present"
+                # Combine date and time for comparison
+                shift_start = timezone.make_aware(datetime.combine(shift.shift_date, shift.start_time))
+                if clock_in_time > shift_start:
+                    diff = clock_in_time - shift_start
+                    lateness_minutes = int(diff.total_seconds() / 60)
+                    if lateness_minutes > 5: # 5 min grace period
+                        status_text = "Late"
+            else:
+                # If shift has already started, mark as absent/late to clock in
+                now = timezone.now()
+                shift_start = timezone.make_aware(datetime.combine(shift.shift_date, shift.start_time))
+                if now > shift_start:
+                    status_text = "Missing"
+
+            report.append({
+                'staff_id': str(staff.id),
+                'staff_name': f"{staff.first_name} {staff.last_name}",
+                'role': shift.role or staff.role,
+                'shift_start': shift.start_time.strftime('%H:%M'),
+                'shift_end': shift.end_time.strftime('%H:%M'),
+                'clock_in': clock_in_time.strftime('%H:%M') if clock_in_time else None,
+                'status': status_text,
+                'lateness_minutes': lateness_minutes
+            })
+
+        return Response({
+            'date': date_str,
+            'restaurant_id': restaurant_id,
+            'summary': report
+        })
 
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

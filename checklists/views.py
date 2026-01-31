@@ -884,7 +884,9 @@ class ChecklistAnalyticsViewSet(viewsets.ViewSet):
 
 
 # Import for function-based views
-from rest_framework.decorators import api_view, permission_classes as perm_classes
+from rest_framework.decorators import api_view, permission_classes as perm_classes, authentication_classes
+from django.conf import settings
+from .serializers import ChecklistSyncSerializer
 from scheduling.models import AssignedShift
 
 
@@ -982,3 +984,347 @@ def get_shift_checklists(request):
         'checklists': checklists_data,
         'message': f'Found {len(checklists_data)} checklist(s) for your shift' if checklists_data else 'No checklists assigned to your shift'
     })
+
+@api_view(['GET'])
+@authentication_classes([])
+@perm_classes([permissions.AllowAny])
+def agent_get_shift_checklists(request):
+    """
+    Agent-authenticated endpoint to get checklist templates assigned to a staff member's active shift.
+    
+    Query Params:
+        staff_id: ID of the staff member
+        
+    Returns:
+        - shift_id
+        - checklists
+        - message
+    """
+    # Validate Agent Key (same pattern as timeclock)
+    auth_header = request.headers.get('Authorization')
+    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+    
+    if not expected_key:
+        return Response({'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+    if not auth_header or auth_header != f"Bearer {expected_key}":
+        return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        
+    staff_id = request.query_params.get('staff_id')
+    if not staff_id:
+        return Response({'error': 'staff_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+    try:
+        user = CustomUser.objects.get(id=staff_id)
+    except CustomUser.DoesNotExist:
+        return Response({'error': 'Staff not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+    today = timezone.now().date()
+    
+    # Find the active shift for today
+    active_shift = AssignedShift.objects.filter(
+        staff=user,
+        shift_date=today,
+        status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS']
+    ).prefetch_related('task_templates').first()
+    
+    if not active_shift:
+        return Response({
+            'shift_id': None,
+            'checklists': [],
+            'message': 'No active shift found for today'
+        })
+    
+    # Get task templates assigned to this shift
+    task_templates = active_shift.task_templates.filter(is_active=True)
+    
+    # Get checklist templates linked to these task templates
+    checklist_templates = ChecklistTemplate.objects.filter(
+        task_template__in=task_templates,
+        is_active=True
+    ).prefetch_related('steps').distinct()
+    
+    # If no checklist templates found via task_template link, 
+    # try to find by matching category to template_type
+    if not checklist_templates.exists() and task_templates.exists():
+        task_types = task_templates.values_list('template_type', flat=True)
+        checklist_templates = ChecklistTemplate.objects.filter(
+            restaurant=user.restaurant,
+            is_active=True,
+            category__in=task_types
+        ).prefetch_related('steps').distinct()
+    
+    # Build response with checklist details (mirrors existing get_shift_checklists structure)
+    checklists_data = []
+    for template in checklist_templates:
+        steps = template.steps.all().order_by('order')
+        checklists_data.append({
+            'id': str(template.id),
+            'name': template.name,
+            'description': template.description,
+            'category': template.category,
+            'estimated_duration_minutes': (
+                int(template.estimated_duration.total_seconds() / 60) 
+                if template.estimated_duration else None
+            ),
+            'requires_supervisor_approval': template.requires_supervisor_approval,
+            'total_steps': steps.count(),
+            'steps': [
+                {
+                    'id': str(step.id),
+                    'order': step.order,
+                    'title': step.title,
+                    'description': step.description,
+                    'step_type': step.step_type,
+                    'is_required': step.is_required,
+                    'requires_photo': step.requires_photo,
+                    'requires_note': step.requires_note,
+                }
+                for step in steps
+            ]
+        })
+    
+    return Response({
+        'shift_id': str(active_shift.id),
+        'checklists': checklists_data,
+        'message': f'Found {len(checklists_data)} checklist(s) for your shift' if checklists_data else 'No checklists assigned to your shift'
+    })
+
+@api_view(['POST'])
+@authentication_classes([])
+@perm_classes([permissions.AllowAny])
+def agent_initiate_shift_checklists(request):
+    """
+    Agent-authenticated endpoint to initiate the first checklist for a staff member's active shift.
+    
+    Accepts:
+        staff_id: ID of the staff member (in body)
+        
+    Returns:
+        - execution_id
+        - checklist (name, etc)
+        - current_step (first step)
+        - status: started/restored
+    """
+    # Validate Agent Key
+    auth_header = request.headers.get('Authorization')
+    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+    
+    if not expected_key:
+        return Response({'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            
+    if not auth_header or auth_header != f"Bearer {expected_key}":
+        return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        
+    staff_id = request.data.get('staff_id')
+    if not staff_id:
+        return Response({'error': 'staff_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+    try:
+        user = CustomUser.objects.get(id=staff_id)
+    except CustomUser.DoesNotExist:
+        return Response({'error': 'Staff not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+    today = timezone.now().date()
+    
+    # 1. Find the active shift
+    active_shift = AssignedShift.objects.filter(
+        staff=user,
+        shift_date=today,
+        status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS']
+    ).prefetch_related('task_templates').first()
+    
+    if not active_shift:
+        return Response({'status': 'no_shift', 'message': 'No active shift found'})
+    
+    # 2. Find associated checklists
+    checklist_templates = ChecklistTemplate.objects.filter(
+        task_template__in=active_shift.task_templates.filter(is_active=True),
+        is_active=True
+    ).prefetch_related('steps').distinct()
+    
+    if not checklist_templates.exists():
+        # Fallback: try to find by matching category to template_type of assigned tasks
+        task_types = active_shift.task_templates.filter(is_active=True).values_list('template_type', flat=True)
+        if task_types:
+            checklist_templates = ChecklistTemplate.objects.filter(
+                restaurant=user.restaurant,
+                is_active=True,
+                category__in=task_types
+            ).prefetch_related('steps').distinct()
+            
+    # Final Fallback: if STILL no checklists, just get all active ones for this restaurant
+    # This ensures something is always triggered if any checklist exists.
+    if not checklist_templates.exists():
+        checklist_templates = ChecklistTemplate.objects.filter(
+            restaurant=user.restaurant,
+            is_active=True
+        ).prefetch_related('steps').distinct()
+        
+    if not checklist_templates.exists():
+        return Response({'status': 'no_checklists', 'message': 'No checklists assigned'})
+        
+    # 3. Pick the first one
+    template = checklist_templates.first() # Deterministic ordering? default pk
+    
+    if not template.steps.exists():
+        return Response({'status': 'empty_checklist', 'message': 'Checklist has no steps'})
+
+    # 4. Ensure execution exists
+    execution, created = ChecklistExecution.objects.get_or_create(
+        template=template,
+        assigned_to=user,
+        assigned_shift=active_shift,
+        defaults={
+            'status': 'NOT_STARTED',
+            'task': None # Link to specific task if we had one
+        }
+    )
+    
+    if created:
+        # Pre-create step responses
+        for step in template.steps.all():
+            ChecklistStepResponse.objects.create(execution=execution, step=step)
+            
+    # 5. Start if not started
+    if execution.status == 'NOT_STARTED':
+        execution.start_execution()
+        try:
+            AuditLog.create_log(
+                restaurant=user.restaurant,
+                user=user,
+                action_type='CREATE',
+                entity_type='ChecklistExecution',
+                entity_id=str(execution.id),
+                description='Checklist execution auto-started by agent',
+                old_values={},
+                new_values={'status': 'IN_PROGRESS'},
+                ip_address=request.META.get('REMOTE_ADDR', ''),
+                user_agent='Lua Agent'
+            )
+        except Exception:
+            pass
+            
+    # 6. Return first incomplete step info
+    # Find next incomplete step
+    next_response = execution.step_responses.filter(is_completed=False).select_related('step').order_by('step__order').first()
+    
+    if not next_response:
+        return Response({'status': 'completed', 'message': 'All steps completed'})
+        
+    step = next_response.step
+    total_steps = template.steps.count()
+    
+    return Response({
+        'status': 'started',
+        'execution_id': str(execution.id),
+        'checklist': {
+            'id': str(template.id),
+            'name': template.name,
+            'total_steps': total_steps
+        },
+        'current_step': {
+            'index': step.order,
+            'total': total_steps,
+            'id': str(step.id),
+            'title': step.title,
+            'description': step.description,
+            'requires_photo': step.requires_photo,
+            'step_type': step.step_type
+        },
+        'message': f'Starting checklist: {template.name}'
+    })
+
+@api_view(['POST'])
+@authentication_classes([])
+@perm_classes([permissions.AllowAny])
+def agent_sync_checklist_response(request, execution_id):
+    """
+    Agent-authenticated endpoint to sync checklist response data.
+    """
+    # Validate Agent Key
+    auth_header = request.headers.get('Authorization')
+    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+    
+    if not expected_key or auth_header != f"Bearer {expected_key}":
+        return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        
+    try:
+        execution = ChecklistExecution.objects.get(id=execution_id)
+    except ChecklistExecution.DoesNotExist:
+        return Response({'error': 'Execution not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+    data = request.data.copy()
+    data['execution_id'] = str(execution_id)
+    
+    serializer = ChecklistSyncSerializer(data=data, context={'request': request, 'bypass_user_check': True})
+    if serializer.is_valid():
+        sync_service = ChecklistSyncService()
+        result = sync_service.sync_execution_data(execution, serializer.validated_data)
+        
+        try:
+            AuditLog.create_log(
+                restaurant=execution.template.restaurant,
+                user=execution.assigned_to,
+                action_type='UPDATE',
+                entity_type='ChecklistExecution',
+                entity_id=str(execution.id),
+                description='Checklist response synced by agent',
+                old_values={},
+                new_values={'synced_items': result['synced_items']},
+                ip_address=request.META.get('REMOTE_ADDR', ''),
+                user_agent='Lua Agent'
+            )
+        except Exception:
+            pass
+            
+        return Response({
+            'success': True,
+            'synced_items': result['synced_items'],
+            'conflicts': result['conflicts']
+        })
+        
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+@authentication_classes([])
+@perm_classes([permissions.AllowAny])
+def agent_complete_checklist_execution(request, execution_id):
+    """
+    Agent-authenticated endpoint to complete a checklist execution.
+    """
+    # Validate Agent Key
+    auth_header = request.headers.get('Authorization')
+    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+    
+    if not expected_key or auth_header != f"Bearer {expected_key}":
+        return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        
+    try:
+        execution = ChecklistExecution.objects.get(id=execution_id)
+    except ChecklistExecution.DoesNotExist:
+        return Response({'error': 'Execution not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+    if execution.status != 'IN_PROGRESS':
+        return Response({'error': 'Checklist execution must be in progress'}, status=status.HTTP_400_BAD_REQUEST)
+        
+    completion_notes = request.data.get('completion_notes', 'Completed via Agent')
+    execution.complete_execution(completion_notes)
+    
+    try:
+        AuditLog.create_log(
+            restaurant=execution.template.restaurant,
+            user=execution.assigned_to,
+            action_type='UPDATE',
+            entity_type='ChecklistExecution',
+            entity_id=str(execution.id),
+            description='Checklist completed by agent',
+            old_values={},
+            new_values={'status': 'COMPLETED'},
+            ip_address=request.META.get('REMOTE_ADDR', ''),
+            user_agent='Lua Agent'
+        )
+    except Exception:
+        pass
+        
+    return Response({'success': True, 'status': 'COMPLETED'})

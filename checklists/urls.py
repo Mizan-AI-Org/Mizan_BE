@@ -17,4 +17,8 @@ router.register(r'analytics', views.ChecklistAnalyticsViewSet, basename='checkli
 urlpatterns = [
     path('api/checklists/', include(router.urls)),
     path('api/checklists/shift-checklists/', views.get_shift_checklists, name='get-shift-checklists'),
+    path('api/checklists/agent/shift-checklists/', views.agent_get_shift_checklists, name='agent-get-shift-checklists'),
+    path('api/checklists/agent/initiate/', views.agent_initiate_shift_checklists, name='agent-initiate-shift-checklists'),
+    path('api/checklists/agent/executions/<uuid:execution_id>/sync/', views.agent_sync_checklist_response, name='agent-sync-checklist-response'),
+    path('api/checklists/agent/executions/<uuid:execution_id>/complete/', views.agent_complete_checklist_execution, name='agent-complete-checklist-execution'),
 ]
