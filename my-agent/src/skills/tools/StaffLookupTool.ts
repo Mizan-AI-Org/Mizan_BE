@@ -1,6 +1,6 @@
 import { LuaTool, User, env } from "lua-cli";
 import { z } from "zod";
-import ApiService from "../../services/ApiService";
+import ApiService, { StaffMember } from "../../services/ApiService";
 
 export default class StaffLookupTool implements LuaTool {
     name = "staff_lookup";
@@ -23,57 +23,47 @@ export default class StaffLookupTool implements LuaTool {
         if (!user) {
             return { status: "error", message: "I can't access your account context right now. Please try again in a moment." };
         }
+
+        // Use type-safe access to user profile/data
         const userData = (user as any).data || {};
         const profile = (user as any)._luaProfile || {};
 
-        const restaurantId =
-            input.restaurantId ||
-            user.restaurantId ||
-            userData.restaurantId ||
-            profile.restaurantId;
+        const restaurantId = input.restaurantId || (user as any).restaurantId || userData.restaurantId || profile.restaurantId;
 
-        const token =
-            user.token ||
-            userData.token ||
-            profile.token ||
-            profile.accessToken ||
-            profile.credentials?.accessToken ||
-            env('MIZAN_SERVICE_TOKEN'); // Fallback to service token
-
-        console.log(`[StaffLookupTool] V7 Context debug: restaurantId=${!!restaurantId}`);
+        console.log(`[StaffLookupTool] Context debug: restaurantId=${!!restaurantId}`);
 
         if (!restaurantId) {
-            return { status: "error", message: "[V7 DIAGNOSTIC] No restaurant ID found in context. (Keys: " + Object.keys(userData).join(',') + ")" };
+            return { status: "error", message: "No restaurant ID found in context." };
         }
 
         try {
             console.log(`[StaffLookupTool] Searching staff in restaurant ${restaurantId}...`);
-            // Use agent-authenticated endpoint with name filter for superior backend matching/fuzzy lookup
-            const staff = await this.apiService.getStaffListForAgent(restaurantId, input.name);
+            const staff: StaffMember[] = await this.apiService.getStaffListForAgent(restaurantId, input.name);
 
-            let filteredStaff = staff;
-
-            // Optional additional client-side filtering (already handled well by backend if name was passed)
-            if (input.name && filteredStaff.length > 10) {
-                // If backend returned too many results (unlikely with specific name), 
-                // we could do further filtering here, but we'll trust the backend's ranking for now.
-            }
-
-            if (filteredStaff.length === 0 && staff.length > 0) {
-                // FALLBACK: If no match found, help the user by listing available staff
-                const allStaffNames = staff.slice(0, 10).map((s: any) => `${s.first_name} ${s.last_name} (${s.role})`).join("\n- ");
+            if (staff.length === 0) {
                 return {
                     status: "not_found",
-                    message: `I couldn't find anyone named "${input.name}" in the staff directory. \n\nHere are some staff members I found:\n- ${allStaffNames}${staff.length > 10 ? "\n...and others." : ""}\n\nCould you please check the spelling?`,
+                    message: `I couldn't find anyone named "${input.name || 'matching your criteria'}" in the staff directory.`,
                     staff: []
                 };
             }
 
+            let filteredStaff = [...staff];
+
             if (input.role) {
                 const searchRole = input.role.toUpperCase();
-                filteredStaff = filteredStaff.filter((s: any) =>
+                filteredStaff = filteredStaff.filter(s =>
                     s.role === searchRole || (s.position && s.position.toUpperCase() === searchRole)
                 );
+            }
+
+            if (filteredStaff.length === 0) {
+                const allStaffNames = staff.slice(0, 10).map(s => `${s.first_name} ${s.last_name} (${s.role})`).join("\n- ");
+                return {
+                    status: "not_found",
+                    message: `I couldn't find anyone with the role "${input.role}" named "${input.name}". \n\nHere are some staff members I found:\n- ${allStaffNames}${staff.length > 10 ? "\n...and others." : ""}`,
+                    staff: []
+                };
             }
 
             if (filteredStaff.length > 1) {
@@ -81,7 +71,7 @@ export default class StaffLookupTool implements LuaTool {
                     status: "multiple_results",
                     count: filteredStaff.length,
                     message: `I found ${filteredStaff.length} matching staff members. Please clarify which one:`,
-                    staff: filteredStaff.map((s: any) => ({
+                    staff: filteredStaff.map(s => ({
                         id: s.id,
                         full_name: `${s.first_name} ${s.last_name}`,
                         role: s.role,
@@ -94,7 +84,7 @@ export default class StaffLookupTool implements LuaTool {
             return {
                 status: "success",
                 count: filteredStaff.length,
-                staff: filteredStaff.map((s: any) => ({
+                staff: filteredStaff.map(s => ({
                     id: s.id,
                     full_name: `${s.first_name} ${s.last_name}`,
                     role: s.role,
@@ -102,7 +92,7 @@ export default class StaffLookupTool implements LuaTool {
                     department: s.department,
                     skills: s.skills || []
                 })),
-                message: filteredStaff.length > 0 ? `Found ${filteredStaff.length} matching staff members.` : "No matching staff members found."
+                message: `Found ${filteredStaff[0].first_name} ${filteredStaff[0].last_name}.`
             };
         } catch (error: any) {
             console.error("[StaffLookupTool] Execution failed:", error.message);
