@@ -24,4 +24,5 @@ urlpatterns = [
     # Agent endpoints
     path('agent/clock-in/', views.agent_clock_in, name='agent-clock-in'),
     path('agent/clock-out/', views.agent_clock_out, name='agent-clock-out'),
+    path('agent/attendance-report/', views.agent_attendance_report, name='agent-attendance-report'),
 ]

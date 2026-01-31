@@ -25,6 +25,7 @@ from .audit_views import AuditLogViewSet
 from .views_enhanced import CalendarAPIViewSet
 from .views_agent import (
     agent_list_staff, 
+    agent_list_shifts,
     agent_create_shift, 
     agent_send_shift_notification,
     agent_optimize_schedule,
@@ -78,6 +79,7 @@ urlpatterns = [
     
     # Agent Integration (authenticated via LUA_WEBHOOK_API_KEY)
     path('agent/staff/', agent_list_staff, name='agent_list_staff'),
+    path('agent/list-shifts/', agent_list_shifts, name='agent_list_shifts'),
     path('agent/create-shift/', agent_create_shift, name='agent_create_shift'),
     path('agent/notify-shift/', agent_send_shift_notification, name='agent_notify_shift'),
     path('agent/optimize-schedule/', agent_optimize_schedule, name='agent_optimize_schedule'),
