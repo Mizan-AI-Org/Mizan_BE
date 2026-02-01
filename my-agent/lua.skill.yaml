@@ -80,17 +80,17 @@ agent:
   welcomeMessage: ''
 skills:
   - name: staff-orchestrator
-    version: 1.0.55
+    version: 1.0.58
     skillId: f8f28466-4864-4f0c-be40-9fd977c487e7
   - name: predictive-analyst
-    version: 1.0.57
+    version: 1.0.58
     skillId: 80c230d3-38e7-4020-9e74-2df61f48c520
   - name: restaurant-operations
-    version: 1.0.46
+    version: 1.0.48
     skillId: cb0eb026-6d53-4534-b763-9d3fed61006d
 webhooks:
   - name: user-events
-    version: 1.0.27
+    version: 1.0.28
     webhookId: 77f06520-d115-41b1-865e-afe7814ce82d
   - name: forecasting-events
     version: 1.0.7
@@ -99,7 +99,7 @@ webhooks:
     version: 2.0.0
     webhookId: 9d44ed39-28c6-672h-d749-dhed1ba098e7
   - name: user-authenticated
-    version: 1.0.47
+    version: 1.0.48
     webhookId: df2d840c-b80e-4e6b-98d8-af4e95c0d96a
 jobs:
   - jobId: 100b555b-4d19-4130-a879-92b5fbb594d3
@@ -193,7 +193,7 @@ preprocessors:
     preprocessorId: preprocessor_56cd07g9-58b5-7479-cg8h-8g6dd2c26a4h
     version: 1.0.0
   - name: tenant-context-validation
-    version: 2.2.35
+    version: 2.2.36
     preprocessorId: preprocessor_730e748f-9bde-49b5-8bb2-69bc9f84eca2
     capabilities:
       - tenant-context-validation

@@ -133,6 +133,13 @@ def resolve_agent_restaurant_and_user(request=None, payload=None):
             hdr_rest_id = request.META.get('HTTP_X_RESTAURANT_ID')
             if hdr_rest_id and not data.get('restaurant_id'):
                 data['restaurant_id'] = hdr_rest_id
+            hdr_session = request.META.get('HTTP_X_SESSION_ID')
+            if hdr_session and not data.get('sessionId'):
+                data['sessionId'] = hdr_session
+            # Optional: user JWT in header so Miya/Lua can pass context when calling agent APIs
+            hdr_token = request.META.get('HTTP_X_CONTEXT_TOKEN') or request.META.get('HTTP_X_USER_TOKEN')
+            if hdr_token and not data.get('token'):
+                data['token'] = hdr_token
         except Exception:
             pass
 
@@ -175,10 +182,14 @@ def resolve_agent_restaurant_and_user(request=None, payload=None):
         for k in keys:
             v = data.get(k)
             if v:
+                if isinstance(v, (list, tuple)) and len(v) > 0:
+                    return v[0]
                 return v
         for k in keys:
             v = meta.get(k)
             if v:
+                if isinstance(v, (list, tuple)) and len(v) > 0:
+                    return v[0]
                 return v
         return None
 

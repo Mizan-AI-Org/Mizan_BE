@@ -61,21 +61,27 @@ export default class StaffSchedulerTool implements LuaTool {
         }
         const userData = (user as any).data || {};
         const profile = (user as any)._luaProfile || {};
+        const metadata = profile.metadata && typeof profile.metadata === 'object' ? profile.metadata : {};
 
-        // Check multiple sources for restaurantId
+        // Check multiple sources for restaurantId (widget sends metadata.restaurantId via LuaPop.init)
         const restaurantId =
             input.restaurantId ||
-            user.restaurantId ||
+            (user as any).restaurantId ||
             userData.restaurantId ||
-            profile.restaurantId;
+            profile.restaurantId ||
+            profile.restaurant_id ||
+            (metadata as any).restaurantId ||
+            (metadata as any).restaurant_id;
 
         // Token retrieval with service account fallback
         const token =
-            user.token ||
+            (user as any).token ||
             userData.token ||
             profile.token ||
             profile.accessToken ||
             profile.credentials?.accessToken ||
+            (metadata as any).token ||
+            (metadata as any).accessToken ||
             env('MIZAN_SERVICE_TOKEN'); // Service account fallback
 
         // Agent key for agent-authenticated endpoints
@@ -141,7 +147,7 @@ export default class StaffSchedulerTool implements LuaTool {
                 }
 
                 case "get_staff": {
-                    const staff = await apiService.getStaffListForAgent(restaurantId);
+                    const staff = await apiService.getStaffListForAgent(restaurantId, undefined, token);
                     return {
                         status: "success",
                         staff: staff.map((s: any) => ({ id: s.id, name: `${s.first_name} ${s.last_name}`, role: s.role }))
@@ -159,7 +165,7 @@ export default class StaffSchedulerTool implements LuaTool {
                     if (namesToSearch.length > 0) {
                         const allMatches: any[] = [];
                         for (const name of namesToSearch) {
-                            const backendMatches = await apiService.getStaffListForAgent(restaurantId, name);
+                            const backendMatches = await apiService.getStaffListForAgent(restaurantId, name, token);
                             allMatches.push(...backendMatches);
                         }
 
@@ -183,7 +189,7 @@ export default class StaffSchedulerTool implements LuaTool {
                     }
 
                     params.restaurant_id = restaurantId;
-                    const shifts = await apiService.getAssignedShiftsForAgent(params);
+                    const shifts = await apiService.getAssignedShiftsForAgent(params, token);
                     return {
                         status: "success",
                         shifts: shifts.results || shifts
@@ -200,7 +206,7 @@ export default class StaffSchedulerTool implements LuaTool {
                     const missingNames = [];
 
                     for (const name of namesToSearch) {
-                        const matches = await apiService.getStaffListForAgent(restaurantId, name);
+                        const matches = await apiService.getStaffListForAgent(restaurantId, name, token);
                         if (matches.length === 1) {
                             staffToSchedule.push(matches[0]);
                         } else if (matches.length > 1) {
@@ -216,7 +222,7 @@ export default class StaffSchedulerTool implements LuaTool {
 
                     if (missingNames.length > 0) {
                         // Get a small sample of staff to help the user
-                        const staffList = await apiService.getStaffListForAgent(restaurantId);
+                        const staffList = await apiService.getStaffListForAgent(restaurantId, undefined, token);
                         const allAvailable = staffList.slice(0, 5).map((s: any) => `${s.first_name} ${s.last_name}`).join(", ");
                         return {
                             status: "error",
@@ -249,7 +255,7 @@ export default class StaffSchedulerTool implements LuaTool {
                                     role: finalRole,
                                     notes: input.notes,
                                     workspace_location: input.workspace_location
-                                });
+                                }, token);
 
                                 if (result.success) {
                                     results.push({ name: staffMember.first_name, date: shiftDate, status: "success" });
@@ -296,7 +302,7 @@ export default class StaffSchedulerTool implements LuaTool {
                     if (!input.staff_name || !input.date || !input.start_time || !input.end_time) {
                         return { status: "error", message: "Missing required fields" };
                     }
-                    const staffList = await apiService.getStaffListForAgent(restaurantId);
+                    const staffList = await apiService.getStaffListForAgent(restaurantId, undefined, token);
                     const matches = this.findStaffMember(staffList, input.staff_name);
 
                     if (matches.length === 0) return { status: "error", message: `Staff member '${input.staff_name}' not found.` };
@@ -318,7 +324,14 @@ export default class StaffSchedulerTool implements LuaTool {
                     return { status: "error", message: "Invalid action" };
             }
         } catch (error: any) {
-            return { status: "error", message: `The scheduling system encountered a technical error: ${error.message}. Please report this if it persists.` };
+            const msg = error.message || "";
+            if (/restaurant context|resolve restaurant|Unable to resolve/i.test(msg)) {
+                return {
+                    status: "error",
+                    message: "I couldn't access your restaurant settings for scheduling right now. Please try again in a moment, or make sure you're logged in through the Mizan dashboard."
+                };
+            }
+            return { status: "error", message: `The scheduling system encountered a technical error: ${msg}. Please report this if it persists.` };
         }
     }
 }

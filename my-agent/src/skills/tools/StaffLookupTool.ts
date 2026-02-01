@@ -4,12 +4,13 @@ import ApiService, { StaffMember } from "../../services/ApiService";
 
 export default class StaffLookupTool implements LuaTool {
     name = "staff_lookup";
-    description = "Retrieve staff member details. ALWAYS extract the restaurant ID from your [SYSTEM: PERSISTENT CONTEXT] block (format: 'ID: xxx') and pass it as restaurantId.";
+    description = "Retrieve staff member details or total staff count. Use countOnly=true for 'how many staff?' / 'total number of staff'. Use the Restaurant ID from your [SYSTEM: PERSISTENT CONTEXT] (Restaurant ID: ...) as restaurantId when calling; if context has it, you can omit restaurantId.";
 
     inputSchema = z.object({
         name: z.string().optional().describe("Partial or full name of the staff member to search for"),
         role: z.string().optional().describe("Filter staff by role (e.g., WAITER, CHEF)"),
-        restaurantId: z.string().describe("REQUIRED: The restaurant ID from your context (e.g., 'aef9c4e0-...')")
+        restaurantId: z.string().optional().describe("Restaurant ID from your [SYSTEM: PERSISTENT CONTEXT] (Restaurant ID: ...). Omit if context already has it."),
+        countOnly: z.boolean().optional().describe("When true, return only the total staff count and breakdown (use for 'how many staff?', 'total number of staff')")
     });
 
     private apiService: ApiService;
@@ -24,21 +25,37 @@ export default class StaffLookupTool implements LuaTool {
             return { status: "error", message: "I can't access your account context right now. Please try again in a moment." };
         }
 
-        // Use type-safe access to user profile/data
+        // Use type-safe access to user profile/data (widget sends metadata.restaurantId via LuaPop.init)
         const userData = (user as any).data || {};
         const profile = (user as any)._luaProfile || {};
+        const metadata = profile.metadata && typeof profile.metadata === 'object' ? profile.metadata : {};
 
-        const restaurantId = input.restaurantId || (user as any).restaurantId || userData.restaurantId || profile.restaurantId;
+        const restaurantId = input.restaurantId || (user as any).restaurantId || userData.restaurantId
+            || profile.restaurantId || profile.restaurant_id
+            || (metadata as any).restaurantId || (metadata as any).restaurant_id;
+        const token = (user as any).token || userData.token || profile.token || profile.accessToken
+            || (metadata as any).token || (metadata as any).accessToken;
 
-        console.log(`[StaffLookupTool] Context debug: restaurantId=${!!restaurantId}`);
+        console.log(`[StaffLookupTool] Context debug: restaurantId=${restaurantId || '(none)'}, hasToken=${!!token}`);
 
-        if (!restaurantId) {
-            return { status: "error", message: "No restaurant ID found in context." };
+        if (!restaurantId && !token) {
+            return { status: "error", message: "I don't have your restaurant context right now. Please use Miya from the dashboard while logged in so I can see your staff." };
         }
 
         try {
+            if (input.countOnly) {
+                const countResult = await this.apiService.getStaffCountForAgent(restaurantId || "", token);
+                return {
+                    status: "success",
+                    count: countResult.count,
+                    by_role: countResult.by_role,
+                    message: countResult.message,
+                    restaurant_name: countResult.restaurant_name
+                };
+            }
+
             console.log(`[StaffLookupTool] Searching staff in restaurant ${restaurantId}...`);
-            const staff: StaffMember[] = await this.apiService.getStaffListForAgent(restaurantId, input.name);
+            const staff: StaffMember[] = await this.apiService.getStaffListForAgent(restaurantId || "", input.name, token);
 
             if (staff.length === 0) {
                 return {
@@ -59,9 +76,15 @@ export default class StaffLookupTool implements LuaTool {
 
             if (filteredStaff.length === 0) {
                 const allStaffNames = staff.slice(0, 10).map(s => `${s.first_name} ${s.last_name} (${s.role})`).join("\n- ");
+                const searchDesc = input.name && input.role
+                    ? `the role "${input.role}" named "${input.name}"`
+                    : input.role
+                        ? `the role "${input.role}"`
+                        : `the name "${input.name}"`;
+
                 return {
                     status: "not_found",
-                    message: `I couldn't find anyone with the role "${input.role}" named "${input.name}". \n\nHere are some staff members I found:\n- ${allStaffNames}${staff.length > 10 ? "\n...and others." : ""}`,
+                    message: `I couldn't find anyone with ${searchDesc}. \n\nHere are some staff members I found:\n- ${allStaffNames}${staff.length > 10 ? "\n...and others." : ""}`,
                     staff: []
                 };
             }
@@ -96,9 +119,16 @@ export default class StaffLookupTool implements LuaTool {
             };
         } catch (error: any) {
             console.error("[StaffLookupTool] Execution failed:", error.message);
+            const msg = error.message || "";
+            if (/restaurant context|resolve restaurant|Unable to resolve/i.test(msg)) {
+                return {
+                    status: "error",
+                    message: "I couldn't access your restaurant's staff list right now. Please try again in a moment, or make sure you're logged in through the Mizan dashboard."
+                };
+            }
             return {
                 status: "error",
-                message: `Failed to retrieve staff profiles: ${error.message}`
+                message: `Failed to retrieve staff profiles: ${msg}`
             };
         }
     }
