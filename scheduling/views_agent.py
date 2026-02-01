@@ -38,36 +38,130 @@ def validate_agent_key(request):
     return True, None
 
 
-@api_view(['GET'])
+def _try_jwt_restaurant_and_user(request):
+    """
+    If Authorization is a valid user JWT (e.g. token from dashboard metadata),
+    return (restaurant, user) so agent endpoints can resolve context without
+    Lua forwarding restaurant_id in the body. Lets Miya work when Lua sends
+    the user's token as Bearer. If user has no direct restaurant (e.g. super admin),
+    use first restaurant from restaurant_roles.
+    """
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith('Bearer '):
+        return None, None
+    token = auth_header[7:].strip()
+    if not token:
+        return None, None
+    # Avoid treating the fixed API key as JWT
+    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+    if expected_key and token == expected_key:
+        return None, None
+    try:
+        from rest_framework_simplejwt.authentication import JWTAuthentication
+        jwt_auth = JWTAuthentication()
+        validated = jwt_auth.get_validated_token(token)
+        user = jwt_auth.get_user(validated)
+        if not user:
+            return None, None
+        if getattr(user, 'restaurant_id', None) and getattr(user, 'restaurant', None):
+            return user.restaurant, user
+        if getattr(user, 'restaurant', None):
+            return user.restaurant, user
+        # User has no direct restaurant (e.g. SUPER_ADMIN); use first from restaurant_roles
+        if hasattr(user, 'restaurant_roles'):
+            first_role = user.restaurant_roles.select_related('restaurant').first()
+            if first_role and getattr(first_role, 'restaurant', None):
+                return first_role.restaurant, user
+    except Exception:
+        pass
+    return None, None
+
+
+def _agent_payload_from_request(request):
+    """Build payload from query params and, for POST, body/metadata so Lua can send context either way."""
+    payload = dict(request.query_params)
+    if request.method == 'POST' and isinstance(getattr(request, 'data', None), dict):
+        for k, v in request.data.items():
+            if k == 'metadata' and isinstance(v, dict):
+                for mk, mv in v.items():
+                    payload.setdefault(mk, mv)
+            else:
+                payload.setdefault(k, v)
+    return payload
+
+
+def _explicit_restaurant_id_from_request(request):
+    """Get restaurant ID from header or body when Miya sends it from context (widget). Prefer this so dashboard context wins."""
+    rid = request.META.get('HTTP_X_RESTAURANT_ID')
+    if rid:
+        return rid.strip() or None
+    payload = _agent_payload_from_request(request)
+    meta = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
+    for key in ('restaurant_id', 'restaurantId', 'restaurant'):
+        val = payload.get(key) or meta.get(key)
+        if val:
+            return val[0] if isinstance(val, (list, tuple)) and val else val
+    return None
+
+
+@api_view(['GET', 'POST'])
 @authentication_classes([])  # Bypass JWT auth
 @permission_classes([permissions.AllowAny])
 def agent_list_staff(request):
     """
     List all staff members for a restaurant.
     Used by the Lua agent to look up staff for scheduling.
-    
-    Query params:
-    - restaurant_id: UUID of the restaurant (required)
-    - name: Optional name filter (fuzzy match)
+    Accepts GET (params in query) or POST (params in body/metadata).
+    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT> (dashboard token).
     """
     try:
-        # Validate agent key
-        is_valid, error = validate_agent_key(request)
-        if not is_valid:
-            return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
-
-        restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
+        restaurant = None
+        # 1) Prefer X-Restaurant-Id first (Miya sends this from widget context; ensures dashboard and agent see same restaurant)
+        explicit_rid = _explicit_restaurant_id_from_request(request)
+        if explicit_rid:
+            rid = explicit_rid[0] if isinstance(explicit_rid, (list, tuple)) and explicit_rid else explicit_rid
+            if rid and isinstance(rid, str) and rid.strip():
+                try:
+                    restaurant = Restaurant.objects.get(id=rid.strip())
+                except (Restaurant.DoesNotExist, ValueError, TypeError):
+                    pass
+        # 2) Else try JWT (dashboard token as Bearer)
+        if not restaurant:
+            restaurant, _ = _try_jwt_restaurant_and_user(request)
+        # 3) Else agent key + resolve from payload/sessionId
+        if not restaurant:
+            is_valid, error = validate_agent_key(request)
+            if not is_valid:
+                return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+            payload = _agent_payload_from_request(request)
+            restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=payload)
         if not restaurant:
             return Response(
                 {'error': 'Unable to resolve restaurant context (no restaurant_id/sessionId/userId/email/phone/token provided).'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
-        # Get staff for this restaurant
+        payload = _agent_payload_from_request(request)
+        # Get staff for this restaurant (queryset used for count_only and list)
         queryset = CustomUser.objects.filter(
             restaurant=restaurant,
             is_active=True
         ).exclude(role='SUPER_ADMIN')
+
+        # If only count is requested (e.g. "how many staff?"), return count + breakdown so one tool can serve both list and count
+        _co = payload.get('count_only') or payload.get('countOnly')
+        count_only_val = _co[0] if isinstance(_co, (list, tuple)) and _co else _co
+        if count_only_val in (True, 'true', '1', 1):
+            from django.db.models import Count
+            count = queryset.count()
+            by_role = dict(queryset.values('role').annotate(n=Count('id')).values_list('role', 'n'))
+            return Response({
+                'count': count,
+                'active': count,
+                'by_role': by_role,
+                'restaurant_id': str(restaurant.id),
+                'restaurant_name': restaurant.name,
+                'message': f"There are {count} staff member{'s' if count != 1 else ''} in {restaurant.name}." if count else f"There are no staff members currently registered in {restaurant.name}.",
+            })
         
         def _norm(s: str) -> str:
             # Normalize for fuzzy matching: lowercase, strip diacritics, collapse spaces.
@@ -85,7 +179,8 @@ def agent_list_staff(request):
 
         # Optional name filter (supports full names like "First Last" or just "First")
         # Strip titles so Miya/lua can pass "Mr Ayoub" and we still find "Ayoub"
-        raw_name = (request.query_params.get("name") or "").strip()
+        name_val = payload.get("name")
+        raw_name = (name_val[0] if isinstance(name_val, (list, tuple)) and name_val else name_val or "").strip()
         name_filter = _strip_titles(raw_name) or raw_name
         fuzzy_mode = False
         token_query = None
@@ -198,6 +293,64 @@ def agent_list_staff(request):
         return Response({'error': err}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@api_view(['GET', 'POST'])
+@authentication_classes([])  # Bypass JWT auth
+@permission_classes([permissions.AllowAny])
+def agent_staff_count(request):
+    """
+    Return staff count and optional breakdown for the restaurant.
+    Used by Miya to answer "how many staff do I have?" and similar queries.
+    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT> (dashboard token).
+    """
+    try:
+        restaurant = None
+        explicit_rid = _explicit_restaurant_id_from_request(request)
+        if explicit_rid:
+            rid = explicit_rid[0] if isinstance(explicit_rid, (list, tuple)) and explicit_rid else explicit_rid
+            if rid and isinstance(rid, str) and rid.strip():
+                try:
+                    restaurant = Restaurant.objects.get(id=rid.strip())
+                except (Restaurant.DoesNotExist, ValueError, TypeError):
+                    pass
+        if not restaurant:
+            restaurant, _ = _try_jwt_restaurant_and_user(request)
+        if not restaurant:
+            is_valid, error = validate_agent_key(request)
+            if not is_valid:
+                return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+            payload = _agent_payload_from_request(request)
+            restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=payload)
+        if not restaurant:
+            return Response(
+                {'error': 'Unable to resolve restaurant context (no restaurant_id/sessionId/userId/email/phone/token provided).'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        queryset = CustomUser.objects.filter(
+            restaurant=restaurant,
+            is_active=True
+        ).exclude(role='SUPER_ADMIN')
+
+        count = queryset.count()
+        from django.db.models import Count
+        by_role = dict(queryset.values('role').annotate(n=Count('id')).values_list('role', 'n'))
+
+        return Response({
+            'count': count,
+            'active': count,
+            'by_role': by_role,
+            'restaurant_id': str(restaurant.id),
+            'restaurant_name': restaurant.name,
+            'message': f"There are {count} staff member{'s' if count != 1 else ''} in {restaurant.name}." if count else f"There are no staff members currently registered in {restaurant.name}.",
+        })
+    except Exception as e:
+        logger.exception("Agent staff count error")
+        err = str(e).strip() if e else "Unable to get staff count"
+        if len(err) > 200:
+            err = err[:197] + "..."
+        return Response({'error': err}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(['POST'])
 @authentication_classes([])  # Bypass JWT auth
 @permission_classes([permissions.AllowAny])
@@ -218,19 +371,41 @@ def agent_create_shift(request):
     }
     """
     try:
-        # Validate agent key
-        is_valid, error = validate_agent_key(request)
-        if not is_valid:
-            return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+        # Resolve restaurant: try JWT first (Miya/Lua can send user token as Bearer)
+        restaurant, acting_user = _try_jwt_restaurant_and_user(request)
+        if not restaurant:
+            is_valid, error = validate_agent_key(request)
+            if not is_valid:
+                return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+            payload = _agent_payload_from_request(request)
+            restaurant_id = (
+                payload.get('restaurant_id') or payload.get('restaurantId')
+                or request.META.get('HTTP_X_RESTAURANT_ID')
+            )
+            if isinstance(restaurant_id, (list, tuple)) and restaurant_id:
+                restaurant_id = restaurant_id[0]
+            restaurant = None
+            acting_user = None
+            if restaurant_id:
+                try:
+                    restaurant = Restaurant.objects.get(id=restaurant_id)
+                except Restaurant.DoesNotExist:
+                    restaurant = None
+            if not restaurant:
+                restaurant, acting_user = resolve_agent_restaurant_and_user(request=request, payload=payload)
         
-        data = request.data
-        
-        # Required fields
-        restaurant_id = data.get('restaurant_id') or data.get('restaurantId')
-        staff_id = data.get('staff_id')
-        shift_date_str = data.get('shift_date')
-        start_time_str = data.get('start_time')
-        end_time_str = data.get('end_time')
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        payload = _agent_payload_from_request(request)
+        def _get_val(d, *keys):
+            for k in keys:
+                v = d.get(k)
+                if v is not None and v != '':
+                    return v[0] if isinstance(v, (list, tuple)) and v else v
+            return None
+        staff_id = _get_val(data, 'staff_id', 'staffId') or _get_val(payload, 'staff_id', 'staffId')
+        shift_date_str = _get_val(data, 'shift_date', 'shiftDate') or _get_val(payload, 'shift_date', 'shiftDate')
+        start_time_str = _get_val(data, 'start_time', 'startTime') or _get_val(payload, 'start_time', 'startTime')
+        end_time_str = _get_val(data, 'end_time', 'endTime') or _get_val(payload, 'end_time', 'endTime')
         
         if not all([staff_id, shift_date_str, start_time_str, end_time_str]):
             return Response({
@@ -238,16 +413,6 @@ def agent_create_shift(request):
                 'error': 'Missing required fields: staff_id, shift_date, start_time, end_time'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Resolve restaurant context (restaurant_id optional)
-        restaurant = None
-        acting_user = None
-        if restaurant_id:
-            try:
-                restaurant = Restaurant.objects.get(id=restaurant_id)
-            except Restaurant.DoesNotExist:
-                restaurant = None
-        if not restaurant:
-            restaurant, acting_user = resolve_agent_restaurant_and_user(request=request, payload=data)
         if not restaurant:
             return Response({
                 'success': False,
@@ -587,45 +752,52 @@ def agent_optimize_schedule(request):
     """
     Generate optimized schedule for a week.
     Used by the Lua agent to automatically fill a week's schedule.
-    
-    Expected payload:
-    {
-        "restaurant_id": "uuid",
-        "week_start": "YYYY-MM-DD",
-        "department": "kitchen/service/all"
-    }
+    Auth: Bearer user JWT or Bearer LUA_WEBHOOK_API_KEY; context via body or X-Restaurant-Id.
     """
     try:
-        # Validate agent key
-        is_valid, error = validate_agent_key(request)
-        if not is_valid:
-            return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
-        
-        data = request.data
-        restaurant_id = data.get('restaurant_id') or data.get('restaurantId')
-        week_start = data.get('week_start')
-        department = data.get('department')
-        
-        if not week_start:
-            return Response({
-                'success': False,
-                'error': 'Missing required fields: week_start'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        restaurant = None
-        if restaurant_id:
-            try:
-                restaurant = Restaurant.objects.get(id=restaurant_id)
-            except Restaurant.DoesNotExist:
-                restaurant = None
+        # Resolve restaurant: try JWT first (dashboard token)
+        restaurant, _ = _try_jwt_restaurant_and_user(request)
         if not restaurant:
-            restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=data)
+            is_valid, error = validate_agent_key(request)
+            if not is_valid:
+                return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+            payload = _agent_payload_from_request(request)
+            restaurant_id = (
+                payload.get('restaurant_id') or payload.get('restaurantId')
+                or request.META.get('HTTP_X_RESTAURANT_ID')
+            )
+            if isinstance(restaurant_id, (list, tuple)) and restaurant_id:
+                restaurant_id = restaurant_id[0]
+            restaurant = None
+            if restaurant_id:
+                try:
+                    restaurant = Restaurant.objects.get(id=restaurant_id)
+                except Restaurant.DoesNotExist:
+                    restaurant = None
+            if not restaurant:
+                restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=payload)
         if not restaurant:
             return Response({
                 'success': False,
                 'error': 'Unable to resolve restaurant context (provide restaurant_id or include sessionId/userId/email/phone/token).'
             }, status=status.HTTP_400_BAD_REQUEST)
-            
+
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        payload = _agent_payload_from_request(request)
+        def _get_val(d, *keys):
+            for k in keys:
+                v = d.get(k)
+                if v is not None and v != '':
+                    return v[0] if isinstance(v, (list, tuple)) and v else v
+            return None
+        week_start = _get_val(data, 'week_start') or _get_val(payload, 'week_start')
+        department = _get_val(data, 'department') or _get_val(payload, 'department')
+        if not week_start:
+            return Response({
+                'success': False,
+                'error': 'Missing required field: week_start (YYYY-MM-DD)'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         # OptimizationService will handle the business logic
         from .services import OptimizationService
         result = OptimizationService.optimize_schedule(
@@ -651,6 +823,32 @@ def agent_optimize_schedule(request):
             'success': False,
             'error': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_restaurant_search(request):
+    """
+    Search restaurants by name (agent key only). Lets Miya resolve "Barometre" / "Mizan Mistro"
+    when the user has no session token (e.g. lua chat from CLI).
+    """
+    try:
+        is_valid, error = validate_agent_key(request)
+        if not is_valid:
+            return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+        name = (request.GET.get('name') or request.GET.get('search') or '').strip()
+        if not name:
+            return Response({'error': 'Missing query parameter: name'}, status=status.HTTP_400_BAD_REQUEST)
+        from django.db.models import Q
+        qs = Restaurant.objects.filter(Q(name__icontains=name) | Q(email__icontains=name))[:20]
+        results = [{'id': str(r.id), 'name': r.name} for r in qs]
+        return Response({'results': results, 'count': len(results)})
+    except Exception as e:
+        logger.exception("Agent restaurant search error")
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(['GET'])
 @authentication_classes([])  # Bypass JWT auth
 @permission_classes([permissions.AllowAny])
@@ -1106,12 +1304,22 @@ def agent_list_shifts(request):
     Used by the Lua agent to show schedules and find who is on duty.
     """
     try:
-        # Validate agent key
-        is_valid, error = validate_agent_key(request)
-        if not is_valid:
-            return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
-
-        restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
+        restaurant = None
+        explicit_rid = _explicit_restaurant_id_from_request(request)
+        if explicit_rid:
+            rid = explicit_rid[0] if isinstance(explicit_rid, (list, tuple)) and explicit_rid else explicit_rid
+            if rid and isinstance(rid, str) and rid.strip():
+                try:
+                    restaurant = Restaurant.objects.get(id=rid.strip())
+                except (Restaurant.DoesNotExist, ValueError, TypeError):
+                    pass
+        if not restaurant:
+            restaurant, _ = _try_jwt_restaurant_and_user(request)
+        if not restaurant:
+            is_valid, error = validate_agent_key(request)
+            if not is_valid:
+                return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+            restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
         if not restaurant:
             return Response(
                 {'error': 'Unable to resolve restaurant context.'},
