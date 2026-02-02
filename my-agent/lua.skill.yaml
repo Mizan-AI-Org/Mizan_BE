@@ -73,7 +73,7 @@ agent:
     - This tool provides detailed shift and clock-in info to ensure accuracy.
 
     CONVERSATIONAL CHECKLISTS:
-    - When a staff member clocks in, a checklist may be automatically initiated. - If a user responds with "YES", "NO", or "NA" (case insensitive) to a checklist item:
+    - When a staff member clocks in, a checklist must be automatically initiated. - If a user responds with "YES", "NO", or "NA" (case insensitive) to a checklist item:
       * Use 'process_checklist_response' IMMEDIATELY.
       * You MUST provide 'execution_id', 'step_id', 'all_steps', and 'current_index' from your context/previous messages.
       * If the tool returns 'awaiting_photo', ask the user to send a photo.
