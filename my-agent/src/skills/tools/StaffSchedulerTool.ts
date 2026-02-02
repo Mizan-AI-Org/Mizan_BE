@@ -4,7 +4,7 @@ import ApiService from "../../services/ApiService";
 
 export default class StaffSchedulerTool implements LuaTool {
     name = "staff_scheduler";
-    description = "Schedule staff shifts. Use 'my_shifts' action when the user asks about THEIR OWN shifts. ALWAYS extract the restaurant ID from your [SYSTEM: PERSISTENT CONTEXT] block and pass it as restaurantId. For time periods like 'lunch', use 12:00-15:00; 'dinner' use 19:00-23:00.";
+    description = "Schedule staff shifts. Use 'my_shifts' for the user's own shifts. When the user specifies a role (e.g. 'the chef', 'Outmane Jebari (CHEF)'), ALWAYS pass role so similar names are disambiguated. For 'any available staff', first use staff_lookup with no name to get the full list, then schedule by name+role. Lunch 12:00-15:00; dinner 19:00-23:00; breakfast 07:00-10:30.";
 
     inputSchema = z.object({
         action: z.enum(["list_shifts", "create_shift", "update_shift", "check_availability", "get_staff", "my_shifts"]).describe("The action to perform. Use 'my_shifts' for the user's own shifts."),
@@ -13,11 +13,11 @@ export default class StaffSchedulerTool implements LuaTool {
         date: z.string().optional().describe("Date of the shift (YYYY-MM-DD)."),
         start_time: z.string().optional().describe("Start time (HH:MM)."),
         end_time: z.string().optional().describe("End time (HH:MM)."),
-        role: z.string().optional().describe("Role for the shift"),
+        role: z.string().optional().describe("Role for the shift; also use to disambiguate when multiple staff have similar names (e.g. 'CHEF' for 'the chef', 'Outmane Jebari (CHEF)')"),
         shift_id: z.string().optional().describe("ID of the shift to update"),
         notes: z.string().optional().describe("Notes for the shift"),
         workspace_location: z.string().optional().describe("Specific workspace/station assignment (e.g., 'Kitchen', 'Bar', 'Terrace')"),
-        restaurantId: z.string().describe("The restaurant ID from your context"),
+        restaurantId: z.string().optional().describe("Restaurant ID from [SYSTEM: PERSISTENT CONTEXT]; omit if context has it."),
         is_recurring: z.boolean().optional().describe("Whether this shift should be recurring"),
         frequency: z.enum(["DAILY", "WEEKLY"]).optional().describe("Recurrence frequency"),
     });
@@ -163,27 +163,36 @@ export default class StaffSchedulerTool implements LuaTool {
 
                     const namesToSearch = input.staff_names || (input.staff_name ? [input.staff_name] : []);
                     if (namesToSearch.length > 0) {
-                        const allMatches: any[] = [];
+                        let allMatches: any[] = [];
                         for (const name of namesToSearch) {
                             const backendMatches = await apiService.getStaffListForAgent(restaurantId, name, token);
                             allMatches.push(...backendMatches);
                         }
+                        allMatches = Array.from(new Map(allMatches.map(m => [m.id, m])).values());
 
                         if (allMatches.length === 1) {
                             params.staff_id = allMatches[0].id;
-                        } else if (allMatches.length > 1) {
-                            // Deduplicate matches by ID
-                            const uniqueMatches = Array.from(new Map(allMatches.map(m => [m.id, m])).values());
-                            if (uniqueMatches.length === 1) {
-                                params.staff_id = uniqueMatches[0].id;
+                        } else if (allMatches.length > 1 && input.role && input.role.trim()) {
+                            const byRole = allMatches.filter((s: any) =>
+                                (s.role && s.role.toUpperCase() === input.role!.trim().toUpperCase()) ||
+                                (s.position && s.position.toUpperCase() === input.role!.trim().toUpperCase())
+                            );
+                            if (byRole.length === 1) {
+                                params.staff_id = byRole[0].id;
                             } else {
                                 return {
                                     status: "multiple_results",
-                                    message: `I found ${uniqueMatches.length} staff members matching your request. Which one did you mean?`,
-                                    matches: uniqueMatches.map((s: any) => ({ id: s.id, name: `${s.first_name} ${s.last_name}`, role: s.role }))
+                                    message: `I found ${allMatches.length} staff matching. Specify role (e.g. "the chef") to narrow.`,
+                                    matches: allMatches.map((s: any) => ({ id: s.id, name: `${s.first_name} ${s.last_name}`, role: s.role }))
                                 };
                             }
-                        } else {
+                        } else if (allMatches.length > 1) {
+                            return {
+                                status: "multiple_results",
+                                message: `I found ${allMatches.length} staff members matching. Specify role (e.g. "the chef") to pick one.`,
+                                matches: allMatches.map((s: any) => ({ id: s.id, name: `${s.first_name} ${s.last_name}`, role: s.role }))
+                            };
+                        } else if (allMatches.length === 0) {
                             return { status: "error", message: `Staff member(s) '${namesToSearch.join(", ")}' not found.` };
                         }
                     }
@@ -206,13 +215,28 @@ export default class StaffSchedulerTool implements LuaTool {
                     const missingNames = [];
 
                     for (const name of namesToSearch) {
-                        const matches = await apiService.getStaffListForAgent(restaurantId, name, token);
+                        let matches = await apiService.getStaffListForAgent(restaurantId, name, token);
                         if (matches.length === 1) {
                             staffToSchedule.push(matches[0]);
                         } else if (matches.length > 1) {
+                            // Disambiguate by role when user specified one (e.g. "the chef", "Outmane Jebari (CHEF)")
+                            if (input.role && input.role.trim()) {
+                                const roleUpper = input.role.trim().toUpperCase();
+                                const byRole = matches.filter((s: any) =>
+                                    (s.role && s.role.toUpperCase() === roleUpper) ||
+                                    (s.position && s.position.toUpperCase() === roleUpper)
+                                );
+                                if (byRole.length === 1) {
+                                    staffToSchedule.push(byRole[0]);
+                                    continue;
+                                }
+                                if (byRole.length > 1) {
+                                    matches = byRole;
+                                }
+                            }
                             return {
                                 status: "multiple_results",
-                                message: `I found multiple matches for '${name}'. Please be more specific.`,
+                                message: `I found ${matches.length} staff matching '${name}'${input.role ? ` with role ${input.role}` : ""}. Specify role (e.g. "the chef") to pick one.`,
                                 matches: matches.map((s: any) => ({ id: s.id, name: `${s.first_name} ${s.last_name}`, role: s.role }))
                             };
                         } else {
@@ -303,10 +327,18 @@ export default class StaffSchedulerTool implements LuaTool {
                         return { status: "error", message: "Missing required fields" };
                     }
                     const staffList = await apiService.getStaffListForAgent(restaurantId, undefined, token);
-                    const matches = this.findStaffMember(staffList, input.staff_name);
+                    let matches = this.findStaffMember(staffList, input.staff_name);
 
                     if (matches.length === 0) return { status: "error", message: `Staff member '${input.staff_name}' not found.` };
-                    if (matches.length > 1) return { status: "multiple_results", matches: matches.map(m => m.first_name) };
+                    if (matches.length > 1 && input.role && input.role.trim()) {
+                        const roleUpper = input.role.trim().toUpperCase();
+                        const byRole = matches.filter((m: any) =>
+                            (m.role && m.role.toUpperCase() === roleUpper) ||
+                            (m.position && m.position.toUpperCase() === roleUpper)
+                        );
+                        if (byRole.length === 1) matches = byRole;
+                    }
+                    if (matches.length > 1) return { status: "multiple_results", matches: matches.map((m: any) => `${m.first_name} ${m.last_name} (${m.role})`) };
 
                     const staffMember = matches[0];
                     const conflicts = await apiService.detectConflicts({
