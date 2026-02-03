@@ -545,9 +545,6 @@ class InvitationViewSet(viewsets.ModelViewSet):
                     {'detail': 'Failed to send invitation via any channel'},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-                    {'detail': 'No contact method available (email or phone)'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
         except Exception as e:
             logger.error(f"Resend invitation error: {str(e)}")
             import traceback
