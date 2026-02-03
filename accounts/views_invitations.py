@@ -473,6 +473,7 @@ class InvitationViewSet(viewsets.ModelViewSet):
             print(f"[Resend] 3. raw_phone={raw_phone}", file=sys.stderr)
             if raw_phone:
                 # Normalize phone: digits only, no + or spaces (e.g., "2203736808")
+                from .tasks import normalize_phone
                 clean_phone = normalize_phone(raw_phone)
                 print(f"[Resend] 4. normalized_phone={clean_phone}", file=sys.stderr)
                 
@@ -489,7 +490,8 @@ class InvitationViewSet(viewsets.ModelViewSet):
                     if log:
                         log.recipient_address = clean_phone
                         log.status = 'PENDING'
-                        log.save(update_fields=['recipient_address', 'status'])
+                        log.error_message = None
+                        log.save(update_fields=['recipient_address', 'status', 'error_message'])
                     else:
                         InvitationDeliveryLog.objects.create(
                             invitation=invitation,
@@ -519,13 +521,15 @@ class InvitationViewSet(viewsets.ModelViewSet):
                     if log:
                         log.recipient_address = clean_phone
                         log.status = 'FAILED'
-                        log.save(update_fields=['recipient_address', 'status'])
+                        log.error_message = str(e)
+                        log.save(update_fields=['recipient_address', 'status', 'error_message'])
                     else:
                         InvitationDeliveryLog.objects.create(
                             invitation=invitation,
                             channel='whatsapp',
                             recipient_address=clean_phone,
                             status='FAILED',
+                            error_message=str(e)
                         )
                     whatsapp_success = True  # Mark as attempted
             
@@ -538,6 +542,9 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 return Response({'detail': f'Invitation sent via {", ".join(channels)}'})
             else:
                 return Response(
+                    {'detail': 'Failed to send invitation via any channel'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
                     {'detail': 'No contact method available (email or phone)'},
                     status=status.HTTP_400_BAD_REQUEST
                 )

@@ -4,7 +4,7 @@ import ApiService, { StaffMember } from "../../services/ApiService";
 
 export default class StaffLookupTool implements LuaTool {
     name = "staff_lookup";
-    description = "Retrieve staff member details or total staff count. Use countOnly=true for 'how many staff?' / 'total number of staff'. Use the Restaurant ID from your [SYSTEM: PERSISTENT CONTEXT] (Restaurant ID: ...) as restaurantId when calling; if context has it, you can omit restaurantId.";
+    description = "Retrieve staff member details, list ALL staff, or total count. Use with NO name to get the full list (e.g. 'any available staff', 'look for any staff'). Use countOnly=true for 'how many staff?'. When the user specifies a role (e.g. 'the chef', 'Outmane Jebari (CHEF)'), pass role so similar names are disambiguated. Restaurant ID from context; omit if already in context.";
 
     inputSchema = z.object({
         name: z.string().optional().describe("Partial or full name of the staff member to search for"),
@@ -89,17 +89,36 @@ export default class StaffLookupTool implements LuaTool {
                 };
             }
 
-            if (filteredStaff.length > 1) {
+            // User asked for a specific name but multiple matches: ask to clarify (unless role already filtered to one)
+            if (filteredStaff.length > 1 && input.name) {
                 return {
                     status: "multiple_results",
                     count: filteredStaff.length,
-                    message: `I found ${filteredStaff.length} matching staff members. Please clarify which one:`,
+                    message: `I found ${filteredStaff.length} staff with similar names. Use role to narrow (e.g. "the chef"):`,
                     staff: filteredStaff.map(s => ({
                         id: s.id,
                         full_name: `${s.first_name} ${s.last_name}`,
                         role: s.role,
                         position: s.position,
                         department: s.department
+                    }))
+                };
+            }
+
+            // No name = "list all" / "any available staff": return success with full list
+            if (filteredStaff.length > 1 && !input.name) {
+                return {
+                    status: "success",
+                    count: filteredStaff.length,
+                    message: `Here are all ${filteredStaff.length} staff members. You can schedule any of them by name and role.`,
+                    staff: filteredStaff.map(s => ({
+                        id: s.id,
+                        full_name: `${s.first_name} ${s.last_name}`,
+                        role: s.role,
+                        position: s.position,
+                        department: s.department,
+                        email: s.email,
+                        phone: s.phone
                     }))
                 };
             }

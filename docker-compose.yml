@@ -1,5 +1,4 @@
-version: '3.8'
-
+# version is obsolete in Compose V2 and is ignored - remove to avoid warnings
 services:
   # Redis - Message broker for Celery and Channels
   redis:
@@ -16,10 +15,10 @@ services:
       timeout: 5s
       retries: 3
 
-  # Django Web Application (Daphne ASGI)
-  web:
+  # Django backend (Daphne ASGI) - service name "backend" for deploy scripts
+  backend:
     build: .
-    container_name: mizan-web
+    container_name: mizan-backend
     restart: unless-stopped
     ports:
       - "8000:8000"
@@ -60,7 +59,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      web:
+      backend:
         condition: service_started
     volumes:
       - static_volume:/app/staticfiles
@@ -81,7 +80,7 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      web:
+      backend:
         condition: service_started
     volumes:
       - static_volume:/app/staticfiles

@@ -222,10 +222,13 @@ class NotificationService:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"  # user-events-production production
+            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"  # user-events-production
+            
             url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
             if not url:
                 url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
+            
+            normalized_phone = self._normalize_phone(phone)
             
             payload = {
                 "eventType": "staff_invite",
@@ -233,7 +236,8 @@ class NotificationService:
                 "staffName": first_name or "New Staff",
                 "role": role.lower() if role else "staff",
                 "details": {
-                    "phone": self._normalize_phone(phone),
+                    "phone": normalized_phone,
+                    "phoneNumber": normalized_phone, # Add for compatibility with different agent handlers
                     "inviteLink": invite_link,
                     "restaurantName": restaurant_name,
                     "invitationToken": invitation_token,
@@ -253,7 +257,7 @@ class NotificationService:
             
             print(f"[LuaInvite] Calling webhook for {first_name} at {url}", file=sys.stderr)
             print(f"[LuaInvite] Payload: {json.dumps(payload)}", file=sys.stderr)
-            resp = requests.post(url, json=payload, headers=headers, timeout=5)
+            resp = requests.post(url, json=payload, headers=headers, timeout=10)
             print(f"[LuaInvite] Response: {resp.status_code} - {resp.text}", file=sys.stderr)
 
             try:
@@ -268,7 +272,7 @@ class NotificationService:
                 return False, {"error": resp.text, "status_code": resp.status_code, "info": info}
                 
         except Exception as e:
-            logger.error(f"[LuaInvite] Unexpected error: {str(e)}")
+            logger.error(f"[LuaInvite] Unexpected error: {str(e)}", exc_info=True)
             return False, {"error": str(e)}
 
     def send_lua_invitation_accepted(self, invitation_token, phone, first_name, flow_data=None, language='en'):

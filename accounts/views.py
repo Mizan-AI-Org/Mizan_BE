@@ -42,8 +42,9 @@ class IsSuperAdmin(permissions.BasePermission):
         return request.user.is_authenticated and request.user.role == 'SUPER_ADMIN'
 
 class IsManagerOrAdmin(permissions.BasePermission):
+    """Allow OWNER, MANAGER, ADMIN, SUPER_ADMIN to manage staff and send invitations."""
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.role in ['ADMIN', 'SUPER_ADMIN', 'MANAGER']
+        return request.user.is_authenticated and request.user.role in ['ADMIN', 'SUPER_ADMIN', 'MANAGER', 'OWNER']
 
 def get_client_ip(request):
     """Get client IP address from request."""
@@ -393,6 +394,18 @@ class MeView(APIView):
         serializer = UserSerializer(user)
         return Response(serializer.data)
 
+def _resolve_restaurant_for_user(user):
+    """Resolve restaurant for invite/scheduling: direct FK or first from restaurant_roles (e.g. SUPER_ADMIN)."""
+    restaurant = getattr(user, 'restaurant', None)
+    if restaurant:
+        return restaurant
+    if hasattr(user, 'restaurant_roles'):
+        role_obj = user.restaurant_roles.select_related('restaurant').first()
+        if role_obj and getattr(role_obj, 'restaurant', None):
+            return role_obj.restaurant
+    return None
+
+
 class InviteStaffView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
@@ -406,11 +419,15 @@ class InviteStaffView(APIView):
             return Response({'error': 'Role is required.'}, status=status.HTTP_400_BAD_REQUEST)
         if not email and not (send_whatsapp and phone_number):
             return Response({'error': 'Email is required unless sending via WhatsApp with a phone number.'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
+        restaurant = _resolve_restaurant_for_user(request.user)
+        if not restaurant:
+            return Response({'error': 'No restaurant context. Make sure you are linked to a restaurant.'}, status=status.HTTP_400_BAD_REQUEST)
+
         if email and CustomUser.objects.filter(email=email).exists():
             return Response({'error': 'User with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        if email and UserInvitation.objects.filter(email=email, is_accepted=False, expires_at__gt=timezone.now()).exists():
+        if email and UserInvitation.objects.filter(restaurant=restaurant, email=email, is_accepted=False, expires_at__gt=timezone.now()).exists():
             return Response({'error': 'A pending invitation already exists for this email.'}, status=status.HTTP_400_BAD_REQUEST)
 
         token = get_random_string(64)
@@ -420,7 +437,7 @@ class InviteStaffView(APIView):
             email=email or '',
             role=role,
             invited_by=request.user,
-            restaurant=request.user.restaurant,
+            restaurant=restaurant,
             invitation_token=token,
             expires_at=expires_at
         )
@@ -443,35 +460,34 @@ class InviteStaffView(APIView):
         invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
         print(f"Staff Invitation Link: {invite_link}")
 
+        email_sent = False
         if email:
             html_message = render_to_string('emails/staff_invite.html', {
                 'invite_link': invite_link,
-                'restaurant_name': request.user.restaurant.name,
+                'restaurant_name': restaurant.name,
                 'year': timezone.now().year
             })
             plain_message = strip_tags(html_message)
-
-        try:
-            if email:
+            try:
                 send_mail(
                     'You\'ve been invited to join Mizan AI!',
                     plain_message,
-                    settings.DEFAULT_FROM_EMAIL,
+                    getattr(settings, 'DEFAULT_FROM_EMAIL', None) or getattr(settings, 'EMAIL_HOST_USER', None) or 'noreply@heymizan.ai',
                     [email],
                     html_message=html_message,
                     fail_silently=False,
                 )
-                email_log = InvitationDeliveryLog(
+                email_sent = True
+                InvitationDeliveryLog.objects.create(
                     invitation=invitation,
                     channel='email',
                     recipient_address=email,
-                    status='SENT'
+                    status='SENT',
+                    delivered_at=timezone.now()
                 )
-                email_log.delivered_at = timezone.now()
-                email_log.save()
                 try:
                     AuditLog.create_log(
-                        restaurant=request.user.restaurant,
+                        restaurant=restaurant,
                         user=request.user,
                         action_type='CREATE',
                         entity_type='INVITATION',
@@ -482,50 +498,55 @@ class InviteStaffView(APIView):
                     )
                 except Exception:
                     pass
-            if send_whatsapp and phone_number:
-                from .tasks import send_whatsapp_invitation_task
-                # Always use background task for reliability and better UX (no hang)
+            except Exception as e:
+                logger.warning(f"InviteStaffView email send failed: {e}")
+                InvitationDeliveryLog.objects.create(
+                    invitation=invitation,
+                    channel='email',
+                    recipient_address=email,
+                    status='FAILED'
+                )
+
+        if send_whatsapp and phone_number:
+            try:
+                from .tasks import send_whatsapp_invitation_task, normalize_phone
+                clean_phone = normalize_phone(phone_number)
                 send_whatsapp_invitation_task.delay(
                     invitation_id=str(invitation.id),
-                    phone=phone_number,
+                    phone=clean_phone,
                     first_name=first_name or "Staff",
-                    restaurant_name=request.user.restaurant.name,
+                    restaurant_name=restaurant.name,
                     invite_link=invite_link,
                     support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
                 )
-                
-                # Mock a successful log entry as PENDING
                 InvitationDeliveryLog.objects.create(
                     invitation=invitation,
                     channel='whatsapp',
-                    recipient_address=phone_number,
+                    recipient_address=clean_phone,
                     status='PENDING'
                 )
-                
                 try:
                     AuditLog.create_log(
-                        restaurant=request.user.restaurant,
+                        restaurant=restaurant,
                         user=request.user,
                         action_type='CREATE',
                         entity_type='INVITATION',
                         entity_id=str(invitation.id),
-                        description='WhatsApp invitation scheduled via Lua Agent',
+                        description='WhatsApp invitation scheduled',
                         old_values={},
                         new_values={'email': email, 'phone': phone_number}
                     )
                 except Exception:
                     pass
+            except Exception as e:
+                logger.warning(f"InviteStaffView WhatsApp task failed: {e}")
 
-            return Response({'message': 'Invitation processed successfully', 'token': token}, status=status.HTTP_201_CREATED)
-        except Exception as e:
-            logger.error(f"InviteStaffView error: {str(e)}")
-            # In development, surface the underlying error to speed up debugging.
-            if getattr(settings, 'DEBUG', False):
-                return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-            return Response(
-                {'error': 'An unexpected error occurred while processing the invitation.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+        message = 'Invitation created successfully.'
+        if email and not email_sent:
+            message = 'Invitation created. Email could not be sent—use Resend to try again.'
+        elif email_sent:
+            message = 'Invitation sent successfully.'
+        return Response({'message': message, 'token': token}, status=status.HTTP_201_CREATED)
 
 
 class InviteStaffBulkCsvView(APIView):
