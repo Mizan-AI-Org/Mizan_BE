@@ -7,7 +7,6 @@ import requests, sys
 from django.conf import settings
 from .utils import get_tasks
 from notifications.services import notification_service
-from core.i18n import get_effective_language, whatsapp_language_code, tr
 
 
 
@@ -29,7 +28,6 @@ def shift_reminder(task):
         staff = task.staff
         first_name = staff.first_name or "Team Member"
         restaurant = getattr(getattr(task, 'schedule', None), 'restaurant', None)
-        lang = get_effective_language(user=staff, restaurant=restaurant)
 
         now = timezone.now()
         shift_start = getattr(task, 'start_time', None)
@@ -48,7 +46,7 @@ def shift_reminder(task):
         minutes_until = 0
         if shift_start:
             minutes_until = int(max(0, (shift_start - now).total_seconds() // 60))
-        minutes_from_now = tr("time.minutes_from_now", lang, n=minutes_until)
+        minutes_from_now = f"{minutes_until} minutes"
 
         location = getattr(restaurant, 'address', None) or getattr(restaurant, 'name', None) or "Restaurant"
         # Add start time + role into the "Shift" field so the reminder includes key details
@@ -69,8 +67,7 @@ def shift_reminder(task):
             duration_text = "—"
         
     except Exception as e:
-        # logger.error(f"Error preparing reminder for shift {task.id}: {e}")
-
+        print(f"Error preparing reminder for shift {task.id}: {e}", file=sys.stderr)
         return None
 
     if not hasattr(staff, 'phone') or not staff.phone:
@@ -93,7 +90,7 @@ def shift_reminder(task):
     ok, _ = notification_service.send_whatsapp_template(
         phone=staff.phone,
         template_name='clock_in_reminder',
-        language_code=whatsapp_language_code(lang),
+        language_code='en_US',
         components=components
     )
     return 200 if ok else 400
@@ -109,15 +106,13 @@ def send_shift_reminder_30min():
         status__in=['SCHEDULED', 'CONFIRMED']
     )
 
-    # logger.info(f"Found {upcoming_tasks.count()} upcoming shifts for 30-min reminders.")
-
+    print(f"Found {upcoming_tasks.count()} upcoming shifts for 30-min reminders.", file=sys.stderr)
 
     for shift in upcoming_tasks:
         if shift_reminder(shift) == 200:
             shift.shift_reminder_sent = True
             shift.save(update_fields=['shift_reminder_sent'])
-            # logger.info(f"Marked shift_reminder_sent=True for shift {shift.id}")
-
+            print(f"Marked shift_reminder_sent=True for shift {shift.id}", file=sys.stderr)
 
 
 def clock_in_reminder(task):
@@ -136,7 +131,6 @@ def clock_in_reminder(task):
         staff = task.staff
         first_name = staff.first_name or "Team Member"
         restaurant = getattr(getattr(task, 'schedule', None), 'restaurant', None)
-        lang = get_effective_language(user=staff, restaurant=restaurant)
 
         now = timezone.now()
         shift_start = getattr(task, 'start_time', None)
@@ -150,12 +144,11 @@ def clock_in_reminder(task):
         minutes_until = 0
         if shift_start:
             minutes_until = int(max(0, (shift_start - now).total_seconds() // 60))
-        minutes_from_now = tr("time.minutes_from_now", lang, n=minutes_until)
+        minutes_from_now = f"{minutes_until} minutes"
 
         location = getattr(restaurant, 'address', None) or getattr(restaurant, 'name', None) or "Restaurant"
     except Exception as e:
-        # logger.error(f"Error preparing clock-in reminder for shift {task.id}: {e}")
-
+        print(f"Error preparing clock-in reminder for shift {task.id}: {e}", file=sys.stderr)
         return None
 
     if not hasattr(staff, 'phone') or not staff.phone:
@@ -176,7 +169,7 @@ def clock_in_reminder(task):
     ok, _ = notification_service.send_whatsapp_template(
         phone=staff.phone,
         template_name='staff_clock_in',
-        language_code=whatsapp_language_code(lang),
+        language_code='en_US',
         components=components
     )
     return 200 if ok else 400
@@ -192,15 +185,13 @@ def send_clock_in_reminder_10min():
         status__in=['SCHEDULED', 'CONFIRMED']
     )
 
-    # logger.info(f"Found {upcoming_tasks.count()} upcoming shifts for 10-min clock-in reminders.")
-
+    print(f"Found {upcoming_tasks.count()} upcoming shifts for 10-min clock-in reminders.", file=sys.stderr)
 
     for shift in upcoming_tasks:
         if clock_in_reminder(shift) == 200:
             shift.clock_in_reminder_sent = True
             shift.save(update_fields=['clock_in_reminder_sent'])
-            # logger.info(f"Marked clock_in_reminder_sent=True for shift {shift.id}")
-
+            print(f"Marked clock_in_reminder_sent=True for shift {shift.id}", file=sys.stderr)
 
 
 def clock_out_reminder(task):
@@ -217,12 +208,10 @@ def clock_out_reminder(task):
         return None
 
     # Use clock_out_reminder template (no body parameters)
-    restaurant = getattr(getattr(task, 'schedule', None), 'restaurant', None)
-    lang = get_effective_language(user=staff, restaurant=restaurant)
     ok, _ = notification_service.send_whatsapp_template(
         phone=staff.phone,
         template_name='clock_out_reminder',
-        language_code=whatsapp_language_code(lang),
+        language_code='en_US',
         components=[]
     )
     return 200 if ok else 400
@@ -243,33 +232,27 @@ def send_clock_out_reminder():
         if clock_out_reminder(shift) == 200:
             shift.clock_out_reminder_sent = True
             shift.save(update_fields=['clock_out_reminder_sent'])
-            # logger.info(f"Marked clock_out_reminder_sent=True for shift {shift.id}")
-
+            print(f"Marked clock_out_reminder_sent=True for shift {shift.id}", file=sys.stderr)
 
 
 def check_list_reminder(shift):
-    # logger.info(f"Preparing checklist reminder for shift {shift.id}")
-
+    print(f"Preparing checklist reminder for shift {shift.id}", file=sys.stderr)
     staff = shift.staff
     first_name = staff.first_name
-    restaurant = getattr(getattr(shift, 'schedule', None), 'restaurant', None)
-    lang = get_effective_language(user=staff, restaurant=restaurant)
     
     tasks = ShiftTask.objects.filter(shift=shift)
     # Simplified logic
     task_titles = ", ".join([t.title for t in tasks[:3]])
     if len(tasks) > 3:
-        task_titles += tr("checklist.preview.more", lang)
+        task_titles += "..."
 
     if not hasattr(staff, 'phone') or not staff.phone:
         return None
     
-    message = tr(
-        "checklist.reminder",
-        lang,
-        name=first_name or "Team Member",
-        count=tasks.count(),
-        preview=task_titles or "—",
+    message = (
+        f"Hi {first_name}! 📋 You have {tasks.count()} tasks assigned for your shift.\n\n"
+        f"Preview: {task_titles}\n\n"
+        "Good luck!"
     )
     
     ok, _ = notification_service.send_whatsapp_text(staff.phone, message)

@@ -71,7 +71,7 @@ class TestTwoStageReminders(unittest.TestCase):
         mock_post.return_value.status_code = 200
         mock_post.return_value.json.return_value = {"messages": [{"id": "wa_id"}]}
         
-        # 1. Test T-30 Shift Reminder (Template)
+        # 1. Test T-1hr Shift Reminder (Template)
         service.send_shift_notification(shift, notification_type='SHIFT_REMINDER')
         self.assertTrue(mock_post.called)
         payload = mock_post.call_args_list[0].kwargs['json']

@@ -39,7 +39,13 @@ services:
              python manage.py migrate --noinput &&
              daphne -b 0.0.0.0 -p 8000 mizan.asgi:application"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/notifications/whatsapp-webhook/?hub.mode=subscribe&hub.verify_token=mizan-whatsapp-token-20260105&hub.challenge=test"]
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost:8000/api/notifications/whatsapp-webhook/?hub.mode=subscribe&hub.verify_token=mizan-whatsapp-token-20260105&hub.challenge=test",
+        ]
       interval: 30s
       timeout: 10s
       retries: 3

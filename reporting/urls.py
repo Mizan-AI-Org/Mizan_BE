@@ -8,6 +8,12 @@ from .views import (
     InventoryReportRetrieveAPIView,
     IncidentListAPIView,
     IncidentCreateAPIView,
+    labor_planned_vs_actual,
+    labor_compliance,
+    labor_certifications_expiring,
+    labor_sales_recommendation,
+    LaborBudgetListCreateAPIView,
+    LaborPolicyAPIView,
 )
 from .views_agent import agent_create_incident
 
@@ -30,4 +36,12 @@ urlpatterns = [
     
     # Agent-Authenticated Incidents
     path('agent/create-incident/', agent_create_incident, name='agent_create_incident'),
+
+    # Labor: planned vs actual, compliance, certifications, sales recommendation, budget, policy
+    path('labor/planned-vs-actual/', labor_planned_vs_actual, name='labor_planned_vs_actual'),
+    path('labor/compliance/', labor_compliance, name='labor_compliance'),
+    path('labor/certifications-expiring/', labor_certifications_expiring, name='labor_certifications_expiring'),
+    path('labor/sales-recommendation/', labor_sales_recommendation, name='labor_sales_recommendation'),
+    path('labor/budgets/', LaborBudgetListCreateAPIView.as_view(), name='labor_budget_list_create'),
+    path('labor/policy/', LaborPolicyAPIView.as_view(), name='labor_policy'),
 ]

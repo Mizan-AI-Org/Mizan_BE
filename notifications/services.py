@@ -15,7 +15,6 @@ import shutil
 import subprocess
 
 logger = logging.getLogger(__name__)
-from core.i18n import get_effective_language, whatsapp_language_code, tr
 
 
 class NotificationService:
@@ -30,8 +29,6 @@ class NotificationService:
             recipient = shift.staff
             if not recipient:
                 return False
-            restaurant = getattr(getattr(shift, 'schedule', None), 'restaurant', None) or getattr(recipient, 'restaurant', None)
-            lang = get_effective_language(user=recipient, restaurant=restaurant)
                 
             title = "Shift Update"
             message = ""
@@ -40,71 +37,23 @@ class NotificationService:
             start_str = shift.start_time.strftime('%a, %b %d at %H:%M') if shift.start_time else "Unknown time"
             
             if notification_type == 'SHIFT_ASSIGNED':
-                title = tr("notify.shift.assigned.title", lang)
-                message = tr("notify.shift.assigned.body", lang, start=start_str)
+                title = "New Shift Assigned"
+                message = f"You have been assigned a new shift on {start_str}."
                 channels.append('email')
                 channels.append('whatsapp')
             elif notification_type == 'SHIFT_UPDATED':
-                title = tr("notify.shift.updated.title", lang)
-                message = tr("notify.shift.updated.body", lang, start=start_str)
+                title = "Shift Updated"
+                message = f"Your shift on {start_str} has been updated."
             elif notification_type == 'SHIFT_CANCELLED':
-                title = tr("notify.shift.cancelled.title", lang)
-                message = tr("notify.shift.cancelled.body", lang, start=start_str)
+                title = "Shift Cancelled"
+                message = f"Your shift on {start_str} has been cancelled."
                 channels.append('email')
                 channels.append('whatsapp')
             elif notification_type == 'SHIFT_REMINDER':
-                title = tr("notify.shift.reminder.title", lang)
-                message = tr("notify.shift.reminder.body", lang, start=start_str)
+                title = "Upcoming Shift Reminder"
+                message = f"Reminder: You have a shift starting soon on {start_str}."
                 channels.append('whatsapp')
                 
-                # Use dedicated WhatsApp template if possible
-                phone = getattr(recipient, 'phone', None)
-                if 'whatsapp' in channels and phone:
-                    template_name = getattr(settings, 'WHATSAPP_TEMPLATE_CLOCK_IN_REMINDER', 'clock_in_reminder')
-                    duration = shift.get_shift_duration_hours()
-                    duration_str = f"{duration:.1f} hours" if duration % 1 != 0 else f"{int(duration)} hours"
-                    
-                    components = [
-                        {
-                            "type": "body",
-                            "parameters": [
-                                {"type": "text", "text": recipient.first_name or "Staff"},
-                                {"type": "text", "text": "30 minutes"},
-                                {"type": "text", "text": shift.workspace_location or restaurant.name if restaurant else "Restaurant"},
-                                {"type": "text", "text": shift.notes or "Your Shift"},
-                                {"type": "text", "text": duration_str},
-                            ]
-                        }
-                    ]
-                    # We send the template directly and remove 'whatsapp' from channels for send_custom_notification
-                    ok, _ = self.send_whatsapp_template(
-                        phone=phone,
-                        template_name=template_name,
-                        language_code=whatsapp_language_code(lang),
-                        components=components
-                    )
-                    if ok:
-                        channels.remove('whatsapp')
-
-            elif notification_type == 'CLOCK_IN_REMINDER':
-                title = tr("notify.shift.clockin_reminder.title", lang)
-                message = tr("notify.shift.clockin_reminder.body", lang, start="10 minutes")
-                channels.append('whatsapp')
-
-                phone = getattr(recipient, 'phone', None)
-                if 'whatsapp' in channels and phone:
-                    body = (
-                        f"⏰ *Clock-In Reminder*\n\n"
-                        f"Hi {recipient.first_name or 'there'}, your shift starts in *10 minutes*.\n\n"
-                        f"Please tap the button below to start your Clock-In process and verify your location."
-                    )
-                    buttons = [
-                        {"id": "clock_in_now", "title": "📍 Clock-In Now"}
-                    ]
-                    ok, _ = self.send_whatsapp_buttons(phone, body, buttons)
-                    if ok:
-                        channels.remove('whatsapp')
-
             return self.send_custom_notification(
                 recipient=recipient,
                 message=message,
@@ -213,7 +162,7 @@ class NotificationService:
     # LUA AGENT INTEGRATION
     # ------------------------------------------------------------------------------------
 
-    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link, role='staff', language='en'):
+    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link, role='staff'):
         """
         Notify Lua agent about a new staff invitation.
         This triggers Miya to send a WhatsApp template message.
@@ -222,13 +171,10 @@ class NotificationService:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
             lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"  # user-events-production
-            
+            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"  # user-events-production production
             url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
             if not url:
                 url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
-            
-            normalized_phone = self._normalize_phone(phone)
             
             payload = {
                 "eventType": "staff_invite",
@@ -236,13 +182,10 @@ class NotificationService:
                 "staffName": first_name or "New Staff",
                 "role": role.lower() if role else "staff",
                 "details": {
-                    "phone": normalized_phone,
-                    "phoneNumber": normalized_phone, # Add for compatibility with different agent handlers
+                    "phone": self._normalize_phone(phone),
                     "inviteLink": invite_link,
                     "restaurantName": restaurant_name,
-                    "invitationToken": invitation_token,
-                    # Let Miya send the invite in the right language
-                    "language": get_effective_language(user=None, restaurant=None, fallback=language),
+                    "invitationToken": invitation_token
                 },
                 "timestamp": timezone.now().isoformat()
             }
@@ -257,7 +200,7 @@ class NotificationService:
             
             print(f"[LuaInvite] Calling webhook for {first_name} at {url}", file=sys.stderr)
             print(f"[LuaInvite] Payload: {json.dumps(payload)}", file=sys.stderr)
-            resp = requests.post(url, json=payload, headers=headers, timeout=10)
+            resp = requests.post(url, json=payload, headers=headers, timeout=5)
             print(f"[LuaInvite] Response: {resp.status_code} - {resp.text}", file=sys.stderr)
 
             try:
@@ -272,10 +215,10 @@ class NotificationService:
                 return False, {"error": resp.text, "status_code": resp.status_code, "info": info}
                 
         except Exception as e:
-            logger.error(f"[LuaInvite] Unexpected error: {str(e)}", exc_info=True)
+            logger.error(f"[LuaInvite] Unexpected error: {str(e)}")
             return False, {"error": str(e)}
 
-    def send_lua_invitation_accepted(self, invitation_token, phone, first_name, flow_data=None, language='en'):
+    def send_lua_invitation_accepted(self, invitation_token, phone, first_name, flow_data=None):
         """
         Notify Lua agent that an invitation was accepted.
         This allows Miya to send a 'Welcome' message with the staff person's PIN.
@@ -295,8 +238,7 @@ class NotificationService:
                 "details": {
                     "phoneNumber": self._normalize_phone(phone),
                     "invitationToken": invitation_token,
-                    "flowData": flow_data or {},
-                    "language": get_effective_language(user=None, restaurant=None, fallback=language),
+                    "flowData": flow_data or {}
                 },
                 "timestamp": timezone.now().isoformat()
             }

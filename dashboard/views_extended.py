@@ -876,6 +876,116 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             'alerts': alerts[:2]
         })
 
+    @action(detail=False, methods=['get'], url_path='staff-performance')
+    def staff_performance(self, request):
+        """Staff performance metrics for SchedulingAnalytics (real data)."""
+        from datetime import datetime, timedelta
+        from scheduling.models import AssignedShift
+        user = request.user
+        if not user.restaurant:
+            return Response({'error': 'No restaurant associated'}, status=status.HTTP_400_BAD_REQUEST)
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        if not start_date or not end_date:
+            return Response({'error': 'start_date and end_date required (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'error': 'Invalid date format'}, status=status.HTTP_400_BAD_REQUEST)
+        shifts = AssignedShift.objects.filter(
+            schedule__restaurant=user.restaurant,
+            shift_date__gte=start_date,
+            shift_date__lte=end_date,
+            staff__isnull=False
+        ).values('staff__id', 'staff__first_name', 'staff__last_name').annotate(
+            total_shifts=Count('id'),
+            completed=Count('id', filter=Q(status='COMPLETED'))
+        )
+        tasks = ShiftTask.objects.filter(
+            shift__schedule__restaurant=user.restaurant,
+            shift__shift_date__gte=start_date,
+            shift__shift_date__lte=end_date,
+            assigned_to__isnull=False
+        ).values('assigned_to__id', 'assigned_to__first_name', 'assigned_to__last_name').annotate(
+            total_tasks=Count('id'),
+            completed_tasks=Count('id', filter=Q(status='COMPLETED'))
+        )
+        by_staff = {}
+        for s in shifts:
+            sid = str(s['staff__id'])
+            name = f"{s['staff__first_name'] or ''} {s['staff__last_name'] or ''}".strip() or sid
+            by_staff[sid] = {'name': name, 'value': s['total_shifts'], 'completionRate': (s['completed'] / s['total_shifts'] * 100) if s['total_shifts'] else 0}
+        for t in tasks:
+            sid = str(t['assigned_to__id'])
+            name = f"{t['assigned_to__first_name'] or ''} {t['assigned_to__last_name'] or ''}".strip() or sid
+            rate = (t['completed_tasks'] / t['total_tasks'] * 100) if t['total_tasks'] else 0
+            if sid in by_staff:
+                by_staff[sid]['completionRate'] = round((by_staff[sid]['completionRate'] + rate) / 2, 1)
+            else:
+                by_staff[sid] = {'name': name, 'value': t['total_tasks'], 'completionRate': round(rate, 1)}
+        data = [{'name': v['name'], 'value': v['value'], 'completionRate': round(v['completionRate'], 1)} for v in by_staff.values()]
+        return Response(data[:20] if len(data) > 20 else data)
+
+    @action(detail=False, methods=['get'], url_path='task-completion')
+    def task_completion(self, request):
+        """Task completion over time for SchedulingAnalytics (real data)."""
+        from datetime import datetime, timedelta
+        from django.db.models.functions import TruncDate
+        user = request.user
+        if not user.restaurant:
+            return Response({'error': 'No restaurant associated'}, status=status.HTTP_400_BAD_REQUEST)
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        if not start_date or not end_date:
+            return Response({'error': 'start_date and end_date required (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'error': 'Invalid date format'}, status=status.HTTP_400_BAD_REQUEST)
+        qs = ShiftTask.objects.filter(
+            shift__schedule__restaurant=user.restaurant,
+            shift__shift_date__gte=start_date,
+            shift__shift_date__lte=end_date
+        )
+        by_date = qs.values('shift__shift_date').annotate(
+            total=Count('id'),
+            completed=Count('id', filter=Q(status='COMPLETED'))
+        ).order_by('shift__shift_date')
+        data = [{'date': b['shift__shift_date'].isoformat(), 'total': b['total'], 'completed': b['completed']} for b in by_date]
+        return Response(data)
+
+    @action(detail=False, methods=['get'], url_path='labor-costs')
+    def labor_costs(self, request):
+        """Labor cost from real timesheet/clock data for SchedulingAnalytics."""
+        from datetime import datetime
+        from reporting.services_labor import labor_cost_from_real_data, labor_budget_for_period
+        user = request.user
+        if not user.restaurant:
+            return Response({'error': 'No restaurant associated'}, status=status.HTTP_400_BAD_REQUEST)
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        if not start_date or not end_date:
+            return Response({'error': 'start_date and end_date required (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'error': 'Invalid date format'}, status=status.HTTP_400_BAD_REQUEST)
+        labor = labor_cost_from_real_data(user.restaurant, start_date, end_date)
+        budget = labor_budget_for_period(user.restaurant, start_date, end_date)
+        by_role = labor.get('by_role', {})
+        chart_data = [{'name': k, 'value': round(v['cost'], 2)} for k, v in by_role.items()]
+        return Response({
+            'chart_data': chart_data,
+            'total_hours': labor['total_hours'],
+            'total_cost': labor['total_cost'],
+            'currency': labor['currency'],
+            'source': labor.get('source', 'timesheets'),
+            'budget': budget,
+        })
+
 class AlertViewSet(viewsets.ModelViewSet):
     """Alert management for restaurants"""
     serializer_class = AlertSerializer

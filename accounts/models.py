@@ -89,6 +89,8 @@ class Restaurant(models.Model):
     ], default='CASUAL_DINING')
     max_weekly_hours = models.DecimalField(max_digits=5, decimal_places=2, default=40.0)
     min_rest_hours = models.DecimalField(max_digits=4, decimal_places=2, default=11.0)
+    # Target labor as % of sales (for sales → labor recommendation); e.g. 30.0 = 30%
+    labor_target_percent = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     
     # POS Integration Fields
     pos_provider = models.CharField(max_length=50, choices=[

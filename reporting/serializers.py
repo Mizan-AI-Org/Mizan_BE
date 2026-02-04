@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import DailySalesReport, AttendanceReport, InventoryReport, Incident
+from .models import DailySalesReport, AttendanceReport, InventoryReport, Incident, LaborBudget, LaborPolicy
 
 class DailySalesReportSerializer(serializers.ModelSerializer):
     class Meta:
@@ -24,3 +24,17 @@ class IncidentSerializer(serializers.ModelSerializer):
         model = Incident
         fields = '__all__'
         read_only_fields = ('id', 'restaurant', 'created_at', 'updated_at')
+
+
+class LaborBudgetSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LaborBudget
+        fields = '__all__'
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+
+class LaborPolicySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = LaborPolicy
+        fields = '__all__'
+        read_only_fields = ('id', 'created_at', 'updated_at')

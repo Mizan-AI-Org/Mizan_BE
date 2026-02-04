@@ -110,3 +110,44 @@ class Incident(models.Model):
     
     def __str__(self):
         return f"{self.title} ({self.status}) - {self.restaurant.name}"
+
+
+class LaborBudget(models.Model):
+    """Target labor budget for a period (used for budget vs actual)."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='labor_budgets')
+    period_start = models.DateField()
+    period_end = models.DateField()
+    target_hours = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    target_amount = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    currency = models.CharField(max_length=10, default='USD')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'labor_budgets'
+        ordering = ['-period_end']
+        indexes = [models.Index(fields=['restaurant', 'period_start', 'period_end'])]
+
+    def __str__(self):
+        return f"Labor budget {self.period_start}–{self.period_end} - {self.restaurant.name}"
+
+
+class LaborPolicy(models.Model):
+    """Labor compliance rules per restaurant (max hours, rest, breaks, overtime)."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.OneToOneField(Restaurant, on_delete=models.CASCADE, related_name='labor_policy')
+    max_hours_per_week = models.DecimalField(max_digits=5, decimal_places=2, default=40, null=True, blank=True)
+    max_hours_per_day = models.DecimalField(max_digits=4, decimal_places=2, default=8, null=True, blank=True)
+    min_rest_hours_between_shifts = models.DecimalField(max_digits=4, decimal_places=2, default=11, null=True, blank=True)
+    break_required_after_hours = models.DecimalField(max_digits=4, decimal_places=2, default=6, null=True, blank=True)
+    overtime_after_hours_per_week = models.DecimalField(max_digits=5, decimal_places=2, default=40, null=True, blank=True)
+    late_threshold_minutes = models.IntegerField(default=15, help_text="Minutes after shift start to count as late")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'labor_policies'
+
+    def __str__(self):
+        return f"Labor policy - {self.restaurant.name}"

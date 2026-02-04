@@ -1180,6 +1180,57 @@ class TimesheetViewSet(viewsets.ModelViewSet):
         timesheet.calculate_totals()
         return Response({'detail': 'Timesheet recalculated', 'timesheet': self.get_serializer(timesheet).data})
 
+    @action(detail=False, methods=['get'], url_path='export-payroll')
+    def export_payroll(self, request):
+        """Export timesheets for pay period as CSV (for payroll systems)."""
+        from django.http import HttpResponse
+        if not (request.user.role in ('ADMIN', 'SUPER_ADMIN', 'MANAGER')):
+            return Response({'detail': 'Only managers can export payroll'}, status=status.HTTP_403_FORBIDDEN)
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        if not start_date or not end_date:
+            return Response(
+                {'detail': 'start_date and end_date required (YYYY-MM-DD)'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            start_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'detail': 'Invalid date format'}, status=status.HTTP_400_BAD_REQUEST)
+        qs = Timesheet.objects.filter(
+            restaurant=request.user.restaurant,
+            start_date__lte=end_date,
+            end_date__gte=start_date
+        ).select_related('staff').order_by('staff__last_name', 'start_date')
+        rows = []
+        rows.append(['Staff ID', 'Email', 'First Name', 'Last Name', 'Start Date', 'End Date', 'Total Hours', 'Hourly Rate', 'Total Earnings', 'Status'])
+        for ts in qs:
+            staff = ts.staff
+            email = staff.email if staff else ''
+            first = getattr(staff, 'first_name', '') or '' if staff else ''
+            last = getattr(staff, 'last_name', '') or '' if staff else ''
+            rows.append([
+                str(ts.staff_id) if ts.staff_id else '',
+                email,
+                first,
+                last,
+                ts.start_date.isoformat(),
+                ts.end_date.isoformat(),
+                str(ts.total_hours),
+                str(ts.hourly_rate),
+                str(ts.total_earnings),
+                ts.status or '',
+            ])
+        import csv
+        from io import StringIO
+        buf = StringIO()
+        w = csv.writer(buf)
+        w.writerows(rows)
+        resp = HttpResponse(buf.getvalue(), content_type='text/csv')
+        resp['Content-Disposition'] = f'attachment; filename="payroll_export_{start_date}_{end_date}.csv"'
+        return resp
+
 
 class TimesheetEntryViewSet(viewsets.ModelViewSet):
     """ViewSet for managing timesheet entries"""

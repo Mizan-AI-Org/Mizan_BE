@@ -24,6 +24,7 @@ from rest_framework.routers import DefaultRouter
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('api/analytics/', include('dashboard.urls_analytics')),
     path('api/', include('accounts.urls')),
     path('api/dashboard/', include('dashboard.urls')),
     path('api/attendance/', include('attendance.urls')),
