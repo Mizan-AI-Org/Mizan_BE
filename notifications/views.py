@@ -21,11 +21,12 @@ from .serializers import (
     AnnouncementCreateSerializer
 )
 from .services import notification_service
+from .utils import infer_incident_type, infer_severity, extract_occurred_at
 from scheduling.audit import AuditTrailService, AuditActionType, AuditSeverity
 from core.utils import build_tenant_context
 from .models import WhatsAppSession
 from accounts.models import CustomUser
-from accounts.services import UserManagementService, sync_user_to_lua_agent
+from accounts.services import UserManagementService, sync_user_to_lua_agent, try_activate_staff_on_inbound_message
 from timeclock.models import ClockEvent
 from scheduling.models import ShiftTask
 from django.conf import settings as dj_settings
@@ -499,7 +500,10 @@ def whatsapp_webhook(request):
                 'task_verify_photo': 'يرجى إرسال صورة كدليل لإكمال هذه المهمة.',
                 'task_verify_done': 'اكتملت المهمة مع دليل الصور.',
                 'incident_prompt': 'يرجى وصف الحادث أو المشكلة. يمكنك إرسال نص أو ملاحظة صوتية.',
+                'incident_clarify_audio': 'شكراً — لم أفهم الملاحظة الصوتية بوضوح. يرجى إعادة إرسالها أو الرد بالنص: نوع الحادث، وصف موجز، ووقت الحدوث.',
+                'incident_clarify_missing': 'شكراً — قبل التسجيل، يرجى توضيح: {missing}.',
                 'incident_recorded': 'تم تسجيل الحادث. التذكرة رقم {ticket_id}. سيتم إخطار المدير.',
+                'incident_failed': 'فشل تسجيل الحادث. يرجى المحاولة مرة أخرى.',
                 'unrecognized': 'أمر غير معروف. أجب بـ "مساعدة" لرؤية الخيارات المتاحة.',
             },
             'fr': {
@@ -516,7 +520,10 @@ def whatsapp_webhook(request):
                 'task_verify_photo': 'Veuillez envoyer une photo.',
                 'task_verify_done': 'Tâche terminée avec photo.',
                 'incident_prompt': 'Décrivez l\'incident (texte ou voix).',
+                'incident_clarify_audio': 'Merci — je n\'ai pas bien compris le message vocal. Veuillez le renvoyer ou répondre par texte : type d\'incident, description brève, et heure.',
+                'incident_clarify_missing': 'Merci — avant d\'enregistrer, veuillez préciser : {missing}.',
                 'incident_recorded': 'Incident enregistré. Ticket #{ticket_id}.',
+                'incident_failed': 'Échec de l\'enregistrement. Veuillez réessayer.',
                 'unrecognized': 'Commande non reconnue. Répondez "aide".',
             },
         }
@@ -573,6 +580,15 @@ def whatsapp_webhook(request):
                     
                     # Normalize phone
                     phone_digits = ''.join(filter(str.isdigit, str(from_phone or '')))
+                    # ONE-TAP activation: on first inbound message, match NOT_ACTIVATED staff by phone and activate
+                    activated_user = try_activate_staff_on_inbound_message(phone_digits)
+                    if activated_user:
+                        session, _ = WhatsAppSession.objects.get_or_create(phone=phone_digits, defaults={'user': activated_user})
+                        if session.user_id != activated_user.id:
+                            session.user = activated_user
+                            session.save(update_fields=['user'])
+                        # Handoff done; Miya sends welcome. Skip further processing for this message.
+                        continue
                     # Match last 9 digits to be safe (or 10)
                     user = CustomUser.objects.filter(phone__isnull=False).filter(phone__regex=r'\d').filter(phone__icontains=phone_digits[-9:]).first()
                     
@@ -1088,51 +1104,8 @@ def whatsapp_webhook(request):
                             continue
 
                         # Extract structured incident details (no ticket if critical details are missing)
-                        from dateutil import parser as date_parser
-                        import re as _re
                         from staff.models_task import SafetyConcernReport
                         from scheduling.models import AssignedShift
-
-                        def _infer_incident_type(t):
-                            t_low = (t or '').lower()
-                            if any(k in t_low for k in ['injury', 'hurt', 'slip', 'fall', 'bleed', 'burn', 'fire', 'unsafe', 'hazard', 'accident']):
-                                return 'Safety'
-                            if any(k in t_low for k in ['broken', 'leak', 'maintenance', 'machine', 'equipment', 'fridge', 'freezer', 'oven', 'gas', 'water']):
-                                return 'Maintenance'
-                            if any(k in t_low for k in ['harassment', 'abuse', 'discrimination', 'fight', 'threat']):
-                                return 'HR'
-                            if any(k in t_low for k in ['customer', 'guest', 'complaint', 'service', 'refund']):
-                                return 'Service'
-                            return None
-
-                        def _extract_occurred_at(t, now):
-                            # Lightweight parse: look for "at 3pm", "3:15", "yesterday", etc.
-                            t_low = (t or '').lower()
-                            if 'yesterday' in t_low:
-                                base = now - timezone.timedelta(days=1)
-                            elif 'today' in t_low:
-                                base = now
-                            else:
-                                base = now
-                            try:
-                                # dateutil will keep base date if only a time is present
-                                dt = date_parser.parse(t, fuzzy=True, default=base)
-                                # Heuristic: if parse returns something wildly in the future, treat as missing
-                                if dt > now + timezone.timedelta(days=7):
-                                    return None
-                                return timezone.make_aware(dt) if timezone.is_naive(dt) else dt
-                            except Exception:
-                                return None
-
-                        def _infer_severity(t):
-                            t_low = (t or '').lower()
-                            if any(k in t_low for k in ['critical', 'life threatening', 'life-threatening', 'fire', 'gas leak']):
-                                return 'CRITICAL'
-                            if any(k in t_low for k in ['injury', 'bleeding', 'severe', 'danger', 'urgent']):
-                                return 'HIGH'
-                            if any(k in t_low for k in ['minor', 'small', 'low risk', 'low-risk']):
-                                return 'LOW'
-                            return 'MEDIUM'
 
                         def _infer_shift(u, when_dt):
                             try:
@@ -1148,8 +1121,8 @@ def whatsapp_webhook(request):
                                 return None
 
                         now = timezone.now()
-                        incident_type = _infer_incident_type(transcript)
-                        occurred_at = _extract_occurred_at(transcript, now)
+                        incident_type = infer_incident_type(transcript)
+                        occurred_at = extract_occurred_at(transcript, now)
 
                         missing = []
                         if not incident_type:
@@ -1177,7 +1150,7 @@ def whatsapp_webhook(request):
                             occurred_at = occurred_at or now
 
                         shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
-                        severity = _infer_severity(transcript)
+                        severity = infer_severity(transcript)
 
                         ticket = SafetyConcernReport.objects.create(
                             restaurant=user.restaurant,
@@ -1486,56 +1459,8 @@ def whatsapp_webhook(request):
                         base_text = (pending.get('transcript') or '').strip()
                         combined_text = (base_text + ("\n\nClarification: " + raw_body if raw_body else "")).strip()
 
-                        from dateutil import parser as date_parser
                         from staff.models_task import SafetyConcernReport
                         from scheduling.models import AssignedShift
-
-                        def _infer_incident_type(t):
-                            t_low = (t or '').lower()
-                            # Explicit type (common in clarifications)
-                            if t_low.strip() in ['safety', 'maintenance', 'hr', 'service', 'other', 'general']:
-                                return t_low.strip().title() if t_low.strip() != 'hr' else 'HR'
-                            if 'maintenance' in t_low:
-                                return 'Maintenance'
-                            if 'safety' in t_low:
-                                return 'Safety'
-                            if 'service' in t_low:
-                                return 'Service'
-                            if 'hr' in t_low or 'harassment' in t_low:
-                                return 'HR'
-                            if any(k in t_low for k in ['injury', 'hurt', 'slip', 'fall', 'bleed', 'burn', 'fire', 'unsafe', 'hazard', 'accident']):
-                                return 'Safety'
-                            if any(k in t_low for k in ['broken', 'leak', 'machine', 'equipment', 'fridge', 'freezer', 'oven', 'gas', 'water']):
-                                return 'Maintenance'
-                            if any(k in t_low for k in ['customer', 'guest', 'complaint', 'refund']):
-                                return 'Service'
-                            return None
-
-                        def _extract_occurred_at(t, now):
-                            t_low = (t or '').lower()
-                            if 'yesterday' in t_low:
-                                base = now - timezone.timedelta(days=1)
-                            elif 'today' in t_low:
-                                base = now
-                            else:
-                                base = now
-                            try:
-                                dt = date_parser.parse(t, fuzzy=True, default=base)
-                                if dt > now + timezone.timedelta(days=7):
-                                    return None
-                                return timezone.make_aware(dt) if timezone.is_naive(dt) else dt
-                            except Exception:
-                                return None
-
-                        def _infer_severity(t):
-                            t_low = (t or '').lower()
-                            if any(k in t_low for k in ['critical', 'life threatening', 'life-threatening', 'fire', 'gas leak']):
-                                return 'CRITICAL'
-                            if any(k in t_low for k in ['injury', 'bleeding', 'severe', 'danger', 'urgent']):
-                                return 'HIGH'
-                            if any(k in t_low for k in ['minor', 'small', 'low risk', 'low-risk']):
-                                return 'LOW'
-                            return 'MEDIUM'
 
                         def _infer_shift(u, when_dt):
                             try:
@@ -1550,8 +1475,8 @@ def whatsapp_webhook(request):
                                 return None
 
                         now = timezone.now()
-                        incident_type = _infer_incident_type(combined_text)
-                        occurred_at = _extract_occurred_at(combined_text, now)
+                        incident_type = infer_incident_type(combined_text)
+                        occurred_at = extract_occurred_at(combined_text, now)
 
                         missing = []
                         if not incident_type:
@@ -1573,7 +1498,7 @@ def whatsapp_webhook(request):
                             occurred_at = occurred_at or now
 
                         shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
-                        severity = _infer_severity(combined_text)
+                        severity = infer_severity(combined_text)
 
                         ticket = SafetyConcernReport.objects.create(
                             restaurant=user.restaurant,
@@ -1685,7 +1610,9 @@ def whatsapp_webhook(request):
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                         continue
 
-                    if body in ['report', 'incident', 'issue']:
+                    body_clean = (body or '').strip()
+                    incident_triggers = {'report', 'incident', 'issue', 'rapport', 'signalement', 'بلاغ'}
+                    if body_clean.lower() in incident_triggers or body_clean in incident_triggers:
                         session.state = 'awaiting_incident_text'
                         session.save(update_fields=['state'])
                         notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_prompt'))
@@ -1694,47 +1621,8 @@ def whatsapp_webhook(request):
                     if session.state == 'awaiting_incident_text':
                         if user:
                             # Use the same structured extraction + clarification rules as voice
-                            from dateutil import parser as date_parser
                             from staff.models_task import SafetyConcernReport
                             from scheduling.models import AssignedShift
-
-                            def _infer_incident_type(t):
-                                t_low = (t or '').lower()
-                                if any(k in t_low for k in ['injury', 'hurt', 'slip', 'fall', 'bleed', 'burn', 'fire', 'unsafe', 'hazard', 'accident']):
-                                    return 'Safety'
-                                if any(k in t_low for k in ['broken', 'leak', 'maintenance', 'machine', 'equipment', 'fridge', 'freezer', 'oven', 'gas', 'water']):
-                                    return 'Maintenance'
-                                if any(k in t_low for k in ['harassment', 'abuse', 'discrimination', 'fight', 'threat']):
-                                    return 'HR'
-                                if any(k in t_low for k in ['customer', 'guest', 'complaint', 'service', 'refund']):
-                                    return 'Service'
-                                return None
-
-                            def _extract_occurred_at(t, now):
-                                t_low = (t or '').lower()
-                                if 'yesterday' in t_low:
-                                    base = now - timezone.timedelta(days=1)
-                                elif 'today' in t_low:
-                                    base = now
-                                else:
-                                    base = now
-                                try:
-                                    dt = date_parser.parse(t, fuzzy=True, default=base)
-                                    if dt > now + timezone.timedelta(days=7):
-                                        return None
-                                    return timezone.make_aware(dt) if timezone.is_naive(dt) else dt
-                                except Exception:
-                                    return None
-
-                            def _infer_severity(t):
-                                t_low = (t or '').lower()
-                                if any(k in t_low for k in ['critical', 'life threatening', 'life-threatening', 'fire', 'gas leak']):
-                                    return 'CRITICAL'
-                                if any(k in t_low for k in ['injury', 'bleeding', 'severe', 'danger', 'urgent']):
-                                    return 'HIGH'
-                                if any(k in t_low for k in ['minor', 'small', 'low risk', 'low-risk']):
-                                    return 'LOW'
-                                return 'MEDIUM'
 
                             def _infer_shift(u, when_dt):
                                 try:
@@ -1749,8 +1637,8 @@ def whatsapp_webhook(request):
                                     return None
 
                             now = timezone.now()
-                            incident_type = _infer_incident_type(raw_body)
-                            occurred_at = _extract_occurred_at(raw_body, now)
+                            incident_type = infer_incident_type(raw_body)
+                            occurred_at = extract_occurred_at(raw_body, now)
 
                             missing = []
                             if not incident_type:
@@ -1773,7 +1661,7 @@ def whatsapp_webhook(request):
                             occurred_at = occurred_at or now
 
                             shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
-                            severity = _infer_severity(raw_body)
+                            severity = infer_severity(raw_body)
 
                             ticket = SafetyConcernReport.objects.create(
                                 restaurant=user.restaurant,
@@ -1810,31 +1698,8 @@ def whatsapp_webhook(request):
                     if user:
                         from staff.models_task import SafetyConcernReport
                         from scheduling.models import AssignedShift
-                        from dateutil import parser as date_parser
 
-                        def _infer_incident_type_text(t):
-                            t_low = (t or '').lower()
-                            if any(k in t_low for k in ['injury', 'hurt', 'slip', 'fall', 'bleed', 'burn', 'fire', 'unsafe', 'hazard', 'accident']):
-                                return 'Safety'
-                            if any(k in t_low for k in ['broken', 'leak', 'maintenance', 'machine', 'equipment', 'fridge', 'freezer', 'oven', 'gas', 'water']):
-                                return 'Maintenance'
-                            if any(k in t_low for k in ['harassment', 'abuse', 'discrimination', 'fight', 'threat']):
-                                return 'HR'
-                            if any(k in t_low for k in ['customer', 'guest', 'complaint', 'service', 'refund']):
-                                return 'Service'
-                            return None
-
-                        def _infer_severity_text(t):
-                            t_low = (t or '').lower()
-                            if any(k in t_low for k in ['critical', 'life threatening', 'life-threatening', 'fire', 'gas leak']):
-                                return 'CRITICAL'
-                            if any(k in t_low for k in ['injury', 'bleeding', 'severe', 'danger', 'urgent']):
-                                return 'HIGH'
-                            if any(k in t_low for k in ['minor', 'small', 'low risk', 'low-risk']):
-                                return 'LOW'
-                            return 'MEDIUM'
-
-                        incident_type = _infer_incident_type_text(raw_body)
+                        incident_type = infer_incident_type(raw_body)
                         if incident_type:
                             now = timezone.now()
                             occurred_at = now
@@ -1852,7 +1717,7 @@ def whatsapp_webhook(request):
                                     return None
 
                             shift_obj = _infer_shift_text(user, occurred_at)
-                            severity = _infer_severity_text(raw_body)
+                            severity = infer_severity(raw_body)
 
                             try:
                                 ticket = SafetyConcernReport.objects.create(
