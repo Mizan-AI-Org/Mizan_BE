@@ -7,7 +7,7 @@ from django.db.models import Count, Q, Avg
 from timeclock.models import ClockEvent
 from scheduling.models import AssignedShift, ShiftSwapRequest, ShiftTask
 from attendance.models import ShiftReview
-from dashboard.models import Task, Alert
+from dashboard.models import Task as DashboardTask, Alert
 from accounts.models import CustomUser
 from inventory.models import PurchaseOrder
 from staff.models_task import SafetyConcernReport
@@ -95,6 +95,25 @@ class DashboardSummaryView(APIView):
             status='NO_SHOW'
         ).count()
 
+        # Potential no-shows: shift started, grace period passed, no clock-in yet (not yet marked NO_SHOW)
+        grace_min = 10
+        potential_no_shows = 0
+        for s in AssignedShift.objects.filter(
+            schedule__restaurant=restaurant,
+            shift_date=today,
+            status__in=['SCHEDULED', 'CONFIRMED'],
+            staff__isnull=False
+        ).select_related('staff'):
+            if s.start_time and s.start_time <= now - timedelta(minutes=grace_min):
+                ev = ClockEvent.objects.filter(
+                    staff_id=s.staff_id,
+                    event_type__in=['in', 'CLOCK_IN'],
+                    timestamp__date=today
+                ).exists()
+                if not ev:
+                    potential_no_shows += 1
+        total_no_shows = no_shows_count + potential_no_shows
+
         # Shifts needing coverage: scheduled shifts with no assigned staff members
         shift_gaps_count = AssignedShift.objects.filter(
             schedule__restaurant=restaurant,
@@ -104,30 +123,76 @@ class DashboardSummaryView(APIView):
             Q(staff__isnull=True) & Q(staff_members__isnull=True)
         ).distinct().count()
 
-        # OT Risk (Simplified: staff with > 40h this week)
+        # OT Risk: staff exceeding standard weekly hours (uses labor compliance when available, else ClockEvent fallback)
         ot_risk_count = 0
+        ot_risk_staff = []
         try:
-            week_shifts = (
-                AssignedShift.objects.filter(
+            from reporting.services_labor import overtime_and_compliance
+            compliance = overtime_and_compliance(restaurant, week_start, week_end)
+            ot_risk_staff = compliance.get('overtime_incidents', [])[:5]
+            ot_risk_count = len(compliance.get('overtime_incidents', []))
+        except Exception:
+            # Fallback: weekly hours from AssignedShift planned duration (less accurate)
+            try:
+                week_shifts = AssignedShift.objects.filter(
                     schedule__restaurant=restaurant,
                     shift_date__gte=week_start,
                     shift_date__lte=week_end,
-                    status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED']
-                )
-                .select_related('staff')
-            )
-            hours_by_staff = {}
-            for s in week_shifts:
-                sid = getattr(s, 'staff_id', None)
-                if not sid:
+                    status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED'],
+                    staff__isnull=False
+                ).select_related('staff')
+                from reporting.models import LaborPolicy
+                policy = LaborPolicy.objects.filter(restaurant=restaurant).first()
+                max_week = float(getattr(policy, 'overtime_after_hours_per_week', None) or 40)
+                hours_by_staff = {}
+                for s in week_shifts:
+                    sid = str(getattr(s, 'staff_id', None))
+                    if not sid:
+                        continue
+                    try:
+                        hrs = float(getattr(s, 'actual_hours', 0) or 0)
+                        hours_by_staff[sid] = hours_by_staff.get(sid, 0.0) + hrs
+                    except Exception:
+                        continue
+                ot_risk_count = sum(1 for _sid, hrs in hours_by_staff.items() if hrs >= max_week)
+                for sid, hrs in hours_by_staff.items():
+                    if hrs >= max_week and len(ot_risk_staff) < 5:
+                        u = CustomUser.objects.filter(id=sid, restaurant=restaurant).first()
+                        ot_risk_staff.append({'staff_id': sid, 'staff_name': _staff_name(u) if u else sid, 'hours': round(hrs, 2), 'threshold': max_week})
+            except Exception:
+                pass
+
+        # Late staff today: staff with shifts today who clocked in late or missed clock-in
+        late_staff_today = []
+        try:
+            from reporting.models import LaborPolicy
+            policy = LaborPolicy.objects.filter(restaurant=restaurant).first()
+            late_min = int(getattr(policy, 'late_threshold_minutes', 15) or 15)
+            today_staff_shifts = AssignedShift.objects.filter(
+                schedule__restaurant=restaurant,
+                shift_date=today,
+                status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED'],
+                staff__isnull=False
+            ).select_related('staff')
+            for s in today_staff_shifts:
+                if not s.staff or not s.start_time:
                     continue
-                try:
-                    hours_by_staff[sid] = hours_by_staff.get(sid, 0.0) + float(getattr(s, 'actual_hours', 0) or 0)
-                except Exception:
-                    continue
-            ot_risk_count = sum(1 for _sid, hrs in hours_by_staff.items() if hrs >= 40.0)
+                shift_start = s.start_time
+                if timezone.is_naive(shift_start):
+                    shift_start = timezone.make_aware(shift_start)
+                if shift_start > now:
+                    continue  # Future shift, not yet late
+                ev = ClockEvent.objects.filter(
+                    staff_id=s.staff_id,
+                    event_type__in=['in', 'CLOCK_IN'],
+                    timestamp__date=today
+                ).order_by('timestamp').first()
+                if not ev:
+                    late_staff_today.append({'id': str(s.staff_id), 'name': _staff_name(s.staff), 'reason': 'missed_clock_in'})
+                elif ev.timestamp > shift_start + timedelta(minutes=late_min):
+                    late_staff_today.append({'id': str(s.staff_id), 'name': _staff_name(s.staff), 'reason': 'late'})
         except Exception:
-            ot_risk_count = 0
+            pass
 
         # 2. Operations & Forecast
         negative_reviews_count = ShiftReview.objects.filter(
@@ -213,6 +278,21 @@ class DashboardSummaryView(APIView):
             sid = str(ev.staff_id)
             if sid not in clockin_by_staff:
                 clockin_by_staff[sid] = ev
+
+        # Critical: staff late today
+        for lm in late_staff_today[:3]:
+            insights.append(
+                _build_insight(
+                    insight_id=f"late_staff:{lm['id']}",
+                    level="OPERATIONAL",
+                    category="attendance",
+                    urgency=_priority_score("OPERATIONAL") + 45,
+                    summary=f"Staff late today: {lm['name']}" + (" (missed clock-in)" if lm.get('reason') == 'missed_clock_in' else " (clocked in late)"),
+                    recommended_action="Follow up with the staff member. Consider coverage if unreachable.",
+                    impacted={"staff": [{"id": lm["id"], "name": lm["name"]}]},
+                    action_url="/dashboard/attendance",
+                )
+            )
 
         # Critical: no-shows today
         for s in today_shifts.filter(status='NO_SHOW')[:3]:
@@ -481,22 +561,42 @@ class DashboardSummaryView(APIView):
             lvl = str(it.get("level") or "OTHER").upper()
             counts_by_level[lvl] = counts_by_level.get(lvl, 0) + 1
 
-        # 5. Tasks Due Today (First 3 for dashboard)
-        tasks_due = ShiftTask.objects.filter(
+        # 5. Tasks Due Today: ShiftTasks, Dashboard Tasks, ProcessTasks, scheduling Task (merged, prioritized)
+        tasks_list = []
+        # ShiftTasks from shifts today
+        for t in ShiftTask.objects.filter(
             shift__schedule__restaurant=restaurant,
             shift__shift_date=today
-        ).exclude(status='COMPLETED').order_by('-priority', 'created_at')[:3]
-        
-        tasks_list = []
-        for t in tasks_due:
+        ).exclude(status='COMPLETED').order_by('-priority', 'created_at')[:5]:
             status_text = "OVERDUE" if t.priority == 'URGENT' and t.status != 'COMPLETED' else t.status
-            tasks_list.append({
-                "label": t.title,
-                "status": status_text,
-                "priority": t.priority
-            })
+            tasks_list.append({"label": t.title, "status": status_text, "priority": t.priority or 'MEDIUM'})
+        # Dashboard tasks due today
+        for t in DashboardTask.objects.filter(restaurant=restaurant, due_date=today).exclude(status__in=['COMPLETED', 'CANCELLED']).order_by('-priority', 'created_at')[:3]:
+            prio = getattr(t, 'priority', 'MEDIUM') or 'MEDIUM'
+            status_text = "OVERDUE" if prio == 'HIGH' and t.status not in ('COMPLETED', 'Completed') else t.status
+            tasks_list.append({"label": t.title, "status": status_text, "priority": prio})
+        # Scheduling Task (from task_templates) due today
+        try:
+            from scheduling.task_templates import Task as SchedulingTask
+            for t in SchedulingTask.objects.filter(restaurant=restaurant, due_date=today).exclude(status__in=['COMPLETED', 'CANCELLED']).order_by('-priority', 'created_at')[:3]:
+                prio = getattr(t, 'priority', 'MEDIUM') or 'MEDIUM'
+                tasks_list.append({"label": t.title, "status": t.status or "PENDING", "priority": prio})
+        except Exception:
+            pass
+        # ProcessTasks due today
+        try:
+            from scheduling.process_models import ProcessTask
+            for t in ProcessTask.objects.filter(process__restaurant=restaurant, due_date=today).exclude(status__in=['COMPLETED', 'CANCELLED']).select_related('process').order_by('-priority', 'created_at')[:3]:
+                prio = getattr(t, 'priority', 'MEDIUM') or 'MEDIUM'
+                tasks_list.append({"label": t.title, "status": t.status or "PENDING", "priority": prio})
+        except Exception:
+            pass
+        # Sort by priority (URGENT > HIGH > MEDIUM > LOW) and take top 5
+        prio_order = {'URGENT': 4, 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1}
+        tasks_list.sort(key=lambda x: prio_order.get(str(x.get('priority', 'MEDIUM')).upper(), 0), reverse=True)
+        tasks_list = tasks_list[:5]
 
-        # Morning no-shows: shifts with start_time before 12:00 that are NO_SHOW today
+        # Morning no-shows: explicit NO_SHOW with start before 12, plus potential (missed clock-in) for morning shifts
         morning_no_shows = 0
         try:
             morning_no_shows = AssignedShift.objects.filter(
@@ -505,16 +605,29 @@ class DashboardSummaryView(APIView):
                 status='NO_SHOW',
                 start_time__hour__lt=12
             ).count()
+            for s in AssignedShift.objects.filter(
+                schedule__restaurant=restaurant,
+                shift_date=today,
+                status__in=['SCHEDULED', 'CONFIRMED'],
+                staff__isnull=False,
+                start_time__hour__lt=12
+            ):
+                if s.start_time and s.start_time <= now - timedelta(minutes=grace_min):
+                    if not ClockEvent.objects.filter(staff_id=s.staff_id, event_type__in=['in', 'CLOCK_IN'], timestamp__date=today).exists():
+                        morning_no_shows += 1
         except Exception:
-            morning_no_shows = no_shows_count
+            morning_no_shows = total_no_shows
 
         data = {
             "attendance": {
                 "present_count": attendance_count,
                 "active_shifts": active_shifts_count,
-                "no_shows": morning_no_shows,
+                "no_shows": total_no_shows,
+                "morning_no_shows": morning_no_shows,
                 "shift_gaps": shift_gaps_count,
-                "ot_risk": ot_risk_count
+                "ot_risk": ot_risk_count,
+                "ot_risk_staff": ot_risk_staff,
+                "late_staff_today": late_staff_today
             },
             "operations": {
                 "negative_reviews": negative_reviews_count,

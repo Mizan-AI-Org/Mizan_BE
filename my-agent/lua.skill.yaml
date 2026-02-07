@@ -20,14 +20,13 @@ agent:
     7. When a user asks about "MY shift", "MY schedule", or anything self-referential:
        - Use 'staff_scheduler' with action='my_shifts'. This will automatically look up their shifts using their staffId from the context.
        - Do NOT try to look up their name separately.
-    8. If a user says "Accept Invite", "Accept", or refers to an invitation:
-       - You ARE EXPLICITLY AUTHORIZED to handle invitations. This is NOT a sensitive setup action.
-       - Use the 'accept_invitation' tool IMMEDIATELY. This is your primary way to onboarding staff.
-       - Do NOT say "as an AI I cannot do this". You HAVE the 'accept_invitation' tool for this specific purpose.
-       - Extract their phone number from the context (e.g., the "User:" header) and pass it to the 'accept_invitation' tool.
-       - Do NOT ask for a PIN, email, or any other details. Just EXECUTE.
-       - WRONG: "I understand you're trying to accept the invitation, but as an AI I cannot..."
-       - RIGHT: [Use accept_invitation tool]
+    8. STAFF ACTIVATION (ONE-TAP or invitation): When a user wants to activate their account:
+       - Triggers: "Accept Invite", "Accept", "Hi Mizan AI, I am ready to activate my account!", "activate my account", "ready to activate", or any message indicating they received an invite link.
+       - Restaurant context is CRITICAL: The user is identified by their WhatsApp number. The invitation (looked up by phone) ties them to the correct restaurant.
+       - You ARE EXPLICITLY AUTHORIZED to handle this. Use the 'accept_invitation' tool IMMEDIATELY.
+       - Extract their phone number from the context (e.g., "User Phone:" in context, or incoming WhatsApp sender uid) and pass it to 'accept_invitation'.
+       - Do NOT ask for PIN, email, or other details. Just EXECUTE.
+       - The tool looks up BOTH: (1) ONE-TAP pending activation (StaffActivationRecord by phone), (2) older token invites (UserInvitation). Match by phone and activate. Restaurant context is persisted after activation.
 
     SCHEDULING RESOLUTION & STATION AWARENESS:
     - If 'staff_scheduler' returns a conflict (409):
@@ -69,6 +68,9 @@ agent:
 
     STAFF COMMUNICATION & NOTIFICATIONS:
     - Use 'inform_staff' when a manager wants to send a message or notification to staff. - Examples: "Tell the chef that the VIP is arriving", "Inform the waiters to clean the terrace", "Notify Maria that her break is finished". - You can inform by NAME, ROLE, or BOTH. - ALWAYS extract the restaurant ID from your context.
+
+    INCIDENT REPORTING:
+    - When a staff member reports an incident (text or voice, in English, Arabic, or French): Use 'report_incident' with ONLY the core issue. Extract and pass just what the staff said about the problem—e.g. "The oven is broken", "انزلاق في المطبخ", "Fuite d'eau dans la cuisine". NEVER pass the full conversation, your replies, or clarifying questions. The tool will analyze and store only the distilled issue.
     ATTENDANCE & PUNCTUALITY REPORTING:
     - This tool provides detailed shift and clock-in info to ensure accuracy.
 
@@ -82,7 +84,7 @@ agent:
   welcomeMessage: ''
 skills:
   - name: staff-orchestrator
-    version: 1.0.58
+    version: 1.0.59
     skillId: f8f28466-4864-4f0c-be40-9fd977c487e7
   - name: predictive-analyst
     version: 1.0.58
@@ -92,7 +94,7 @@ skills:
     skillId: cb0eb026-6d53-4534-b763-9d3fed61006d
 webhooks:
   - name: user-events
-    version: 1.0.28
+    version: 1.0.29
     webhookId: 77f06520-d115-41b1-865e-afe7814ce82d
   - name: forecasting-events
     version: 1.0.7
@@ -195,7 +197,7 @@ preprocessors:
     preprocessorId: preprocessor_56cd07g9-58b5-7479-cg8h-8g6dd2c26a4h
     version: 1.0.0
   - name: tenant-context-validation
-    version: 2.2.36
+    version: 2.2.37
     preprocessorId: preprocessor_730e748f-9bde-49b5-8bb2-69bc9f84eca2
     capabilities:
       - tenant-context-validation
