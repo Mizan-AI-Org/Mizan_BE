@@ -677,6 +677,78 @@ class Holiday(models.Model):
     def __str__(self):
         return f"{self.name} on {self.date} ({self.restaurant.name})"
 
+
+class ShiftChecklistProgress(models.Model):
+    """
+    Persisted progress for WhatsApp/ShiftTask-based checklists.
+    Survives session loss (phone change, reinstall).
+    """
+    STATUS_CHOICES = (
+        ('IN_PROGRESS', 'In Progress'),
+        ('COMPLETED', 'Completed'),
+        ('CANCELLED', 'Cancelled'),
+    )
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    shift = models.ForeignKey(AssignedShift, on_delete=models.CASCADE, related_name='checklist_progress')
+    staff = models.ForeignKey('accounts.CustomUser', on_delete=models.CASCADE, related_name='shift_checklist_progress')
+    channel = models.CharField(max_length=20, default='whatsapp', blank=True)
+    phone = models.CharField(max_length=20, blank=True, db_index=True, help_text='WhatsApp phone for recovery')
+    task_ids = models.JSONField(default=list, help_text='Ordered list of ShiftTask IDs')
+    current_task_id = models.CharField(max_length=36, blank=True)
+    responses = models.JSONField(default=dict, help_text='task_id -> response (yes/no/n_a)')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='IN_PROGRESS', db_index=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'shift_checklist_progress'
+        unique_together = ['shift', 'staff']
+        indexes = [
+            models.Index(fields=['staff', 'status']),
+            models.Index(fields=['phone', 'status']),
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Checklist {self.shift_id} - {self.staff.get_full_name()} ({self.status})"
+
+
+class AgentMemory(models.Model):
+    """
+    Persistent memory for Miya: preferences, corrections, and key facts per restaurant.
+    Used for explainability, learning from corrections, and context across conversations.
+    """
+    MEMORY_TYPE_CHOICES = (
+        ('preference', 'Preference'),
+        ('correction', 'Correction'),
+        ('fact', 'Fact'),
+        ('pattern', 'Pattern'),
+    )
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='agent_memories')
+    memory_type = models.CharField(max_length=20, choices=MEMORY_TYPE_CHOICES, default='fact', db_index=True)
+    key = models.CharField(max_length=255, help_text='E.g. staff name, "no_maria_fridays", "default_breakfast_time"')
+    value = models.TextField(help_text='Stored fact or instruction')
+    scope = models.CharField(max_length=64, blank=True, help_text='Optional: staff_id, role, or date range')
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        'accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='agent_memories_created'
+    )
+
+    class Meta:
+        db_table = 'agent_memories'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['restaurant', 'memory_type']),
+            models.Index(fields=['restaurant', 'key']),
+        ]
+        verbose_name_plural = 'Agent memories'
+
+    def __str__(self):
+        return f"{self.get_memory_type_display()}: {self.key}"
+
+
 # Ensure task template models are registered with Django
 # This import loads models defined in scheduling/task_templates.py without circular imports
 from . import task_templates  # noqa: F401

@@ -16,6 +16,9 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
+# Lua webhooks may take time (template lookup + WhatsApp API). Use a generous timeout.
+LUA_WEBHOOK_TIMEOUT = 25
+
 
 class NotificationService:
     """Unified notification service (NO DUPLICATES)"""
@@ -162,7 +165,7 @@ class NotificationService:
     # LUA AGENT INTEGRATION
     # ------------------------------------------------------------------------------------
 
-    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link, role='staff'):
+    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link, role='staff', language='en'):
         """
         Notify Lua agent about a new staff invitation.
         This triggers Miya to send a WhatsApp template message.
@@ -179,13 +182,14 @@ class NotificationService:
             payload = {
                 "eventType": "staff_invite",
                 "staffId": f"invite_{str(invitation_token)[:8]}",
-                "staffName": first_name or "New Staff",
+                "staffName": first_name or "Staff Member",
                 "role": role.lower() if role else "staff",
                 "details": {
                     "phone": self._normalize_phone(phone),
                     "inviteLink": invite_link,
                     "restaurantName": restaurant_name,
-                    "invitationToken": invitation_token
+                    "invitationToken": invitation_token,
+                    "language": language
                 },
                 "timestamp": timezone.now().isoformat()
             }
@@ -200,7 +204,7 @@ class NotificationService:
             
             print(f"[LuaInvite] Calling webhook for {first_name} at {url}", file=sys.stderr)
             print(f"[LuaInvite] Payload: {json.dumps(payload)}", file=sys.stderr)
-            resp = requests.post(url, json=payload, headers=headers, timeout=5)
+            resp = requests.post(url, json=payload, headers=headers, timeout=LUA_WEBHOOK_TIMEOUT)
             print(f"[LuaInvite] Response: {resp.status_code} - {resp.text}", file=sys.stderr)
 
             try:
@@ -252,7 +256,7 @@ class NotificationService:
             }
             
             logger.info(f"[LuaAccept] Calling webhook for {first_name} at {url}")
-            resp = requests.post(url, json=payload, headers=headers, timeout=5)
+            resp = requests.post(url, json=payload, headers=headers, timeout=LUA_WEBHOOK_TIMEOUT)
             
             if resp.status_code in (200, 201):
                 return True, resp.json()
@@ -262,6 +266,50 @@ class NotificationService:
                 
         except Exception as e:
             logger.error(f"[LuaAccept] Unexpected error: {str(e)}")
+            return False, {"error": str(e)}
+
+    def send_lua_staff_activated(self, phone, first_name, restaurant_name, user_id, pin_code=None, batch_id=None):
+        """
+        ONE-TAP activation handoff: notify Lua agent that a staff account was just activated.
+        Miya sends the welcome message (schedule, clock in, checklists, updates). No outbound
+        message is sent from Django before this; the first message from the user triggered activation.
+        """
+        try:
+            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
+            import os
+            lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
+            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"
+            url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
+            if not url:
+                url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
+            payload = {
+                "eventType": "staff_activated",
+                "staffId": user_id,
+                "staffName": first_name or "Staff",
+                "details": {
+                    "phoneNumber": self._normalize_phone(phone),
+                    "restaurantName": restaurant_name,
+                    "userId": user_id,
+                    "pinCode": pin_code,
+                    "batchId": batch_id or "",
+                },
+                "timestamp": timezone.now().isoformat(),
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {lua_api_key}",
+                "Api-Key": lua_api_key,
+                "x-api-key": LUA_WEBHOOK_API_KEY,
+                "x-role": "manager",
+            }
+            logger.info(f"[LuaStaffActivated] Handoff for {first_name} at {restaurant_name}")
+            resp = requests.post(url, json=payload, headers=headers, timeout=LUA_WEBHOOK_TIMEOUT)
+            if resp.status_code in (200, 201):
+                return True, (resp.json() if resp.text else {})
+            logger.warning(f"[LuaStaffActivated] Failed: {resp.status_code} - {resp.text}")
+            return False, {"error": resp.text, "status_code": resp.status_code}
+        except Exception as e:
+            logger.error(f"[LuaStaffActivated] Unexpected error: {str(e)}")
             return False, {"error": str(e)}
 
     def send_lua_incident(self, user, description, metadata=None):
@@ -305,7 +353,7 @@ class NotificationService:
             }
             
             logger.info(f"[LuaIncident] Calling webhook for {user.get_full_name()} at {url}")
-            resp = requests.post(url, json=payload, headers=headers, timeout=5)
+            resp = requests.post(url, json=payload, headers=headers, timeout=LUA_WEBHOOK_TIMEOUT)
             
             if resp.status_code in (200, 201):
                 return True, resp.json()
@@ -508,6 +556,11 @@ class NotificationService:
             return False
 
     def send_whatsapp_invitation(self, phone, first_name, restaurant_name, invite_link, support_contact):
+        """
+        Send WhatsApp template via Meta API directly.
+        Do NOT use for staff invites: staff invitations must go through Miya (Lua agent)
+        via send_lua_staff_invite() so the approved Lua template (e.g. staff_invitation) is used.
+        """
         try:
             token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
             phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)

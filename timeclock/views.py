@@ -11,6 +11,7 @@ from .models import ClockEvent
 from .serializers import ClockEventSerializer, ClockInSerializer, ShiftSerializer
 from accounts.models import CustomUser, AuditLog
 from accounts.views import get_client_ip
+from accounts.permissions import IsAdminOrManager
 from scheduling.models import AssignedShift
 import base64  # <--- ADD THIS IMPORT
 from django.core.files.base import ContentFile  # <--- ADD THIS IMPORT
@@ -789,6 +790,88 @@ def attendance_history(request, user_id=None):
         attendance_records.append(current_session)
         
     return Response(attendance_records)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated, IsAdminOrManager])
+def manager_clock_in(request, staff_id):
+    """
+    Manager/admin/super_admin clocks in a staff member (e.g. lost phone).
+    No geolocation required.
+    """
+    staff = get_object_or_404(CustomUser, id=staff_id, is_active=True)
+    if not staff.restaurant_id or staff.restaurant_id != request.user.restaurant_id:
+        return Response({'error': 'Staff not in your restaurant'}, status=status.HTTP_403_FORBIDDEN)
+    last_event = ClockEvent.objects.filter(staff=staff).order_by('-timestamp').first()
+    if last_event and last_event.event_type == 'in':
+        return Response({
+            'error': 'Staff is already clocked in',
+            'last_clock_in': last_event.timestamp.isoformat()
+        }, status=status.HTTP_400_BAD_REQUEST)
+    clock_event = ClockEvent.objects.create(
+        staff=staff,
+        event_type='in',
+        device_id=request.META.get('HTTP_USER_AGENT', ''),
+        notes=f"Manager override (clock-in by {request.user.get_full_name()}) - lost phone",
+    )
+    try:
+        AuditLog.create_log(
+            restaurant=request.user.restaurant,
+            user=request.user,
+            action_type='CREATE',
+            entity_type='CLOCK_EVENT',
+            entity_id=str(clock_event.id),
+            description=f'Manager clock-in for staff {staff.get_full_name()} (lost phone)',
+            old_values={},
+            new_values={'staff_id': str(staff.id), 'staff_name': staff.get_full_name()},
+            ip_address=get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
+        )
+    except Exception:
+        pass
+    return Response(ClockEventSerializer(clock_event).data, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated, IsAdminOrManager])
+def manager_clock_out(request, staff_id):
+    """
+    Manager/admin/super_admin clocks out a staff member (e.g. lost phone).
+    No geolocation required.
+    """
+    staff = get_object_or_404(CustomUser, id=staff_id, is_active=True)
+    if not staff.restaurant_id or staff.restaurant_id != request.user.restaurant_id:
+        return Response({'error': 'Staff not in your restaurant'}, status=status.HTTP_403_FORBIDDEN)
+    last_event = ClockEvent.objects.filter(staff=staff).order_by('-timestamp').first()
+    if not last_event or last_event.event_type != 'in':
+        return Response({'error': 'Staff is not clocked in'}, status=status.HTTP_400_BAD_REQUEST)
+    duration = timezone.now() - last_event.timestamp
+    clock_event = ClockEvent.objects.create(
+        staff=staff,
+        event_type='out',
+        device_id=request.META.get('HTTP_USER_AGENT', ''),
+        notes=f"Manager override (clock-out by {request.user.get_full_name()}) - lost phone",
+    )
+    try:
+        AuditLog.create_log(
+            restaurant=request.user.restaurant,
+            user=request.user,
+            action_type='CREATE',
+            entity_type='CLOCK_EVENT',
+            entity_id=str(clock_event.id),
+            description=f'Manager clock-out for staff {staff.get_full_name()} (lost phone)',
+            old_values={},
+            new_values={'staff_id': str(staff.id), 'staff_name': staff.get_full_name(), 'duration_hours': round(duration.total_seconds() / 3600, 2)},
+            ip_address=get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
+        )
+    except Exception:
+        pass
+    return Response({
+        **ClockEventSerializer(clock_event).data,
+        'total_hours': round(duration.total_seconds() / 3600, 2),
+    }, status=status.HTTP_201_CREATED)
+
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])

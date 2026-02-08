@@ -8,12 +8,11 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from accounts.permissions import IsAdminOrManager
 from rest_framework.parsers import MultiPartParser, FormParser
-import sys
 import logging
 import json
 
 logger = logging.getLogger(__name__)
-from .models import Notification, NotificationPreference, DeviceToken, NotificationAttachment, NotificationIssue
+from .models import Notification, NotificationPreference, DeviceToken, NotificationAttachment, NotificationIssue, WhatsAppMessageProcessed
 from .serializers import (
     NotificationSerializer, 
     NotificationPreferenceSerializer,
@@ -26,11 +25,80 @@ from scheduling.audit import AuditTrailService, AuditActionType, AuditSeverity
 from core.utils import build_tenant_context
 from .models import WhatsAppSession
 from accounts.models import CustomUser
-from accounts.services import UserManagementService, sync_user_to_lua_agent, try_activate_staff_on_inbound_message
+from accounts.services import UserManagementService, try_activate_staff_on_inbound_message
 from timeclock.models import ClockEvent
-from scheduling.models import ShiftTask
+from scheduling.models import ShiftTask, AssignedShift, ShiftChecklistProgress
 from django.conf import settings as dj_settings
 from core.i18n import whatsapp_language_code
+
+
+def _sync_checklist_progress_create(shift, staff, phone_digits, task_ids):
+    """Create ShiftChecklistProgress when starting a WhatsApp checklist."""
+    try:
+        ShiftChecklistProgress.objects.update_or_create(
+            shift=shift,
+            staff=staff,
+            defaults={
+                'channel': 'whatsapp',
+                'phone': phone_digits,
+                'task_ids': task_ids,
+                'current_task_id': task_ids[0] if task_ids else '',
+                'responses': {},
+                'status': 'IN_PROGRESS',
+            }
+        )
+    except Exception as e:
+        logger.warning("ShiftChecklistProgress create failed: %s", e)
+
+
+def _sync_checklist_progress_update(shift_id, staff, checklist_dict):
+    """Update ShiftChecklistProgress when checklist state changes."""
+    if not shift_id or not staff:
+        return
+    try:
+        shift_obj = AssignedShift.objects.filter(id=shift_id).first()
+        if not shift_obj:
+            return
+        prog = ShiftChecklistProgress.objects.filter(
+            shift=shift_obj, staff=staff, status='IN_PROGRESS'
+        ).first()
+        if prog:
+            prog.task_ids = checklist_dict.get('tasks', prog.task_ids)
+            prog.current_task_id = checklist_dict.get('current_task_id', '')
+            prog.responses = checklist_dict.get('responses', {})
+            prog.save(update_fields=['task_ids', 'current_task_id', 'responses', 'updated_at'])
+    except Exception as e:
+        logger.warning("ShiftChecklistProgress update failed: %s", e)
+
+
+def _sync_checklist_progress_complete(shift_id, staff):
+    """Mark ShiftChecklistProgress as completed when checklist is done."""
+    if not shift_id or not staff:
+        return
+    try:
+        shift_obj = AssignedShift.objects.filter(id=shift_id).first()
+        if not shift_obj:
+            return
+        ShiftChecklistProgress.objects.filter(
+            shift=shift_obj, staff=staff, status='IN_PROGRESS'
+        ).update(status='COMPLETED', completed_at=timezone.now())
+    except Exception as e:
+        logger.warning("ShiftChecklistProgress complete failed: %s", e)
+
+
+def _sync_checklist_progress_cancel(shift_id, staff):
+    """Mark ShiftChecklistProgress as cancelled (shift ended, etc)."""
+    if not shift_id or not staff:
+        return
+    try:
+        shift_obj = AssignedShift.objects.filter(id=shift_id).first()
+        if not shift_obj:
+            return
+        ShiftChecklistProgress.objects.filter(
+            shift=shift_obj, staff=staff, status='IN_PROGRESS'
+        ).update(status='CANCELLED', completed_at=timezone.now())
+    except Exception as e:
+        logger.warning("ShiftChecklistProgress cancel failed: %s", e)
 
 
 class NotificationPagination(PageNumberPagination):
@@ -134,7 +202,6 @@ def mark_notification_read(request, notification_id):
 @parser_classes([MultiPartParser, FormParser])
 def create_announcement(request):
     """Create and send announcement to all restaurant staff"""
-    print("Creating announcement...", file=sys.stderr)
     try:
         ctx = build_tenant_context(request)
         if not ctx:
@@ -177,7 +244,7 @@ def create_announcement(request):
                     'scheduled_for': schedule_for.isoformat(),
                 }
                 notification.save(update_fields=['delivery_status'])
-            print("Announcement scheduled for future delivery.", file=sys.stderr)
+            logger.info("Announcement scheduled for future delivery.")
         else:
             # Send via notification service for immediate delivery with multi-channel support
             # Channels can be provided as list in request.data['channels']
@@ -193,7 +260,7 @@ def create_announcement(request):
                 channels=channels,
                 override_preferences=override
                 )
-            print("Announcement sent via notification service..", file=sys.stderr)
+            logger.info("Announcement sent via notification service.")
         
         return Response({
             'success': True,
@@ -574,6 +641,14 @@ def whatsapp_webhook(request):
                 messages = value.get('messages', [])
                 
                 for msg in messages:
+                    wamid = msg.get('id')
+                    if wamid:
+                        if WhatsAppMessageProcessed.objects.filter(wamid=wamid).exists():
+                            continue  # Idempotency: already processed
+                        WhatsAppMessageProcessed.objects.get_or_create(
+                            wamid=wamid,
+                            defaults={'channel': 'whatsapp', 'processed_at': timezone.now()}
+                        )
                     from_phone = msg.get('from')
                     msg_type = msg.get('type')
                     text_body = (msg.get('text') or {}).get('body') if msg_type == 'text' else None
@@ -583,16 +658,25 @@ def whatsapp_webhook(request):
                     # ONE-TAP activation: on first inbound message, match NOT_ACTIVATED staff by phone and activate
                     activated_user = try_activate_staff_on_inbound_message(phone_digits)
                     if activated_user:
-                        session, _ = WhatsAppSession.objects.get_or_create(phone=phone_digits, defaults={'user': activated_user})
-                        if session.user_id != activated_user.id:
-                            session.user = activated_user
-                            session.save(update_fields=['user'])
+                        session, _ = WhatsAppSession.objects.update_or_create(
+                            phone=phone_digits,
+                            defaults={'user': activated_user, 'state': 'idle'}
+                        )
                         # Handoff done; Miya sends welcome. Skip further processing for this message.
                         continue
-                    # Match last 9 digits to be safe (or 10)
-                    user = CustomUser.objects.filter(phone__isnull=False).filter(phone__regex=r'\d').filter(phone__icontains=phone_digits[-9:]).first()
-                    
-                    session, _ = WhatsAppSession.objects.get_or_create(phone=phone_digits, defaults={'user': user})
+                    # Resolve user: prefer session's user (restaurant-scoped); else match by phone
+                    session = WhatsAppSession.objects.filter(phone=phone_digits).first()
+                    user = session.user if (session and session.user_id) else None
+                    if not user:
+                        qs = CustomUser.objects.filter(phone__isnull=False).filter(phone__regex=r'\d')
+                        if session and session.user_id and getattr(session.user, 'restaurant_id', None):
+                            qs = qs.filter(restaurant_id=session.user.restaurant_id)
+                        user = qs.filter(phone__icontains=phone_digits[-9:]).first()
+                    if not session:
+                        session = WhatsAppSession.objects.create(phone=phone_digits, user=user)
+                    elif user and not session.user_id:
+                        session.user = user
+                        session.save(update_fields=['user'])
                     if user and session.user is None:
                         session.user = user
                         session.save(update_fields=['user'])
@@ -635,11 +719,31 @@ def whatsapp_webhook(request):
                                     last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
                                     if last_event and last_event.event_type == 'in':
                                         duration = (timezone.now() - last_event.timestamp).total_seconds() / 3600
+                                        restaurant = user.restaurant
+                                        notes = "WhatsApp clock-out without location - unverified"
+                                        lat, lon, within_geofence = None, None, False
+                                        if restaurant and restaurant.latitude and restaurant.longitude and restaurant.radius:
+                                            loc_msg = msg.get('location') or (msg.get('interactive', {}).get('location') if msg.get('type') == 'interactive' else None)
+                                            if loc_msg:
+                                                lat = loc_msg.get('latitude')
+                                                lon = loc_msg.get('longitude')
+                                            if lat is not None and lon is not None:
+                                                from accounts.utils import calculate_distance
+                                                dist = calculate_distance(
+                                                    float(restaurant.latitude), float(restaurant.longitude),
+                                                    float(lat), float(lon)
+                                                )
+                                                radius = float(restaurant.radius or 100)
+                                                within_geofence = dist <= radius
+                                                notes = f"WhatsApp clock-out | distance={dist:.0f}m, geofence={'OK' if within_geofence else 'OUTSIDE'}"
                                         ClockEvent.objects.create(
-                                            staff=user, 
-                                            event_type='out', 
+                                            staff=user,
+                                            event_type='out',
                                             device_id='whatsapp',
-                                            location_encrypted="PRECISE_GPS" # Placeholder
+                                            latitude=lat,
+                                            longitude=lon,
+                                            notes=notes,
+                                            location_encrypted='PRECISE_GPS' if within_geofence else 'UNVERIFIED',
                                         )
                                         # Send summary and ask for feedback
                                         summary_msg = (
@@ -682,6 +786,7 @@ def whatsapp_webhook(request):
                                     responses[current_task_id] = response_value
                                     checklist['responses'] = responses
                                     session.context['checklist'] = checklist
+                                    _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
                                     
                                     # Update ShiftTask status based on response
                                     try:
@@ -692,6 +797,7 @@ def whatsapp_webhook(request):
                                             sft = AssignedShift.objects.filter(id=checklist.get('shift_id')).first()
                                             if sft and sft.end_time and timezone.now() > sft.end_time:
                                                 notification_service.send_whatsapp_text(phone_digits, "⏱️ Shift ended. Checklist paused.")
+                                                _sync_checklist_progress_cancel(checklist.get('shift_id'), user)
                                                 session.context.pop('checklist', None)
                                                 session.state = 'idle'
                                                 session.save(update_fields=['state', 'context'])
@@ -758,6 +864,7 @@ def whatsapp_webhook(request):
                                             "Great job! Have a productive shift."
                                         )
                                         notification_service.send_whatsapp_text(phone_digits, completion_msg)
+                                        _sync_checklist_progress_complete(checklist.get('shift_id'), user)
                                         session.context.pop('checklist', None)
                                         session.state = 'idle'
                                         session.save(update_fields=['state', 'context'])
@@ -772,6 +879,7 @@ def whatsapp_webhook(request):
                                     next_task_id = next_task_id or str(pending_tasks[0].id)
                                     checklist['current_task_id'] = next_task_id
                                     session.context['checklist'] = checklist
+                                    _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
                                     session.save(update_fields=['context'])
 
                                     next_task = ShiftTask.objects.filter(id=next_task_id).first()
@@ -857,131 +965,6 @@ def whatsapp_webhook(request):
                                 notification_service.send_whatsapp_text(phone_digits, "Thanks — marked as delayed. Continuing.")
                                 continue
 
-
-                            nfm_reply = interactive.get('nfm_reply', {})
-                            response_json_str = nfm_reply.get('response_json', '{}')
-                            try:
-                                flow_data = json.loads(response_json_str)
-                                if flow_data.get('invite_accepted') == 'yes':
-                                    # Delegate to Lua Agent for invitation acceptance
-                                    flow_token = nfm_reply.get('flow_token')
-                                    if flow_token:
-                                        from accounts.models import UserInvitation
-                                        invitation = UserInvitation.objects.filter(invitation_token=flow_token).first()
-                                        if invitation:
-                                            # Update first name if provided in flow
-                                            entered_name = flow_data.get('name') or flow_data.get('first_name')
-                                            if entered_name:
-                                                invitation.first_name = entered_name
-                                                invitation.save(update_fields=['first_name'])
-                                            
-                                            # IMMEDIATE FOLLOW-UP (Requested by user)
-                                            notification_service.send_whatsapp_template(
-                                                phone_digits,
-                                                template_name='accepted_invite_confirmation',
-                                                language_code=whatsapp_language_code(getattr(invitation.restaurant, 'language', 'en'))
-                                            )
-                                            
-                                            # AUTOMATIC ACCEPTANCE: Create user account immediately
-                                            user, error = UserManagementService.accept_invitation(
-                                                token=invitation.invitation_token,
-                                                first_name=invitation.first_name,
-                                                last_name=invitation.last_name or "Staff"
-                                            )
-                                            
-                                            if user:
-                                                logger.info(f"User {user.email} created automatically via WhatsApp accept")
-                                                # Log in for the user or just sync? 
-                                                # For now, we sync with a placeholder/empty token or none
-                                                # sync_user_to_lua_agent(user, access_token=None)
-                                                
-                                                # Delegate to Lua Agent for welcome message
-                                                ok, agent_response = notification_service.send_lua_invitation_accepted(
-                                                    invitation_token=invitation.invitation_token,
-                                                    phone=phone_digits,
-                                                    first_name=user.first_name,
-                                                    flow_data=flow_data,
-                                                    language=getattr(invitation.restaurant, 'language', 'en')
-                                                )
-                                            else:
-                                                logger.error(f"Failed to automatically create user via WhatsApp: {error}")
-                                                ok = False
-                                                notification_service.send_whatsapp_text(
-                                                    phone_digits,
-                                                    f"Sorry, there was an issue creating your account: {error}. Please contact support."
-                                                )
-                                            
-                                            # Update delivery log
-                                            from accounts.models import InvitationDeliveryLog
-                                            log = InvitationDeliveryLog.objects.filter(invitation=invitation, channel='whatsapp').first()
-                                            if log:
-                                                log.status = 'ACCEPTED' if ok else 'FAILED'
-                                                log.save(update_fields=['status'])
-                            except Exception as e:
-                                logger.error(f"Flow response error: {e}")
-                            continue
-
-                    # ══════════════════════════════════════════════════════════════════
-                    # 5. HANDLE TEXT MESSAGES (Accept Invitation Fallback)
-                    # ══════════════════════════════════════════════════════════════════
-                    if msg_type == 'text' and text_body:
-                        normalized_body = text_body.strip().lower()
-                        if normalized_body in ['accept invite', 'accept invitation', 'accept']:
-                            from accounts.models import UserInvitation
-                            from django.db.models import Q
-                            
-                            print(f"DEBUG: WhatsApp Accept Text from {phone_digits}", file=sys.stderr)
-                            
-                            # Lookup pending invitation for this phone number
-                            # (Search in extra_data where we store invitation phone)
-                            # We search for the digits string itself in the JSON dump as a fallback
-                            invitation = UserInvitation.objects.filter(
-                                is_accepted=False,
-                                expires_at__gt=timezone.now()
-                            ).filter(
-                                Q(extra_data__phone__icontains=phone_digits[-9:]) | 
-                                Q(extra_data__phone_number__icontains=phone_digits[-9:]) |
-                                Q(extra_data__icontains=phone_digits[-9:])
-                            ).first()
-
-                            if invitation:
-                                print(f"DEBUG: Found invitation {invitation.id}", file=sys.stderr)
-                                
-                                # IMMEDIATE FOLLOW-UP
-                                notification_service.send_whatsapp_template(
-                                    phone_digits,
-                                    template_name='accepted_invite_confirmation',
-                                    language_code=whatsapp_language_code(getattr(invitation.restaurant, 'language', 'en'))
-                                )
-                                
-                                # AUTOMATIC ACCEPTANCE
-                                user, error = UserManagementService.accept_invitation(
-                                    token=invitation.invitation_token,
-                                    first_name=invitation.first_name,
-                                    last_name=invitation.last_name or "Staff"
-                                )
-                                
-                                if user:
-                                    logger.info(f"User {user.email} created automatically via text command")
-                                    # Notify Lua Agent for welcome
-                                    notification_service.send_lua_invitation_accepted(
-                                        invitation_token=invitation.invitation_token,
-                                        phone=phone_digits,
-                                        first_name=user.first_name,
-                                        flow_data={'method': 'text_command'},
-                                        language=getattr(invitation.restaurant, 'language', 'en')
-                                    )
-                                    continue # Message handled
-                                else:
-                                    logger.error(f"Failed to auto-create user via text: {error}")
-                                    notification_service.send_whatsapp_text(
-                                        phone_digits,
-                                        f"Sorry, there was an issue creating your account: {error}. Please contact support."
-                                    )
-                                    continue
-                            else:
-                                logger.warning(f"No pending invitation found for {phone_digits} matching '{text_body}'")
-                                # Let it fall through to unrecognized or agent
 
                     # ------------------------------------------------------------------
                     # 2. HANDLE IMAGE (Verification)
@@ -1323,12 +1306,14 @@ def whatsapp_webhook(request):
                                             'responses': {},
                                             'started_at': timezone.now().isoformat()
                                         }
+                                        _sync_checklist_progress_create(active_shift, user, phone_digits, task_ids)
                                         session.state = 'in_checklist'
                                         session.save(update_fields=['state', 'context'])
 
                                         # If shift ended already, don't start
                                         if active_shift.end_time and timezone.now() > active_shift.end_time:
                                             notification_service.send_whatsapp_text(phone_digits, "⏱️ This shift has already ended. No checklist to run.")
+                                            _sync_checklist_progress_cancel(str(active_shift.id), user)
                                             session.context.pop('checklist', None)
                                             session.state = 'idle'
                                             session.save(update_fields=['state', 'context'])
@@ -1401,6 +1386,7 @@ def whatsapp_webhook(request):
                             task_ids = checklist.get('tasks', [])
                             pending = list(ShiftTask.objects.filter(id__in=task_ids).exclude(status__in=['COMPLETED', 'CANCELLED']))
                             if not pending:
+                                _sync_checklist_progress_complete(checklist.get('shift_id'), user)
                                 session.context.pop('checklist', None)
                                 session.state = 'idle'
                                 session.save(update_fields=['state', 'context'])
@@ -1415,6 +1401,7 @@ def whatsapp_webhook(request):
                                 next_id = next_id or str(pending[0].id)
                                 checklist['current_task_id'] = next_id
                                 session.context['checklist'] = checklist
+                                _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
                                 session.save(update_fields=['context'])
                                 nxt = ShiftTask.objects.filter(id=next_id).first()
                                 if nxt:
@@ -1762,7 +1749,7 @@ def whatsapp_webhook(request):
 
         return Response({'success': True})
     except Exception as e:
-        print(f"Webhook Error: {e}", file=sys.stderr)
+        logger.error("Webhook error: %s", e, exc_info=True)
         return Response({'success': False, 'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 

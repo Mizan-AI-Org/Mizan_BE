@@ -4,19 +4,22 @@ import ApiService from "../../services/ApiService";
 
 export default class StaffSchedulerTool implements LuaTool {
     name = "staff_scheduler";
-    description = "Schedule staff shifts. Use 'my_shifts' for the user's own shifts. When the user specifies a role (e.g. 'the chef', 'Outmane Jebari (CHEF)'), ALWAYS pass role so similar names are disambiguated. For 'any available staff', first use staff_lookup with no name to get the full list, then schedule by name+role. Lunch 12:00-15:00; dinner 19:00-23:00; breakfast 07:00-10:30.";
+    description = "Schedule staff shifts. Use 'my_shifts' for the user's own shifts. When the user specifies a role (e.g. 'the chef', 'Outmane Jebari (CHEF)'), ALWAYS pass role so similar names are disambiguated. For 'any available staff', first use staff_lookup with no name to get the full list, then schedule by name+role. Lunch 12:00-15:00; dinner 19:00-23:00; breakfast 07:00-10:30. When a requested task template doesn't exist, use create_task_template to create the perfect template for that shift, then create_shift with task_template_ids.";
 
     inputSchema = z.object({
-        action: z.enum(["list_shifts", "create_shift", "update_shift", "check_availability", "get_staff", "my_shifts"]).describe("The action to perform. Use 'my_shifts' for the user's own shifts."),
+        action: z.enum(["list_shifts", "create_shift", "update_shift", "check_availability", "get_staff", "my_shifts", "list_task_templates", "create_task_template", "attach_templates_to_shift"]).describe("The action to perform. Use 'my_shifts' for the user's own shifts. Use 'list_task_templates' to see available templates. Use 'create_task_template' when a requested template doesn't exist - Miya creates the perfect template for that shift. Use 'attach_templates_to_shift' to add templates to an existing shift."),
         staff_names: z.array(z.string()).optional().describe("Names of the staff members (fuzzy match). Support multiple names to avoid 'single staff' errors."),
         staff_name: z.string().optional().describe("DEPRECATED: Use staff_names instead. Name of a single staff member."),
         date: z.string().optional().describe("Date of the shift (YYYY-MM-DD)."),
         start_time: z.string().optional().describe("Start time (HH:MM)."),
         end_time: z.string().optional().describe("End time (HH:MM)."),
         role: z.string().optional().describe("Role for the shift; also use to disambiguate when multiple staff have similar names (e.g. 'CHEF' for 'the chef', 'Outmane Jebari (CHEF)')"),
-        shift_id: z.string().optional().describe("ID of the shift to update"),
+        shift_id: z.string().optional().describe("ID of the shift (for update_shift or attach_templates_to_shift)."),
         notes: z.string().optional().describe("Notes for the shift"),
         workspace_location: z.string().optional().describe("Specific workspace/station assignment (e.g., 'Kitchen', 'Bar', 'Terrace')"),
+        task_template_ids: z.array(z.string()).optional().describe("UUIDs of task/process templates to assign to this shift. Use list_task_templates first to get IDs when manager says 'assign the opening checklist' or 'include kitchen cleaning tasks'."),
+        template_name: z.string().optional().describe("Name for a new template (for create_task_template)."),
+        template_tasks: z.array(z.object({ title: z.string(), description: z.string().optional(), priority: z.string().optional() })).optional().describe("Tasks for create_task_template: [{title, description?, priority?}]."),
         restaurantId: z.string().optional().describe("Restaurant ID from [SYSTEM: PERSISTENT CONTEXT]; omit if context has it."),
         is_recurring: z.boolean().optional().describe("Whether this shift should be recurring"),
         frequency: z.enum(["DAILY", "WEEKLY"]).optional().describe("Recurrence frequency"),
@@ -154,6 +157,62 @@ export default class StaffSchedulerTool implements LuaTool {
                     };
                 }
 
+                case "list_task_templates": {
+                    const { task_templates } = await apiService.getTaskTemplatesForAgent(restaurantId, token);
+                    return {
+                        status: "success",
+                        message: task_templates.length ? `Found ${task_templates.length} task template(s). Use task_template_ids when creating a shift to assign them.` : "No task templates available. Use create_task_template to create the perfect template for that shift.",
+                        task_templates: task_templates.map((t: any) => ({ id: t.id, name: t.name, template_type: t.template_type }))
+                    };
+                }
+
+                case "create_task_template": {
+                    const name = (input.template_name || "").trim();
+                    if (!name) return { status: "error", message: "Missing template_name for create_task_template." };
+                    const tasksRaw = input.template_tasks || [];
+                    if (!Array.isArray(tasksRaw) || tasksRaw.length === 0) {
+                        return { status: "error", message: "Missing template_tasks. Provide array of {title, description?, priority?} - e.g. [{title: 'Arrive and confirm station', priority: 'HIGH'}]." };
+                    }
+                    const tasks = tasksRaw.map((t: any) => ({
+                        title: String(t?.title || "").trim(),
+                        description: t?.description ? String(t.description).trim() : undefined,
+                        priority: t?.priority ? String(t.priority).toUpperCase() : "MEDIUM",
+                    })).filter((t: { title: string }) => t.title.length > 0);
+                    if (tasks.length === 0) return { status: "error", message: "At least one task with a title is required." };
+                    const result = await apiService.createTaskTemplateForAgent({
+                        restaurant_id: restaurantId,
+                        name,
+                        tasks,
+                        template_type: "CUSTOM",
+                    }, token);
+                    if (!result.success || !result.task_template) {
+                        return { status: "error", message: result.error || "Failed to create task template." };
+                    }
+                    return {
+                        status: "success",
+                        message: `Created template "${result.task_template.name}" with ${result.task_template.tasks_count} task(s). Use task_template_ids=[${result.task_template.id}] when creating shifts.`,
+                        task_template: result.task_template,
+                    };
+                }
+
+                case "attach_templates_to_shift": {
+                    const shiftId = input.shift_id?.trim();
+                    const ids = input.task_template_ids || [];
+                    if (!shiftId) return { status: "error", message: "Missing shift_id for attach_templates_to_shift." };
+                    if (!Array.isArray(ids) || ids.length === 0) return { status: "error", message: "Missing task_template_ids (array of template UUIDs)." };
+                    const result = await apiService.attachTemplatesToShiftForAgent({
+                        restaurant_id: restaurantId,
+                        shift_id: shiftId,
+                        task_template_ids: ids.map(String).filter(Boolean),
+                    }, token);
+                    if (!result.success) return { status: "error", message: result.error || "Failed to attach templates to shift." };
+                    return {
+                        status: "success",
+                        message: `Attached ${result.attached_templates?.length || 0} template(s) to shift.`,
+                        attached_templates: result.attached_templates,
+                    };
+                }
+
                 case "list_shifts": {
                     const params: any = {};
                     if (input.date) {
@@ -278,7 +337,8 @@ export default class StaffSchedulerTool implements LuaTool {
                                     end_time: input.end_time,
                                     role: finalRole,
                                     notes: input.notes,
-                                    workspace_location: input.workspace_location
+                                    workspace_location: input.workspace_location,
+                                    task_template_ids: input.task_template_ids && input.task_template_ids.length > 0 ? input.task_template_ids : undefined,
                                 }, token);
 
                                 if (result.success) {
@@ -356,14 +416,17 @@ export default class StaffSchedulerTool implements LuaTool {
                     return { status: "error", message: "Invalid action" };
             }
         } catch (error: any) {
-            const msg = error.message || "";
+            const msg = (error?.message || "").toString();
             if (/restaurant context|resolve restaurant|Unable to resolve/i.test(msg)) {
-                return {
-                    status: "error",
-                    message: "I couldn't access your restaurant settings for scheduling right now. Please try again in a moment, or make sure you're logged in through the Mizan dashboard."
-                };
+                return { status: "error", message: "I couldn't access your restaurant settings for scheduling right now. Please try again in a moment, or make sure you're logged in through the Mizan dashboard." };
             }
-            return { status: "error", message: `The scheduling system encountered a technical error: ${msg}. Please report this if it persists.` };
+            if (/network|timeout|ECONNREFUSED|Could not retrieve/i.test(msg)) {
+                return { status: "error", message: "I couldn't reach the scheduling service right now. Please check your connection and try again." };
+            }
+            if (/conflict|409|overlap/i.test(msg)) {
+                return { status: "error", message: msg }; // Keep conflict details for user
+            }
+            return { status: "error", message: "The scheduling system encountered an error. Please try again in a moment." };
         }
     }
 }

@@ -9,6 +9,7 @@ Handles:
 """
 import csv, io, sys, os
 import logging
+import random
 import secrets
 from datetime import timedelta
 from django.utils import timezone
@@ -20,7 +21,7 @@ from django.conf import settings
 from .models import (
     Restaurant, CustomUser, StaffProfile,
     Role, Permission, RolePermission, UserInvitation,
-    UserRole, AuditLog
+    UserRole, AuditLog, StaffActivationRecord,
 )
 from .tasks import send_whatsapp_invitation_task
 import requests
@@ -40,17 +41,23 @@ def sync_user_to_lua_agent(user, access_token):
     Sync user context to Lua agent after login.
     This provisions the user's Lua profile with restaurant context and JWT token,
     enabling Miya to make API calls on behalf of the user.
+    Returns True on success, False on failure. Never raises; login proceeds regardless.
     """
+    import time
+    webhook_url = getattr(settings, 'LUA_USER_AUTHENTICATION_WEBHOOK', None)
+    if not webhook_url:
+        webhook_url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{LUA_USER_AUTH_WEBHOOK_ID}"
+
+    lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '').strip()
+    if not lua_api_key:
+        logger.warning(
+            "[LuaSync] Skipping sync for %s: LUA_API_KEY is not configured. "
+            "Set LUA_API_KEY in .env to enable Miya context sync.",
+            user.email
+        )
+        return False
+
     try:
-        # Use environment-based URL if available, otherwise fallback to legacy UUID
-        webhook_url = getattr(settings, 'LUA_USER_AUTHENTICATION_WEBHOOK', None)
-        if not webhook_url:
-            webhook_url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{LUA_USER_AUTH_WEBHOOK_ID}"
-        
-        # Get the Lua API key for Authorization header
-        lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-        
-        # Normalize mobile number
         mobile_number = getattr(user, 'phone', None)
         if mobile_number:
             mobile_number = ''.join(filter(str.isdigit, mobile_number))
@@ -73,31 +80,173 @@ def sync_user_to_lua_agent(user, access_token):
                 "language": effective_lang,
             }
         }
-        
+
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {lua_api_key}",
-            "Api-Key": lua_api_key,  # Legacy endpoint expects Api-Key
-            "x-api-key": LUA_WEBHOOK_API_KEY  # Our webhook's internal validation
+            "Api-Key": lua_api_key,
+            "x-api-key": LUA_WEBHOOK_API_KEY
         }
-        
-        logger.info(f"[LuaSync] Calling webhook for user {user.email} at {webhook_url}")
-        logger.info(f"[LuaSync] Using API key: {lua_api_key[:8]}... (truncated)")
-        response = requests.post(webhook_url, json=payload, headers=headers, timeout=5)
-        
-        if response.status_code in (200, 201):
-            logger.info(f"[LuaSync] Successfully synced user {user.email} to Lua agent")
-            return True
-        else:
-            logger.warning(f"[LuaSync] Failed to sync user {user.email}: {response.status_code} - {response.text}")
-            return False
-            
-    except requests.RequestException as e:
-        logger.warning(f"[LuaSync] Network error syncing user {user.email}: {str(e)}")
+
+        max_retries = 2
+        last_error = None
+
+        for attempt in range(max_retries + 1):
+            try:
+                response = requests.post(webhook_url, json=payload, headers=headers, timeout=10)
+                if response.status_code in (200, 201):
+                    logger.info("[LuaSync] Successfully synced user %s to Lua agent", user.email)
+                    return True
+                last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                logger.warning(
+                    "[LuaSync] Attempt %d/%d failed for %s: %s",
+                    attempt + 1, max_retries + 1, user.email, last_error
+                )
+                if attempt < max_retries:
+                    time.sleep(1)
+            except requests.RequestException as e:
+                last_error = str(e)
+                logger.warning(
+                    "[LuaSync] Attempt %d/%d network error for %s: %s",
+                    attempt + 1, max_retries + 1, user.email, last_error
+                )
+                if attempt < max_retries:
+                    time.sleep(1)
+
+        logger.error(
+            "[LuaSync] All %d attempts failed for %s. Last error: %s",
+            max_retries + 1, user.email, last_error
+        )
         return False
+
     except Exception as e:
-        logger.error(f"[LuaSync] Unexpected error syncing user {user.email}: {str(e)}")
+        logger.error(
+            "[LuaSync] Unexpected error syncing user %s: %s",
+            user.email, str(e),
+            exc_info=True
+        )
         return False
+
+
+def _normalize_phone_digits(phone):
+    """Return digits only from phone string (e.g. for lookup)."""
+    if not phone:
+        return ""
+    return "".join(filter(str.isdigit, str(phone)))
+
+
+def _phone_suffix(digits, length=9):
+    """Return last N digits for matching (handles local vs international format)."""
+    if not digits or len(digits) < 6:
+        return ""
+    return digits[-length:] if len(digits) >= length else digits
+
+
+def _find_staff_activation_record_by_phone(phone_digits):
+    """
+    Find a NOT_ACTIVATED StaffActivationRecord by phone using robust suffix matching.
+    Prefers exact match; falls back to last-9-digit suffix.
+    Handles: CSV "0784476751" vs WhatsApp "212784476751".
+    Returns record or None.
+    """
+    if not phone_digits or len(phone_digits) < 6:
+        return None
+    normalized = _normalize_phone_digits(phone_digits)
+    suffix = _phone_suffix(normalized)
+    # Fast path: exact digit match (stored normalized)
+    record = StaffActivationRecord.objects.filter(
+        status=StaffActivationRecord.STATUS_NOT_ACTIVATED
+    ).filter(phone=normalized).first()
+    if record:
+        return record
+    # Suffix match: stored phone ends with suffix
+    record = StaffActivationRecord.objects.filter(
+        status=StaffActivationRecord.STATUS_NOT_ACTIVATED
+    ).filter(phone__endswith=suffix).first()
+    if record:
+        return record
+    # Fallback: compare last 9 digits
+    for r in StaffActivationRecord.objects.filter(status=StaffActivationRecord.STATUS_NOT_ACTIVATED).only('id', 'phone'):
+        stored_digits = _normalize_phone_digits(r.phone)
+        if _phone_suffix(stored_digits) == suffix:
+            return r
+    return None
+
+
+def try_activate_staff_on_inbound_message(phone_digits):
+    """
+    ONE-TAP activation: on first inbound WhatsApp message, match by phone and activate.
+    Phone number is the ONLY identity; no tokens. Creates CustomUser, links session, hands off to Lua.
+    Returns CustomUser if activated, else None.
+    """
+    record = _find_staff_activation_record_by_phone(phone_digits)
+    if not record:
+        return None
+    full_phone = _normalize_phone_digits(record.phone) or phone_digits
+    with transaction.atomic():
+        record = StaffActivationRecord.objects.select_for_update().filter(
+            id=record.id, status=StaffActivationRecord.STATUS_NOT_ACTIVATED
+        ).first()
+        if not record:
+            return None  # Already activated by another process
+        email = f"wa_{full_phone}@mizan.activation"
+        if CustomUser.objects.filter(email=email).exists():
+            # Already activated (e.g. race or duplicate record)
+            existing = CustomUser.objects.get(email=email)
+            record.status = StaffActivationRecord.STATUS_ACTIVATED
+            record.user = existing
+            record.activated_at = timezone.now()
+            record.save(update_fields=["status", "user", "activated_at", "updated_at"])
+            return existing
+        pin_code = str(random.randint(1000, 9999))
+        user = CustomUser.objects.create_user(
+            email=email,
+            pin_code=pin_code,
+            first_name=record.first_name or "Staff",
+            last_name=record.last_name or "",
+            role=record.role,
+            restaurant=record.restaurant,
+            phone=full_phone,
+            is_verified=True,
+            is_active=True,
+        )
+        record.status = StaffActivationRecord.STATUS_ACTIVATED
+        record.user = user
+        record.activated_at = timezone.now()
+        record.save(update_fields=["status", "user", "activated_at", "updated_at"])
+        # Ensure StaffProfile exists (used elsewhere)
+        if not getattr(user, "profile", None):
+            StaffProfile.objects.get_or_create(user=user, defaults={})
+        # Log activation (timestamp, phone, batch_id)
+        try:
+            AuditLog.create_log(
+                restaurant=record.restaurant,
+                user=None,
+                action_type='OTHER',
+                entity_type='StaffActivationRecord',
+                entity_id=str(record.id),
+                description=f"Staff activated via ONE-TAP WhatsApp: phone={full_phone}, batch_id={getattr(record, 'batch_id', '') or ''}",
+                new_values={
+                    'phone': full_phone,
+                    'batch_id': getattr(record, 'batch_id', '') or '',
+                    'user_id': str(user.id),
+                    'activated_at': record.activated_at.isoformat() if record.activated_at else None,
+                },
+            )
+        except Exception:
+            pass
+        # Hand off to Lua for welcome message (no outbound from Django before this)
+        from notifications.services import notification_service
+        notification_service.send_lua_staff_activated(
+            phone=full_phone,
+            first_name=user.first_name or record.first_name or "Staff",
+            restaurant_name=record.restaurant.name,
+            user_id=str(user.id),
+            pin_code=pin_code,
+            batch_id=getattr(record, 'batch_id', '') or '',
+        )
+        logger.info(f"[ONE-TAP] Activated staff {user.id} for phone {full_phone} batch={getattr(record, 'batch_id', '')} ({record.restaurant.name})")
+        return user
 
 
 class UserManagementService:
@@ -134,8 +283,6 @@ class UserManagementService:
                 phone = (row.get('phone') or row.get('whatsapp') or row.get('phonenumber') or '').strip()
 
                 # Check if pending invitation already exists
-                    # logger.info(f"Row {idx}: checking existing invitation for {email}")
-
                 try:
                     existing_invite = UserInvitation.objects.filter(
                         restaurant=restaurant,
@@ -147,9 +294,7 @@ class UserManagementService:
                     import traceback
                     results['failed'] += 1
                     results['errors'].append(f"Row {idx}: DB query failed for {email} - {str(e)}")
-                    # logger.error(f"❌ ERROR in DB query (row {idx}): {e}")
-
-                    print(traceback.format_exc(), file=sys.stderr)
+                    logger.error(f"CSV bulk invite row {idx} DB error: {e}", exc_info=True)
                     continue  # skip this row
 
                 if existing_invite:
@@ -189,7 +334,7 @@ class UserManagementService:
                         UserManagementService._send_invitation_email(invitation)
                     except Exception as e:
                         results['errors'].append(f"Row {idx}: Email send failed for {email} - {str(e)}")
-                        print(f"❌ Email send failed (row {idx}): {e}", file=sys.stderr)
+                        logger.warning(f"CSV bulk invite row {idx} email failed: {e}")
 
                     results['success'] += 1
                     results['invitations'].append(invitation)
@@ -210,14 +355,12 @@ class UserManagementService:
                 except Exception as e:
                     results['failed'] += 1
                     results['errors'].append(f"Row {idx}: Creation failed for {email} - {str(e)}")
-                    print(f"❌ Creation failed (row {idx}): {e}", file=sys.stderr)
+                    logger.warning(f"CSV bulk invite row {idx} creation failed: {e}")
 
             except Exception as e:
                 results['failed'] += 1
                 results['errors'].append(f"Row {idx}: Unexpected error for {email} - {str(e)}")
-                import traceback
-                print(f"❌ Unexpected error (row {idx}): {e}", file=sys.stderr)
-                print(traceback.format_exc(), file=sys.stderr)
+                logger.error(f"CSV bulk invite row {idx} unexpected error: {e}", exc_info=True)
 
         return results
 
@@ -298,6 +441,93 @@ class UserManagementService:
             except Exception as e:
                 results['failed'] += 1
                 results['errors'].append(f"Item {idx}: {str(e)}")
+        return results
+
+    @staticmethod
+    def get_activation_invite_link():
+        """
+        ONE-TAP invite link: same link for all staff. Opens WhatsApp with prefilled message.
+        Uses WHATSAPP_ACTIVATION_WA_PHONE only (E.164 digits, e.g. 212784476751).
+        Do not use WHATSAPP_PHONE_NUMBER_ID here — that is Meta's internal ID, not the WhatsApp number.
+        """
+        base = "https://wa.me/"
+        phone = getattr(settings, 'WHATSAPP_ACTIVATION_WA_PHONE', None) or ''
+        phone = "".join(filter(str.isdigit, str(phone))) if phone else ""
+        text = "Hi Mizan AI, I am ready to activate my account!"
+        import urllib.parse
+        query = urllib.parse.urlencode({"text": text})
+        return f"{base}{phone}?{query}" if phone else ""
+
+    @staticmethod
+    def bulk_create_staff_activation_records(restaurant, invited_by=None, csv_content=None, staff_list=None):
+        """
+        ONE-TAP: Create staff profiles (pre-activation) from CSV or JSON. No outbound message.
+        Validates: required phone, valid format (digits, min length), no duplicate phones in batch.
+        Columns/keys: phone (required), first_name, last_name, role.
+        Returns: { created, failed, errors, records, invite_link, batch_id }.
+        """
+        from django.db import IntegrityError
+        invite_link = UserManagementService.get_activation_invite_link()
+        batch_id = secrets.token_hex(8)
+        results = {
+            "created": 0, "failed": 0, "errors": [], "records": [],
+            "invite_link": invite_link, "batch_id": batch_id,
+        }
+        if csv_content:
+            rows = list(csv.DictReader(io.StringIO(csv_content)))
+        elif staff_list and isinstance(staff_list, list):
+            rows = staff_list
+        else:
+            results["errors"].append("Provide csv_content or staff_list")
+            return results
+        seen_phones = set()
+        for idx, row in enumerate(rows, start=2 if csv_content else 1):
+            try:
+                raw_phone = (row.get("phone") or row.get("whatsapp") or row.get("phonenumber") or "").strip()
+                phone = _normalize_phone_digits(raw_phone)
+                if not phone:
+                    results["failed"] += 1
+                    results["errors"].append(f"Row {idx}: Missing phone number")
+                    continue
+                if len(phone) < 6:
+                    results["failed"] += 1
+                    results["errors"].append(f"Row {idx}: Phone must be at least 6 digits (international format, e.g. 2203736808 for Gambia)")
+                    continue
+                if phone in seen_phones:
+                    results["failed"] += 1
+                    results["errors"].append(f"Row {idx}: Duplicate phone number in this file")
+                    continue
+                seen_phones.add(phone)
+                first_name = (row.get("first_name") or row.get("firstname") or "").strip()
+                last_name = (row.get("last_name") or row.get("lastname") or "").strip()
+                role_value = (row.get("role") or "WAITER").strip().upper()
+                if role_value not in dict(CustomUser.ROLE_CHOICES):
+                    role_value = "WAITER"
+                try:
+                    record = StaffActivationRecord.objects.create(
+                        restaurant=restaurant,
+                        phone=phone,
+                        first_name=first_name,
+                        last_name=last_name,
+                        role=role_value,
+                        status=StaffActivationRecord.STATUS_NOT_ACTIVATED,
+                        batch_id=batch_id,
+                        invited_by=invited_by,
+                    )
+                    results["created"] += 1
+                    results["records"].append({
+                        "id": str(record.id),
+                        "phone": phone,
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "batch_id": batch_id,
+                    })
+                except IntegrityError:
+                    results["failed"] += 1
+                    results["errors"].append(f"Row {idx}: This phone is already pending activation for this restaurant")
+            except Exception as e:
+                results["failed"] += 1
+                results["errors"].append(f"Row {idx}: {str(e)}")
         return results
     
     @staticmethod
@@ -464,39 +694,42 @@ class UserManagementService:
         Returns tuple: (user, error)
         """
         try:
-            invitation = UserInvitation.objects.get(invitation_token=token, is_accepted=False)
-            # Check expiration
-            if invitation.expires_at < timezone.now():
-                return None, "Invitation has expired"
-
-            # Fallback for names if not provided
-            effective_first_name = first_name or invitation.first_name or ''
-            effective_last_name = last_name or invitation.last_name or ''
-
-            # Detect missing email and generate placeholder from phone if needed
-            email = invitation.email
-            phone = (invitation.extra_data or {}).get('phone') or (invitation.extra_data or {}).get('phone_number')
-            
-            if not email:
-                if phone:
-                    clean_phone = ''.join(filter(str.isdigit, phone))
-                    email = f"{clean_phone}@mizan.ai"
-                else:
-                    return None, "Invitation has no email and no phone number"
-
-            # Guard against existing accounts for the same email
-            if CustomUser.objects.filter(email=email).exists():
-                return (
-                    None,
-                    "An account with this email address already exists. Please log in instead or contact your admin."
-                )
-
-            # Auto-generate password if not provided
-            if not password:
-                import secrets
-                password = secrets.token_urlsafe(12)
-
             with transaction.atomic():
+                invitation = UserInvitation.objects.select_for_update().filter(
+                    invitation_token=token, is_accepted=False
+                ).first()
+                if not invitation:
+                    return None, "Invalid invitation token"
+                if invitation.expires_at < timezone.now():
+                    return None, "Invitation has expired"
+
+                # Fallback for names if not provided
+                effective_first_name = first_name or invitation.first_name or ''
+                effective_last_name = last_name or invitation.last_name or ''
+
+                # Detect missing email and generate placeholder from phone if needed
+                email = invitation.email
+                phone = (invitation.extra_data or {}).get('phone') or (invitation.extra_data or {}).get('phone_number')
+
+                if not email:
+                    if phone:
+                        clean_phone = ''.join(filter(str.isdigit, phone))
+                        email = f"{clean_phone}@mizan.ai"
+                    else:
+                        return None, "Invitation has no email and no phone number"
+
+                # Guard against existing accounts for the same email
+                if CustomUser.objects.filter(email=email).exists():
+                    return (
+                        None,
+                        "An account with this email address already exists. Please log in instead or contact your admin."
+                    )
+
+                # Auto-generate password if not provided
+                if not password:
+                    import secrets
+                    password = secrets.token_urlsafe(12)
+
                 # Prepare arguments for user creation
                 user_kwargs = {
                     'email': email,

@@ -4,13 +4,14 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from django.shortcuts import get_object_or_404
+from django.http import HttpResponseRedirect
 from .serializers import (
     CustomUserSerializer, RestaurantSerializer, StaffInvitationSerializer,
     PinLoginSerializer, StaffProfileSerializer, StaffSerializer, UserSerializer
 )
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
-from .models import CustomUser, Restaurant, UserInvitation, StaffProfile, AuditLog
+from .models import CustomUser, Restaurant, UserInvitation, StaffProfile, AuditLog, StaffActivationRecord
 from django.utils import timezone
 from django.core.files.base import ContentFile
 import base64, os, sys
@@ -26,6 +27,7 @@ from django.conf import settings
 from notifications.services import notification_service
 from .models import InvitationDeliveryLog
 from .services import sync_user_to_lua_agent, UserManagementService
+from .permissions import IsAdminOrManager
 
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
@@ -352,6 +354,15 @@ class LogoutView(APIView):
         except Exception as e:
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
+class LogoutView(APIView):
+    """Logout endpoint. Accepts optional refresh_token; JWT logout is client-side."""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        # Optionally blacklist refresh token here if using simplejwt.token_blacklist
+        return Response({'detail': 'Logged out successfully'}, status=status.HTTP_200_OK)
+
+
 class MeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -510,7 +521,11 @@ class InviteStaffView(APIView):
                 except Exception:
                     pass
 
-            return Response({'message': 'Invitation processed successfully', 'token': token}, status=status.HTTP_201_CREATED)
+            return Response({
+                'message': 'Invitation processed successfully',
+                'token': token,
+                'invite_link': invite_link,
+            }, status=status.HTTP_201_CREATED)
         except Exception as e:
             logger.error(f"InviteStaffView error: {str(e)}")
             return Response({'error': 'An unexpected error occurred while processing the invitation.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -552,6 +567,105 @@ class InviteStaffBulkCsvView(APIView):
         except Exception as e:
             logger.error(f"InviteStaffBulkCsvView error: {str(e)}")
             return Response({'error': str(e), 'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class StaffActivationUploadView(APIView):
+    """
+    ONE-TAP staff activation: upload staff via CSV or JSON (phone required).
+    Creates StaffActivationRecord only; no outbound message. Managers share
+    the returned invite_link; staff tap it, send the prefilled message, and activate.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
+
+    def post(self, request):
+        restaurant = getattr(request.user, 'restaurant', None)
+        if not restaurant:
+            return Response({'error': 'No restaurant for this user'}, status=status.HTTP_403_FORBIDDEN)
+        csv_content = request.data.get('csv_content') or request.data.get('csv_content_utf8')
+        staff_list = request.data.get('staff_list')
+        if not csv_content and not staff_list:
+            return Response(
+                {'error': 'Provide csv_content or staff_list (array of {phone, first_name, last_name, role})'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            results = UserManagementService.bulk_create_staff_activation_records(
+                restaurant=restaurant,
+                invited_by=request.user,
+                csv_content=csv_content,
+                staff_list=staff_list,
+            )
+            full_link = results.get('invite_link', '')
+            short_link = request.build_absolute_uri('/api/go/wa')
+            if 'localhost' in short_link or '127.0.0.1' in short_link:
+                short_link = full_link
+            return Response({
+                'created': results['created'],
+                'failed': results['failed'],
+                'errors': results['errors'],
+                'invite_link': full_link,
+                'invite_short_link': short_link or full_link,
+                'batch_id': results['batch_id'],
+                'detail': f"Created {results['created']} staff records. Share the invite link with staff (no message is sent).",
+            }, status=status.HTTP_201_CREATED if results['created'] > 0 else status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"StaffActivationUploadView error: {str(e)}")
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class StaffActivationInviteLinkView(APIView):
+    """Return the ONE-TAP WhatsApp invite link (same for all staff). Prefer sharing the short link."""
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
+
+    def get(self, request):
+        link = UserManagementService.get_activation_invite_link()
+        short_link = request.build_absolute_uri('/api/go/wa')
+        if not link or 'localhost' in short_link or '127.0.0.1' in short_link:
+            short_link = link or ''
+        return Response({'invite_link': link, 'invite_short_link': short_link or link})
+
+
+def redirect_to_wa_activation(request):
+    """Public redirect: open this short URL to be sent to the WhatsApp activation link (wa.me with prefill)."""
+    link = UserManagementService.get_activation_invite_link()
+    if not link:
+        from django.http import HttpResponse
+        return HttpResponse("Activation link not configured.", status=503)
+    return HttpResponseRedirect(link)
+
+
+class StaffActivationPendingListView(APIView):
+    """
+    Pending Invites list for manager dashboard: staff with status Pending Activation.
+    Optional query param: batch_id to filter by CSV batch.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
+
+    def get(self, request):
+        restaurant = getattr(request.user, 'restaurant', None)
+        if not restaurant:
+            return Response({'error': 'No restaurant for this user'}, status=status.HTTP_403_FORBIDDEN)
+        qs = StaffActivationRecord.objects.filter(
+            restaurant=restaurant,
+            status=StaffActivationRecord.STATUS_NOT_ACTIVATED,
+        ).order_by('-created_at')
+        batch_id = request.query_params.get('batch_id', '').strip()
+        if batch_id:
+            qs = qs.filter(batch_id=batch_id)
+        data = [
+            {
+                'id': str(r.id),
+                'first_name': r.first_name or '',
+                'last_name': r.last_name or '',
+                'phone': r.phone,
+                'role': r.role,
+                'status': 'Pending Activation',
+                'batch_id': r.batch_id or '',
+                'created_at': r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in qs
+        ]
+        return Response({'pending': data, 'count': len(data)})
 
 
 class AcceptInvitationView(APIView):

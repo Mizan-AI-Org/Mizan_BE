@@ -67,7 +67,7 @@ class Restaurant(models.Model):
     geofence_polygon = models.JSONField(default=list, blank=True)  # Array of lat/lon coordinates for custom perimeter
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    timezone = models.CharField(max_length=50, default='America/New_York')
+    timezone = models.CharField(max_length=50, default='Africa/Casablanca')
     currency = models.CharField(max_length=10, default='USD')
     language = models.CharField(max_length=10, default='en')
     operating_hours = models.JSONField(default=dict)
@@ -666,4 +666,82 @@ class InvitationDeliveryLog(models.Model):
 
     def __str__(self):
         return f"{self.channel} invitation to {self.recipient_address} - {self.status}"
-    
+
+
+class StaffActivationRecord(models.Model):
+    """
+    ONE-TAP staff activation: staff uploaded via CSV (phone known), not messaged proactively.
+    Identity is phone-only; activation happens on first inbound WhatsApp message.
+    """
+    STATUS_NOT_ACTIVATED = 'NOT_ACTIVATED'
+    STATUS_ACTIVATED = 'ACTIVATED'
+    # UI-friendly alias: NOT_ACTIVATED is shown as "Pending Activation" / PENDING_INVITE
+    STATUS_CHOICES = (
+        (STATUS_NOT_ACTIVATED, 'Pending Activation'),
+        (STATUS_ACTIVATED, 'Activated'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='staff_activation_records')
+    phone = models.CharField(max_length=20, db_index=True, help_text='Normalized digits; phone is the only identity')
+    first_name = models.CharField(max_length=100, blank=True, default='')
+    last_name = models.CharField(max_length=100, blank=True, default='')
+    role = models.CharField(max_length=20, choices=CustomUser.ROLE_CHOICES, default='WAITER')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_NOT_ACTIVATED, db_index=True)
+    user = models.ForeignKey(
+        CustomUser, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='staff_activation_record'
+    )
+    activated_at = models.DateTimeField(null=True, blank=True)
+    batch_id = models.CharField(max_length=64, db_index=True, blank=True, default='', help_text='CSV batch identifier for this upload')
+    invited_by = models.ForeignKey(
+        CustomUser, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='staff_activation_batches'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'staff_activation_records'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['phone', 'status']),
+            models.Index(fields=['restaurant', 'status']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['restaurant', 'phone'],
+                condition=models.Q(status='NOT_ACTIVATED'),
+                name='unique_not_activated_per_restaurant_phone',
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.phone} ({self.restaurant.name}) - {self.status}"
+
+
+class StaffRestaurantLink(models.Model):
+    """
+    Multi-restaurant staff identity: links a staff member to additional restaurants.
+    CustomUser.restaurant = primary restaurant; this model holds secondary links.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='restaurant_links')
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='staff_links')
+    role = models.CharField(max_length=20, choices=CustomUser.ROLE_CHOICES, default='WAITER')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'staff_restaurant_links'
+        unique_together = ['user', 'restaurant']
+        indexes = [
+            models.Index(fields=['restaurant', 'is_active']),
+            models.Index(fields=['user', 'is_active']),
+        ]
+        ordering = ['restaurant__name']
+
+    def __str__(self):
+        return f"{self.user.get_full_name()} @ {self.restaurant.name} ({self.role})"
+

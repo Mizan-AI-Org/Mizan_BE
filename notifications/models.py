@@ -298,14 +298,28 @@ class NotificationIssue(models.Model):
         return f"Issue by {self.reporter.email} - {self.status}"
 
 
+class WhatsAppMessageProcessed(models.Model):
+    """Idempotency table: skip processing duplicate WhatsApp messages."""
+    wamid = models.CharField(max_length=255, unique=True, db_index=True)
+    processed_at = models.DateTimeField(default=timezone.now)
+    channel = models.CharField(max_length=20, default='whatsapp')
+
+    class Meta:
+        db_table = 'whatsapp_message_processed'
+        indexes = [models.Index(fields=['wamid'])]
+        verbose_name = 'WhatsApp Message Processed'
+        verbose_name_plural = 'WhatsApp Messages Processed'
+
+
 class WhatsAppSession(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='whatsapp_sessions')
-    phone = models.CharField(max_length=20, db_index=True)
+    phone = models.CharField(max_length=20, db_index=True, unique=True)
     state = models.CharField(max_length=50, default='idle')
     context = models.JSONField(default=dict, blank=True)
     last_interaction_at = models.DateTimeField(auto_now=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
     class Meta:
         db_table = 'whatsapp_sessions'
         indexes = [
