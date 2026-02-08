@@ -1,6 +1,10 @@
 import json
+import logging
+from asgiref.sync import async_to_sync
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
+
+logger = logging.getLogger(__name__)
 from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth import get_user_model
 from staff.models import Order
@@ -57,7 +61,7 @@ class KitchenConsumer(AsyncWebsocketConsumer):
                 }
             )
         except Order.DoesNotExist:
-            pass # Handle error if order not found
+            logger.warning("Kitchen consumer: order not found for id=%s", order_id)
 
     async def send_order_update(self, event):
         order_data = event['order']

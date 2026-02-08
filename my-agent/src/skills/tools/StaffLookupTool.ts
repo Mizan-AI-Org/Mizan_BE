@@ -137,18 +137,15 @@ export default class StaffLookupTool implements LuaTool {
                 message: `Found ${filteredStaff[0].first_name} ${filteredStaff[0].last_name}.`
             };
         } catch (error: any) {
-            console.error("[StaffLookupTool] Execution failed:", error.message);
-            const msg = error.message || "";
+            console.error("[StaffLookupTool] Execution failed:", error?.message);
+            const msg = (error?.message || "").toString();
             if (/restaurant context|resolve restaurant|Unable to resolve/i.test(msg)) {
-                return {
-                    status: "error",
-                    message: "I couldn't access your restaurant's staff list right now. Please try again in a moment, or make sure you're logged in through the Mizan dashboard."
-                };
+                return { status: "error", message: "I couldn't access your restaurant's staff list right now. Please try again in a moment, or make sure you're logged in through the Mizan dashboard." };
             }
-            return {
-                status: "error",
-                message: `Failed to retrieve staff profiles: ${msg}`
-            };
+            if (/network|timeout|ECONNREFUSED|fetch/i.test(msg)) {
+                return { status: "error", message: "I couldn't reach the server right now. Please check your connection and try again." };
+            }
+            return { status: "error", message: "I couldn't retrieve staff information. Please try again in a moment." };
         }
     }
 }

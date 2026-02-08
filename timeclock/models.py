@@ -18,8 +18,7 @@ class ClockEvent(models.Model):
     longitude = models.FloatField(null=True, blank=True)
     device_id = models.CharField(max_length=255, blank=True)
     notes = models.TextField(blank=True)
-    # Align model with existing DB column to prevent NOT NULL insert failures
-    location_encrypted = models.TextField(db_column='location_encrypted')
+    location_encrypted = models.TextField(db_column='location_encrypted', blank=True, default='')
     class Meta:
         ordering = ['-timestamp']
     

@@ -14,12 +14,21 @@ import unicodedata
 from difflib import SequenceMatcher
 
 from accounts.models import CustomUser, Restaurant
-from .models import AssignedShift, WeeklySchedule
+from .models import AssignedShift, WeeklySchedule, AgentMemory
 from .serializers import AssignedShiftSerializer
 from .services import SchedulingService
 import logging
 from core.utils import resolve_agent_restaurant_and_user
-from .shift_auto_templates import auto_attach_templates_and_tasks, detect_shift_context, generate_shift_title
+from .shift_auto_templates import (
+    AutoAttachResult,
+    auto_attach_templates_and_tasks,
+    detect_shift_context,
+    generate_shift_title,
+    instantiate_shift_tasks_from_template,
+    ensure_checklist_for_task_template,
+    ensure_checklist_execution_for_shift,
+)
+from .task_templates import TaskTemplate
 
 logger = logging.getLogger(__name__)
 
@@ -351,14 +360,226 @@ def agent_staff_count(request):
         return Response({'error': err}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+def _resolve_restaurant_for_agent(request):
+    """Resolve restaurant for agent endpoints."""
+    restaurant = None
+    explicit_rid = _explicit_restaurant_id_from_request(request)
+    if explicit_rid:
+        rid = explicit_rid[0] if isinstance(explicit_rid, (list, tuple)) and explicit_rid else explicit_rid
+        if rid and isinstance(rid, str) and rid.strip():
+            try:
+                restaurant = Restaurant.objects.get(id=rid.strip())
+            except (Restaurant.DoesNotExist, ValueError, TypeError):
+                pass
+    if not restaurant:
+        restaurant, _ = _try_jwt_restaurant_and_user(request)
+    if not restaurant:
+        is_valid, error = validate_agent_key(request)
+        if not is_valid:
+            return None, {'error': error, 'status': 401}
+        payload = _agent_payload_from_request(request)
+        restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=payload)
+    if not restaurant:
+        return None, {'error': 'Unable to resolve restaurant context.', 'status': 400}
+    return restaurant, None
+
+
+@api_view(['GET'])
+@authentication_classes([])  # Bypass JWT auth
+@permission_classes([permissions.AllowAny])
+def agent_list_task_templates(request):
+    """
+    List task templates for the restaurant.
+    Used by Miya to assign tasks/processes to shifts (e.g. "assign the opening checklist").
+    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
+    Query: restaurant_id (or X-Restaurant-Id header).
+    """
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        templates = TaskTemplate.objects.filter(
+            restaurant=restaurant,
+            is_active=True
+        ).order_by('name').values('id', 'name', 'template_type', 'description')
+        return Response({
+            'task_templates': list(templates),
+            'restaurant_id': str(restaurant.id),
+        })
+    except Exception as e:
+        logger.exception("Agent list task templates error")
+        err = str(e).strip() if e else "Unable to list task templates"
+        return Response({'error': err[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([])  # Bypass JWT auth
+@permission_classes([permissions.AllowAny])
+def agent_create_task_template(request):
+    """
+    Create a task template for the restaurant.
+    Used by Miya when a requested template doesn't exist - Miya can create the perfect template for that shift.
+    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
+    Payload: restaurant_id, name, description (optional), template_type (optional, default CUSTOM),
+             tasks: [{title, description?, priority?}]
+    """
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        name = (data.get('name') or '').strip()
+        if not name:
+            return Response({'error': 'Missing required field: name'}, status=status.HTTP_400_BAD_REQUEST)
+        tasks_raw = data.get('tasks') or []
+        if not isinstance(tasks_raw, list):
+            return Response({'error': 'tasks must be an array of {title, description?, priority?}'}, status=status.HTTP_400_BAD_REQUEST)
+        import uuid as uuid_mod
+        tasks = []
+        for t in tasks_raw:
+            if not isinstance(t, dict):
+                continue
+            title = str(t.get('title') or '').strip()
+            if not title:
+                continue
+            tasks.append({
+                'id': str(uuid_mod.uuid4()),
+                'title': title,
+                'description': str(t.get('description') or '').strip(),
+                'priority': (str(t.get('priority') or 'MEDIUM')).upper()[:20] or 'MEDIUM',
+                'completed': False,
+            })
+        if not tasks:
+            return Response({'error': 'tasks must contain at least one item with a title'}, status=status.HTTP_400_BAD_REQUEST)
+        template_type = (data.get('template_type') or 'CUSTOM').upper()
+        valid_types = [c[0] for c in TaskTemplate.TEMPLATE_TYPES]
+        if template_type not in valid_types:
+            template_type = 'CUSTOM'
+        acting_user = None
+        try:
+            _, acting_user = _try_jwt_restaurant_and_user(request)
+        except Exception:
+            pass
+        template = TaskTemplate.objects.create(
+            restaurant=restaurant,
+            name=name,
+            description=(data.get('description') or '').strip() or None,
+            template_type=template_type,
+            tasks=tasks,
+            frequency='CUSTOM',
+            ai_generated=True,
+            ai_prompt=data.get('ai_prompt') or f"Created by Miya for shift: {name}",
+            created_by=acting_user,
+            is_active=True,
+        )
+        return Response({
+            'success': True,
+            'task_template': {
+                'id': str(template.id),
+                'name': template.name,
+                'template_type': template.template_type,
+                'tasks_count': len(tasks),
+            },
+            'message': f"Created template '{template.name}' with {len(tasks)} task(s). Use task_template_ids=[{template.id}] when creating shifts.",
+        }, status=status.HTTP_201_CREATED)
+    except Exception as e:
+        logger.exception("Agent create task template error")
+        err = str(e).strip()[:200] if e else "Unable to create task template"
+        return Response({'error': err}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([])  # Bypass JWT auth
+@permission_classes([permissions.AllowAny])
+def agent_attach_templates_to_shift(request):
+    """
+    Attach task templates to an existing shift.
+    Used by Miya when manager says "add the opening checklist to Maria's shift".
+    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
+    Payload: shift_id, task_template_ids: [uuid1, uuid2]
+    """
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        shift_id = data.get('shift_id') or data.get('shiftId')
+        if not shift_id:
+            return Response({'error': 'Missing required field: shift_id'}, status=status.HTTP_400_BAD_REQUEST)
+        ids_raw = data.get('task_template_ids') or data.get('taskTemplateIds') or []
+        if isinstance(ids_raw, str):
+            ids_raw = [x.strip() for x in ids_raw.split(',') if x.strip()]
+        task_template_ids = [str(x).strip() for x in ids_raw if x]
+        if not task_template_ids:
+            return Response({'error': 'Missing required field: task_template_ids (array of template UUIDs)'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            shift = AssignedShift.objects.get(
+                id=shift_id,
+                schedule__restaurant=restaurant
+            )
+        except AssignedShift.DoesNotExist:
+            return Response({'error': 'Shift not found'}, status=status.HTTP_404_NOT_FOUND)
+        templates = list(TaskTemplate.objects.filter(
+            id__in=task_template_ids,
+            restaurant=restaurant,
+            is_active=True
+        ))
+        if not templates:
+            return Response({'error': 'No valid task templates found for the given IDs'}, status=status.HTTP_404_NOT_FOUND)
+        shift.task_templates.add(*templates)
+        staff = shift.staff or shift.staff_members.first()
+        acting_user = None
+        try:
+            _, acting_user = _try_jwt_restaurant_and_user(request)
+        except Exception:
+            pass
+        from core.i18n import get_effective_language, normalize_language
+        lang = normalize_language(get_effective_language(user=staff, restaurant=restaurant) or 'en') if staff else 'en'
+        created_shift_tasks = 0
+        created_executions = 0
+        for tpl in templates:
+            created_shift_tasks += instantiate_shift_tasks_from_template(
+                shift=shift,
+                assignee=staff,
+                task_template=tpl,
+                created_by=acting_user,
+                language=lang,
+            )
+            ct = ensure_checklist_for_task_template(
+                restaurant=restaurant,
+                task_template=tpl,
+                created_by=acting_user,
+                language=lang,
+            )
+            if ct and staff:
+                created_executions += ensure_checklist_execution_for_shift(
+                    checklist_template=ct,
+                    assignee=staff,
+                    shift=shift,
+                )
+        return Response({
+            'success': True,
+            'shift_id': str(shift.id),
+            'attached_templates': [{'id': str(t.id), 'name': t.name} for t in templates],
+            'created_shift_tasks': created_shift_tasks,
+            'created_checklist_executions': created_executions,
+            'message': f"Attached {len(templates)} template(s) to shift. Created {created_shift_tasks} task(s).",
+        })
+    except Exception as e:
+        logger.exception("Agent attach templates to shift error")
+        err = str(e).strip()[:200] if e else "Unable to attach templates"
+        return Response({'error': err}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(['POST'])
 @authentication_classes([])  # Bypass JWT auth
 @permission_classes([permissions.AllowAny])
 def agent_create_shift(request):
     """
     Create a shift for a staff member.
-    Used by the Lua agent to schedule staff.
-    
+    Used by the Lua agent (Miya) to schedule staff.
+    Each shift can have independent tasks/processes assigned via task_template_ids.
+
     Expected payload:
     {
         "restaurant_id": "uuid",
@@ -366,8 +587,10 @@ def agent_create_shift(request):
         "shift_date": "YYYY-MM-DD",
         "start_time": "HH:MM",
         "end_time": "HH:MM",
-        "role": "SERVER",  # optional, defaults to staff's role
-        "notes": "optional notes"
+        "role": "SERVER",  # optional
+        "notes": "optional notes",
+        "workspace_location": "Kitchen",  # optional
+        "task_template_ids": ["uuid1", "uuid2"]  # optional: assign specific task/process templates
     }
     """
     try:
@@ -552,18 +775,69 @@ def agent_create_shift(request):
         except Exception:
             pass
 
-        # Auto-attach relevant Process/Task templates and generate tasks/checklists
+        # Attach tasks/processes: explicit task_template_ids (manager/Miya request) OR auto-attach by shift type
         attach_result = None
+        task_template_ids_raw = data.get('task_template_ids') or data.get('taskTemplateIds') or []
+        if isinstance(task_template_ids_raw, str):
+            task_template_ids_raw = [x.strip() for x in task_template_ids_raw.split(',') if x.strip()]
+        task_template_ids = [str(x).strip() for x in task_template_ids_raw if x]
+
         try:
-            attach_result = auto_attach_templates_and_tasks(
-                shift=shift,
-                restaurant=restaurant,
-                assignee=staff,
-                staff_role=role.upper(),
-                shift_title=shift_title,
-                instructions=shift_notes,
-                created_by=acting_user,
-            )
+            if task_template_ids:
+                # Explicit assignment: Miya/manager requested specific task templates or processes
+                templates = list(TaskTemplate.objects.filter(
+                    id__in=task_template_ids,
+                    restaurant=restaurant,
+                    is_active=True
+                ))
+                if templates:
+                    shift.task_templates.add(*templates)
+                    from core.i18n import get_effective_language, normalize_language
+                    lang = normalize_language(get_effective_language(user=staff, restaurant=restaurant) or 'en')
+                    created_shift_tasks = 0
+                    created_executions = 0
+                    for tpl in templates:
+                        created_shift_tasks += instantiate_shift_tasks_from_template(
+                            shift=shift,
+                            assignee=staff,
+                            task_template=tpl,
+                            created_by=acting_user,
+                            language=lang,
+                        )
+                        ct = ensure_checklist_for_task_template(
+                            restaurant=restaurant,
+                            task_template=tpl,
+                            created_by=acting_user,
+                            language=lang,
+                        )
+                        if ct:
+                            created_executions += ensure_checklist_execution_for_shift(
+                                checklist_template=ct,
+                                assignee=staff,
+                                shift=shift,
+                            )
+                    attach_result = AutoAttachResult(
+                        shift_context=detect_shift_context(
+                            shift_title=shift_title,
+                            shift_notes=shift_notes,
+                            start_dt=start_datetime,
+                            end_dt=end_datetime,
+                        ),
+                        used_templates=templates,
+                        created_shift_tasks=created_shift_tasks,
+                        created_checklist_executions=created_executions,
+                        used_fallback_custom_template=False,
+                    )
+            if not attach_result:
+                attach_result = auto_attach_templates_and_tasks(
+                    shift=shift,
+                    restaurant=restaurant,
+                    assignee=staff,
+                    staff_role=role.upper(),
+                    shift_title=shift_title,
+                    instructions=shift_notes,
+                    created_by=acting_user,
+                )
         except Exception as e:
             # Do not fail shift creation if automation fails; log for observability
             logger.warning(f"Agent create shift: auto-attach templates failed: {e}")
@@ -1326,7 +1600,7 @@ def agent_list_shifts(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        queryset = AssignedShift.objects.filter(weekly_schedule__restaurant=restaurant)
+        queryset = AssignedShift.objects.filter(schedule__restaurant=restaurant)
 
         # Filters
         date_from = request.query_params.get('date_from')
@@ -1351,3 +1625,267 @@ def agent_list_shifts(request):
     except Exception as e:
         logger.exception("Agent list shifts error")
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# --- Agent Memory (Miya context persistence, corrections, explainability) ---
+
+@api_view(['GET', 'POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_memory_list_or_save(request):
+    """
+    GET: List memories for the restaurant (optional filter: memory_type, key).
+    POST: Save a memory (key, value, memory_type, scope optional).
+    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
+    """
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+
+        if request.method == 'GET':
+            qs = AgentMemory.objects.filter(restaurant=restaurant)
+            memory_type = request.query_params.get('memory_type')
+            key = request.query_params.get('key')
+            if memory_type:
+                qs = qs.filter(memory_type=memory_type)
+            if key:
+                qs = qs.filter(key__icontains=key)
+            qs = qs.order_by('-created_at')[:100]
+            items = [
+                {
+                    'id': str(m.id),
+                    'memory_type': m.memory_type,
+                    'key': m.key,
+                    'value': m.value,
+                    'scope': m.scope or '',
+                    'created_at': m.created_at.isoformat() if m.created_at else None,
+                }
+                for m in qs
+            ]
+            return Response({'memories': items, 'restaurant_id': str(restaurant.id)})
+
+        # POST
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        key = (data.get('key') or '').strip()
+        value = (data.get('value') or '').strip()
+        memory_type = (data.get('memory_type') or 'fact').lower()
+        if memory_type not in ('preference', 'correction', 'fact', 'pattern'):
+            memory_type = 'fact'
+        if not key:
+            return Response({'error': 'Missing required field: key'}, status=status.HTTP_400_BAD_REQUEST)
+        if not value:
+            return Response({'error': 'Missing required field: value'}, status=status.HTTP_400_BAD_REQUEST)
+        scope = (data.get('scope') or '').strip()[:64]
+        acting_user = None
+        try:
+            _, acting_user = _try_jwt_restaurant_and_user(request)
+        except Exception:
+            pass
+        memory = AgentMemory.objects.create(
+            restaurant=restaurant,
+            memory_type=memory_type,
+            key=key,
+            value=value,
+            scope=scope,
+            created_by=acting_user,
+        )
+        return Response({
+            'success': True,
+            'memory': {
+                'id': str(memory.id),
+                'memory_type': memory.memory_type,
+                'key': memory.key,
+                'value': memory.value,
+                'scope': memory.scope or '',
+            },
+            'message': f"Remembered: {memory.key}",
+        }, status=status.HTTP_201_CREATED)
+    except Exception as e:
+        logger.exception("Agent memory list/save error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST', 'DELETE'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_memory_delete(request):
+    """
+    Delete a memory by id or by key.
+    POST/DELETE body: memory_id (uuid) or key (string). Auth: agent key or JWT.
+    """
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        memory_id = data.get('memory_id') or data.get('id')
+        key = (data.get('key') or '').strip()
+        if memory_id:
+            deleted = AgentMemory.objects.filter(
+                id=memory_id, restaurant=restaurant
+            ).delete()
+        elif key:
+            deleted = AgentMemory.objects.filter(
+                restaurant=restaurant, key=key
+            ).delete()
+        else:
+            return Response({'error': 'Provide memory_id or key'}, status=status.HTTP_400_BAD_REQUEST)
+        count = deleted[0] if isinstance(deleted, tuple) else (1 if deleted else 0)
+        return Response({'success': True, 'deleted': count, 'message': f"Removed {count} memory(ies)."})
+    except Exception as e:
+        logger.exception("Agent memory delete error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_proactive_insights(request):
+    """
+    Proactive intelligence: no-shows today, understaffed shifts, late patterns, staffing suggestions.
+    Used by Miya to surface alerts and recommendations without being asked.
+    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
+    Query: restaurant_id (or X-Restaurant-Id), date (optional, default today).
+    """
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+
+        date_str = request.query_params.get('date') or timezone.now().date().isoformat()
+        try:
+            target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            target_date = timezone.now().date()
+
+        insights = []
+        no_shows = []
+        understaffed = []
+        late_patterns = []
+        suggestions = []
+
+        # No-shows: shifts with status NO_SHOW or SCHEDULED/CONFIRMED where clock-in never happened
+        from timeclock.models import ClockEvent
+        today_start = timezone.datetime.combine(target_date, time(0, 0))
+        if timezone.is_naive(today_start):
+            today_start = timezone.make_aware(today_start)
+        today_end = today_start + timedelta(days=1)
+        shifts_today = AssignedShift.objects.filter(
+            schedule__restaurant=restaurant,
+            shift_date=target_date,
+            status__in=['SCHEDULED', 'CONFIRMED', 'NO_SHOW']
+        ).select_related('staff')
+        staff_clock_ins = {}
+        if shifts_today.exists():
+            clock_ins = ClockEvent.objects.filter(
+                staff__restaurant=restaurant,
+                event_type='in',
+                timestamp__gte=today_start,
+                timestamp__lt=today_end
+            ).values_list('staff_id', 'timestamp')
+            staff_clock_ins = {str(sid): ts for sid, ts in clock_ins}
+        for shift in shifts_today:
+            staff = shift.staff
+            if not staff:
+                continue
+            clocked = str(staff.id) in staff_clock_ins
+            if not clocked and shift.status == 'NO_SHOW':
+                no_shows.append({
+                    'shift_id': str(shift.id),
+                    'staff_name': f"{staff.first_name} {staff.last_name}",
+                    'role': shift.role or '',
+                })
+            elif not clocked and shift.status in ('SCHEDULED', 'CONFIRMED'):
+                start_dt = shift.start_time
+                if start_dt and timezone.now() > start_dt:
+                    no_shows.append({
+                        'shift_id': str(shift.id),
+                        'staff_name': f"{staff.first_name} {staff.last_name}",
+                        'role': shift.role or '',
+                        'expected_start': start_dt.strftime('%H:%M') if hasattr(start_dt, 'strftime') else str(start_dt)[:5],
+                    })
+
+        if no_shows:
+            insights.append({
+                'type': 'no_shows',
+                'priority': 'high',
+                'title': 'No-shows or missing clock-ins',
+                'items': no_shows,
+                'summary': f"{len(no_shows)} staff expected today have not clocked in.",
+            })
+
+        # Understaffed: compare today's shifts to a simple baseline (e.g. roles count)
+        role_counts = {}
+        for shift in shifts_today:
+            r = (shift.role or 'STAFF').upper()
+            role_counts[r] = role_counts.get(r, 0) + 1
+        if role_counts:
+            # Simple heuristic: if only 1 server for dinner, flag
+            if role_counts.get('SERVER', 0) < 2 and target_date == timezone.now().date():
+                understaffed.append({
+                    'reason': 'Few servers scheduled today',
+                    'role': 'SERVER',
+                    'current': role_counts.get('SERVER', 0),
+                })
+            if understaffed:
+                insights.append({
+                    'type': 'understaffed',
+                    'priority': 'medium',
+                    'title': 'Understaffing risk',
+                    'items': understaffed,
+                    'summary': 'Consider adding coverage for peak hours.',
+                })
+
+        # Late patterns: staff who clocked in after shift start
+        for shift in shifts_today:
+            staff = shift.staff
+            if not staff or not shift.start_time:
+                continue
+            cin = staff_clock_ins.get(str(staff.id))
+            if cin and shift.start_time and cin > shift.start_time:
+                delta = cin - (shift.start_time if timezone.is_aware(shift.start_time) else timezone.make_aware(shift.start_time))
+                mins = int(delta.total_seconds() / 60)
+                if mins > 5:
+                    late_patterns.append({
+                        'staff_name': f"{staff.first_name} {staff.last_name}",
+                        'lateness_minutes': mins,
+                    })
+        if late_patterns:
+            insights.append({
+                'type': 'late_patterns',
+                'priority': 'low',
+                'title': 'Late clock-ins today',
+                'items': late_patterns[:5],
+                'summary': f"{len(late_patterns)} staff clocked in late.",
+            })
+
+        # Staffing suggestions from operational advice
+        try:
+            from .ai_scheduler import AIScheduler
+            scheduler = AIScheduler(restaurant)
+            demand = scheduler._get_demand_forecast(target_date)
+            day_name = target_date.strftime('%A')
+            current_demand = demand.get(day_name, 'MEDIUM')
+            if current_demand == 'HIGH':
+                suggestions.append('High demand expected today; ensure peak-hour coverage (lunch 12–15, dinner 19–23).')
+            if suggestions:
+                insights.append({
+                    'type': 'suggestions',
+                    'priority': 'low',
+                    'title': 'Staffing suggestions',
+                    'items': suggestions,
+                    'summary': '; '.join(suggestions),
+                })
+        except Exception:
+            pass
+
+        return Response({
+            'restaurant_id': str(restaurant.id),
+            'date': target_date.isoformat(),
+            'insights': insights,
+            'has_alerts': any(i.get('priority') == 'high' for i in insights),
+        })
+    except Exception as e:
+        logger.exception("Agent proactive insights error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

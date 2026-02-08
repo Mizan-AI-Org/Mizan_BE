@@ -113,30 +113,52 @@ def get_invitation_by_phone(request):
         
         # Normalize phone (digits only)
         clean_phone = ''.join(filter(str.isdigit, phone))
-        
-        # Search in extra_data
-        from .models import UserInvitation
+        if not clean_phone or len(clean_phone) < 6:
+            return Response({'error': 'Invalid phone number'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # NEW FLOW (ONE-TAP): Check StaffActivationRecord first (pending activation by phone)
+        from .models import UserInvitation, StaffActivationRecord
+        from .services import _find_staff_activation_record_by_phone
         from django.db.models import Q
-        
-        # Look for pending invitations where phone matches in extra_data
+
+        activation_record = _find_staff_activation_record_by_phone(clean_phone)
+
+        if activation_record:
+            return Response({
+                'success': True,
+                'type': 'activation',
+                'invitation': {
+                    'token': f"ACTIVATION:{activation_record.id}",
+                    'first_name': activation_record.first_name or 'Staff',
+                    'last_name': activation_record.last_name or '',
+                    'role': activation_record.role,
+                    'restaurant_id': str(activation_record.restaurant.id),
+                    'restaurant_name': activation_record.restaurant.name,
+                    'phone': clean_phone
+                }
+            })
+
+        # OLD FLOW: UserInvitation (email/token invites with phone in extra_data)
         invitation = UserInvitation.objects.filter(
             is_accepted=False,
             expires_at__gt=timezone.now()
         ).filter(
-            Q(extra_data__phone__icontains=clean_phone) | 
+            Q(extra_data__phone__icontains=clean_phone) |
             Q(extra_data__phone_number__icontains=clean_phone)
         ).first()
 
         if not invitation:
             return Response({'error': 'No pending invitation found for this number'}, status=status.HTTP_404_NOT_FOUND)
-            
+
         return Response({
             'success': True,
+            'type': 'invitation',
             'invitation': {
                 'token': invitation.invitation_token,
                 'first_name': invitation.first_name,
                 'last_name': invitation.last_name,
                 'role': invitation.role,
+                'restaurant_id': str(invitation.restaurant.id),
                 'restaurant_name': invitation.restaurant.name
             }
         })
@@ -180,24 +202,65 @@ def accept_invitation_from_agent(request):
              
         # Extract parameters
         invitation_token = request.data.get('invitation_token')
-        pin = request.data.get('pin') or '0000' # Default PIN if not provided
+        phone = request.data.get('phone', '')
+        pin = request.data.get('pin') or '0000'
         first_name = request.data.get('first_name', '')
         last_name = request.data.get('last_name', '')
-        
+
+        # NEW FLOW (ONE-TAP): activation by phone via StaffActivationRecord
+        if invitation_token and str(invitation_token).startswith('ACTIVATION:'):
+            from .models import StaffActivationRecord
+            from .services import try_activate_staff_on_inbound_message
+            clean_phone = ''
+            try:
+                record_id = str(invitation_token).replace('ACTIVATION:', '', 1)
+                record = StaffActivationRecord.objects.get(id=record_id, status=StaffActivationRecord.STATUS_NOT_ACTIVATED)
+                clean_phone = ''.join(filter(str.isdigit, record.phone))
+            except (StaffActivationRecord.DoesNotExist, ValueError):
+                pass
+            if not clean_phone and phone:
+                clean_phone = ''.join(filter(str.isdigit, phone))
+            if not clean_phone:
+                return Response({
+                    'success': False,
+                    'error': 'phone is required for activation'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            user = try_activate_staff_on_inbound_message(clean_phone)
+            if not user:
+                return Response({
+                    'success': False,
+                    'error': 'No pending activation found for this phone number'
+                }, status=status.HTTP_404_NOT_FOUND)
+            return Response({
+                'success': True,
+                'user': {
+                    'id': str(user.id),
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'phone': user.phone,
+                    'role': user.role,
+                    'restaurant': {
+                        'id': str(user.restaurant.id),
+                        'name': user.restaurant.name
+                    }
+                }
+            })
+
         if not invitation_token:
             return Response({
                 'success': False,
                 'error': 'invitation_token is required'
             }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Accept invitation using existing service
+
+        # OLD FLOW: UserInvitation (token-based)
         user, error = UserManagementService.accept_invitation(
             token=invitation_token,
-            password=pin,  # Using PIN as password
+            password=pin,
             first_name=first_name,
             last_name=last_name
         )
-        
+
         if error:
             return Response({
                 'success': False,

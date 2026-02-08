@@ -1,10 +1,6 @@
 """
 User Management and Invitation API Views
 """
-import sys
-sys.stderr.write("[DEBUG] accounts/views_invitations.py is loading...\n")
-sys.stderr.flush()
-
 from rest_framework import viewsets, status, pagination
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -262,7 +258,6 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 if phone:
                     # Normalize phone: digits only, no + or spaces (e.g., "2203736808")
                     clean_phone = normalize_phone(phone)
-                    print(f"[Invitation] Sending WhatsApp to {clean_phone} (raw: {phone})", file=sys.stderr)
                     
                     invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
                     send_whatsapp_invitation_task.delay(
@@ -315,14 +310,13 @@ class InvitationViewSet(viewsets.ModelViewSet):
         CSV Format: email,role,first_name,last_name
         JSON Format: [{"email": "user@example.com", "role": "WAITER"}, ...]
         """
-        import traceback, sys
+        import traceback
 
         try:
-            print(f"\n\n📥 REQUEST DATA: {request.data}\n\n", file=sys.stderr)
             serializer = BulkInviteSerializer(data=request.data)
             
             if not serializer.is_valid():
-                print(f"❌ Serializer errors: {serializer.errors}\n", file=sys.stderr)
+                logger.warning("Bulk invite serializer errors: %s", serializer.errors)
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             
             invite_type = serializer.validated_data['type']
@@ -354,8 +348,7 @@ class InvitationViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_201_CREATED if results['success'] > 0 else status.HTTP_400_BAD_REQUEST)
 
         except Exception as e:
-            print("\n\n❌ BULK INVITE ERROR ❌", file=sys.stderr)
-            print(traceback.format_exc(), file=sys.stderr)
+            logger.error("Bulk invite error: %s", e, exc_info=True)
             return Response(
                 {"detail": str(e)},
                 status=status.HTTP_400_BAD_REQUEST
@@ -445,12 +438,8 @@ class InvitationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def resend(self, request, pk=None):
         """Resend invitation via email and/or WhatsApp"""
-        sys.stderr.write(f"\n[INVITE_VIEWSET] resend() called with pk={pk}\n")
-        sys.stderr.flush()
         try:
-            print(f"[Resend] 0. invitation lookup starting", file=sys.stderr)
             invitation = self.get_object()
-            print(f"[Resend] 1. invitation found: {invitation}", file=sys.stderr)
             
             if invitation.is_accepted:
                 return Response(
@@ -465,23 +454,16 @@ class InvitationViewSet(viewsets.ModelViewSet):
             email_success = False
             whatsapp_success = False
             if invitation.email:
-                print(f"[Resend] 2. sending email to {invitation.email}", file=sys.stderr)
                 email_success = UserManagementService._send_invitation_email(invitation)
-            
+
             # Send WhatsApp if phone number exists
             raw_phone = (invitation.extra_data or {}).get('phone') or (invitation.extra_data or {}).get('phone_number')
-            print(f"[Resend] 3. raw_phone={raw_phone}", file=sys.stderr)
             if raw_phone:
                 # Normalize phone: digits only, no + or spaces (e.g., "2203736808")
                 from .tasks import normalize_phone
                 clean_phone = normalize_phone(raw_phone)
-                print(f"[Resend] 4. normalized_phone={clean_phone}", file=sys.stderr)
-                
                 invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={invitation.invitation_token}"
-                print(f"[Resend] 5. invite_link={invite_link}", file=sys.stderr)
-                
                 try:
-                    print(f"[Resend] 6. Logging delivery for {clean_phone}", file=sys.stderr)
                     # Update or create log first (filter-then-update avoids MultipleObjectsReturned when duplicates exist)
                     from .models import InvitationDeliveryLog
                     log = InvitationDeliveryLog.objects.filter(
@@ -499,7 +481,6 @@ class InvitationViewSet(viewsets.ModelViewSet):
                             recipient_address=clean_phone,
                             status='PENDING',
                         )
-                    print(f"[Resend] 7. Queueing task for invitation_id={invitation.id}", file=sys.stderr)
                     # Queue the task (with CELERY_TASK_ALWAYS_EAGER=True, this runs synchronously)
                     send_whatsapp_invitation_task.delay(
                         invitation_id=str(invitation.id),
@@ -511,7 +492,6 @@ class InvitationViewSet(viewsets.ModelViewSet):
                     )
                     whatsapp_success = True
                 except Exception as e:
-                    print(f"[Resend] 8. Task error: {e}", file=sys.stderr)
                     logger.error(f"[Resend] Error sending WhatsApp: {str(e)}", exc_info=True)
                     # Update existing log to FAILED if present
                     from .models import InvitationDeliveryLog

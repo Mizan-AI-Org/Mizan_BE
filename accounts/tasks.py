@@ -34,6 +34,7 @@ def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_n
     print(f"[Task] Calling Lua webhook for invitation {token[:8]} via notification_service...", file=sys.stderr)
     
     try:
+        # Send via Lua Agent which uses Lua's Templates API to send staff_invitation_eng
         ok, info = notification_service.send_lua_staff_invite(
             invitation_token=token,
             phone=phone,

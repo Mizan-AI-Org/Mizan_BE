@@ -252,7 +252,7 @@ class WeeklyScheduleViewSet(viewsets.ModelViewSet):
         if success:
             return Response({'detail': message})
         else:
-            pass # Message trace removed for production
+            logger.debug("Shift reminder: no notification sent (trace omitted)")
     
     @action(detail=False, methods=['post'])
     def optimize(self, request):

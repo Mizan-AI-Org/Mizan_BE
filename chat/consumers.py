@@ -1,5 +1,8 @@
 import json
+import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
+
+logger = logging.getLogger(__name__)
 from channels.db import database_sync_to_async
 from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth import get_user_model
@@ -65,7 +68,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             try:
                 recipient = User.objects.get(id=recipient_id)
             except User.DoesNotExist:
-                pass # Handle if recipient not found
+                logger.warning("Chat consumer: recipient not found for id=%s", recipient_id)
         
         return Message.objects.create(
             sender=sender,

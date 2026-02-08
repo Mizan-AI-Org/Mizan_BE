@@ -4,8 +4,10 @@ from .views import (
     CustomTokenObtainPairView, CustomTokenRefreshView, RegisterView, VerifyEmailView, PasswordResetRequestView,
     PasswordResetConfirmView, RestaurantDetailView, RestaurantUpdateView, StaffInvitationListView, 
     StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView,
-    LoginView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView, pin_login,
-    StaffListView, StaffPasswordResetView, InviteStaffBulkCsvView
+    LoginView, LogoutView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView, pin_login,
+    StaffListView, StaffPasswordResetView, InviteStaffBulkCsvView,
+    StaffActivationUploadView, StaffActivationInviteLinkView, StaffActivationPendingListView,
+    redirect_to_wa_activation,
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
 from .views_invitations import InvitationViewSet, UserManagementViewSet
@@ -34,11 +36,16 @@ urlpatterns = [
     path('staff/', StaffListAPIView.as_view(), name='staff_list'),
     # path('staff/users/', StaffUsersListView.as_view(), name='staff_users_list'),
     path('auth/login/', LoginView.as_view(), name='login'),
+    path('auth/logout/', LogoutView.as_view(), name='logout'),
     # Use class-based view for PIN login (public endpoint)
     path('auth/pin-login/', StaffPinLoginView.as_view(), name='pin_login'),
     path('auth/me/', MeView.as_view(), name='me'),
     path('staff/invite/', InviteStaffView.as_view(), name='invite_staff'),
     path('staff/invite-bulk-csv/', InviteStaffBulkCsvView.as_view(), name='invite_staff_bulk_csv'),
+    path('staff/activation/upload/', StaffActivationUploadView.as_view(), name='staff_activation_upload'),
+    path('staff/activation/invite-link/', StaffActivationInviteLinkView.as_view(), name='staff_activation_invite_link'),
+    path('staff/activation/pending/', StaffActivationPendingListView.as_view(), name='staff_activation_pending'),
+    path('go/wa', redirect_to_wa_activation, name='wa_activation_redirect'),
     path('staff/accept-invitation/', AcceptInvitationView.as_view(), name='accept_invitation'),
     path('staff/login/', StaffPinLoginView.as_view(), name='pin_login'),
     path('auth/agent-context/', AgentContextView.as_view(), name='agent_context'),

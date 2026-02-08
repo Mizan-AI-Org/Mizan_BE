@@ -596,27 +596,41 @@ class DashboardSummaryView(APIView):
         tasks_list.sort(key=lambda x: prio_order.get(str(x.get('priority', 'MEDIUM')).upper(), 0), reverse=True)
         tasks_list = tasks_list[:5]
 
-        # Morning no-shows: explicit NO_SHOW with start before 12, plus potential (missed clock-in) for morning shifts
-        morning_no_shows = 0
-        try:
-            morning_no_shows = AssignedShift.objects.filter(
-                schedule__restaurant=restaurant,
-                shift_date=today,
-                status='NO_SHOW',
-                start_time__hour__lt=12
-            ).count()
-            for s in AssignedShift.objects.filter(
-                schedule__restaurant=restaurant,
-                shift_date=today,
-                status__in=['SCHEDULED', 'CONFIRMED'],
-                staff__isnull=False,
-                start_time__hour__lt=12
-            ):
+        # Time-of-day no-shows: morning (<12), afternoon (12-16), evening (17+)
+        def _no_shows_for_period(hour_lt=None, hour_gte=None):
+            qs_base = Q(schedule__restaurant=restaurant, shift_date=today, start_time__isnull=False)
+            if hour_lt is not None:
+                qs_base &= Q(start_time__hour__lt=hour_lt)
+            if hour_gte is not None:
+                qs_base &= Q(start_time__hour__gte=hour_gte)
+            cnt = AssignedShift.objects.filter(qs_base, status='NO_SHOW').count()
+            for s in AssignedShift.objects.filter(qs_base, status__in=['SCHEDULED', 'CONFIRMED'], staff__isnull=False).select_related('staff'):
                 if s.start_time and s.start_time <= now - timedelta(minutes=grace_min):
                     if not ClockEvent.objects.filter(staff_id=s.staff_id, event_type__in=['in', 'CLOCK_IN'], timestamp__date=today).exists():
-                        morning_no_shows += 1
+                        cnt += 1
+            return cnt
+
+        morning_no_shows = 0
+        afternoon_no_shows = 0
+        evening_no_shows = 0
+        try:
+            morning_no_shows = _no_shows_for_period(hour_lt=12)
+            afternoon_no_shows = _no_shows_for_period(hour_gte=12, hour_lt=17)
+            evening_no_shows = _no_shows_for_period(hour_gte=17)
         except Exception:
-            morning_no_shows = total_no_shows
+            morning_no_shows = afternoon_no_shows = evening_no_shows = total_no_shows
+
+        # Current period label based on time of day
+        hour_now = now.hour
+        if hour_now < 12:
+            current_period = "morning"
+            current_period_no_shows = morning_no_shows
+        elif hour_now < 17:
+            current_period = "afternoon"
+            current_period_no_shows = afternoon_no_shows
+        else:
+            current_period = "evening"
+            current_period_no_shows = evening_no_shows
 
         data = {
             "attendance": {
@@ -624,6 +638,10 @@ class DashboardSummaryView(APIView):
                 "active_shifts": active_shifts_count,
                 "no_shows": total_no_shows,
                 "morning_no_shows": morning_no_shows,
+                "afternoon_no_shows": afternoon_no_shows,
+                "evening_no_shows": evening_no_shows,
+                "current_period": current_period,
+                "current_period_no_shows": current_period_no_shows,
                 "shift_gaps": shift_gaps_count,
                 "ot_risk": ot_risk_count,
                 "ot_risk_staff": ot_risk_staff,
