@@ -135,6 +135,39 @@ def _normalize_phone_digits(phone):
     return "".join(filter(str.isdigit, str(phone)))
 
 
+def _normalize_staff_upload_row(row):
+    """
+    Map common CSV/Excel column names to canonical keys so uploads like
+    'First Name', 'Last Name', 'Role', 'WhatsApp Number' work.
+    Returns dict with keys: phone, first_name, last_name, role (values stripped).
+    """
+    if not isinstance(row, dict):
+        return {}
+    # Normalize keys: lowercase, strip, space -> underscore, for matching
+    def norm(s):
+        return (str(s).strip().lower().replace(" ", "_").replace("-", "_") if s else "")
+    key_to_val = {norm(k): str(v).strip() for k, v in row.items() if k is not None and v is not None and str(v).strip()}
+    def get_first(*candidates):
+        for c in candidates:
+            nc = norm(c)
+            if nc and nc in key_to_val:
+                return key_to_val[nc]
+            for k, v in key_to_val.items():
+                if nc in k or (len(nc) > 2 and k.endswith(nc)) or (len(k) > 2 and nc.endswith(k)):
+                    return v
+        return ""
+    phone = get_first("phone", "whatsapp", "phonenumber", "whatsapp number", "whatsapp_number", "tel", "mobile")
+    first_name = get_first("first name", "first_name", "firstname", "prenom")
+    last_name = get_first("last name", "last_name", "lastname", "nom")
+    role = get_first("role", "position", "title", "job")
+    return {
+        "phone": str(phone).strip() if phone else "",
+        "first_name": str(first_name).strip() if first_name else "",
+        "last_name": str(last_name).strip() if last_name else "",
+        "role": str(role).strip() if role else "",
+    }
+
+
 def _phone_suffix(digits, length=9):
     """Return last N digits for matching (handles local vs international format)."""
     if not digits or len(digits) < 6:
@@ -463,7 +496,9 @@ class UserManagementService:
         """
         ONE-TAP: Create staff profiles (pre-activation) from CSV or JSON. No outbound message.
         Validates: required phone, valid format (digits, min length), no duplicate phones in batch.
-        Columns/keys: phone (required), first_name, last_name, role.
+        Columns/keys: phone (required), first_name, last_name, role. Accepts 'First Name', 'Last Name', 'WhatsApp Number', 'Role'.
+        Manager copies and shares the returned invite_link; when staff click it and send the prefilled message to Miya,
+        the backend activates that staff's account and Miya replies via WhatsApp.
         Returns: { created, failed, errors, records, invite_link, batch_id }.
         """
         from django.db import IntegrityError
@@ -483,24 +518,35 @@ class UserManagementService:
         seen_phones = set()
         for idx, row in enumerate(rows, start=2 if csv_content else 1):
             try:
-                raw_phone = (row.get("phone") or row.get("whatsapp") or row.get("phonenumber") or "").strip()
+                n = _normalize_staff_upload_row(row)
+                raw_phone = n.get("phone") or ""
                 phone = _normalize_phone_digits(raw_phone)
                 if not phone:
                     results["failed"] += 1
-                    results["errors"].append(f"Row {idx}: Missing phone number")
+                    results["errors"].append(f"Row {idx}: Missing phone number (use column 'Phone', 'WhatsApp', or 'WhatsApp Number')")
                     continue
                 if len(phone) < 6:
                     results["failed"] += 1
-                    results["errors"].append(f"Row {idx}: Phone must be at least 6 digits (international format, e.g. 2203736808 for Gambia)")
+                    results["errors"].append(f"Row {idx}: Phone must be at least 6 digits (international format, e.g. 212697998519)")
                     continue
                 if phone in seen_phones:
                     results["failed"] += 1
                     results["errors"].append(f"Row {idx}: Duplicate phone number in this file")
                     continue
                 seen_phones.add(phone)
-                first_name = (row.get("first_name") or row.get("firstname") or "").strip()
-                last_name = (row.get("last_name") or row.get("lastname") or "").strip()
-                role_value = (row.get("role") or "WAITER").strip().upper()
+                first_name = (n.get("first_name") or "").strip()
+                last_name = (n.get("last_name") or "").strip()
+                role_value = (n.get("role") or "WAITER").strip().upper().replace(" ", "_").replace("É", "E").replace("È", "E")[:50]
+                # Map common French/other role labels to STAFF_ROLES_CHOICES
+                role_aliases = {
+                    "SERVEUR": "WAITER", "SERVER": "WAITER", "CHEF_DE_SALLE": "MANAGER",
+                    "ADJOINT_DE_DIRECTION": "MANAGER", "MANAGER": "MANAGER", "CHEF": "CHEF",
+                    "PLONGEUR": "CLEANER", "HYGIENE": "CLEANER", "HYGIÈNE": "CLEANER",
+                    "COMMIS_PARTIE_FROID": "KITCHEN_HELP", "ENTREMETIER": "KITCHEN_HELP", "ENTREMÉTIER": "KITCHEN_HELP",
+                    "CHEF_PARTIE_CHAUD": "CHEF", "RECEPTIONNISTE": "RECEPTIONIST",
+                    "BARTENDER": "BARTENDER", "CASHIER": "CASHIER",
+                }
+                role_value = role_aliases.get(role_value, role_value)
                 if role_value not in dict(CustomUser.ROLE_CHOICES):
                     role_value = "WAITER"
                 try:

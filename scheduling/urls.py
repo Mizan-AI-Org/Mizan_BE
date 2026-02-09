@@ -23,6 +23,7 @@ from .process_views import ProcessViewSet, ProcessTaskViewSet
 from .template_views import ScheduleTemplateViewSet, TemplateVersionViewSet
 from .audit_views import AuditLogViewSet
 from .views_enhanced import CalendarAPIViewSet
+from .schedule_photo_views import parse_schedule_photo, parse_schedule_document, apply_parsed_schedule
 from .views_agent import (
     agent_list_staff,
     agent_staff_count,
@@ -81,6 +82,11 @@ urlpatterns = [
     # Shift Swap Requests
     path('shift-swap-requests/', ShiftSwapRequestListCreateAPIView.as_view(), name='shift-swap-request-list-create'),
     path('shift-swap-requests/<uuid:pk>/', ShiftSwapRequestRetrieveUpdateDestroyAPIView.as_view(), name='shift-swap-request-detail'),
+
+    # Schedule photo import (7Shifts-style: upload/snap → parse → template + apply)
+    path('parse-schedule-photo/', parse_schedule_photo, name='parse-schedule-photo'),
+    path('parse-schedule-document/', parse_schedule_document, name='parse-schedule-document'),
+    path('apply-parsed-schedule/', apply_parsed_schedule, name='apply-parsed-schedule'),
 
     # Task Management
     path('', include(router.urls)),
