@@ -5,11 +5,11 @@ from rest_framework import viewsets, status, pagination
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework_simplejwt.tokens import RefreshToken
 from django.db.models import Q
 from django.utils import timezone
 from django.conf import settings
 from datetime import timedelta
-import sys
 
 from .models import CustomUser, UserInvitation
 from .serializers import (
@@ -377,12 +377,21 @@ class InvitationViewSet(viewsets.ModelViewSet):
         )
         
         if user:
+            refresh = RefreshToken.for_user(user)
             return Response({
                 'detail': 'Account created successfully',
-                'user': UserSerializer(user).data
+                'user': UserSerializer(user).data,
+                'tokens': {
+                    'refresh': str(refresh),
+                    'access': str(refresh.access_token),
+                },
             }, status=status.HTTP_201_CREATED)
         else:
-            return Response({'detail': error}, status=status.HTTP_400_BAD_REQUEST)
+            payload = {'detail': error}
+            if error == 'already_accepted':
+                payload['code'] = 'already_accepted'
+                payload['detail'] = "You've already accepted this invitation. Please log in."
+            return Response(payload, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=False, methods=['get'], permission_classes=[AllowAny], url_path='by-token')
     def by_token(self, request):
@@ -432,6 +441,7 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 'status': invitation.status,
                 'is_accepted': invitation.is_accepted,
                 'has_phone': bool(phone),
+                'restaurant_name': invitation.restaurant.name if invitation.restaurant_id else None,
             }
         )
     
