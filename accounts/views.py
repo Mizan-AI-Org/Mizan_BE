@@ -585,7 +585,7 @@ class StaffActivationUploadView(APIView):
         staff_list = request.data.get('staff_list')
         if not csv_content and not staff_list:
             return Response(
-                {'error': 'Provide csv_content or staff_list (array of {phone, first_name, last_name, role})'},
+                {'error': 'Provide csv_content or staff_list (array of {phone, first_name, last_name, role}). Columns like "First Name", "Last Name", "WhatsApp Number", "Role" are supported.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         try:
@@ -606,7 +606,7 @@ class StaffActivationUploadView(APIView):
                 'invite_link': full_link,
                 'invite_short_link': short_link or full_link,
                 'batch_id': results['batch_id'],
-                'detail': f"Created {results['created']} staff records. Share the invite link with staff (no message is sent).",
+                'detail': f"Created {results['created']} staff records. Copy and share the invite link with staff—when they click it and send the message to Miya, their account will be activated and Miya will reply via WhatsApp.",
             }, status=status.HTTP_201_CREATED if results['created'] > 0 else status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             logger.error(f"StaffActivationUploadView error: {str(e)}")
