@@ -14,7 +14,7 @@ from django.contrib.auth import authenticate
 from .models import CustomUser, Restaurant, UserInvitation, StaffProfile, AuditLog, StaffActivationRecord
 from django.utils import timezone
 from django.core.files.base import ContentFile
-import base64, os, sys
+import base64, os
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.contrib.auth.models import UserManager
@@ -679,8 +679,6 @@ class AcceptInvitationView(APIView):
         pin_code = data.get('pin_code')
         provided_email = data.get('email')
 
-        # Build an error dictionary
-        print(data, file=sys.stderr)
         errors = {}
         if not token:
             errors['token'] = 'This field is required.'
@@ -694,6 +692,19 @@ class AcceptInvitationView(APIView):
             errors['pin_code'] = 'PIN code must be 4 to 8 digits long.'
         if errors:
             return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # Check if invitation was already accepted (user re-visiting or resubmitting)
+        already_accepted = UserInvitation.objects.filter(
+            invitation_token=token, is_accepted=True
+        ).exists()
+        if already_accepted:
+            return Response(
+                {
+                    'error': "You've already accepted this invitation. Please log in.",
+                    'code': 'already_accepted',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             invitation = UserInvitation.objects.get(

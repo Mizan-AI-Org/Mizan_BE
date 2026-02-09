@@ -282,16 +282,22 @@ class NotificationService:
             url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
             if not url:
                 url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
+            success_message = (
+                "Your account has been successfully activated! You can now interact with Mizan AI Agent. "
+                "Welcome to the team!"
+            )
             payload = {
                 "eventType": "staff_activated",
                 "staffId": user_id,
                 "staffName": first_name or "Staff",
+                "messageForUser": success_message,
                 "details": {
                     "phoneNumber": self._normalize_phone(phone),
                     "restaurantName": restaurant_name,
                     "userId": user_id,
                     "pinCode": pin_code,
                     "batchId": batch_id or "",
+                    "messageForUser": success_message,
                 },
                 "timestamp": timezone.now().isoformat(),
             }

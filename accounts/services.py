@@ -771,6 +771,12 @@ class UserManagementService:
                     invitation_token=token, is_accepted=False
                 ).first()
                 if not invitation:
+                    # Token may have been used already – return a specific code so frontend can redirect to login
+                    already = UserInvitation.objects.filter(
+                        invitation_token=token, is_accepted=True
+                    ).first()
+                    if already:
+                        return None, "already_accepted"
                     return None, "Invalid invitation token"
                 if invitation.expires_at < timezone.now():
                     return None, "Invitation has expired"

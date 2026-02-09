@@ -167,6 +167,66 @@ def get_invitation_by_phone(request):
         logger.error(f"Invitation lookup error: {e}")
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def account_activation_from_agent(request):
+    """
+    Single-step account activation by phone. Used by Miya's account_activation tool.
+    Staff send first message → agent calls this with their phone → we activate and return success message.
+    Payload: { "phone": "212600959067" }. Returns { "success", "user?", "message_for_user" }.
+    """
+    try:
+        auth_header = request.headers.get('Authorization')
+        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        if not expected_key:
+            return Response({'success': False, 'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        if not auth_header or auth_header != f"Bearer {expected_key}":
+            return Response({'success': False, 'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        phone = request.data.get('phone') or ''
+        clean_phone = ''.join(filter(str.isdigit, str(phone)))
+        if not clean_phone or len(clean_phone) < 6:
+            return Response({
+                'success': False,
+                'error': 'Invalid or missing phone number'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        from .services import try_activate_staff_on_inbound_message
+
+        user = try_activate_staff_on_inbound_message(clean_phone)
+        if not user:
+            return Response({
+                'success': False,
+                'error': 'No pending activation found for this phone number. Please confirm you received the activation link from your manager and that your phone number matches what they have on file.'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        message_for_user = (
+            "Your account has been successfully activated! You can now log in to the Mizan app. "
+            "Use your PIN when prompted. Welcome to the team!"
+        )
+        return Response({
+            'success': True,
+            'user': {
+                'id': str(user.id),
+                'email': user.email,
+                'first_name': user.first_name,
+                'last_name': user.last_name or '',
+                'phone': user.phone,
+                'role': user.role,
+                'restaurant': {
+                    'id': str(user.restaurant.id),
+                    'name': user.restaurant.name,
+                }
+            },
+            'message_for_user': message_for_user,
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Account activation error: {e}")
+        return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
 @api_view(['POST'])
 @authentication_classes([])  # Bypass default JWT auth - use manual API key validation
 @permission_classes([permissions.AllowAny])  # Authenticated via Agent Key
@@ -231,8 +291,13 @@ def accept_invitation_from_agent(request):
                     'success': False,
                     'error': 'No pending activation found for this phone number'
                 }, status=status.HTTP_404_NOT_FOUND)
+            message_for_user = (
+                "Your account has been successfully activated! You can now interact with Mizan AI Agent. "
+                "Welcome to the team!"
+            )
             return Response({
                 'success': True,
+                'message_for_user': message_for_user,
                 'user': {
                     'id': str(user.id),
                     'email': user.email,
