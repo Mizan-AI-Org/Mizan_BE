@@ -2,6 +2,7 @@ from rest_framework import generics, status, permissions
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
+from datetime import timedelta
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Q
@@ -115,11 +116,13 @@ class NotificationListView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        # Only show notifications from the last 12 hours (older ones are auto-cleared from the list)
+        cutoff = timezone.now() - timedelta(hours=12)
         # Be defensive: eagerly load related sender/recipient and attachments
         # to avoid lazy-loading surprises that can bubble up during serialization
         queryset = (
             Notification.objects
-            .filter(recipient=user)
+            .filter(recipient=user, created_at__gte=cutoff)
             .select_related('recipient', 'sender')
             .prefetch_related('attachments')
             .order_by('-created_at')
@@ -1922,7 +1925,9 @@ class NotificationListView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = Notification.objects.filter(recipient=user).order_by('-created_at')
+        # Only show notifications from the last 12 hours (older ones are auto-cleared from the list)
+        cutoff = timezone.now() - timedelta(hours=12)
+        queryset = Notification.objects.filter(recipient=user, created_at__gte=cutoff).order_by('-created_at')
         
         # Filter by read status
         is_read = self.request.query_params.get('is_read')
