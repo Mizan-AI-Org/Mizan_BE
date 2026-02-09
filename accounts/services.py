@@ -175,34 +175,58 @@ def _phone_suffix(digits, length=9):
     return digits[-length:] if len(digits) >= length else digits
 
 
+def _phone_to_e164_morocco(digits):
+    """
+    Normalize to E.164 for Morocco (212 + 9 digits). If digits are 9 and start with 6 or 7, prepend 212.
+    Handles CSV like "697998519" or "0784476751" (strip leading 0) -> "212697998519" / "212784476751".
+    """
+    if not digits or len(digits) < 6:
+        return digits
+    d = _normalize_phone_digits(digits)
+    if len(d) == 9 and d[0] in ('6', '7'):
+        return '212' + d
+    if len(d) == 10 and d.startswith('0') and d[1] in ('6', '7'):
+        return '212' + d[1:]
+    return d
+
+
 def _find_staff_activation_record_by_phone(phone_digits):
     """
     Find a NOT_ACTIVATED StaffActivationRecord by phone using robust suffix matching.
-    Prefers exact match; falls back to last-9-digit suffix.
-    Handles: CSV "0784476751" vs WhatsApp "212784476751".
+    Prefers exact match; falls back to last-9-digit suffix; handles Morocco 212+7 (CSV) vs 212+9 (WhatsApp).
+    Handles: CSV "0784476751" vs WhatsApp "212784476751"; CSV "2126979985" (10d) vs WhatsApp "212697998519" (12d).
     Returns record or None.
     """
     if not phone_digits or len(phone_digits) < 6:
         return None
     normalized = _normalize_phone_digits(phone_digits)
-    suffix = _phone_suffix(normalized)
+    suffix = _phone_suffix(normalized, 9)
     # Fast path: exact digit match (stored normalized)
     record = StaffActivationRecord.objects.filter(
         status=StaffActivationRecord.STATUS_NOT_ACTIVATED
     ).filter(phone=normalized).first()
     if record:
         return record
-    # Suffix match: stored phone ends with suffix
+    # Suffix match: stored phone ends with suffix (last 9 digits)
     record = StaffActivationRecord.objects.filter(
         status=StaffActivationRecord.STATUS_NOT_ACTIVATED
     ).filter(phone__endswith=suffix).first()
     if record:
         return record
-    # Fallback: compare last 9 digits
+    # Fallback: compare last 9 digits in Python (handles stored with leading 0 etc.)
     for r in StaffActivationRecord.objects.filter(status=StaffActivationRecord.STATUS_NOT_ACTIVATED).only('id', 'phone'):
         stored_digits = _normalize_phone_digits(r.phone)
-        if _phone_suffix(stored_digits) == suffix:
+        if _phone_suffix(stored_digits, 9) == suffix:
             return r
+    # Morocco: stored 212+7 digits (10 total) vs incoming 212+9 digits (12 total) — CSV missing 2 digits
+    if len(normalized) >= 12 and normalized.startswith('212'):
+        national_in = normalized[3:]  # 9 digits
+        for r in StaffActivationRecord.objects.filter(status=StaffActivationRecord.STATUS_NOT_ACTIVATED).only('id', 'phone'):
+            stored_digits = _normalize_phone_digits(r.phone)
+            if len(stored_digits) == 10 and stored_digits.startswith('212'):
+                national_stored = stored_digits[3:]  # 7 digits
+                if len(national_in) >= 7 and national_in[:7] == national_stored:
+                    return r
     return None
 
 
@@ -521,6 +545,8 @@ class UserManagementService:
                 n = _normalize_staff_upload_row(row)
                 raw_phone = n.get("phone") or ""
                 phone = _normalize_phone_digits(raw_phone)
+                # Normalize to E.164 for Morocco so WhatsApp incoming (212+9) matches
+                phone = _phone_to_e164_morocco(phone) or phone
                 if not phone:
                     results["failed"] += 1
                     results["errors"].append(f"Row {idx}: Missing phone number (use column 'Phone', 'WhatsApp', or 'WhatsApp Number')")
