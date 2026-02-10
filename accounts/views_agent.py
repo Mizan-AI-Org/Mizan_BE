@@ -194,34 +194,75 @@ def account_activation_from_agent(request):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         from .services import try_activate_staff_on_inbound_message
+        from .models import CustomUser
 
         user = try_activate_staff_on_inbound_message(clean_phone)
+
         if not user:
-            return Response({
-                'success': False,
-                'error': 'No pending activation found for this phone number. Please confirm you received the activation link from your manager and that your phone number matches what they have on file.'
-            }, status=status.HTTP_404_NOT_FOUND)
+            # Idempotency: if the account is already active for this phone, treat as SUCCESS
+            existing_user = CustomUser.objects.filter(phone__icontains=clean_phone).first()
+            if existing_user:
+                already_msg = (
+                    "Your account is already active. You can log in to the Mizan app with your PIN. "
+                    "If you have any trouble logging in, please ask your manager."
+                )
+                return Response(
+                    {
+                        'success': True,
+                        'user': {
+                            'id': str(existing_user.id),
+                            'email': existing_user.email,
+                            'first_name': existing_user.first_name,
+                            'last_name': existing_user.last_name or '',
+                            'phone': existing_user.phone,
+                            'role': existing_user.role,
+                            'restaurant': {
+                                'id': str(existing_user.restaurant.id),
+                                'name': existing_user.restaurant.name,
+                            },
+                        },
+                        'message_for_user': already_msg,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            # No pending activation and no existing account: give a gentle, actionable error
+            return Response(
+                {
+                    'success': False,
+                    'error': 'No pending activation found for this phone number.',
+                    'message_for_user': (
+                        "I can’t see your activation details yet. "
+                        "Please ask your manager to add your WhatsApp number to the staff list or resend the activation link. "
+                        "Once that’s done, just send me this same message again."
+                    ),
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
         message_for_user = (
             "Your account has been successfully activated! You can now log in to the Mizan app. "
             "Use your PIN when prompted. Welcome to the team!"
         )
-        return Response({
-            'success': True,
-            'user': {
-                'id': str(user.id),
-                'email': user.email,
-                'first_name': user.first_name,
-                'last_name': user.last_name or '',
-                'phone': user.phone,
-                'role': user.role,
-                'restaurant': {
-                    'id': str(user.restaurant.id),
-                    'name': user.restaurant.name,
-                }
+        return Response(
+            {
+                'success': True,
+                'user': {
+                    'id': str(user.id),
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name or '',
+                    'phone': user.phone,
+                    'role': user.role,
+                    'restaurant': {
+                        'id': str(user.restaurant.id),
+                        'name': user.restaurant.name,
+                    },
+                },
+                'message_for_user': message_for_user,
             },
-            'message_for_user': message_for_user,
-        }, status=status.HTTP_200_OK)
+            status=status.HTTP_200_OK,
+        )
     except Exception as e:
         logger.error(f"Account activation error: {e}")
         return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
