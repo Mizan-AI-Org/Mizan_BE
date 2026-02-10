@@ -406,12 +406,49 @@ class InviteStaffView(APIView):
         role = request.data.get('role')
         phone_number = request.data.get('phone_number')
         send_whatsapp = bool(request.data.get('send_whatsapp', False))
+        first_name = (request.data.get('first_name') or '').strip() or None
+        last_name = (request.data.get('last_name') or '').strip() or None
 
         if not role:
             return Response({'error': 'Role is required.'}, status=status.HTTP_400_BAD_REQUEST)
         if not email and not (send_whatsapp and phone_number):
             return Response({'error': 'Email is required unless sending via WhatsApp with a phone number.'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
+        # Individual WhatsApp: same flow as bulk – create StaffActivationRecord, return wa.me link for manager to share
+        if send_whatsapp and phone_number:
+            record, err = UserManagementService.create_single_staff_activation_record(
+                restaurant=request.user.restaurant,
+                phone_raw=phone_number,
+                first_name=first_name,
+                last_name=last_name,
+                role_raw=role,
+                invited_by=request.user,
+            )
+            if err:
+                return Response({'error': err}, status=status.HTTP_400_BAD_REQUEST)
+            invite_link = UserManagementService.get_activation_invite_link()
+            short_link = request.build_absolute_uri('/api/go/wa')
+            if not invite_link or 'localhost' in short_link or '127.0.0.1' in short_link:
+                short_link = invite_link or ''
+            try:
+                AuditLog.create_log(
+                    restaurant=request.user.restaurant,
+                    user=request.user,
+                    action_type='CREATE',
+                    entity_type='StaffActivationRecord',
+                    entity_id=str(record.id),
+                    description='Individual WhatsApp invite: staff record created; share link with staff to activate',
+                    old_values={},
+                    new_values={'phone': record.phone, 'role': record.role}
+                )
+            except Exception:
+                pass
+            return Response({
+                'message': 'Staff added. Copy and share the invite link—when they click it and send the message to Miya, their account will be activated and Miya will reply via WhatsApp.',
+                'invite_link': invite_link,
+                'invite_short_link': short_link or invite_link,
+            }, status=status.HTTP_201_CREATED)
+
         if email and CustomUser.objects.filter(email=email).exists():
             return Response({'error': 'User with this email already exists.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -430,8 +467,6 @@ class InviteStaffView(APIView):
             expires_at=expires_at
         )
 
-        first_name = (request.data.get('first_name') or '').strip() or None
-        last_name = (request.data.get('last_name') or '').strip() or None
         if first_name:
             invitation.first_name = first_name
         if last_name:
@@ -446,7 +481,6 @@ class InviteStaffView(APIView):
         invitation.save(update_fields=['first_name', 'last_name', 'extra_data'])
 
         invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
-        print(f"Staff Invitation Link: {invite_link}")
 
         if email:
             html_message = render_to_string('emails/staff_invite.html', {
@@ -484,39 +518,6 @@ class InviteStaffView(APIView):
                         description='Staff invitation created and email sent',
                         old_values={},
                         new_values={'email': email, 'role': role}
-                    )
-                except Exception:
-                    pass
-            if send_whatsapp and phone_number:
-                from .tasks import send_whatsapp_invitation_task
-                # Always use background task for reliability and better UX (no hang)
-                send_whatsapp_invitation_task.delay(
-                    invitation_id=str(invitation.id),
-                    phone=phone_number,
-                    first_name=first_name or "Staff",
-                    restaurant_name=request.user.restaurant.name,
-                    invite_link=invite_link,
-                    support_contact=getattr(settings, 'SUPPORT_CONTACT', '')
-                )
-                
-                # Mock a successful log entry as PENDING
-                InvitationDeliveryLog.objects.create(
-                    invitation=invitation,
-                    channel='whatsapp',
-                    recipient_address=phone_number,
-                    status='PENDING'
-                )
-                
-                try:
-                    AuditLog.create_log(
-                        restaurant=request.user.restaurant,
-                        user=request.user,
-                        action_type='CREATE',
-                        entity_type='INVITATION',
-                        entity_id=str(invitation.id),
-                        description='WhatsApp invitation scheduled via Lua Agent',
-                        old_values={},
-                        new_values={'email': email, 'phone': phone_number}
                     )
                 except Exception:
                     pass

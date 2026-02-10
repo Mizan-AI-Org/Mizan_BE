@@ -601,6 +601,50 @@ class UserManagementService:
                 results["failed"] += 1
                 results["errors"].append(f"Row {idx}: {str(e)}")
         return results
+
+    @staticmethod
+    def create_single_staff_activation_record(restaurant, phone_raw, first_name, last_name, role_raw, invited_by=None):
+        """
+        ONE-TAP: Create one StaffActivationRecord for individual WhatsApp invite.
+        Same flow as bulk: manager gets invite_link and shares it; when staff click and send message, account activates.
+        Returns (record, None) on success, (None, error_message) on validation/duplicate error.
+        """
+        from django.db import IntegrityError
+        phone = _normalize_phone_digits(phone_raw or "")
+        phone = _phone_to_e164_morocco(phone) or phone
+        if not phone:
+            return None, "Phone number is required and must be at least 6 digits (international format)."
+        if len(phone) < 6:
+            return None, "Phone must be at least 6 digits (international format, e.g. 212697998519)."
+        role_value = (role_raw or "WAITER").strip().upper().replace(" ", "_").replace("É", "E").replace("È", "E")[:50]
+        role_aliases = {
+            "SERVEUR": "WAITER", "SERVER": "WAITER", "CHEF_DE_SALLE": "MANAGER",
+            "ADJOINT_DE_DIRECTION": "MANAGER", "MANAGER": "MANAGER", "CHEF": "CHEF",
+            "PLONGEUR": "CLEANER", "HYGIENE": "CLEANER", "HYGIÈNE": "CLEANER",
+            "COMMIS_PARTIE_FROID": "KITCHEN_HELP", "ENTREMETIER": "KITCHEN_HELP", "ENTREMÉTIER": "KITCHEN_HELP",
+            "CHEF_PARTIE_CHAUD": "CHEF", "RECEPTIONNISTE": "RECEPTIONIST",
+            "BARTENDER": "BARTENDER", "CASHIER": "CASHIER",
+        }
+        role_value = role_aliases.get(role_value, role_value)
+        if role_value not in dict(CustomUser.ROLE_CHOICES):
+            role_value = "WAITER"
+        first_name = (first_name or "").strip()
+        last_name = (last_name or "").strip()
+        batch_id = secrets.token_hex(8)
+        try:
+            record = StaffActivationRecord.objects.create(
+                restaurant=restaurant,
+                phone=phone,
+                first_name=first_name,
+                last_name=last_name,
+                role=role_value,
+                status=StaffActivationRecord.STATUS_NOT_ACTIVATED,
+                batch_id=batch_id,
+                invited_by=invited_by,
+            )
+            return record, None
+        except IntegrityError:
+            return None, "This phone number already has a pending activation for this restaurant."
     
     @staticmethod
     def bulk_invite_users(restaurant, csv_file, invited_by, role=None, expires_in_days=7):
