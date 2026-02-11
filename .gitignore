@@ -55,7 +55,7 @@ node_modules/
 # Localization compiled files
 locale/**/*.mo
 
-# Lua Agent (deployed separately via Lua CLI, not to EC2)
+# Lua Agent: always ignore; deployed separately via Lua CLI, not with BE
 my-agent/
 
 # Redis
