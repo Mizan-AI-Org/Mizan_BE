@@ -292,12 +292,16 @@ class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         schedule_id = self.kwargs.get('schedule_pk')
-        return AssignedShift.objects.filter(schedule__id=schedule_id, schedule__restaurant=self.request.user.restaurant)
+        return AssignedShift.objects.filter(
+            schedule__id=schedule_id, schedule__restaurant=self.request.user.restaurant
+        ).prefetch_related('task_templates', 'tasks').select_related('staff', 'schedule')
 
     def perform_create(self, serializer):
         schedule_id = self.kwargs.get('schedule_pk')
         schedule = WeeklySchedule.objects.get(id=schedule_id, restaurant=self.request.user.restaurant)
-        serializer.save(schedule=schedule)
+        shift = serializer.save(schedule=schedule)
+        # Ensure staff receive schedule reminder (same as AssignedShiftViewSet)
+        SchedulingService.notify_shift_assignment(shift, force_whatsapp=True)
 
     def create(self, request, *args, **kwargs):
         """Create assigned shift under a schedule, with friendly duplicate/validation errors."""
@@ -336,7 +340,9 @@ class AssignedShiftRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
 
     def get_queryset(self):
         schedule_id = self.kwargs.get('schedule_pk')
-        return AssignedShift.objects.filter(schedule__id=schedule_id, schedule__restaurant=self.request.user.restaurant)
+        return AssignedShift.objects.filter(
+            schedule__id=schedule_id, schedule__restaurant=self.request.user.restaurant
+        ).prefetch_related('task_templates', 'tasks').select_related('staff', 'schedule')
 
 
 class AssignedShiftViewSet(viewsets.ModelViewSet):
@@ -365,8 +371,10 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
         if date_to:
             queryset = queryset.filter(shift_date__lte=date_to)
         
-        return queryset.order_by('shift_date', 'start_time')
-    
+        return queryset.prefetch_related('task_templates', 'tasks').select_related(
+            'staff', 'schedule'
+        ).order_by('shift_date', 'start_time')
+
     def perform_create(self, serializer):
         """Create shift and send notification"""
         shift = serializer.save()

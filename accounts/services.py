@@ -645,7 +645,60 @@ class UserManagementService:
             return record, None
         except IntegrityError:
             return None, "This phone number already has a pending activation for this restaurant."
-    
+
+    @staticmethod
+    def deactivate_user(user, deactivated_by):
+        """
+        Deactivate a staff member (set is_active=False). Only Owner/Super Admin should call this.
+        Returns (success: bool, message: str). Cannot deactivate self.
+        """
+        if user.id == deactivated_by.id:
+            return False, "You cannot deactivate your own account."
+        if user.role == 'SUPER_ADMIN' and deactivated_by.role != 'SUPER_ADMIN':
+            return False, "Only a Super Admin can deactivate a Super Admin."
+        if not user.is_active:
+            return True, "User is already deactivated."
+        user.is_active = False
+        user.save(update_fields=['is_active'])
+        try:
+            AuditLog.create_log(
+                restaurant=deactivated_by.restaurant,
+                user=deactivated_by,
+                action_type='OTHER',
+                entity_type='CustomUser',
+                entity_id=str(user.id),
+                description=f"Staff deactivated: {user.get_full_name()} ({user.email})",
+                new_values={'is_active': False},
+            )
+        except Exception:
+            pass
+        return True, "Staff member deactivated successfully."
+
+    @staticmethod
+    def delete_user(user, deleted_by):
+        """
+        Permanently delete a staff member. Only Owner/Super Admin should call this.
+        Returns (success: bool, message: str). Cannot delete self.
+        """
+        if user.id == deleted_by.id:
+            return False, "You cannot delete your own account."
+        if user.role == 'SUPER_ADMIN' and deleted_by.role != 'SUPER_ADMIN':
+            return False, "Only a Super Admin can delete a Super Admin."
+        try:
+            AuditLog.create_log(
+                restaurant=deleted_by.restaurant,
+                user=deleted_by,
+                action_type='DELETE',
+                entity_type='CustomUser',
+                entity_id=str(user.id),
+                description=f"Staff deleted: {user.get_full_name()} ({user.email})",
+                old_values={'email': user.email, 'role': user.role},
+            )
+        except Exception:
+            pass
+        user.delete()
+        return True, "Staff member removed successfully."
+
     @staticmethod
     def bulk_invite_users(restaurant, csv_file, invited_by, role=None, expires_in_days=7):
         """

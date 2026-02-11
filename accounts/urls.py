@@ -3,7 +3,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     CustomTokenObtainPairView, CustomTokenRefreshView, RegisterView, VerifyEmailView, PasswordResetRequestView,
     PasswordResetConfirmView, RestaurantDetailView, RestaurantUpdateView, StaffInvitationListView, 
-    StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView,
+    StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView, StaffMemberDetailView,
     LoginView, LogoutView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView, pin_login,
     StaffListView, StaffPasswordResetView, InviteStaffBulkCsvView,
     StaffActivationUploadView, StaffActivationInviteLinkView, StaffActivationPendingListView,
@@ -34,6 +34,7 @@ urlpatterns = [
     path('staff/profile/<uuid:pk>/update/', StaffProfileUpdateView.as_view(), name='staff_profile_update'),
     path('staff/profile/<uuid:pk>/reset-password/', StaffPasswordResetView.as_view(), name='staff_password_reset'),
     path('staff/', StaffListAPIView.as_view(), name='staff_list'),
+    path('staff/<uuid:pk>/', StaffMemberDetailView.as_view(), name='staff_detail'),
     # path('staff/users/', StaffUsersListView.as_view(), name='staff_users_list'),
     path('auth/login/', LoginView.as_view(), name='login'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),

@@ -174,8 +174,10 @@ def get_invitation_by_phone(request):
 def account_activation_from_agent(request):
     """
     Single-step account activation by phone. Used by Miya's account_activation tool.
-    Staff send first message → agent calls this with their phone → we activate and return success message.
-    Payload: { "phone": "212600959067" }. Returns { "success", "user?", "message_for_user" }.
+    Staff send first message → agent calls this with their phone → we activate and return success.
+    On success we send the staff_activated_welcome WhatsApp template; response has template_sent=True
+    and message_for_user=None so Miya does not send a duplicate inline reply.
+    Payload: { "phone": "212600959067" }. Returns { "success", "template_sent?", "user?", "message_for_user?" }.
     """
     try:
         auth_header = request.headers.get('Authorization')
@@ -202,13 +204,16 @@ def account_activation_from_agent(request):
             # Idempotency: if the account is already active for this phone, treat as SUCCESS
             existing_user = CustomUser.objects.filter(phone__icontains=clean_phone).first()
             if existing_user:
-                already_msg = (
-                    "Your account is already active. You can log in to the Mizan app with your PIN. "
-                    "If you have any trouble logging in, please ask your manager."
+                from notifications.services import notification_service
+                notification_service.send_staff_activated_welcome(
+                    phone=clean_phone,
+                    first_name=existing_user.first_name or "Staff",
+                    restaurant_name=existing_user.restaurant.name if getattr(existing_user, 'restaurant', None) else "",
                 )
                 return Response(
                     {
                         'success': True,
+                        'template_sent': True,
                         'user': {
                             'id': str(existing_user.id),
                             'email': existing_user.email,
@@ -221,7 +226,7 @@ def account_activation_from_agent(request):
                                 'name': existing_user.restaurant.name,
                             },
                         },
-                        'message_for_user': already_msg,
+                        'message_for_user': None,
                     },
                     status=status.HTTP_200_OK,
                 )
@@ -240,13 +245,16 @@ def account_activation_from_agent(request):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        message_for_user = (
-            "Your account has been successfully activated! You can now log in to the Mizan app. "
-            "Use your PIN when prompted. Welcome to the team!"
+        from notifications.services import notification_service
+        notification_service.send_staff_activated_welcome(
+            phone=clean_phone,
+            first_name=user.first_name or "Staff",
+            restaurant_name=user.restaurant.name if getattr(user, 'restaurant', None) else "",
         )
         return Response(
             {
                 'success': True,
+                'template_sent': True,
                 'user': {
                     'id': str(user.id),
                     'email': user.email,
@@ -259,7 +267,7 @@ def account_activation_from_agent(request):
                         'name': user.restaurant.name,
                     },
                 },
-                'message_for_user': message_for_user,
+                'message_for_user': None,
             },
             status=status.HTTP_200_OK,
         )

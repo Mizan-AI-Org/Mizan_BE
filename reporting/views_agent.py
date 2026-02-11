@@ -55,20 +55,23 @@ def agent_create_incident(request):
         
         data = request.data
         restaurant_id = data.get('restaurant_id') or data.get('restaurantId')
-        title = (data.get('title') or '').strip()
         description = (data.get('description') or '').strip()
         category = data.get('category', 'General')
         priority = data.get('priority', 'MEDIUM')
         reporter_phone = data.get('reporter_phone')
 
-        # Allow payloads with only description or only title.
-        if not description and title:
+        # Canonical incident types (Miya determines type; title is constant per type)
+        VALID_CATEGORIES = ('Safety', 'Maintenance', 'HR', 'Service', 'General')
+        category = (category or 'General').strip()
+        if category not in VALID_CATEGORIES:
+            category = 'General'
+        title = f"{category} incident"
+
+        if not description:
             description = title
-        if not title and description:
-            title = (description[:80] + '…') if len(description) > 80 else description
-        if not title or not description:
+        if not description:
             return Response(
-                {'error': 'title or description is required'},
+                {'error': 'description is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -85,12 +88,17 @@ def agent_create_incident(request):
             restaurant, reporter = resolve_agent_restaurant_and_user(request=request, payload=data)
 
         if not reporter and reporter_phone:
-            reporter = CustomUser.objects.filter(phone__icontains=''.join(filter(str.isdigit, str(reporter_phone)))).first()
+            digits = ''.join(filter(str.isdigit, str(reporter_phone)))
+            if digits:
+                reporter = CustomUser.objects.filter(phone__icontains=digits).select_related('restaurant').first()
+                if reporter and not restaurant and getattr(reporter, 'restaurant', None):
+                    restaurant = reporter.restaurant
+                    logger.info(f"[AgentIncident] Resolved restaurant from reporter_phone: {restaurant.name}")
 
         if not restaurant:
             return Response(
                 {
-                    'error': 'Unable to resolve restaurant context. Provide restaurant_id, or include sessionId/userId/email/phone/token in the payload.'
+                    'error': 'Unable to resolve restaurant context. Provide restaurant_id, or include sessionId/userId/email/phone/token in the payload. Ensure your phone number is linked to a staff account.'
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )

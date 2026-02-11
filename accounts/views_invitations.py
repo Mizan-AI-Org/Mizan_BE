@@ -19,7 +19,7 @@ from .serializers import (
 )
 from .tasks import send_whatsapp_invitation_task
 from .services import UserManagementService
-from core.permissions import IsRestaurantOwnerOrManager
+from core.permissions import IsRestaurantOwnerOrManager, IsOwnerOrSuperAdmin
 import logging
 
 logger = logging.getLogger(__name__)
@@ -112,9 +112,29 @@ class UserManagementViewSet(viewsets.ModelViewSet):
         else:
             return Response({'detail': message}, status=status.HTTP_400_BAD_REQUEST)
     
+    def _only_owner_or_super_admin(self, request):
+        if request.user.role not in ['OWNER', 'SUPER_ADMIN']:
+            return Response(
+                {'detail': 'Only the restaurant Owner or Super Admin can deactivate or delete staff.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        return None
+
+    def destroy(self, request, *args, **kwargs):
+        """Permanently delete a staff member. Only Owner and Super Admin."""
+        if self._only_owner_or_super_admin(request):
+            return self._only_owner_or_super_admin(request)
+        user = self.get_object()
+        success, message = UserManagementService.delete_user(user=user, deleted_by=request.user)
+        if success:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response({'detail': message}, status=status.HTTP_400_BAD_REQUEST)
+
     @action(detail=True, methods=['post'])
     def deactivate(self, request, pk=None):
-        """Deactivate user"""
+        """Deactivate user (set is_active=False). Only Owner and Super Admin."""
+        if self._only_owner_or_super_admin(request):
+            return self._only_owner_or_super_admin(request)
         user = self.get_object()
         success, message = UserManagementService.deactivate_user(
             user=user,

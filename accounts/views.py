@@ -28,6 +28,7 @@ from notifications.services import notification_service
 from .models import InvitationDeliveryLog
 from .services import sync_user_to_lua_agent, UserManagementService
 from .permissions import IsAdminOrManager
+from core.permissions import IsOwnerOrSuperAdmin
 
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
@@ -1079,6 +1080,26 @@ class StaffListAPIView(generics.ListAPIView):
             restaurant=user.restaurant,
             is_active=True,
             ).exclude(role='SUPER_ADMIN').order_by('first_name', 'last_name')
+
+
+class StaffMemberDetailView(APIView):
+    """
+    Delete or deactivate a staff member. Only Owner and Super Admin.
+    DELETE /api/staff/<pk>/ -> permanently remove staff.
+    POST /api/staff/<pk>/deactivate/ is on UserManagementViewSet; use POST /api/users/<pk>/deactivate/.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsOwnerOrSuperAdmin]
+
+    def delete(self, request, pk=None):
+        staff = get_object_or_404(CustomUser, pk=pk)
+        if not getattr(request.user, 'restaurant', None) or staff.restaurant_id != request.user.restaurant_id:
+            return Response({'detail': 'Staff member not found in your restaurant.'}, status=status.HTTP_404_NOT_FOUND)
+        if staff.role == 'SUPER_ADMIN' and request.user.role != 'SUPER_ADMIN':
+            return Response({'detail': 'Only a Super Admin can remove a Super Admin.'}, status=status.HTTP_403_FORBIDDEN)
+        success, message = UserManagementService.delete_user(user=staff, deleted_by=request.user)
+        if success:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response({'detail': message}, status=status.HTTP_400_BAD_REQUEST)
             
     
 class StaffPinLoginView(APIView):
