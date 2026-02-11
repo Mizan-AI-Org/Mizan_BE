@@ -56,7 +56,45 @@ class NotificationService:
                 title = "Upcoming Shift Reminder"
                 message = f"Reminder: You have a shift starting soon on {start_str}."
                 channels.append('whatsapp')
-                
+            elif notification_type == 'CLOCK_IN_REMINDER':
+                # Send staff_clock_in template (Clock-In button) via WhatsApp; app/push get plain message
+                title = "Clock-In Reminder"
+                message = f"Please clock in for your shift starting at {start_str}."
+                staff = shift.staff
+                if getattr(staff, 'phone', None):
+                    restaurant = getattr(getattr(shift, 'schedule', None), 'restaurant', None)
+                    now = timezone.now()
+                    shift_start = getattr(shift, 'start_time', None)
+                    if shift_start:
+                        try:
+                            shift_start = timezone.localtime(shift_start)
+                        except Exception:
+                            pass
+                    start_time = shift_start.strftime('%H:%M') if shift_start and hasattr(shift_start, 'strftime') else ''
+                    minutes_until = int(max(0, (shift_start - now).total_seconds() // 60)) if shift_start else 0
+                    minutes_from_now = f"{minutes_until} minutes"
+                    location = getattr(restaurant, 'address', None) or getattr(restaurant, 'name', None) or "Restaurant"
+                    components = [
+                        {
+                            "type": "body",
+                            "parameters": [
+                                {"type": "text", "text": (staff.first_name or "Team Member")[:255]},
+                                {"type": "text", "text": str(start_time)[:20]},
+                                {"type": "text", "text": str(minutes_from_now)[:50]},
+                                {"type": "text", "text": str(location)[:255]},
+                            ],
+                        }
+                    ]
+                    template_name = getattr(settings, 'WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', 'staff_clock_in')
+                    self.send_whatsapp_template(
+                        phone=staff.phone,
+                        template_name=template_name,
+                        language_code='en_US',
+                        components=components
+                    )
+                # Only app/push for custom notification (WhatsApp already sent above)
+                channels = ['app', 'push']
+
             return self.send_custom_notification(
                 recipient=recipient,
                 message=message,
@@ -763,6 +801,57 @@ class NotificationService:
                 pass
             return False, {"error": str(e)}
 
+    def send_staff_activated_welcome(self, phone, first_name, restaurant_name, language_code='en_US'):
+        """
+        Send the staff_activated_welcome WhatsApp template after account activation.
+        Template: Welcome {{first_name}}! Your staff account for {{restaurant_name}} has been
+        successfully activated. You're now ready to clock in, receive tasks, and manage your shifts.
+        """
+        template_name = getattr(settings, 'WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME', 'staff_activated_welcome')
+        first_name = (first_name or 'Staff').strip()
+        restaurant_name = (restaurant_name or '').strip() or 'your restaurant'
+        components = [
+            {
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": first_name},
+                    {"type": "text", "text": restaurant_name},
+                ],
+            },
+        ]
+        # If template has a header (e.g. "Welcome {{1}}!"), add it
+        if getattr(settings, 'WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME_HAS_HEADER', False):
+            components.insert(0, {
+                "type": "header",
+                "parameters": [{"type": "text", "text": first_name}],
+            })
+        return self.send_whatsapp_template(phone, template_name, language_code=language_code, components=components)
+
+    def send_staff_checklist_step(self, phone, question_text, language_code='en_US'):
+        """
+        Send one checklist step using the approved staff_checklist template if configured.
+        Template body should have one variable {{1}} = question (e.g. "Have you clean glassware and bar surface").
+        Buttons Yes/No/N/A are defined in the template. Returns True if sent via template, False to use interactive fallback.
+        """
+        template_name = getattr(settings, 'WHATSAPP_TEMPLATE_STAFF_CHECKLIST', None) or ''
+        if not template_name or not (question_text or '').strip():
+            return False
+        question = (question_text or '').strip()[:1024]
+        components = [{"type": "body", "parameters": [{"type": "text", "text": question}]}]
+        ok, _ = self.send_whatsapp_template(phone, template_name, language_code=language_code, components=components)
+        return ok
+
+    def send_shift_review_request(self, phone, first_name, language_code=None):
+        """
+        Send the shift_review WhatsApp template (Hi {{1}}, how was your shift today?) with quick-reply buttons.
+        Template has one body variable: first name. Buttons Bad/Decent/Good/Great are defined in the template.
+        """
+        template_name = getattr(settings, 'WHATSAPP_TEMPLATE_SHIFT_REVIEW', 'shift_review')
+        lang = language_code or getattr(settings, 'WHATSAPP_TEMPLATE_SHIFT_REVIEW_LANGUAGE', 'en_US')
+        first_name = (first_name or 'there').strip()
+        components = [{"type": "body", "parameters": [{"type": "text", "text": first_name}]}]
+        return self.send_whatsapp_template(phone, template_name, language_code=lang, components=components)
+
     def send_whatsapp_buttons(self, phone, body, buttons):
         """
         Send an interactive WhatsApp message with up to 3 quick-reply buttons.
@@ -829,9 +918,10 @@ class NotificationService:
         """
         try:
             # If you have a Meta template for this, use it:
+            template_name = getattr(settings, 'WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION', 'clock_in_location_request')
             ok, resp = self.send_whatsapp_template(
                 phone=phone,
-                template_name='clock_in_location_request',
+                template_name=template_name,
                 language_code='en_US',
                 components=[]
             )

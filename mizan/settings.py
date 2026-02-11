@@ -345,6 +345,9 @@ WHATSAPP_ACTIVATION_WA_PHONE = config('WHATSAPP_ACTIVATION_WA_PHONE', default='2
 WHATSAPP_INVITATION_FLOW_ID = config('WHATSAPP_INVITATION_FLOW_ID', default=None)
 WHATSAPP_TEMPLATE_SHIFT_ASSIGNED = config('WHATSAPP_TEMPLATE_SHIFT_ASSIGNED', default='')
 WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_LANGUAGE = config('WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_LANGUAGE', default='en_US')
+# After staff activation we send this template (Welcome {{1}}, account for {{2}} activated...)
+WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME = config('WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME', default='staff_activated_welcome')
+WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME_HAS_HEADER = config('WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME_HAS_HEADER', default=False, cast=str_to_bool)
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', f'redis://{REDIS_HOST}:6379/0')
@@ -363,6 +366,16 @@ LUA_USER_AUTHENTICATION_WEBHOOK = config('LUA_USER_AUTHENTICATION_WEBHOOK', defa
 AUTO_WHATSAPP_INVITES = str_to_bool(os.getenv('AUTO_WHATSAPP_INVITES', True))
 WHATSAPP_INVITE_DELAY_SECONDS = int(os.getenv('WHATSAPP_INVITE_DELAY_SECONDS', 0))
 SUPPORT_CONTACT = os.getenv('SUPPORT_CONTACT', '+212626154332') # Default support contact if needed
+
+# WhatsApp templates (align with Lua/Meta approved names)
+WHATSAPP_TEMPLATE_STAFF_CLOCK_IN = config('WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', default='staff_clock_in')
+WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION = config('WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION', default='clock_in_location_request')
+WHATSAPP_TEMPLATE_CLOCK_IN_SUCCESSFUL = config('WHATSAPP_TEMPLATE_CLOCK_IN_SUCCESSFUL', default='clock_in_success')
+# Optional: use approved staff_checklist template for each step (body {{1}} = question). Empty = use interactive buttons with dynamic task text.
+WHATSAPP_TEMPLATE_STAFF_CHECKLIST = config('WHATSAPP_TEMPLATE_STAFF_CHECKLIST', default='')
+# Shift review: sent when staff shift ends (body {{1}} = first name; buttons Bad/Decent/Good/Great).
+WHATSAPP_TEMPLATE_SHIFT_REVIEW = config('WHATSAPP_TEMPLATE_SHIFT_REVIEW', default='shift_review')
+WHATSAPP_TEMPLATE_SHIFT_REVIEW_LANGUAGE = config('WHATSAPP_TEMPLATE_SHIFT_REVIEW_LANGUAGE', default='en_US')
 
 # ---------------------------
 # Stripe Configuration

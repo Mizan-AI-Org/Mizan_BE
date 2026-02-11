@@ -12,6 +12,40 @@ import logging
 
 from accounts.models import CustomUser, Restaurant
 from core.utils import resolve_agent_restaurant_and_user
+
+
+def _resolve_restaurant_and_staff_by_phone(phone_raw):
+    """Resolve (restaurant, staff) from phone when agent sends phone but not restaurant_id."""
+    if not phone_raw:
+        return None, None
+    phone_digits = ''.join(filter(str.isdigit, str(phone_raw)))
+    if not phone_digits:
+        return None, None
+    default_cc = ''.join(filter(str.isdigit, str(getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '') or '')))
+    possible_patterns = [phone_digits, f"+{phone_digits}"]
+    if len(phone_digits) > 10:
+        possible_patterns.extend([phone_digits[-10:], f"+{phone_digits[-10:]}"])
+    if default_cc and phone_digits.startswith(default_cc):
+        local = phone_digits[len(default_cc):]
+        if local:
+            possible_patterns.extend([local, f"0{local}", f"+{default_cc}{local}"])
+    if phone_digits.startswith('0') and len(phone_digits) > 1:
+        possible_patterns.append(phone_digits.lstrip('0'))
+        if default_cc:
+            possible_patterns.append(f"{default_cc}{phone_digits.lstrip('0')}")
+    seen = set()
+    possible_patterns = [p for p in possible_patterns if p and not (p in seen or seen.add(p))]
+    for pattern in possible_patterns:
+        try:
+            staff = CustomUser.objects.filter(
+                phone__icontains=pattern,
+                is_active=True
+            ).exclude(role='SUPER_ADMIN').select_related('restaurant').first()
+            if staff and getattr(staff, 'restaurant_id', None):
+                return staff.restaurant, staff
+        except Exception:
+            continue
+    return None, None
 from notifications.services import notification_service
 from notifications.models import Notification
 
@@ -96,6 +130,11 @@ def agent_ingest_staff_request(request):
                 restaurant = Restaurant.objects.get(id=rest_id)
             except Exception:
                 restaurant = None
+
+    if not restaurant:
+        # Fallback: resolve restaurant (and staff) from phone so agent ingest succeeds when tool sends phone but not restaurant_id
+        phone_raw = data.get('phone') or data.get('phoneNumber') or data.get('from')
+        restaurant, staff = _resolve_restaurant_and_staff_by_phone(phone_raw) or (None, None)
 
     if not restaurant:
         return Response({'success': False, 'error': 'Unable to resolve restaurant context'}, status=status.HTTP_400_BAD_REQUEST)

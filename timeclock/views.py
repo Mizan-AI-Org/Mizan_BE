@@ -5,6 +5,7 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from notifications.utils import send_realtime_notification
+from notifications.services import NotificationService
 
 from accounts.utils import calculate_distance
 from .models import ClockEvent
@@ -352,7 +353,14 @@ def web_clock_out(request):
         )
     except Exception:
         pass
-    
+
+    # Send shift review template so staff can rate their shift (Miya: Hi {{1}}, how was your shift today?)
+    if getattr(user, 'phone', None):
+        try:
+            NotificationService().send_shift_review_request(user.phone, user.first_name)
+        except Exception:
+            pass
+
     return Response(response_data)
 
 @api_view(['GET'])

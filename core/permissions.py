@@ -25,8 +25,21 @@ class IsRestaurantOwnerOrManager(permissions.BasePermission):
             return False
         
         # Check if user has appropriate role
-        allowed_roles = ['SUPER_ADMIN', 'ADMIN', 'MANAGER']
+        allowed_roles = ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'OWNER']
         return request.user.role in allowed_roles
+
+
+class IsOwnerOrSuperAdmin(permissions.BasePermission):
+    """
+    Only Restaurant Owner and Super Admin. Use for destructive or sensitive actions
+    (e.g. deactivate staff, delete staff).
+    """
+    def has_permission(self, request, view):
+        return (
+            request.user
+            and request.user.is_authenticated
+            and request.user.role in ['OWNER', 'SUPER_ADMIN']
+        )
 
 
 class IsRestaurantStaff(permissions.BasePermission):

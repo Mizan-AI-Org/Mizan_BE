@@ -19,6 +19,7 @@ __pycache__/
 .env.*
 !.env.*.template
 *.pem
+.env.production.template
 
 # Django
 .db.sqlite3/

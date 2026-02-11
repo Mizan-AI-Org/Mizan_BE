@@ -366,7 +366,30 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
                              raise serializers.ValidationError(
                                  f"Staff {staff_member} already has a shift on {shift_date} from {e_start.strftime('%H:%M')} to {e_end.strftime('%H:%M')}"
                              )
-                
+
+        # Every shift must have either Process & Task Templates or Custom Tasks
+        initial = getattr(self, 'initial_data', None) or {}
+        templates_sent = initial.get('task_templates')
+        tasks_sent = initial.get('tasks')
+        if self.instance:
+            will_have_templates = (
+                len(templates_sent) > 0
+                if templates_sent is not None
+                else self.instance.task_templates.exists()
+            )
+            will_have_tasks = (
+                len(tasks_sent) > 0
+                if tasks_sent is not None
+                else self.instance.tasks.exists()
+            )
+        else:
+            will_have_templates = len(templates_sent or []) > 0
+            will_have_tasks = len(tasks_sent or []) > 0
+        if not will_have_templates and not will_have_tasks:
+            raise serializers.ValidationError(
+                'Every shift must have either at least one Process & Task Template assigned or at least one Custom Task.'
+            )
+
         return attrs
 
     def validate_role(self, value):
