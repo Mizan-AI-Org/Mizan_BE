@@ -256,6 +256,8 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
     staff_members_details = serializers.SerializerMethodField(read_only=True)
     tasks = ShiftTaskSerializer(many=True, required=False)
     task_templates_details = TaskTemplateSerializer(source='task_templates', many=True, read_only=True)
+    # Title: first-class field; stored in notes. Write: accept title; read: expose notes as title for viewing saved details
+    title = serializers.SerializerMethodField(read_only=True)
     # Use lenient field that ignores non-existent IDs
     task_templates = LenientPKRelatedField(
         many=True,
@@ -280,7 +282,7 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
         model = AssignedShift
         fields = [
             'id', 'schedule', 'staff', 'staff_members', 'staff_name', 'staff_members_details',
-            'shift_date', 'start_time', 'end_time', 'break_duration', 'role', 'notes', 'color',
+            'shift_date', 'start_time', 'end_time', 'break_duration', 'role', 'notes', 'title', 'color',
             'created_at', 'updated_at', 'tasks', 'task_templates', 'task_templates_details',
             'is_recurring', 'recurrence_group_id'
         ]
@@ -293,6 +295,10 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
     def get_staff_members_details(self, obj):
         return [{"id": s.id, "first_name": s.first_name, "last_name": s.last_name} for s in obj.staff_members.all()]
 
+    def get_title(self, obj):
+        """Expose notes as title so saved details can be viewed again."""
+        return (getattr(obj, 'notes', None) or '').strip()
+
     def validate(self, attrs):
         request = self.context.get('request')
         staff = attrs.get('staff')
@@ -301,6 +307,24 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
         shift_date = attrs.get('shift_date')
         start = attrs.get('start_time')
         end = attrs.get('end_time')
+        notes = attrs.get('notes')
+        title = attrs.get('title')
+
+        # Title: required for every shift (manual or Miya). Stored in notes. Accept from 'title' or 'notes'.
+        initial = getattr(self, 'initial_data', None) or {}
+        title_sent = initial.get('title') or title
+        effective_title = (title_sent if (title_sent is not None and str(title_sent).strip()) else None) or (notes if (notes is not None and str(notes).strip()) else None)
+        if not self.instance and not effective_title:
+            raise serializers.ValidationError({'notes': 'Each shift must have a title.'})
+        if title_sent is not None and str(title_sent).strip():
+            attrs['notes'] = str(title_sent).strip()
+
+        # At least one staff required
+        all_staff = list(staff_members) if staff_members else []
+        if staff and staff not in all_staff:
+            all_staff.append(staff)
+        if not self.instance and not all_staff:
+            raise serializers.ValidationError({'staff': 'At least one staff member must be assigned to the shift.'})
 
         # If it's an update, get existing values from instance for validation
         if self.instance:

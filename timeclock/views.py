@@ -904,10 +904,20 @@ def agent_clock_in(request):
         longitude = request.data.get('longitude')
         timestamp = request.data.get('timestamp')
 
-        if not staff_id or latitude is None or longitude is None:
-            return Response({'error': 'staff_id, latitude, and longitude are required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not staff_id:
+            return Response({'error': 'staff_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         user = get_object_or_404(CustomUser, id=staff_id, is_active=True)
+
+        # Optional lat/lon: for conversational clock-in Miya can omit location; use restaurant center or None
+        if latitude is None or longitude is None:
+            rest = getattr(user, 'restaurant', None)
+            if rest and getattr(rest, 'latitude', None) is not None and getattr(rest, 'longitude', None) is not None:
+                latitude = float(rest.latitude)
+                longitude = float(rest.longitude)
+            else:
+                latitude = None
+                longitude = None
         
         # Check if user is already clocked in
         last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
@@ -917,14 +927,15 @@ def agent_clock_in(request):
                 'last_clock_in': last_event.timestamp
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Create clock in event
+        # Create clock in event (conversational when lat/lon omitted)
+        notes = "Clock-in via WhatsApp Agent (conversational)" if (latitude is None and longitude is None) else "Clock-in via WhatsApp Agent"
         clock_event = ClockEvent.objects.create(
             staff=user,
             event_type='in',
             latitude=latitude,
             longitude=longitude,
             device_id="Lua Agent",
-            notes=f"Clock-in via WhatsApp Agent"
+            notes=notes
         )
         if timestamp:
             try:

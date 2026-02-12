@@ -294,7 +294,7 @@ class AssignedShiftListCreateAPIView(generics.ListCreateAPIView):
         schedule_id = self.kwargs.get('schedule_pk')
         return AssignedShift.objects.filter(
             schedule__id=schedule_id, schedule__restaurant=self.request.user.restaurant
-        ).prefetch_related('task_templates', 'tasks').select_related('staff', 'schedule')
+        ).prefetch_related('task_templates', 'tasks', 'staff_members').select_related('staff', 'schedule')
 
     def perform_create(self, serializer):
         schedule_id = self.kwargs.get('schedule_pk')
@@ -342,7 +342,7 @@ class AssignedShiftRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
         schedule_id = self.kwargs.get('schedule_pk')
         return AssignedShift.objects.filter(
             schedule__id=schedule_id, schedule__restaurant=self.request.user.restaurant
-        ).prefetch_related('task_templates', 'tasks').select_related('staff', 'schedule')
+        ).prefetch_related('task_templates', 'tasks', 'staff_members').select_related('staff', 'schedule')
 
 
 class AssignedShiftViewSet(viewsets.ModelViewSet):
@@ -371,7 +371,7 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
         if date_to:
             queryset = queryset.filter(shift_date__lte=date_to)
         
-        return queryset.prefetch_related('task_templates', 'tasks').select_related(
+        return queryset.prefetch_related('task_templates', 'tasks', 'staff_members').select_related(
             'staff', 'schedule'
         ).order_by('shift_date', 'start_time')
 

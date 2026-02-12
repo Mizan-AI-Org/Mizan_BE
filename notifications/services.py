@@ -321,8 +321,7 @@ class NotificationService:
             if not url:
                 url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
             success_message = (
-                "Your account has been successfully activated! You can now interact with Mizan AI Agent. "
-                "Welcome to the team!"
+                "Congratulations! Your account has been successfully activated. Welcome to the team!"
             )
             payload = {
                 "eventType": "staff_activated",

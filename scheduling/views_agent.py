@@ -14,7 +14,7 @@ import unicodedata
 from difflib import SequenceMatcher
 
 from accounts.models import CustomUser, Restaurant
-from .models import AssignedShift, WeeklySchedule, AgentMemory
+from .models import AssignedShift, WeeklySchedule, AgentMemory, ShiftTask
 from .serializers import AssignedShiftSerializer
 from .services import SchedulingService
 import logging
@@ -641,6 +641,23 @@ def agent_create_shift(request):
                 'success': False,
                 'error': 'Unable to resolve restaurant context (provide restaurant_id or include sessionId/userId/email/phone/token).'
             }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Each shift must have at least one Process & Task Template or one Custom Task
+        task_template_ids_raw = data.get('task_template_ids') or data.get('taskTemplateIds') or []
+        if isinstance(task_template_ids_raw, str):
+            task_template_ids_raw = [x.strip() for x in task_template_ids_raw.split(',') if x.strip()]
+        custom_tasks = data.get('tasks') or []
+        if isinstance(custom_tasks, str):
+            try:
+                import json
+                custom_tasks = json.loads(custom_tasks) if custom_tasks.strip() else []
+            except Exception:
+                custom_tasks = []
+        if not task_template_ids_raw and not custom_tasks:
+            return Response({
+                'success': False,
+                'error': 'Each shift must have at least one Process & Task Template (task_template_ids) or at least one Custom Task (tasks array with title).'
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         # Validate staff
         try:
@@ -775,12 +792,19 @@ def agent_create_shift(request):
         except Exception:
             pass
 
-        # Attach tasks/processes: explicit task_template_ids (manager/Miya request) OR auto-attach by shift type
+        # Attach tasks/processes: explicit task_template_ids (manager/Miya request) OR custom tasks OR auto-attach
         attach_result = None
         task_template_ids_raw = data.get('task_template_ids') or data.get('taskTemplateIds') or []
         if isinstance(task_template_ids_raw, str):
             task_template_ids_raw = [x.strip() for x in task_template_ids_raw.split(',') if x.strip()]
         task_template_ids = [str(x).strip() for x in task_template_ids_raw if x]
+        custom_tasks_payload = data.get('tasks') or []
+        if isinstance(custom_tasks_payload, str):
+            try:
+                import json
+                custom_tasks_payload = json.loads(custom_tasks_payload) if custom_tasks_payload.strip() else []
+            except Exception:
+                custom_tasks_payload = []
 
         try:
             if task_template_ids:
@@ -841,6 +865,29 @@ def agent_create_shift(request):
         except Exception as e:
             # Do not fail shift creation if automation fails; log for observability
             logger.warning(f"Agent create shift: auto-attach templates failed: {e}")
+
+        # Create custom tasks if provided (each shift must have templates or custom tasks)
+        for t in custom_tasks_payload:
+            if not isinstance(t, dict):
+                continue
+            title = (t.get('title') or t.get('name') or '').strip()
+            if not title:
+                continue
+            priority = (t.get('priority') or 'MEDIUM').upper()
+            if priority not in ('LOW', 'MEDIUM', 'HIGH', 'URGENT'):
+                priority = 'MEDIUM'
+            try:
+                ShiftTask.objects.create(
+                    shift=shift,
+                    title=title[:255],
+                    description=(t.get('description') or '')[:1000],
+                    priority=priority,
+                    status='TODO',
+                    assigned_to=staff,
+                    created_by=acting_user,
+                )
+            except Exception as e:
+                logger.warning(f"Agent create shift: failed to create custom task '{title[:50]}': {e}")
 
         # Immediately notify the assigned staff (WhatsApp + in-app), with audit logging
         try:

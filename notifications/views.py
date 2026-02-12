@@ -1874,22 +1874,39 @@ def whatsapp_webhook(request):
                     if body in ['hi', 'hello', 'menu', 'help']:
                         notification_service.send_whatsapp_text(phone_digits, R(user, 'help'))
                         continue
-                        
-                    if body in ['clock in', 'clock-in', 'clockin']:
+
+                    # Conversational clock-in (fallback when notification/template fails)
+                    # Example:
+                    #   Staff: I want to clock in
+                    #   Miya:  sends clock_in_location_request template (or text prompt)
+                    #   Staff: shares location
+                    #   Backend: validates geofence and clocks in (see location handler above)
+                    _clock_in_exact = body in ['clock in', 'clock-in', 'clockin']
+                    _clock_in_phrases = (
+                        'want to do clock in', 'want to clock in', 'clock me in', 'i want to clock in',
+                        'i need to clock in', 'can you clock me in', 'please clock me in', 'id like to clock in',
+                        'i would like to clock in', 'do clock in', 'let me clock in', 'need to clock in',
+                        'wanna clock in', 'going to clock in'
+                    )
+                    _is_clock_in_intent = _clock_in_exact or any(p in body for p in _clock_in_phrases)
+
+                    if _is_clock_in_intent:
                         if user:
-                            # Check if already clocked in
                             last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
                             if last_event and last_event.event_type == 'in':
                                 notification_service.send_whatsapp_text(phone_digits, "You are already clocked in.")
                             else:
                                 session.state = 'awaiting_clock_in_location'
                                 session.save(update_fields=['state'])
-                                # Use interactive location request
-                                notification_service.send_whatsapp_location_request(phone_digits, R(user, 'clockin_prompt'))
+                                # Use template-based location request with text fallback
+                                notification_service.send_whatsapp_location_request(
+                                    phone_digits,
+                                    R(user, 'clockin_prompt')
+                                )
                         else:
-                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                         continue
-                        
+
                     if body in ['clock out', 'clock-out', 'clockout']:
                         if user:
                             last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()

@@ -375,16 +375,24 @@ class SchedulingService:
     @staticmethod
     def notify_shift_assignment(shift: 'AssignedShift', force_whatsapp: bool = False) -> None:
         """
-        Send notification to staff about shift assignment
+        Send notification with full shift details to every assigned staff member
+        (Miya / manual create: all chosen staff get the same details).
         """
         from notifications.models import Notification
         from notifications.services import notification_service
-        
-        try:
-            # Build human-friendly message
-            staff_name = shift.staff.get_full_name() if shift.staff else "Team Member"
-            rest_name = getattr(getattr(shift.schedule, 'restaurant', None), 'name', 'your restaurant')
 
+        try:
+            # Collect all assigned staff (legacy staff + staff_members), deduplicated
+            all_staff = []
+            if shift.staff_id:
+                all_staff.append(shift.staff)
+            for m in shift.staff_members.all():
+                if m and m not in all_staff:
+                    all_staff.append(m)
+            if not all_staff:
+                return
+
+            rest_name = getattr(getattr(shift.schedule, 'restaurant', None), 'name', 'your restaurant')
             start_dt = shift.start_time
             end_dt = shift.end_time
             try:
@@ -394,174 +402,194 @@ class SchedulingService:
                     end_dt = timezone.localtime(end_dt)
             except Exception:
                 pass
-
             shift_date_str = shift.shift_date.strftime('%a, %b %d, %Y') if shift.shift_date else '—'
             start_str = start_dt.strftime('%I:%M %p').lstrip('0') if hasattr(start_dt, 'strftime') else str(shift.start_time)
             end_str = end_dt.strftime('%I:%M %p').lstrip('0') if hasattr(end_dt, 'strftime') else str(shift.end_time)
-
             role = (shift.role or '').upper() or 'STAFF'
-            dept = (shift.department or '').strip() if hasattr(shift, 'department') else ''
+            dept = (getattr(shift, 'department', '') or '').strip()
             shift_title = (getattr(shift, 'notes', '') or '').strip()
+            workspace_location = (getattr(shift, 'workspace_location', '') or '').strip()
+            instructions = (getattr(shift, 'preparation_instructions', '') or '').strip()
 
+            # Who's on this shift (for "all details")
+            colleague_names = [s.get_full_name() or (getattr(s, 'first_name', '') or 'Staff') for s in all_staff]
+            colleagues_line = ', '.join(colleague_names[:10])
+            if len(colleague_names) > 10:
+                colleagues_line += f' (+{len(colleague_names) - 10} more)'
+
+            # Tasks: template names + custom task titles
+            task_parts = []
+            try:
+                for t in shift.task_templates.all():
+                    name = (getattr(t, 'name', '') or '').strip()
+                    if name:
+                        task_parts.append(name)
+            except Exception:
+                pass
+            try:
+                for t in shift.tasks.all():
+                    title = (getattr(t, 'title', '') or '').strip()
+                    if title:
+                        task_parts.append(title)
+            except Exception:
+                pass
+            tasks_line = ', '.join(task_parts[:15]) if task_parts else None
+            if task_parts and len(task_parts) > 15:
+                tasks_line += f' (+{len(task_parts) - 15} more)'
+
+            # Build one base message with all details (same for everyone)
             title = "Shift Assigned"
             lines = [
-                f"✅ You have been successfully assigned a shift at {rest_name}.",
+                f"✅ You have been assigned a shift at {rest_name}.",
                 "",
                 f"🧾 Shift: {shift_title}" if shift_title else "",
                 f"📅 Date: {shift_date_str}",
                 f"⏰ Time: {start_str} – {end_str}",
                 f"👔 Role: {role}",
             ]
-            # Remove any empty lines caused by missing title
             lines = [ln for ln in lines if ln != ""]
             if dept:
                 lines.append(f"🏷️ Department: {dept}")
+            if colleagues_line:
+                lines.append(f"👥 With: {colleagues_line}")
+            if tasks_line:
+                lines.append(f"📋 Tasks: {tasks_line}")
+            if workspace_location:
+                lines.append(f"📍 Location: {workspace_location}")
+            if instructions:
+                lines.append(f"📝 Notes: {instructions}")
             message = "\n".join(lines)
 
-            notification = Notification.objects.create(
-                recipient=shift.staff,
-                title=title,
-                message=message,
-                notification_type='SHIFT_ASSIGNED',
-                related_shift_id=shift.id,
-                data={
-                    'shift_id': str(shift.id),
-                    'shift_date': str(shift.shift_date),
-                    'start_time': start_str,
-                    'end_time': end_str,
-                    'role': role,
-                    'department': dept,
-                }
-            )
+            shift_data = {
+                'shift_id': str(shift.id),
+                'shift_date': str(shift.shift_date),
+                'start_time': start_str,
+                'end_time': end_str,
+                'role': role,
+                'department': dept,
+                'shift_title': shift_title,
+                'colleagues': colleague_names,
+                'tasks': task_parts,
+            }
 
-            # Always send in-app immediately
-            ok, channels_used = notification_service.send_custom_notification(
-                recipient=shift.staff,
-                message=message,
-                notification_type='SHIFT_ASSIGNED',
-                title=title,
-                channels=['app'],
-                notification=notification,
-            )
+            # WhatsApp template params (shared)
+            from django.conf import settings as dj_settings
+            template_name = (getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED', '') or '').strip()
+            template_lang = getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED_LANGUAGE', None)
+            if not template_name:
+                template_name = (getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED', '') or '').strip() or 'staff_weekly_schedule'
+                template_lang = getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_LANGUAGE', 'en_US')
+            template_lang = template_lang or 'en_US'
 
-            # WhatsApp: prefer your approved template (configurable), fallback to plain text.
-            # For agent-created shifts, pass force_whatsapp=True to bypass user preferences
-            # (the user explicitly expects WhatsApp delivery).
-            try:
-                should_whatsapp = True if force_whatsapp else notification_service._should_send_whatsapp(shift.staff)
-            except Exception:
-                should_whatsapp = True
+            def _cap(s: str, n: int) -> str:
+                s = str(s or '').strip()
+                return s if len(s) <= n else (s[: max(0, n - 1)] + "…")
 
-            if should_whatsapp and getattr(shift.staff, 'phone', None):
-                from django.conf import settings as dj_settings
+            detailed = template_name == (getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED', '') or '').strip()
 
-                # Prefer a dedicated detailed template if configured; otherwise default to the
-                # existing `staff_weekly_schedule` template (widely used elsewhere in this repo).
-                template_name = (getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED', '') or '').strip()
-                template_lang = getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED_LANGUAGE', None)
-                if not template_name:
-                    template_name = (getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED', '') or '').strip() or 'staff_weekly_schedule'
-                    template_lang = getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_LANGUAGE', 'en_US')
-                template_lang = template_lang or 'en_US'
-
-                workspace_location = (getattr(shift, 'workspace_location', '') or '').strip()
-                instructions = (getattr(shift, 'preparation_instructions', '') or '').strip()
-                shift_title = (getattr(shift, 'notes', '') or '').strip()
-                break_minutes = None
+            any_whatsapp_sent = False
+            for recipient in all_staff:
                 try:
-                    bd = getattr(shift, 'break_duration', None)
-                    if bd:
-                        break_minutes = int(bd.total_seconds() // 60)
-                except Exception:
-                    break_minutes = None
+                    staff_name = recipient.get_full_name() or (getattr(recipient, 'first_name', '') or 'Team Member')
+                    try:
+                        should_whatsapp = bool(force_whatsapp) or notification_service._should_send_whatsapp(recipient)
+                    except Exception:
+                        should_whatsapp = True
 
-                def _cap(s: str, n: int) -> str:
-                    s = str(s or '').strip()
-                    return s if len(s) <= n else (s[: max(0, n - 1)] + "…")
+                    notification = Notification.objects.create(
+                        recipient=recipient,
+                        title=title,
+                        message=message,
+                        notification_type='SHIFT_ASSIGNED',
+                        related_shift_id=shift.id,
+                        data=shift_data,
+                    )
 
-                # Templates are strict about parameter count/order. We support:
-                # - `staff_weekly_schedule`-style (6 params): name, restaurant, date, start, end, role
-                # - detailed template (10 params) if you configure it on the WhatsApp/Meta side:
-                #   {{1}} first_name, {{2}} restaurant, {{3}} date, {{4}} start, {{5}} end,
-                #   {{6}} role, {{7}} department, {{8}} shift_title, {{9}} workspace, {{10}} instructions
-                detailed = template_name == (getattr(dj_settings, 'WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED', '') or '').strip()
-
-                if detailed:
-                    components = [{
-                        "type": "body",
-                        "parameters": [
-                            {"type": "text", "text": _cap((shift.staff.first_name or staff_name), 30)},
-                            {"type": "text", "text": _cap(rest_name, 60)},
-                            {"type": "text", "text": _cap(shift_date_str, 40)},
-                            {"type": "text", "text": _cap(start_str, 20)},
-                            {"type": "text", "text": _cap(end_str, 20)},
-                            {"type": "text", "text": _cap(role, 30)},
-                            {"type": "text", "text": _cap(dept or "—", 40)},
-                            {"type": "text", "text": _cap(shift_title or "—", 80)},
-                            {"type": "text", "text": _cap(workspace_location or "—", 60)},
-                            {"type": "text", "text": _cap(instructions or "—", 120)},
-                        ],
-                    }]
-                else:
-                    # Standard template: keep it compatible with `agent_send_shift_notification`
-                    components = [{
-                        "type": "body",
-                        "parameters": [
-                            {"type": "text", "text": _cap((shift.staff.first_name or staff_name), 30)},
-                            {"type": "text", "text": _cap(rest_name, 60)},
-                            {"type": "text", "text": _cap(shift_date_str, 40)},
-                            {"type": "text", "text": _cap(start_str, 20)},
-                            {"type": "text", "text": _cap(end_str, 20)},
-                            {"type": "text", "text": _cap(role, 30)},
-                        ],
-                    }]
-
-                wa_ok = False
-                wa_resp = None
-                if template_name:
-                    wa_ok, wa_resp = notification_service.send_whatsapp_template(
-                        phone=shift.staff.phone,
-                        template_name=template_name,
-                        language_code=template_lang,
-                        components=components,
+                    ok, _ = notification_service.send_custom_notification(
+                        recipient=recipient,
+                        message=message,
+                        notification_type='SHIFT_ASSIGNED',
+                        title=title,
+                        channels=['app'],
                         notification=notification,
                     )
 
-                if not template_name or not wa_ok:
-                    wa_ok, wa_resp = notification_service.send_whatsapp_text(
-                        phone=shift.staff.phone,
-                        body=message,
-                        notification=notification,
-                    )
+                    if should_whatsapp and getattr(recipient, 'phone', None):
+                        first_name = _cap((recipient.first_name or staff_name), 30)
+                        if detailed:
+                            components = [{
+                                "type": "body",
+                                "parameters": [
+                                    {"type": "text", "text": first_name},
+                                    {"type": "text", "text": _cap(rest_name, 60)},
+                                    {"type": "text", "text": _cap(shift_date_str, 40)},
+                                    {"type": "text", "text": _cap(start_str, 20)},
+                                    {"type": "text", "text": _cap(end_str, 20)},
+                                    {"type": "text", "text": _cap(role, 30)},
+                                    {"type": "text", "text": _cap(dept or "—", 40)},
+                                    {"type": "text", "text": _cap(shift_title or "—", 80)},
+                                    {"type": "text", "text": _cap(workspace_location or "—", 60)},
+                                    {"type": "text", "text": _cap(instructions or "—", 120)},
+                                ],
+                            }]
+                        else:
+                            components = [{
+                                "type": "body",
+                                "parameters": [
+                                    {"type": "text", "text": first_name},
+                                    {"type": "text", "text": _cap(rest_name, 60)},
+                                    {"type": "text", "text": _cap(shift_date_str, 40)},
+                                    {"type": "text", "text": _cap(start_str, 20)},
+                                    {"type": "text", "text": _cap(end_str, 20)},
+                                    {"type": "text", "text": _cap(role, 30)},
+                                ],
+                            }]
 
-                # Merge delivery status into Notification record (without overwriting app status)
-                try:
-                    ds = dict(notification.delivery_status or {})
-                    ds['whatsapp'] = {
-                        'status': 'SENT' if wa_ok else 'FAILED',
-                        'timestamp': timezone.now().isoformat(),
-                        'external_id': (wa_resp or {}).get('external_id') if isinstance(wa_resp, dict) else None,
-                    }
-                    notification.delivery_status = ds
-                    chans = list(notification.channels_sent or [])
-                    if wa_ok and 'whatsapp' not in chans:
-                        chans.append('whatsapp')
-                    notification.channels_sent = chans
-                    notification.save(update_fields=['delivery_status', 'channels_sent'])
+                        wa_ok = False
+                        wa_resp = None
+                        if template_name:
+                            wa_ok, wa_resp = notification_service.send_whatsapp_template(
+                                phone=recipient.phone,
+                                template_name=template_name,
+                                language_code=template_lang,
+                                components=components,
+                                notification=notification,
+                            )
+                        if not template_name or not wa_ok:
+                            wa_ok, wa_resp = notification_service.send_whatsapp_text(
+                                phone=recipient.phone,
+                                body=message,
+                                notification=notification,
+                            )
+                        if wa_ok:
+                            any_whatsapp_sent = True
+                        try:
+                            ds = dict(notification.delivery_status or {})
+                            ds['whatsapp'] = {
+                                'status': 'SENT' if wa_ok else 'FAILED',
+                                'timestamp': timezone.now().isoformat(),
+                                'external_id': (wa_resp or {}).get('external_id') if isinstance(wa_resp, dict) else None,
+                            }
+                            notification.delivery_status = ds
+                            chans = list(notification.channels_sent or [])
+                            if wa_ok and 'whatsapp' not in chans:
+                                chans.append('whatsapp')
+                            notification.channels_sent = chans
+                            notification.save(update_fields=['delivery_status', 'channels_sent'])
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
-                # Track on shift for operational visibility
+            if any_whatsapp_sent:
                 try:
-                    if wa_ok:
-                        shift.notification_sent = True
-                        shift.notification_sent_at = timezone.now()
-                        shift.notification_channels = list(set((shift.notification_channels or []) + ['whatsapp']))
-                        shift.save(update_fields=['notification_sent', 'notification_sent_at', 'notification_channels'])
+                    shift.notification_sent = True
+                    shift.notification_sent_at = timezone.now()
+                    shift.notification_channels = list(set((shift.notification_channels or []) + ['whatsapp']))
+                    shift.save(update_fields=['notification_sent', 'notification_sent_at', 'notification_channels'])
                 except Exception:
                     pass
         except Exception as e:
-            # logger.error(f"Error notifying shift assignment: {e}")
             pass
 
 
