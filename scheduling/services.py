@@ -489,94 +489,95 @@ class SchedulingService:
 
             any_whatsapp_sent = False
             for recipient in all_staff:
-                staff_name = recipient.get_full_name() or (getattr(recipient, 'first_name', '') or 'Team Member')
                 try:
-                    should_whatsapp = bool(force_whatsapp) or notification_service._should_send_whatsapp(recipient)
-                except Exception:
-                    should_whatsapp = True
-
-                notification = Notification.objects.create(
-                    recipient=recipient,
-                    title=title,
-                    message=message,
-                    notification_type='SHIFT_ASSIGNED',
-                    related_shift_id=shift.id,
-                    data=shift_data,
-                )
-
-                ok, _ = notification_service.send_custom_notification(
-                    recipient=recipient,
-                    message=message,
-                    notification_type='SHIFT_ASSIGNED',
-                    title=title,
-                    channels=['app'],
-                    notification=notification,
-                )
-
-                if should_whatsapp and getattr(recipient, 'phone', None):
-                    first_name = _cap((recipient.first_name or staff_name), 30)
-                    if detailed:
-                        components = [{
-                            "type": "body",
-                            "parameters": [
-                                {"type": "text", "text": first_name},
-                                {"type": "text", "text": _cap(rest_name, 60)},
-                                {"type": "text", "text": _cap(shift_date_str, 40)},
-                                {"type": "text", "text": _cap(start_str, 20)},
-                                {"type": "text", "text": _cap(end_str, 20)},
-                                {"type": "text", "text": _cap(role, 30)},
-                                {"type": "text", "text": _cap(dept or "—", 40)},
-                                {"type": "text", "text": _cap(shift_title or "—", 80)},
-                                {"type": "text", "text": _cap(workspace_location or "—", 60)},
-                                {"type": "text", "text": _cap(instructions or "—", 120)},
-                            ],
-                        }]
-                    else:
-                        components = [{
-                            "type": "body",
-                            "parameters": [
-                                {"type": "text", "text": first_name},
-                                {"type": "text", "text": _cap(rest_name, 60)},
-                                {"type": "text", "text": _cap(shift_date_str, 40)},
-                                {"type": "text", "text": _cap(start_str, 20)},
-                                {"type": "text", "text": _cap(end_str, 20)},
-                                {"type": "text", "text": _cap(role, 30)},
-                            ],
-                        }]
-
-                    wa_ok = False
-                    wa_resp = None
-                    if template_name:
-                        wa_ok, wa_resp = notification_service.send_whatsapp_template(
-                            phone=recipient.phone,
-                            template_name=template_name,
-                            language_code=template_lang,
-                            components=components,
-                            notification=notification,
-                        )
-                    if not template_name or not wa_ok:
-                        wa_ok, wa_resp = notification_service.send_whatsapp_text(
-                            phone=recipient.phone,
-                            body=message,
-                            notification=notification,
-                        )
-                    if wa_ok:
-                        any_whatsapp_sent = True
+                    staff_name = recipient.get_full_name() or (getattr(recipient, 'first_name', '') or 'Team Member')
                     try:
-                        ds = dict(notification.delivery_status or {})
-                        ds['whatsapp'] = {
-                            'status': 'SENT' if wa_ok else 'FAILED',
-                            'timestamp': timezone.now().isoformat(),
-                            'external_id': (wa_resp or {}).get('external_id') if isinstance(wa_resp, dict) else None,
-                        }
-                        notification.delivery_status = ds
-                        chans = list(notification.channels_sent or [])
-                        if wa_ok and 'whatsapp' not in chans:
-                            chans.append('whatsapp')
-                        notification.channels_sent = chans
-                        notification.save(update_fields=['delivery_status', 'channels_sent'])
+                        should_whatsapp = bool(force_whatsapp) or notification_service._should_send_whatsapp(recipient)
                     except Exception:
-                        pass
+                        should_whatsapp = True
+
+                    notification = Notification.objects.create(
+                        recipient=recipient,
+                        title=title,
+                        message=message,
+                        notification_type='SHIFT_ASSIGNED',
+                        related_shift_id=shift.id,
+                        data=shift_data,
+                    )
+
+                    ok, _ = notification_service.send_custom_notification(
+                        recipient=recipient,
+                        message=message,
+                        notification_type='SHIFT_ASSIGNED',
+                        title=title,
+                        channels=['app'],
+                        notification=notification,
+                    )
+
+                    if should_whatsapp and getattr(recipient, 'phone', None):
+                        first_name = _cap((recipient.first_name or staff_name), 30)
+                        if detailed:
+                            components = [{
+                                "type": "body",
+                                "parameters": [
+                                    {"type": "text", "text": first_name},
+                                    {"type": "text", "text": _cap(rest_name, 60)},
+                                    {"type": "text", "text": _cap(shift_date_str, 40)},
+                                    {"type": "text", "text": _cap(start_str, 20)},
+                                    {"type": "text", "text": _cap(end_str, 20)},
+                                    {"type": "text", "text": _cap(role, 30)},
+                                    {"type": "text", "text": _cap(dept or "—", 40)},
+                                    {"type": "text", "text": _cap(shift_title or "—", 80)},
+                                    {"type": "text", "text": _cap(workspace_location or "—", 60)},
+                                    {"type": "text", "text": _cap(instructions or "—", 120)},
+                                ],
+                            }]
+                        else:
+                            components = [{
+                                "type": "body",
+                                "parameters": [
+                                    {"type": "text", "text": first_name},
+                                    {"type": "text", "text": _cap(rest_name, 60)},
+                                    {"type": "text", "text": _cap(shift_date_str, 40)},
+                                    {"type": "text", "text": _cap(start_str, 20)},
+                                    {"type": "text", "text": _cap(end_str, 20)},
+                                    {"type": "text", "text": _cap(role, 30)},
+                                ],
+                            }]
+
+                        wa_ok = False
+                        wa_resp = None
+                        if template_name:
+                            wa_ok, wa_resp = notification_service.send_whatsapp_template(
+                                phone=recipient.phone,
+                                template_name=template_name,
+                                language_code=template_lang,
+                                components=components,
+                                notification=notification,
+                            )
+                        if not template_name or not wa_ok:
+                            wa_ok, wa_resp = notification_service.send_whatsapp_text(
+                                phone=recipient.phone,
+                                body=message,
+                                notification=notification,
+                            )
+                        if wa_ok:
+                            any_whatsapp_sent = True
+                        try:
+                            ds = dict(notification.delivery_status or {})
+                            ds['whatsapp'] = {
+                                'status': 'SENT' if wa_ok else 'FAILED',
+                                'timestamp': timezone.now().isoformat(),
+                                'external_id': (wa_resp or {}).get('external_id') if isinstance(wa_resp, dict) else None,
+                            }
+                            notification.delivery_status = ds
+                            chans = list(notification.channels_sent or [])
+                            if wa_ok and 'whatsapp' not in chans:
+                                chans.append('whatsapp')
+                            notification.channels_sent = chans
+                            notification.save(update_fields=['delivery_status', 'channels_sent'])
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
