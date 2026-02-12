@@ -341,8 +341,7 @@ def accept_invitation_from_agent(request):
                     'error': 'No pending activation found for this phone number'
                 }, status=status.HTTP_404_NOT_FOUND)
             message_for_user = (
-                "Your account has been successfully activated! You can now interact with Mizan AI Agent. "
-                "Welcome to the team!"
+                "Congratulations! Your account has been successfully activated. Welcome to the team!"
             )
             return Response({
                 'success': True,
