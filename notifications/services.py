@@ -724,6 +724,91 @@ class NotificationService:
                 pass
             return False, {"error": str(e)}
 
+    def send_announcement_to_audience(
+        self,
+        restaurant_id,
+        title,
+        message,
+        sender=None,
+        staff_ids=None,
+        roles=None,
+        departments=None,
+        channels=None,
+    ):
+        """
+        Send an announcement (in-app + WhatsApp) to staff in a restaurant.
+        Used by Miya when a manager says e.g. "Announce: No work tomorrow."
+        - restaurant_id: UUID of the restaurant.
+        - title: Short title (e.g. "Announcement").
+        - message: Body text to send.
+        - sender: User who triggered (manager); optional.
+        - staff_ids: Optional list of UUIDs to target specific staff.
+        - roles: Optional list of role names (CustomUser.role), e.g. ["CHEF", "WAITER"].
+        - departments: Optional list of department names (StaffProfile.department).
+        - channels: List of channels; default ["app", "whatsapp"].
+        Returns (success: bool, notification_count: int, error_message: str|None).
+        """
+        from django.db.models import Q
+        from accounts.models import CustomUser
+
+        if channels is None:
+            channels = ["app", "whatsapp"]
+        staff_ids = staff_ids or []
+        roles = roles or []
+        departments = departments or []
+
+        try:
+            qs = CustomUser.objects.filter(
+                restaurant_id=restaurant_id,
+                is_active=True,
+            ).exclude(Q(phone__isnull=True) | Q(phone=""))
+            if sender:
+                qs = qs.exclude(id=sender.id)
+
+            if staff_ids or roles or departments:
+                filters = Q()
+                if staff_ids:
+                    filters |= Q(id__in=staff_ids)
+                if roles:
+                    filters |= Q(role__in=roles)
+                if departments:
+                    filters |= Q(profile__department__in=departments)
+                qs = qs.filter(filters)
+
+            recipients = list(qs.distinct())
+            if not recipients:
+                return False, 0, "No recipients found for the given audience"
+
+            sent = 0
+            for recipient in recipients:
+                try:
+                    notification = Notification.objects.create(
+                        recipient=recipient,
+                        sender=sender,
+                        title=title or "Announcement",
+                        message=message,
+                        notification_type="ANNOUNCEMENT",
+                        priority="MEDIUM",
+                        data={"source": "miya_announcement", "channels": channels},
+                    )
+                    ok, _ = self.send_custom_notification(
+                        recipient=recipient,
+                        notification=notification,
+                        channels=channels,
+                        sender=sender,
+                        title=notification.title,
+                        message=notification.message,
+                        notification_type="ANNOUNCEMENT",
+                    )
+                    if ok:
+                        sent += 1
+                except Exception as e:
+                    logger.warning("Announcement send failed for %s: %s", recipient.id, e)
+            return True, sent, None
+        except Exception as e:
+            logger.exception("send_announcement_to_audience failed: %s", e)
+            return False, 0, str(e)
+
     def send_whatsapp_template(self, phone, template_name, language_code='en_US', components=None, notification=None):
         """Send a WhatsApp template message via Meta Cloud API"""
         try:

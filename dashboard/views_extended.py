@@ -219,6 +219,55 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         serializer = self.get_serializer(kpi)
         return Response(serializer.data)
     
+    @action(detail=False, methods=['get'], url_path='restaurant-stats')
+    def restaurant_stats(self, request):
+        """KPI stats for Staff Scheduling page: total_staff, scheduled_shifts, open_tasks, completed_tasks."""
+        from datetime import date, timedelta
+        from accounts.models import CustomUser
+        from scheduling.models import AssignedShift, WeeklySchedule
+        from scheduling.task_templates import Task as SchedulingTask
+
+        user = request.user
+        if not user.restaurant:
+            return Response(
+                {'total_staff': 0, 'scheduled_shifts': 0, 'open_tasks': 0, 'completed_tasks': 0},
+                status=status.HTTP_200_OK,
+            )
+        restaurant = user.restaurant
+        today = date.today()
+        week_start = today - timedelta(days=today.weekday())
+        week_end = week_start + timedelta(days=6)
+        seven_days_ago = today - timedelta(days=7)
+
+        total_staff = CustomUser.objects.filter(
+            restaurant=restaurant, is_active=True
+        ).exclude(role='SUPER_ADMIN').count()
+
+        scheduled_shifts = AssignedShift.objects.filter(
+            schedule__restaurant=restaurant,
+            shift_date__gte=week_start,
+            shift_date__lte=week_end,
+            status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED'],
+        ).count()
+
+        open_tasks = SchedulingTask.objects.filter(
+            restaurant=restaurant,
+        ).exclude(status__in=['COMPLETED', 'CANCELLED']).count()
+
+        completed_tasks = SchedulingTask.objects.filter(
+            restaurant=restaurant,
+            status='COMPLETED',
+            completed_at__date__gte=seven_days_ago,
+            completed_at__date__lte=today,
+        ).count()
+
+        return Response({
+            'total_staff': total_staff,
+            'scheduled_shifts': scheduled_shifts,
+            'open_tasks': open_tasks,
+            'completed_tasks': completed_tasks,
+        })
+
     @action(detail=False, methods=['get'])
     def range(self, request):
         """Get KPI for a date range"""

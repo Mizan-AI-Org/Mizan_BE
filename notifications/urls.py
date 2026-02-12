@@ -37,4 +37,5 @@ urlpatterns = [
     
     # Agent Integration
     path('agent/send-whatsapp/', views_agent.send_whatsapp_from_agent, name='agent-send-whatsapp'),
+    path('agent/announcement/', views_agent.agent_send_announcement, name='agent-send-announcement'),
 ]
