@@ -620,11 +620,14 @@ class SchedulingService:
 
     @staticmethod
     def ensure_shift_color(shift: 'AssignedShift') -> None:
-        """Assign a staff-based color if missing/blank."""
+        """Assign a staff-based color (unique per staff) if missing/blank."""
         try:
             if getattr(shift, 'color', None):
                 return
             staff_id = getattr(getattr(shift, 'staff', None), 'id', None)
+            if not staff_id:
+                first_member = shift.staff_members.order_by('id').first()
+                staff_id = getattr(first_member, 'id', None) if first_member else None
             if not staff_id:
                 return
             shift.color = SchedulingService.staff_shift_color(str(staff_id))
@@ -645,8 +648,17 @@ class SchedulingService:
         from asgiref.sync import async_to_sync
         
         try:
-            # Create in-app notification
-            message = f"Your shift on {shift.shift_date} from {shift.start_time} to {shift.end_time} has been cancelled"
+            # Human-readable date and times for the notification message
+            date_str = shift.shift_date.strftime('%A, %b %d, %Y') if shift.shift_date else '—'
+            start_dt = shift.start_time
+            end_dt = shift.end_time
+            if start_dt and timezone.is_aware(start_dt):
+                start_dt = timezone.localtime(start_dt)
+            if end_dt and timezone.is_aware(end_dt):
+                end_dt = timezone.localtime(end_dt)
+            start_str = start_dt.strftime('%I:%M %p').lstrip('0') if start_dt and hasattr(start_dt, 'strftime') else '—'
+            end_str = end_dt.strftime('%I:%M %p').lstrip('0') if end_dt and hasattr(end_dt, 'strftime') else '—'
+            message = f"Your shift on {date_str} from {start_str} to {end_str} has been cancelled."
             notification = Notification.objects.create(
                 recipient=shift.staff,
                 message=message,
@@ -655,12 +667,12 @@ class SchedulingService:
             )
             
             # Send email notification
-            subject = f"Shift Cancelled - {shift.shift_date}"
+            subject = f"Shift Cancelled - {date_str}"
             html_message = render_to_string('emails/shift_cancelled.html', {
                 'staff_name': shift.staff.get_full_name(),
-                'shift_date': shift.shift_date,
-                'start_time': shift.start_time,
-                'end_time': shift.end_time,
+                'shift_date': date_str,
+                'start_time': start_str,
+                'end_time': end_str,
             })
             
             send_mail(

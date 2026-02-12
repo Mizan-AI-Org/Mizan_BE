@@ -12,6 +12,7 @@ from .views import (
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
 from .views_invitations import InvitationViewSet, UserManagementViewSet
 from .views_agent import AgentContextView, accept_invitation_from_agent, get_invitation_by_phone, account_activation_from_agent
+from .views_staff_report import staff_profile_report_pdf
 
 router = DefaultRouter()
 router.register(r'settings', RestaurantSettingsViewSet, basename='settings')
@@ -34,6 +35,7 @@ urlpatterns = [
     path('staff/profile/<uuid:pk>/update/', StaffProfileUpdateView.as_view(), name='staff_profile_update'),
     path('staff/profile/<uuid:pk>/reset-password/', StaffPasswordResetView.as_view(), name='staff_password_reset'),
     path('staff/', StaffListAPIView.as_view(), name='staff_list'),
+    path('staff/<uuid:pk>/report/pdf/', staff_profile_report_pdf, name='staff_profile_report_pdf'),
     path('staff/<uuid:pk>/', StaffMemberDetailView.as_view(), name='staff_detail'),
     # path('staff/users/', StaffUsersListView.as_view(), name='staff_users_list'),
     path('auth/login/', LoginView.as_view(), name='login'),
