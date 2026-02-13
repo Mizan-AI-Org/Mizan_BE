@@ -14,9 +14,12 @@ from django.contrib.auth import authenticate
 from .models import CustomUser, Restaurant, UserInvitation, StaffProfile, AuditLog, StaffActivationRecord
 from django.utils import timezone
 from django.core.files.base import ContentFile
-import base64, os
+import base64, logging, os
 from django.conf import settings
+
+logger = logging.getLogger(__name__)
 from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.contrib.auth.models import UserManager
 from django.contrib.auth.models import UserManager
 from django.utils.crypto import get_random_string
@@ -186,13 +189,38 @@ class RestaurantOwnerSignupView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
-        restaurant_serializer = RestaurantSerializer(data=request.data.get('restaurant'))
+        # Require nested payload: { restaurant: {...}, user: {...} }
+        if not request.data or not isinstance(request.data, dict):
+            return Response(
+                {'message': 'Request body must be JSON with "restaurant" and "user" keys.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        restaurant_payload = request.data.get('restaurant')
+        user_data = request.data.get('user')
+        if not restaurant_payload or not isinstance(restaurant_payload, dict):
+            return Response(
+                {'message': 'Missing or invalid "restaurant" in request body.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if not user_data or not isinstance(user_data, dict):
+            return Response(
+                {'message': 'Missing or invalid "user" in request body.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        restaurant_serializer = RestaurantSerializer(data=restaurant_payload)
         if not restaurant_serializer.is_valid():
             return Response(restaurant_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        restaurant = restaurant_serializer.save()
 
-        user_data = request.data.get('user')
+        try:
+            restaurant = restaurant_serializer.save()
+        except IntegrityError as e:
+            return Response(
+                {'message': 'A restaurant with this email already exists. Use a different email or sign in.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user_data = dict(user_data)
         user_data['restaurant'] = restaurant.id
         user_data['role'] = 'SUPER_ADMIN'
         user_data['is_verified'] = True
@@ -203,12 +231,26 @@ class RestaurantOwnerSignupView(APIView):
         if not user_serializer.is_valid():
             restaurant.delete()
             return Response(user_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        user = user_serializer.save()
-        user.set_password(password)
-        if pin_code:
-            user.set_pin(pin_code)
-        user.save()
+
+        try:
+            user = user_serializer.save()
+            user.set_password(password)
+            if pin_code:
+                user.set_pin(pin_code)
+            user.save()
+        except IntegrityError:
+            restaurant.delete()
+            return Response(
+                {'message': 'A user with this email already exists. Sign in or use a different email.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            restaurant.delete()
+            logger.exception("Register: unexpected error creating user")
+            return Response(
+                {'message': 'Registration failed. Please try again or contact support.'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
         refresh = RefreshToken.for_user(user)
         return Response({

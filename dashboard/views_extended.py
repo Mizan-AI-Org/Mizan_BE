@@ -192,6 +192,57 @@ class TaskCategoryViewSet(viewsets.ModelViewSet):
         return Response(data)
 
 
+def _build_miya_recommendation(reliability_score, no_show_rate, no_shows, total_30d, alerts, reliability_signals):
+    """Build a data-driven recommendation phrased as live feedback from Miya."""
+    # Priority 1: no-show rate is high
+    if total_30d >= 4 and no_show_rate >= 15:
+        return {
+            'title': 'Reduce no-shows with Miya',
+            'body': f"Based on last month's data, **{no_show_rate}%** of scheduled shifts were no-shows ({no_shows} of {total_30d}). Miya can send clock-in reminders and follow up with staff—ask me to enable reminders or review who’s at risk.",
+            'action_label': 'Chat with Miya about reminders',
+        }
+    if total_30d >= 4 and no_show_rate >= 10:
+        return {
+            'title': 'Address no-show trend',
+            'body': f"No-show rate this month is **{no_show_rate}%**. Consider using Miya’s shift-assigned and clock-in reminders to reduce last-minute absences.",
+            'action_label': 'Chat with Miya',
+        }
+    # Priority 2: burnout or punctuality alerts
+    burnout = next((a for a in alerts if a.get('type') == 'Burnout Risk'), None)
+    if burnout:
+        return {
+            'title': 'Support overworked staff',
+            'body': f"Miya noticed: **{burnout.get('title', 'A team member')}** may need support. Review shifts and consider redistributing hours or recognizing their effort.",
+            'action_label': 'Chat with Miya',
+        }
+    punctuality = next((a for a in alerts if 'punctuality' in (a.get('title') or '').lower()), None)
+    if punctuality:
+        return {
+            'title': 'Improve punctuality',
+            'body': f"**{punctuality.get('title', 'Punctuality')}** was flagged. Miya can send clock-in reminders before shift start to help staff arrive on time.",
+            'action_label': 'Chat with Miya',
+        }
+    # Priority 3: positive reinforcement
+    if reliability_score >= 90 and reliability_signals:
+        return {
+            'title': 'Team punctuality is strong',
+            'body': f"Based on the last 30 days, on-time arrival is **{reliability_score}%**. Miya suggests recognizing on-time staff or keeping clock-in reminders enabled to maintain this.",
+            'action_label': 'Chat with Miya',
+        }
+    if reliability_score >= 80:
+        return {
+            'title': 'Optimize shift distribution',
+            'body': f"On-time arrival is **{reliability_score}%** this month. To improve further, Miya can suggest shift timing or remind staff before their shift—ask me for details.",
+            'action_label': 'Chat with Miya',
+        }
+    # Default: generic actionable suggestion
+    return {
+        'title': 'Optimize shift distribution',
+        'body': "Based on last month's data, reassigning shifts during peak hours and using Miya’s clock-in reminders can reduce late arrivals and improve coverage. Ask Miya for a tailored plan.",
+        'action_label': 'Chat with Miya',
+    }
+
+
 class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
     """Dashboard analytics and KPI tracking"""
     serializer_class = DailyKPISerializer
@@ -816,7 +867,10 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         on_time_count = 0
         total_shifts_with_clockin = 0
         
+        from datetime import datetime as _dt
         for s in reliability_shifts:
+            if not s.staff:
+                continue
             first_in = ClockEvent.objects.filter(
                 staff=s.staff,
                 timestamp__date=s.shift_date,
@@ -825,24 +879,36 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             
             if first_in:
                 total_shifts_with_clockin += 1
-                if s.start_time and first_in.timestamp <= s.start_time + grace_period:
-                    on_time_count += 1
+                if s.start_time:
+                    start = s.start_time
+                    t = start.time() if isinstance(start, _dt) else start
+                    shift_start_dt = timezone.make_aware(_dt.combine(s.shift_date, t))
+                    if first_in.timestamp <= shift_start_dt + grace_period:
+                        on_time_count += 1
         
         reliability_score = 100
         if total_shifts_with_clockin > 0:
             reliability_score = int((on_time_count / total_shifts_with_clockin) * 100)
 
-        # 3. Active Workers
-        daily_events = ClockEvent.objects.filter(
-            staff__restaurant=user.restaurant,
-            timestamp__date=today
-        ).order_by('timestamp')
-        
-        staff_status = {}
-        for ev in daily_events:
-            staff_status[ev.staff_id] = ev.event_type
-            
-        active_count = sum(1 for status in staff_status.values() if status in ['in', 'CLOCK_IN'])
+        # 3. Active Workers: unique staff who have clocked in today (primary + linked to this restaurant)
+        from accounts.models import StaffRestaurantLink
+        primary_staff_ids = set(
+            user.restaurant.staff.filter(is_active=True).values_list('id', flat=True)
+        )
+        linked_staff_ids = set(
+            StaffRestaurantLink.objects.filter(
+                restaurant=user.restaurant, is_active=True
+            ).values_list('user_id', flat=True)
+        )
+        restaurant_staff_ids = primary_staff_ids | linked_staff_ids
+        if restaurant_staff_ids:
+            active_count = ClockEvent.objects.filter(
+                staff_id__in=restaurant_staff_ids,
+                event_type__in=['in', 'CLOCK_IN'],
+                timestamp__date=today
+            ).values('staff_id').distinct().count()
+        else:
+            active_count = 0
 
         # 4. Star Performers
         staff_completions = ShiftTask.objects.filter(
@@ -866,7 +932,7 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         # 5. Burnout & Alerts
         alerts = []
         reliability_signals = []
-        all_staff = user.restaurant.customuser_set.filter(is_active=True)
+        all_staff = user.restaurant.staff.filter(is_active=True)
         
         for staff in all_staff:
             recent_shifts = reliability_shifts.filter(staff=staff, shift_date__range=(last_7_days, today))
@@ -884,8 +950,12 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             late_count = 0
             for s in recent_shifts:
                 first_in = ClockEvent.objects.filter(staff=staff, timestamp__date=s.shift_date, event_type__in=['in', 'CLOCK_IN']).order_by('timestamp').first()
-                if first_in and s.start_time and first_in.timestamp > s.start_time + grace_period:
-                    late_count += 1
+                if first_in and s.start_time:
+                    start = s.start_time
+                    t = start.time() if isinstance(start, _dt) else start
+                    shift_start_dt = timezone.make_aware(_dt.combine(s.shift_date, t))
+                    if first_in.timestamp > shift_start_dt + grace_period:
+                        late_count += 1
             
             if late_count >= 3:
                 alerts.append({
@@ -909,6 +979,25 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         total_30d = AssignedShift.objects.filter(schedule__restaurant=user.restaurant, shift_date__range=(last_30_days, today)).count()
         no_show_rate = round((no_shows / total_30d * 100), 1) if total_30d > 0 else 0
 
+        # No-show alert when rate is high and we have enough data
+        if total_30d >= 4 and no_show_rate >= 10:
+            alerts.append({
+                'type': 'No-Show Rate',
+                'level': 'Monitor',
+                'title': 'High no-show rate this month',
+                'description': f"{no_show_rate}% of scheduled shifts were no-shows ({no_shows} of {total_30d}). Consider clock-in reminders or follow-up with Miya."
+            })
+
+        # Miya recommendation: data-driven, phrased as live feedback from Miya
+        miya_recommendation = _build_miya_recommendation(
+            reliability_score=reliability_score,
+            no_show_rate=no_show_rate,
+            no_shows=no_shows,
+            total_30d=total_30d,
+            alerts=alerts,
+            reliability_signals=reliability_signals,
+        )
+
         return Response({
             'summary': {
                 'tasks_completed': total_completed,
@@ -922,7 +1011,8 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                 'no_show_rate': no_show_rate
             },
             'signals': reliability_signals[:2] or [{'color': 'emerald', 'text': 'Team punctuality is stable this week'}],
-            'alerts': alerts[:2]
+            'alerts': alerts[:3],
+            'miya_recommendation': miya_recommendation,
         })
 
     @action(detail=False, methods=['get'], url_path='staff-performance')
