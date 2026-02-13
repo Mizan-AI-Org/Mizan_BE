@@ -320,12 +320,17 @@ class SchedulingService:
                     )
                     
                     if not conflicts:
+                        # Use full datetime so clock-in/reminder tasks find shifts (they filter by start_time range)
+                        start_dt = timezone.make_aware(timezone.datetime.combine(shift_date, ts.start_time)) if ts.start_time else timezone.now()
+                        end_dt = timezone.make_aware(timezone.datetime.combine(shift_date, ts.end_time)) if ts.end_time else start_dt + timedelta(hours=4)
+                        if ts.end_time and ts.end_time < ts.start_time:
+                            end_dt = timezone.make_aware(timezone.datetime.combine(shift_date + timedelta(days=1), ts.end_time))
                         AssignedShift.objects.create(
                             schedule=schedule,
                             staff=staff,
                             shift_date=shift_date,
-                            start_time=ts.start_time,
-                            end_time=ts.end_time,
+                            start_time=start_dt,
+                            end_time=end_dt,
                             role=ts.role
                         )
                         created_count += 1

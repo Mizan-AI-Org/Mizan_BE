@@ -5,7 +5,7 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from notifications.utils import send_realtime_notification
-from notifications.services import NotificationService
+from notifications.services import notification_service
 
 from accounts.utils import calculate_distance
 from .models import ClockEvent
@@ -272,7 +272,24 @@ def web_clock_in(request):
         )
     except Exception:
         pass
-    
+
+    # Start conversational checklist (WhatsApp step-by-step) so staff receive it immediately after clock-in
+    try:
+        now_today = timezone.now()
+        active_qs = AssignedShift.objects.filter(
+            staff=user,
+            shift_date=now_today.date(),
+            status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
+        )
+        active_shift = (
+            active_qs.filter(start_time__lte=now_today, end_time__gte=now_today).first()
+            or active_qs.order_by('start_time').first()
+        )
+        if active_shift and getattr(user, 'phone', None):
+            notification_service.start_conversational_checklist_after_clock_in(user, active_shift)
+    except Exception:
+        pass
+
     return Response(response_data)
 
 @api_view(['POST'])
@@ -357,7 +374,7 @@ def web_clock_out(request):
     # Send shift review template so staff can rate their shift (Miya: Hi {{1}}, how was your shift today?)
     if getattr(user, 'phone', None):
         try:
-            NotificationService().send_shift_review_request(user.phone, user.first_name)
+            notification_service.send_shift_review_request(user.phone, user.first_name)
         except Exception:
             pass
 
@@ -943,7 +960,24 @@ def agent_clock_in(request):
                 pass
             except Exception:
                 pass
-        
+
+        # Start conversational checklist (WhatsApp) so staff receive step-by-step tasks after clock-in
+        try:
+            now_today = timezone.now()
+            active_qs = AssignedShift.objects.filter(
+                staff=user,
+                shift_date=now_today.date(),
+                status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
+            )
+            active_shift = (
+                active_qs.filter(start_time__lte=now_today, end_time__gte=now_today).first()
+                or active_qs.order_by('start_time').first()
+            )
+            if active_shift and getattr(user, 'phone', None):
+                notification_service.start_conversational_checklist_after_clock_in(user, active_shift)
+        except Exception:
+            pass
+
         return Response(ClockEventSerializer(clock_event).data)
 
     except Exception as e:

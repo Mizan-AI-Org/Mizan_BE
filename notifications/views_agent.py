@@ -77,7 +77,7 @@ def agent_send_announcement(request):
     # "all" or missing audience => no filters (staff_ids, roles, departments stay None)
 
     try:
-        success, count, err = notification_service.send_announcement_to_audience(
+        success, count, err, details = notification_service.send_announcement_to_audience(
             restaurant_id=str(restaurant_id),
             title=title,
             message=message,
@@ -92,11 +92,25 @@ def agent_send_announcement(request):
                 {"success": False, "error": err or "Send failed", "notification_count": count},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        whatsapp_sent = details.get("whatsapp_sent", count)
+        recipients_without_phone = details.get("recipients_without_phone") or []
+        # When staff don't use the app, WhatsApp is the only way to reach them; surface when we couldn't send WhatsApp.
+        if recipients_without_phone:
+            names = [r.get("full_name") or r.get("id", "") for r in recipients_without_phone]
+            message_text = (
+                f"Announcement sent to {count} recipient(s) (WhatsApp: {whatsapp_sent}). "
+                f"The following have no phone number on file, so they only received an in-app message: {', '.join(names)}. "
+                "If your team doesn't use the app, add their phone numbers so Miya can reach them by WhatsApp."
+            )
+        else:
+            message_text = f"Announcement sent to {count} recipient(s) via app and WhatsApp."
         return Response(
             {
                 "success": True,
-                "message": f"Announcement sent to {count} recipient(s) via app and WhatsApp.",
+                "message": message_text,
                 "notification_count": count,
+                "whatsapp_sent": whatsapp_sent,
+                "recipients_without_phone": recipients_without_phone,
             },
             status=status.HTTP_200_OK,
         )

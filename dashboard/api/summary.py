@@ -313,7 +313,7 @@ class DashboardSummaryView(APIView):
                     summary=f"No-show detected: {(s.notes or 'Shift')} ({_staff_name(staff) if staff else 'Unassigned'})",
                     recommended_action="Contact the staff member immediately and assign coverage if needed.",
                     impacted=impacted,
-                    action_url="/dashboard/staff-scheduling",
+                    action_url="/dashboard/attendance",
                 )
             )
 

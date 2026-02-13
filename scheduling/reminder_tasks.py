@@ -55,7 +55,7 @@ def send_checklist_reminders():
         start_time__lte=now + timedelta(minutes=65),
         shift_date=now.date(),
         check_list_reminder_sent=False
-    ).select_related('staff', 'weekly_schedule__restaurant')
+    ).select_related('staff', 'schedule__restaurant')
     
     service = NotificationService()
     count = 0
@@ -83,10 +83,11 @@ def send_clock_in_reminders():
     """
     now = timezone.now()
     upcoming_shifts = AssignedShift.objects.filter(
+        shift_date=now.date(),
         start_time__gte=now + timedelta(minutes=5),
         start_time__lte=now + timedelta(minutes=15),
-        shift_date=now.date(),
-        clock_in_reminder_sent=False
+        clock_in_reminder_sent=False,
+        status__in=['SCHEDULED', 'CONFIRMED']
     ).select_related('staff', 'schedule__restaurant')
     
     service = NotificationService()

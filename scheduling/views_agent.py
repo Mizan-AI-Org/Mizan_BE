@@ -8,8 +8,10 @@ from rest_framework import status, permissions
 from django.conf import settings
 from django.utils import timezone
 from datetime import datetime, time, timedelta
-from django.db.models import Q
+from django.db.models import Q, Value
+from django.db.models.functions import Concat
 import re
+import uuid
 import unicodedata
 from difflib import SequenceMatcher
 
@@ -206,7 +208,13 @@ def agent_list_staff(request):
                     | Q(phone__icontains=tok)
                 )
 
-            # If token filter yields no results, fall back to fuzzy suggestions.
+            # If token filter yields no results, try matching full name string (e.g. "salima majdallah" vs "Salima Majdallah").
+            if not filtered.exists() and name_filter:
+                filtered = queryset.annotate(
+                    full_name=Concat("first_name", Value(" "), "last_name")
+                ).filter(full_name__icontains=name_filter)
+
+            # If still no results, fall back to fuzzy suggestions.
             if filtered.exists():
                 queryset = filtered
             else:
@@ -225,8 +233,8 @@ def agent_list_staff(request):
                     SequenceMatcher(None, query_n, full_b).ratio(),
                     SequenceMatcher(None, query_n, email_n).ratio(),
                 )
-                # Only keep reasonably close matches
-                if score >= 0.72:
+                # Keep close matches (lower threshold so "Salima Majdallah" / "salima majdallah" and minor typos still match)
+                if score >= 0.55:
                     candidates.append((score, staff))
 
             candidates.sort(key=lambda x: x[0], reverse=True)
@@ -576,9 +584,10 @@ def agent_attach_templates_to_shift(request):
 @permission_classes([permissions.AllowAny])
 def agent_create_shift(request):
     """
-    Create a shift for a staff member.
+    Create a single shift for a staff member.
     Used by the Lua agent (Miya) to schedule staff.
-    Each shift can have independent tasks/processes assigned via task_template_ids.
+    For recurring shifts on specific days until an end date (e.g. "Mon–Sat until June 30"),
+    use POST /api/scheduling/agent/create-recurring-shifts/ instead.
 
     Expected payload:
     {
@@ -935,6 +944,348 @@ def agent_create_shift(request):
             'success': False,
             'error': f"Could not create shift: {err}"
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def _normalize_days_of_week(value):
+    """Convert days_of_week to a set of Python weekdays (0=Monday, 6=Sunday)."""
+    if value is None:
+        return None
+    day_names = {
+        'monday': 0, 'mon': 0, 'tuesday': 1, 'tue': 1, 'wednesday': 2, 'wed': 2,
+        'thursday': 3, 'thu': 3, 'friday': 4, 'fri': 4, 'saturday': 5, 'sat': 5,
+        'sunday': 6, 'sun': 6,
+    }
+    out = set()
+    if isinstance(value, (list, tuple)):
+        for v in value:
+            if isinstance(v, int) and 0 <= v <= 6:
+                out.add(v)
+            elif isinstance(v, str):
+                out.add(day_names.get(v.strip().lower(), -1))
+        out.discard(-1)
+    elif isinstance(value, str):
+        for part in value.replace(',', ' ').split():
+            part = part.strip().lower()
+            if part in day_names:
+                out.add(day_names[part])
+    return out if out else None
+
+
+@api_view(['POST'])
+@authentication_classes([])  # Bypass JWT auth
+@permission_classes([permissions.AllowAny])
+def agent_create_recurring_shifts(request):
+    """
+    Create recurring shifts for a staff member on specified days of the week until an end date.
+    Used by Miya to support instructions like "every day from Monday to Saturday until June 30".
+
+    Same payload as create-shift, plus:
+    - start_date: YYYY-MM-DD (first occurrence)
+    - end_date: YYYY-MM-DD (last date, e.g. 2026-06-30)
+    - days_of_week: list of weekdays to repeat. Options:
+      - Integers 0-6 (Monday=0, Sunday=6), e.g. [0,1,2,3,4,5] for Mon-Sat
+      - Names: ["monday","tuesday",...,"saturday"] or "monday,tuesday,wednesday,thursday,friday,saturday"
+    """
+    try:
+        restaurant, acting_user = _try_jwt_restaurant_and_user(request)
+        if not restaurant:
+            is_valid, error = validate_agent_key(request)
+            if not is_valid:
+                return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+            payload = _agent_payload_from_request(request)
+            restaurant_id = (
+                payload.get('restaurant_id') or payload.get('restaurantId')
+                or request.META.get('HTTP_X_RESTAURANT_ID')
+            )
+            if isinstance(restaurant_id, (list, tuple)) and restaurant_id:
+                restaurant_id = restaurant_id[0]
+            restaurant = None
+            acting_user = None
+            if restaurant_id:
+                try:
+                    restaurant = Restaurant.objects.get(id=restaurant_id)
+                except Restaurant.DoesNotExist:
+                    restaurant = None
+            if not restaurant:
+                restaurant, acting_user = resolve_agent_restaurant_and_user(request=request, payload=payload)
+
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        payload = _agent_payload_from_request(request)
+
+        def _get_val(d, *keys):
+            for k in keys:
+                v = d.get(k)
+                if v is not None and v != '':
+                    return v[0] if isinstance(v, (list, tuple)) and v else v
+            return None
+
+        staff_id = _get_val(data, 'staff_id', 'staffId') or _get_val(payload, 'staff_id', 'staffId')
+        start_date_str = _get_val(data, 'start_date', 'startDate')
+        end_date_str = _get_val(data, 'end_date', 'endDate')
+        days_of_week_raw = data.get('days_of_week') or data.get('daysOfWeek') or payload.get('days_of_week') or payload.get('daysOfWeek')
+        start_time_str = _get_val(data, 'start_time', 'startTime') or _get_val(payload, 'start_time', 'startTime')
+        end_time_str = _get_val(data, 'end_time', 'endTime') or _get_val(payload, 'end_time', 'endTime')
+
+        if not all([staff_id, start_date_str, end_date_str, start_time_str, end_time_str]):
+            return Response({
+                'success': False,
+                'error': 'Missing required fields: staff_id, start_date, end_date, start_time, end_time'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        days_of_week = _normalize_days_of_week(days_of_week_raw)
+        if not days_of_week:
+            return Response({
+                'success': False,
+                'error': 'days_of_week is required (e.g. [0,1,2,3,4,5] for Mon-Sat or ["monday","tuesday",...,"saturday"]).'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if not restaurant:
+            return Response({
+                'success': False,
+                'error': 'Unable to resolve restaurant context.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        task_template_ids_raw = data.get('task_template_ids') or data.get('taskTemplateIds') or []
+        if isinstance(task_template_ids_raw, str):
+            task_template_ids_raw = [x.strip() for x in task_template_ids_raw.split(',') if x.strip()]
+        custom_tasks = data.get('tasks') or []
+        if isinstance(custom_tasks, str):
+            try:
+                import json
+                custom_tasks = json.loads(custom_tasks) if custom_tasks.strip() else []
+            except Exception:
+                custom_tasks = []
+        if not task_template_ids_raw and not custom_tasks:
+            return Response({
+                'success': False,
+                'error': 'Each shift must have at least one task_template_ids or tasks array.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            staff = CustomUser.objects.get(id=staff_id, restaurant=restaurant)
+        except CustomUser.DoesNotExist:
+            return Response({
+                'success': False,
+                'error': 'Staff member not found in this restaurant'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({
+                'success': False,
+                'error': 'Invalid start_date or end_date. Use YYYY-MM-DD'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        if start_date > end_date:
+            return Response({
+                'success': False,
+                'error': 'start_date must be on or before end_date'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            if len(start_time_str) == 5:
+                start_time = datetime.strptime(start_time_str, '%H:%M').time()
+            else:
+                start_time = datetime.strptime(start_time_str, '%H:%M:%S').time()
+            if len(end_time_str) == 5:
+                end_time = datetime.strptime(end_time_str, '%H:%M').time()
+            else:
+                end_time = datetime.strptime(end_time_str, '%H:%M:%S').time()
+        except ValueError:
+            return Response({
+                'success': False,
+                'error': 'Invalid time format. Use HH:MM or HH:MM:SS'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        role = data.get('role') or staff.role or 'SERVER'
+        department = data.get('department') or None
+        workspace_location = data.get('workspace_location') or data.get('workspaceLocation') or None
+        shift_notes = data.get('notes', '') or ''
+        shift_title = data.get('shift_title') or data.get('shiftTitle') or data.get('title') or ''
+        task_template_ids = [str(x).strip() for x in task_template_ids_raw if x]
+        recurrence_group_id = uuid.uuid4()
+        if not shift_title:
+            start_datetime_ctx = timezone.datetime.combine(start_date, start_time)
+            end_datetime_ctx = timezone.datetime.combine(start_date, end_time)
+            if timezone.is_naive(start_datetime_ctx):
+                start_datetime_ctx = timezone.make_aware(start_datetime_ctx)
+            if timezone.is_naive(end_datetime_ctx):
+                end_datetime_ctx = timezone.make_aware(end_datetime_ctx)
+            inferred = detect_shift_context(
+                shift_title=None,
+                shift_notes=shift_notes,
+                start_dt=start_datetime_ctx,
+                end_dt=end_datetime_ctx,
+                restaurant=restaurant,
+            )
+            shift_title = generate_shift_title(
+                shift_context=inferred,
+                staff_role=role.upper(),
+                department=department,
+                workspace_location=workspace_location,
+            )
+        created_shifts = []
+        skipped_conflicts = []
+        current = start_date
+        while current <= end_date:
+            if current.weekday() not in days_of_week:
+                current += timedelta(days=1)
+                continue
+            shift_date = current
+            days_since_monday = shift_date.weekday()
+            week_start = shift_date - timedelta(days=days_since_monday)
+            week_end = week_start + timedelta(days=6)
+            schedule, _ = WeeklySchedule.objects.get_or_create(
+                restaurant=restaurant,
+                week_start=week_start,
+                defaults={'week_end': week_end}
+            )
+            start_datetime = timezone.datetime.combine(shift_date, start_time)
+            end_datetime = timezone.datetime.combine(shift_date, end_time)
+            if timezone.is_naive(start_datetime):
+                start_datetime = timezone.make_aware(start_datetime)
+            if timezone.is_naive(end_datetime):
+                end_datetime = timezone.make_aware(end_datetime)
+
+            conflicts = SchedulingService.detect_scheduling_conflicts(
+                str(staff.id),
+                shift_date,
+                start_time,
+                end_time,
+                workspace_location=workspace_location
+            )
+            if conflicts:
+                skipped_conflicts.append({'date': str(shift_date), 'message': conflicts[0].get('message', 'Conflict')})
+                current += timedelta(days=1)
+                continue
+
+            shift = AssignedShift.objects.create(
+                schedule=schedule,
+                staff=staff,
+                shift_date=shift_date,
+                start_time=start_datetime,
+                end_time=end_datetime,
+                role=role.upper(),
+                notes=shift_title,
+                preparation_instructions=shift_notes,
+                department=department,
+                workspace_location=workspace_location,
+                status='SCHEDULED',
+                created_by=acting_user,
+                last_modified_by=acting_user,
+                is_recurring=True,
+                recurrence_group_id=recurrence_group_id,
+            )
+            shift.staff_members.add(staff)
+            try:
+                SchedulingService.ensure_shift_color(shift)
+            except Exception:
+                pass
+
+            if task_template_ids:
+                templates = list(TaskTemplate.objects.filter(
+                    id__in=task_template_ids,
+                    restaurant=restaurant,
+                    is_active=True
+                ))
+                if templates:
+                    shift.task_templates.add(*templates)
+                    from core.i18n import get_effective_language, normalize_language
+                    lang = normalize_language(get_effective_language(user=staff, restaurant=restaurant) or 'en')
+                    for tpl in templates:
+                        instantiate_shift_tasks_from_template(
+                            shift=shift,
+                            assignee=staff,
+                            task_template=tpl,
+                            created_by=acting_user,
+                            language=lang,
+                        )
+                        ct = ensure_checklist_for_task_template(
+                            restaurant=restaurant,
+                            task_template=tpl,
+                            created_by=acting_user,
+                            language=lang,
+                        )
+                        if ct:
+                            ensure_checklist_execution_for_shift(
+                                checklist_template=ct,
+                                assignee=staff,
+                                shift=shift,
+                            )
+            else:
+                try:
+                    auto_attach_templates_and_tasks(
+                        shift=shift,
+                        restaurant=restaurant,
+                        assignee=staff,
+                        staff_role=role.upper(),
+                        shift_title=shift_title,
+                        instructions=shift_notes,
+                        created_by=acting_user,
+                    )
+                except Exception as e:
+                    logger.warning(f"Agent create recurring: auto-attach failed for {shift_date}: {e}")
+
+            for t in custom_tasks:
+                if not isinstance(t, dict):
+                    continue
+                title = (t.get('title') or t.get('name') or '').strip()
+                if not title:
+                    continue
+                priority = (t.get('priority') or 'MEDIUM').upper()
+                if priority not in ('LOW', 'MEDIUM', 'HIGH', 'URGENT'):
+                    priority = 'MEDIUM'
+                try:
+                    ShiftTask.objects.create(
+                        shift=shift,
+                        title=title[:255],
+                        description=(t.get('description') or '')[:1000],
+                        priority=priority,
+                        status='TODO',
+                        assigned_to=staff,
+                        created_by=acting_user,
+                    )
+                except Exception as e:
+                    logger.warning(f"Agent create recurring: custom task failed: {e}")
+
+            try:
+                SchedulingService.notify_shift_assignment(shift, force_whatsapp=True)
+            except Exception as e:
+                logger.warning(f"Agent create recurring: notify failed for {shift_date}: {e}")
+
+            created_shifts.append({
+                'id': str(shift.id),
+                'shift_date': str(shift_date),
+                'start_time': start_time_str,
+                'end_time': end_time_str,
+            })
+            current += timedelta(days=1)
+
+        return Response({
+            'success': True,
+            'created': len(created_shifts),
+            'shifts': created_shifts,
+            'skipped_conflicts': skipped_conflicts,
+            'recurrence_group_id': str(recurrence_group_id),
+            'message': f"Created {len(created_shifts)} recurring shift(s) for {staff.first_name} from {start_date} to {end_date} on {_days_summary(days_of_week)}."
+        }, status=status.HTTP_201_CREATED)
+
+    except Exception as e:
+        logger.exception("Agent create recurring shifts error")
+        err = str(e).strip() if e else "Unknown error"
+        if len(err) > 200:
+            err = err[:197] + "..."
+        return Response({
+            'success': False,
+            'error': f"Could not create recurring shifts: {err}"
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def _days_summary(days_set):
+    """Return a short label for the set of weekdays (0=Mon, 6=Sun)."""
+    names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    return ', '.join(names[d] for d in sorted(days_set))
 
 
 @api_view(['POST'])

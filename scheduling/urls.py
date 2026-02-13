@@ -17,6 +17,7 @@ from .views import (
     ShiftTaskViewSet,
     TimesheetViewSet,
     TimesheetEntryViewSet,
+    live_checklist_progress,
 )
 from .task_views import TaskTemplateViewSet, TaskViewSet
 from .process_views import ProcessViewSet, ProcessTaskViewSet
@@ -32,6 +33,7 @@ from .views_agent import (
     agent_attach_templates_to_shift,
     agent_list_shifts,
     agent_create_shift,
+    agent_create_recurring_shifts,
     agent_send_shift_notification,
     agent_optimize_schedule,
     agent_restaurant_search,
@@ -88,6 +90,9 @@ urlpatterns = [
     path('parse-schedule-document/', parse_schedule_document, name='parse-schedule-document'),
     path('apply-parsed-schedule/', apply_parsed_schedule, name='apply-parsed-schedule'),
 
+    # Live checklist progress (WhatsApp/conversational step-by-step) for managers
+    path('live-checklist-progress/', live_checklist_progress, name='scheduling-live-checklist-progress'),
+
     # Task Management
     path('', include(router.urls)),
     
@@ -99,6 +104,7 @@ urlpatterns = [
     path('agent/attach-templates-to-shift/', agent_attach_templates_to_shift, name='agent_attach_templates_to_shift'),
     path('agent/list-shifts/', agent_list_shifts, name='agent_list_shifts'),
     path('agent/create-shift/', agent_create_shift, name='agent_create_shift'),
+    path('agent/create-recurring-shifts/', agent_create_recurring_shifts, name='agent_create_recurring_shifts'),
     path('agent/notify-shift/', agent_send_shift_notification, name='agent_notify_shift'),
     path('agent/optimize-schedule/', agent_optimize_schedule, name='agent_optimize_schedule'),
     path('agent/restaurant-search/', agent_restaurant_search, name='agent_restaurant_search'),
