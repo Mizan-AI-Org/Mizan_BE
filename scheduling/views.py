@@ -1,6 +1,6 @@
 from rest_framework import generics, permissions, status, viewsets
 from rest_framework.response import Response
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes
 from django.utils import timezone
 from django.db.models import Q
 from django.db import IntegrityError
@@ -10,8 +10,9 @@ from datetime import datetime, timedelta
 import logging, sys
 
 from .models import (
-    ScheduleTemplate, TemplateShift, WeeklySchedule, AssignedShift, 
-    ShiftSwapRequest, TaskCategory, ShiftTask, Timesheet, TimesheetEntry
+    ScheduleTemplate, TemplateShift, WeeklySchedule, AssignedShift,
+    ShiftSwapRequest, TaskCategory, ShiftTask, Timesheet, TimesheetEntry,
+    ShiftChecklistProgress,
 )
 from .serializers import (
     ScheduleTemplateSerializer,
@@ -1256,3 +1257,63 @@ class TimesheetEntryViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         serializer.save()
+
+
+def _staff_display_name(user):
+    if not user:
+        return "Unknown"
+    parts = [getattr(user, 'first_name', None), getattr(user, 'last_name', None)]
+    name = ' '.join(p for p in parts if p).strip()
+    return name or getattr(user, 'email', None) or "Staff"
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated, IsManagerOrAdmin])
+def live_checklist_progress(request):
+    """
+    Live report of step-by-step conversational (e.g. WhatsApp) checklist progress
+    for the manager's restaurant. Returns in-progress and recently completed
+    shift checklists with completion percentage.
+    """
+    restaurant = getattr(request.user, 'restaurant', None)
+    if not restaurant:
+        return Response({'detail': 'No restaurant'}, status=status.HTTP_403_FORBIDDEN)
+
+    # In progress + completed in last 24h
+    since = timezone.now() - timedelta(hours=24)
+    qs = ShiftChecklistProgress.objects.filter(
+        shift__schedule__restaurant=restaurant,
+        status__in=['IN_PROGRESS', 'COMPLETED'],
+    ).filter(
+        Q(updated_at__gte=since) | Q(status='IN_PROGRESS')
+    ).select_related('shift', 'staff', 'shift__schedule').order_by('-updated_at')[:50]
+
+    out = []
+    for prog in qs:
+        task_ids = prog.task_ids or []
+        responses = prog.responses or {}
+        total_tasks = len(task_ids)
+        completed_tasks = sum(1 for tid in task_ids if tid in responses)
+        if prog.status == 'COMPLETED':
+            progress_percentage = 100
+        elif total_tasks > 0:
+            progress_percentage = min(100, int(round((completed_tasks / total_tasks) * 100)))
+        else:
+            progress_percentage = 0
+
+        out.append({
+            'id': str(prog.id),
+            'shift_id': str(prog.shift_id),
+            'staff_id': str(prog.staff_id),
+            'staff_name': _staff_display_name(prog.staff),
+            'shift_date': prog.shift.shift_date.isoformat() if prog.shift and prog.shift.shift_date else None,
+            'channel': prog.channel or 'whatsapp',
+            'status': prog.status,
+            'progress_percentage': progress_percentage,
+            'total_tasks': total_tasks,
+            'completed_tasks': completed_tasks,
+            'current_task_id': prog.current_task_id or None,
+            'updated_at': prog.updated_at.isoformat() if prog.updated_at else None,
+            'completed_at': prog.completed_at.isoformat() if prog.completed_at else None,
+        })
+    return Response({'items': out})

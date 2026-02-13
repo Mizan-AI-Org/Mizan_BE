@@ -406,9 +406,13 @@ SQUARE_WEBHOOK_NOTIFICATION_URL_TEMPLATE = config('SQUARE_WEBHOOK_NOTIFICATION_U
 from celery.schedules import crontab
 
 CELERY_BEAT_SCHEDULE = {
-    "check_tasks_every_minute": {
+    "check_tasks_every_5min": {
         "task": "scheduling.tasks.check_upcoming_tasks",
-        "schedule": 5,
+        "schedule": crontab(minute='*/5'),  # Every 5 min: 30-min shift reminder, 10-min clock-in, checklist, clock-out
+    },
+    "clock_in_reminders": {
+        "task": "scheduling.reminder_tasks.send_clock_in_reminders",
+        "schedule": crontab(minute='*/5'),  # Every 5 min (backup path for clock-in reminders)
     },
     "checklist_reminders": {
         "task": "scheduling.reminder_tasks.send_checklist_reminders",

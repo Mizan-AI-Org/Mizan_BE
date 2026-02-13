@@ -290,7 +290,7 @@ class DashboardSummaryView(APIView):
                     summary=f"Staff late today: {lm['name']}" + (" (missed clock-in)" if lm.get('reason') == 'missed_clock_in' else " (clocked in late)"),
                     recommended_action="Follow up with the staff member. Consider coverage if unreachable.",
                     impacted={"staff": [{"id": lm["id"], "name": lm["name"]}]},
-                    action_url="/dashboard/scheduling",
+                    action_url="/dashboard/attendance",
                 )
             )
 
@@ -313,7 +313,7 @@ class DashboardSummaryView(APIView):
                     summary=f"No-show detected: {(s.notes or 'Shift')} ({_staff_name(staff) if staff else 'Unassigned'})",
                     recommended_action="Contact the staff member immediately and assign coverage if needed.",
                     impacted=impacted,
-                    action_url="/dashboard/staff-scheduling",
+                    action_url="/dashboard/attendance",
                 )
             )
 
@@ -345,7 +345,7 @@ class DashboardSummaryView(APIView):
                             summary=f"Missed clock-in: {_staff_name(staff)} for {(s.notes or 'Shift')}",
                             recommended_action="Message the staff member to clock in now or mark as no-show if unresponsive.",
                             impacted=impacted,
-                            action_url="/dashboard/scheduling",
+                            action_url="/dashboard/attendance",
                         )
                     )
 

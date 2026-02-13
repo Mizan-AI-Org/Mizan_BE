@@ -118,67 +118,28 @@ def send_shift_reminder_30min():
 def clock_in_reminder(task):
     """
     Clock-In Reminder (10 minutes before shift start).
-    Purpose: prompt staff to actively clock in.
-    Uses WhatsApp template: `staff_clock_in` (contains the Clock-In CTA button).
-
-    Expected template parameters (per your template preview):
-    {{1}} = staff first name
-    {{2}} = shift start time (e.g., "14:00")
-    {{3}} = minutes from now (e.g., "10 minutes")
-    {{4}} = location (restaurant address or name)
+    Delegates to NotificationService so Miya (Lua) sends the reminder when configured,
+    otherwise backend sends the staff_clock_in WhatsApp template directly.
     """
     try:
-        staff = task.staff
-        first_name = staff.first_name or "Team Member"
-        restaurant = getattr(getattr(task, 'schedule', None), 'restaurant', None)
-
-        now = timezone.now()
-        shift_start = getattr(task, 'start_time', None)
-        if shift_start:
-            try:
-                shift_start = timezone.localtime(shift_start)
-            except Exception:
-                pass
-
-        start_time = shift_start.strftime('%H:%M') if hasattr(shift_start, 'strftime') else ''
-        minutes_until = 0
-        if shift_start:
-            minutes_until = int(max(0, (shift_start - now).total_seconds() // 60))
-        minutes_from_now = f"{minutes_until} minutes"
-
-        location = getattr(restaurant, 'address', None) or getattr(restaurant, 'name', None) or "Restaurant"
+        if not hasattr(task, 'staff') or not task.staff:
+            return None
+        if not getattr(task.staff, 'phone', None) or not task.staff.phone:
+            return None
+        ok = notification_service.send_shift_notification(
+            task, notification_type='CLOCK_IN_REMINDER'
+        )
+        return 200 if ok else 400
     except Exception as e:
-        print(f"Error preparing clock-in reminder for shift {task.id}: {e}", file=sys.stderr)
+        print(f"Error sending clock-in reminder for shift {task.id}: {e}", file=sys.stderr)
         return None
-
-    if not hasattr(staff, 'phone') or not staff.phone:
-        return None
-
-    components = [
-        {
-            "type": "body",
-            "parameters": [
-                {"type": "text", "text": first_name},
-                {"type": "text", "text": start_time},
-                {"type": "text", "text": minutes_from_now},
-                {"type": "text", "text": str(location)},
-            ],
-        }
-    ]
-
-    ok, _ = notification_service.send_whatsapp_template(
-        phone=staff.phone,
-        template_name='staff_clock_in',
-        language_code='en_US',
-        components=components
-    )
-    return 200 if ok else 400
 
 
 def send_clock_in_reminder_10min():
     now = timezone.now()
-    # Check shifts starting between 5 and 15 minutes from now (targeting ~10 min)
+    # Check shifts starting between 5 and 15 minutes from now (targeting ~10 min); only today's shifts
     upcoming_tasks = AssignedShift.objects.filter(
+        shift_date=now.date(),
         start_time__gte=now + timedelta(minutes=5),
         start_time__lte=now + timedelta(minutes=15),
         clock_in_reminder_sent=False,
