@@ -168,22 +168,41 @@ def get_invitation_by_phone(request):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+def _activation_user_payload(user):
+    """Build user payload for activation response."""
+    return {
+        'id': str(user.id),
+        'email': user.email,
+        'first_name': user.first_name,
+        'last_name': user.last_name or '',
+        'phone': user.phone,
+        'role': user.role,
+        'restaurant': {
+            'id': str(user.restaurant.id),
+            'name': user.restaurant.name,
+        },
+    }
+
+
 @api_view(['POST'])
 @authentication_classes([])
 @permission_classes([permissions.AllowAny])
 def account_activation_from_agent(request):
     """
     Single-step account activation by phone. Used by Miya's account_activation tool.
-    Staff send first message → agent calls this with their phone → we activate and return success.
-    On success we send the staff_activated_welcome WhatsApp template; response has template_sent=True
-    and message_for_user=None so Miya does not send a duplicate inline reply.
-    Payload: { "phone": "212600959067" }. Returns { "success", "template_sent?", "user?", "message_for_user?" }.
+    ALWAYS checks the database first; returns a strict validation sequence and exact
+    message_for_user so Miya never shows technical errors.
+    Payload: { "phone": "212600959067" }. Returns { "success", "template_sent?", "user?", "message_for_user" }.
     """
     try:
         auth_header = request.headers.get('Authorization')
         expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
         if not expected_key:
-            return Response({'success': False, 'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({
+                'success': False,
+                'error': 'Agent key not configured',
+                'message_for_user': "We couldn't complete your request. Please try again later.",
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         if not auth_header or auth_header != f"Bearer {expected_key}":
             return Response({'success': False, 'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
 
@@ -192,88 +211,81 @@ def account_activation_from_agent(request):
         if not clean_phone or len(clean_phone) < 6:
             return Response({
                 'success': False,
-                'error': 'Invalid or missing phone number'
+                'error': 'Invalid or missing phone number',
+                'message_for_user': "We couldn't find your account. Please contact your manager to be added to your restaurant.",
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        from .services import try_activate_staff_on_inbound_message
-        from .models import CustomUser
+        from .services import get_activation_status_by_phone, try_activate_staff_on_inbound_message
 
-        user = try_activate_staff_on_inbound_message(clean_phone)
+        # 1. Always check database first
+        status_result = get_activation_status_by_phone(clean_phone)
+        act_status = status_result['status']
+        existing_user = status_result.get('user')
 
-        if not user:
-            # Idempotency: if the account is already active for this phone, treat as SUCCESS
-            existing_user = CustomUser.objects.filter(phone__icontains=clean_phone).first()
-            if existing_user:
-                from notifications.services import notification_service
-                notification_service.send_staff_activated_welcome(
-                    phone=clean_phone,
-                    first_name=existing_user.first_name or "Staff",
-                    restaurant_name=existing_user.restaurant.name if getattr(existing_user, 'restaurant', None) else "",
-                )
+        # 2. pending_activation: activate, update to active, respond with congratulations
+        if act_status == 'pending_activation':
+            user = try_activate_staff_on_inbound_message(clean_phone)
+            if not user:
                 return Response(
                     {
-                        'success': True,
-                        'template_sent': True,
-                        'user': {
-                            'id': str(existing_user.id),
-                            'email': existing_user.email,
-                            'first_name': existing_user.first_name,
-                            'last_name': existing_user.last_name or '',
-                            'phone': existing_user.phone,
-                            'role': existing_user.role,
-                            'restaurant': {
-                                'id': str(existing_user.restaurant.id),
-                                'name': existing_user.restaurant.name,
-                            },
-                        },
-                        'message_for_user': None,
+                        'success': False,
+                        'message_for_user': 'No pending activation found for this phone number.',
                     },
                     status=status.HTTP_200_OK,
                 )
+            from notifications.services import notification_service
+            notification_service.send_staff_activated_welcome(
+                phone=clean_phone,
+                first_name=user.first_name or "Staff",
+                restaurant_name=user.restaurant.name if getattr(user, 'restaurant', None) else "",
+            )
+            return Response(
+                {
+                    'success': True,
+                    'template_sent': True,
+                    'user': _activation_user_payload(user),
+                    'message_for_user': 'Congratulations! Your account has been successfully activated. Welcome to the team!',
+                },
+                status=status.HTTP_200_OK,
+            )
 
-            # No pending activation and no existing account: give a gentle, actionable error
+        # 3. active: do NOT modify, respond already activated (no template)
+        if act_status == 'active' and existing_user:
+            return Response(
+                {
+                    'success': True,
+                    'template_sent': False,
+                    'user': _activation_user_payload(existing_user),
+                    'message_for_user': 'Your account has already been activated.',
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # 4. no_pending: user exists but no pending activation record
+        if act_status == 'no_pending':
             return Response(
                 {
                     'success': False,
-                    'error': 'No pending activation found for this phone number.',
-                    'message_for_user': (
-                        "I can’t see your activation details yet. "
-                        "Please ask your manager to add your WhatsApp number to the staff list or resend the activation link. "
-                        "Once that’s done, just send me this same message again."
-                    ),
+                    'message_for_user': 'No pending activation found for this phone number.',
                 },
-                status=status.HTTP_404_NOT_FOUND,
+                status=status.HTTP_200_OK,
             )
 
-        from notifications.services import notification_service
-        notification_service.send_staff_activated_welcome(
-            phone=clean_phone,
-            first_name=user.first_name or "Staff",
-            restaurant_name=user.restaurant.name if getattr(user, 'restaurant', None) else "",
-        )
+        # 5. not_found: no user record at all
         return Response(
             {
-                'success': True,
-                'template_sent': True,
-                'user': {
-                    'id': str(user.id),
-                    'email': user.email,
-                    'first_name': user.first_name,
-                    'last_name': user.last_name or '',
-                    'phone': user.phone,
-                    'role': user.role,
-                    'restaurant': {
-                        'id': str(user.restaurant.id),
-                        'name': user.restaurant.name,
-                    },
-                },
-                'message_for_user': None,
+                'success': False,
+                'message_for_user': "We couldn't find your account. Please contact your manager to be added to your restaurant.",
             },
             status=status.HTTP_200_OK,
         )
     except Exception as e:
         logger.error(f"Account activation error: {e}")
-        return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({
+            'success': False,
+            'error': str(e),
+            'message_for_user': "We couldn't complete your request. Please try again later.",
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])

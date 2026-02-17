@@ -378,10 +378,11 @@ class SchedulingService:
         }
     
     @staticmethod
-    def notify_shift_assignment(shift: 'AssignedShift', force_whatsapp: bool = False) -> None:
+    def notify_shift_assignment(shift: 'AssignedShift', force_whatsapp: bool = True) -> None:
         """
         Send notification with full shift details to every assigned staff member
         (Miya / manual create: all chosen staff get the same details).
+        Staff are notified immediately via WhatsApp (and in-app); email is not used for shift assignment.
         """
         from notifications.models import Notification
         from notifications.services import notification_service

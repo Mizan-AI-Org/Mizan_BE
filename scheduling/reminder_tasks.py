@@ -75,11 +75,26 @@ def send_checklist_reminders():
     return f"Sent {count} checklist reminders"
 
 
+def _shift_recipients(shift):
+    """Deduplicated list of staff to notify for this shift (legacy staff + staff_members)."""
+    seen = set()
+    out = []
+    if shift.staff_id and shift.staff:
+        seen.add(shift.staff_id)
+        out.append(shift.staff)
+    for m in shift.staff_members.all():
+        if m.id not in seen and m:
+            seen.add(m.id)
+            out.append(m)
+    return out
+
+
 @shared_task
 def send_clock_in_reminders():
     """
-    Send clock-in reminders 10 minutes before shift
-    Runs every 5 minutes via Celery Beat
+    Send clock-in reminders 10 minutes before shift.
+    Uses WhatsApp template (staff_clock_in / WHATSAPP_TEMPLATE_STAFF_CLOCK_IN) via Miya (Lua) or directly.
+    Runs every 5 minutes via Celery Beat.
     """
     now = timezone.now()
     upcoming_shifts = AssignedShift.objects.filter(
@@ -88,21 +103,26 @@ def send_clock_in_reminders():
         start_time__lte=now + timedelta(minutes=15),
         clock_in_reminder_sent=False,
         status__in=['SCHEDULED', 'CONFIRMED']
-    ).select_related('staff', 'schedule__restaurant')
+    ).select_related('staff', 'schedule__restaurant').prefetch_related('staff_members')
     
     service = NotificationService()
     count = 0
     
     for shift in upcoming_shifts:
-        if shift.staff.phone:
-            try:
-                service.send_shift_notification(shift, notification_type='CLOCK_IN_REMINDER')
-                shift.clock_in_reminder_sent = True
-                shift.save(update_fields=['clock_in_reminder_sent'])
-                count += 1
-                logger.info(f"Sent clock-in reminder to {shift.staff.email} for shift {shift.id}")
-            except Exception as e:
-                logger.error(f"Failed to send clock-in reminder for shift {shift.id}: {e}")
+        recipients = _shift_recipients(shift)
+        sent_any = False
+        for member in recipients:
+            if getattr(member, 'phone', None):
+                try:
+                    service.send_shift_notification(shift, notification_type='CLOCK_IN_REMINDER', recipient=member)
+                    sent_any = True
+                    count += 1
+                    logger.info(f"Sent clock-in reminder to {member.email} for shift {shift.id}")
+                except Exception as e:
+                    logger.error(f"Failed to send clock-in reminder for shift {shift.id} to {member.email}: {e}")
+        if sent_any:
+            shift.clock_in_reminder_sent = True
+            shift.save(update_fields=['clock_in_reminder_sent'])
     
     logger.info(f"Sent {count} clock-in reminders")
     return f"Sent {count} clock-in reminders"
