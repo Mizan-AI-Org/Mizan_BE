@@ -26,10 +26,10 @@ class NotificationService:
     def __init__(self):
         self.channel_layer = get_channel_layer()
 
-    def send_shift_notification(self, shift, notification_type='SHIFT_ASSIGNED'):
-        """Helper to send shift-related notifications"""
+    def send_shift_notification(self, shift, notification_type='SHIFT_ASSIGNED', recipient=None):
+        """Helper to send shift-related notifications. Optional recipient overrides shift.staff (e.g. when notifying each staff_member)."""
         try:
-            recipient = shift.staff
+            recipient = recipient or shift.staff
             if not recipient:
                 return False
                 
@@ -42,11 +42,12 @@ class NotificationService:
             if notification_type == 'SHIFT_ASSIGNED':
                 title = "New Shift Assigned"
                 message = f"You have been assigned a new shift on {start_str}."
-                channels.append('email')
+                # Staff are notified via WhatsApp only (not email) for scheduled shifts.
+                channels.append('whatsapp')
                 # Prefer Miya (Lua) to send the WhatsApp so the message comes from the assistant
                 lua_url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
                 lua_agent_id = getattr(settings, 'LUA_AGENT_ID', None)
-                staff = shift.staff
+                staff = recipient  # use passed recipient (e.g. when notifying each staff_member)
                 if (lua_url or lua_agent_id) and getattr(staff, 'phone', None):
                     ok, _ = self.send_lua_shift_assigned(
                         phone=staff.phone,
@@ -56,18 +57,16 @@ class NotificationService:
                         shift_id=getattr(shift, 'id', None),
                     )
                     if ok:
-                        pass  # Miya sent WhatsApp; don't add 'whatsapp' to avoid double-send
-                    else:
-                        channels.append('whatsapp')  # Fallback: send direct
-                else:
-                    channels.append('whatsapp')
+                        pass  # Miya sent WhatsApp; channel already added
+                    # If Lua failed, send_custom_notification will still send via 'whatsapp' channel
+                # else: whatsapp already in channels for direct send
             elif notification_type == 'SHIFT_UPDATED':
                 title = "Shift Updated"
                 message = f"Your shift on {start_str} has been updated."
+                channels.append('whatsapp')
             elif notification_type == 'SHIFT_CANCELLED':
                 title = "Shift Cancelled"
                 message = f"Your shift on {start_str} has been cancelled."
-                channels.append('email')
                 channels.append('whatsapp')
             elif notification_type == 'SHIFT_REMINDER':
                 title = "Upcoming Shift Reminder"
@@ -77,7 +76,7 @@ class NotificationService:
                 # Clock-in reminder: send via Miya (Lua) when configured, else direct WhatsApp template
                 title = "Clock-In Reminder"
                 message = f"Please clock in for your shift starting at {start_str}."
-                staff = shift.staff
+                staff = recipient
                 if getattr(staff, 'phone', None):
                     restaurant = getattr(getattr(shift, 'schedule', None), 'restaurant', None)
                     now = timezone.now()

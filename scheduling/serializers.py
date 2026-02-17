@@ -278,19 +278,36 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
     # Override role field to accept any case - we'll normalize in validate_role
     role = serializers.CharField(required=False, allow_blank=True)
 
+    recurrence_end_date = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = AssignedShift
         fields = [
             'id', 'schedule', 'staff', 'staff_members', 'staff_name', 'staff_members_details',
             'shift_date', 'start_time', 'end_time', 'break_duration', 'role', 'notes', 'title', 'color',
             'created_at', 'updated_at', 'tasks', 'task_templates', 'task_templates_details',
-            'is_recurring', 'recurrence_group_id'
+            'is_recurring', 'recurrence_group_id', 'recurrence_end_date'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at', 'schedule']
         extra_kwargs = {
             'role': {'required': False},
             'staff': {'required': False},
         }
+
+    def get_recurrence_end_date(self, obj):
+        """For recurring shifts, return the latest shift_date in the same recurrence group."""
+        if not getattr(obj, 'recurrence_group_id', None):
+            return None
+        # Use annotated value from get_assigned_shifts when present (avoids N+1)
+        ann = getattr(obj, '_recurrence_end_date', None)
+        if ann is not None:
+            return ann.isoformat() if ann else None
+        from django.db.models import Max
+        result = AssignedShift.objects.filter(
+            recurrence_group_id=obj.recurrence_group_id
+        ).aggregate(Max('shift_date'))
+        max_date = result.get('shift_date__max')
+        return max_date.isoformat() if max_date else None
 
     def get_staff_members_details(self, obj):
         return [{"id": s.id, "first_name": s.first_name, "last_name": s.last_name} for s in obj.staff_members.all()]
@@ -600,7 +617,14 @@ class WeeklyScheduleSerializer(serializers.ModelSerializer):
 
     def get_assigned_shifts(self, obj):
         try:
-            qs = obj.assigned_shifts.all()
+            from django.db.models import Max, OuterRef, Subquery
+            from .models import AssignedShift as AS
+            subq = AS.objects.filter(
+                recurrence_group_id=OuterRef('recurrence_group_id')
+            ).values('recurrence_group_id').annotate(md=Max('shift_date')).values('md')[:1]
+            qs = obj.assigned_shifts.all().annotate(
+                _recurrence_end_date=Subquery(subq)
+            )
             return AssignedShiftSerializer(qs, many=True).data
         except Exception:
             return []

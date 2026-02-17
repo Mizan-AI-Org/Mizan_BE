@@ -31,6 +31,7 @@ from .shift_auto_templates import (
     ensure_checklist_execution_for_shift,
 )
 from .task_templates import TaskTemplate
+from .recurring_views import _dates_for_frequency, _dates_for_days_of_week
 
 logger = logging.getLogger(__name__)
 
@@ -1022,6 +1023,8 @@ def agent_create_recurring_shifts(request):
         staff_id = _get_val(data, 'staff_id', 'staffId') or _get_val(payload, 'staff_id', 'staffId')
         start_date_str = _get_val(data, 'start_date', 'startDate')
         end_date_str = _get_val(data, 'end_date', 'endDate')
+        frequency_raw = (data.get('frequency') or payload.get('frequency') or '').upper()
+        frequency = frequency_raw if frequency_raw in ('DAILY', 'WEEKLY', 'MONTHLY') else None
         days_of_week_raw = data.get('days_of_week') or data.get('daysOfWeek') or payload.get('days_of_week') or payload.get('daysOfWeek')
         start_time_str = _get_val(data, 'start_time', 'startTime') or _get_val(payload, 'start_time', 'startTime')
         end_time_str = _get_val(data, 'end_time', 'endTime') or _get_val(payload, 'end_time', 'endTime')
@@ -1033,10 +1036,10 @@ def agent_create_recurring_shifts(request):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         days_of_week = _normalize_days_of_week(days_of_week_raw)
-        if not days_of_week:
+        if not days_of_week and not frequency:
             return Response({
                 'success': False,
-                'error': 'days_of_week is required (e.g. [0,1,2,3,4,5] for Mon-Sat or ["monday","tuesday",...,"saturday"]).'
+                'error': 'Either days_of_week or frequency (DAILY, WEEKLY, MONTHLY) is required. Use days_of_week for custom days (e.g. [0,2,4] for Mon/Wed/Fri).'
             }, status=status.HTTP_400_BAD_REQUEST)
 
         if not restaurant:
@@ -1125,14 +1128,16 @@ def agent_create_recurring_shifts(request):
                 department=department,
                 workspace_location=workspace_location,
             )
+        # Same semantics as dashboard: frequency (DAILY/WEEKLY/MONTHLY) or custom days_of_week
+        if days_of_week:
+            date_iter = _dates_for_days_of_week(start_date, end_date, list(days_of_week))
+        elif frequency:
+            date_iter = _dates_for_frequency(start_date, end_date, frequency)
+        else:
+            date_iter = iter([])
         created_shifts = []
         skipped_conflicts = []
-        current = start_date
-        while current <= end_date:
-            if current.weekday() not in days_of_week:
-                current += timedelta(days=1)
-                continue
-            shift_date = current
+        for shift_date in date_iter:
             days_since_monday = shift_date.weekday()
             week_start = shift_date - timedelta(days=days_since_monday)
             week_end = week_start + timedelta(days=6)
@@ -1157,7 +1162,6 @@ def agent_create_recurring_shifts(request):
             )
             if conflicts:
                 skipped_conflicts.append({'date': str(shift_date), 'message': conflicts[0].get('message', 'Conflict')})
-                current += timedelta(days=1)
                 continue
 
             shift = AssignedShift.objects.create(
@@ -1260,7 +1264,6 @@ def agent_create_recurring_shifts(request):
                 'start_time': start_time_str,
                 'end_time': end_time_str,
             })
-            current += timedelta(days=1)
 
         return Response({
             'success': True,
@@ -2003,20 +2006,44 @@ def agent_list_shifts(request):
         # Filters
         date_from = request.query_params.get('date_from')
         date_to = request.query_params.get('date_to')
-        staff_id = request.query_params.get('staff_id')
+        staff_id = request.query_params.get('staff_id') or request.query_params.get('staffId')
+        staff_name = (request.query_params.get('staff_name') or request.query_params.get('name') or '').strip()
         role = request.query_params.get('role')
+
+        # Resolve staff by name so Miya can ask "who is scheduled" / "does X have a shift" by name
+        if not staff_id and staff_name and restaurant:
+            staff_qs = CustomUser.objects.filter(
+                restaurant=restaurant, is_active=True
+            ).exclude(role='SUPER_ADMIN')
+            name_lower = staff_name.lower()
+            for u in staff_qs[:200]:
+                full = f"{(u.first_name or '').strip()} {(u.last_name or '').strip()}".strip().lower()
+                if full == name_lower or name_lower in full:
+                    staff_id = str(u.id)
+                    break
+            if not staff_id and ' ' in staff_name:
+                first, last = staff_name.split(' ', 1)
+                match = staff_qs.filter(
+                    first_name__icontains=first.strip(),
+                    last_name__icontains=last.strip()
+                ).first()
+                if match:
+                    staff_id = str(match.id)
 
         if date_from:
             queryset = queryset.filter(shift_date__gte=date_from)
         if date_to:
             queryset = queryset.filter(shift_date__lte=date_to)
+        # Include shifts where staff is primary OR in staff_members (same source as dashboard & get_my_shifts)
         if staff_id:
-            queryset = queryset.filter(staff_id=staff_id)
+            queryset = queryset.filter(
+                Q(staff_id=staff_id) | Q(staff_members__id=staff_id)
+            ).distinct()
         if role:
             queryset = queryset.filter(role=role)
 
-        queryset = queryset.select_related('staff').order_by('shift_date', 'start_time')
-        
+        queryset = queryset.select_related('staff').prefetch_related('staff_members').order_by('shift_date', 'start_time')
+
         serializer = AssignedShiftSerializer(queryset, many=True)
         return Response(serializer.data)
 

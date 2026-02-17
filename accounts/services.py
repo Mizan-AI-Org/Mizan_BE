@@ -230,6 +230,68 @@ def _find_staff_activation_record_by_phone(phone_digits):
     return None
 
 
+def _find_active_user_by_phone(phone_digits):
+    """
+    Find an active CustomUser by phone (same normalization as activation).
+    ONE-TAP users have email wa_{phone}@mizan.activation; also match by phone field.
+    Returns CustomUser or None.
+    """
+    if not phone_digits or len(phone_digits) < 6:
+        return None
+    normalized = _normalize_phone_digits(phone_digits)
+    suffix = _phone_suffix(normalized, 9)
+    # ONE-TAP activation users
+    email = f"wa_{normalized}@mizan.activation"
+    user = CustomUser.objects.filter(email=email, is_active=True).first()
+    if user:
+        return user
+    # Phone field match (exact then suffix)
+    user = CustomUser.objects.filter(phone=normalized, is_active=True).first()
+    if user:
+        return user
+    user = CustomUser.objects.filter(phone__endswith=suffix, is_active=True).first()
+    if user:
+        return user
+    for u in CustomUser.objects.filter(is_active=True).only('id', 'phone'):
+        if not u.phone:
+            continue
+        stored = _normalize_phone_digits(u.phone)
+        if _phone_suffix(stored, 9) == suffix:
+            return u
+    return None
+
+
+def get_activation_status_by_phone(phone_digits):
+    """
+    Determine account status by phone for Miya activation flow.
+    ALWAYS check this before responding. Returns:
+    - status: 'pending_activation' | 'active' | 'no_pending' | 'not_found'
+    - user: CustomUser if active (or after activation)
+    - record: StaffActivationRecord if pending_activation
+    """
+    if not phone_digits or len(phone_digits) < 6:
+        return {'status': 'not_found', 'user': None, 'record': None}
+    pending = _find_staff_activation_record_by_phone(phone_digits)
+    if pending:
+        return {'status': 'pending_activation', 'user': None, 'record': pending}
+    user = _find_active_user_by_phone(phone_digits)
+    if user:
+        return {'status': 'active', 'user': user, 'record': None}
+    # Any activation record for this phone but already activated (orphan or no user match)
+    normalized = _normalize_phone_digits(phone_digits)
+    suffix = _phone_suffix(normalized, 9)
+    activated_record = StaffActivationRecord.objects.filter(
+        status=StaffActivationRecord.STATUS_ACTIVATED
+    ).filter(phone=normalized).first()
+    if not activated_record:
+        activated_record = StaffActivationRecord.objects.filter(
+            status=StaffActivationRecord.STATUS_ACTIVATED
+        ).filter(phone__endswith=suffix).first()
+    if activated_record:
+        return {'status': 'no_pending', 'user': None, 'record': activated_record}
+    return {'status': 'not_found', 'user': None, 'record': None}
+
+
 def try_activate_staff_on_inbound_message(phone_digits):
     """
     ONE-TAP activation: on first inbound WhatsApp message, match by phone and activate.

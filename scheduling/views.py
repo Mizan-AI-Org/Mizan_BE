@@ -371,6 +371,10 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(shift_date__gte=date_from)
         if date_to:
             queryset = queryset.filter(shift_date__lte=date_to)
+        # Filter by recurrence group (e.g. to list or delete all shifts in a series)
+        recurrence_group_id = self.request.query_params.get('recurrence_group_id')
+        if recurrence_group_id:
+            queryset = queryset.filter(recurrence_group_id=recurrence_group_id)
         
         return queryset.prefetch_related('task_templates', 'tasks', 'staff_members').select_related(
             'staff', 'schedule'

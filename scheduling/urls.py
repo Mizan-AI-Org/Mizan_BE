@@ -25,6 +25,7 @@ from .template_views import ScheduleTemplateViewSet, TemplateVersionViewSet
 from .audit_views import AuditLogViewSet
 from .views_enhanced import CalendarAPIViewSet
 from .schedule_photo_views import parse_schedule_photo, parse_schedule_document, apply_parsed_schedule
+from .recurring_views import batch_create_recurring_shifts, batch_delete_recurring_series
 from .views_agent import (
     agent_list_staff,
     agent_staff_count,
@@ -92,6 +93,10 @@ urlpatterns = [
 
     # Live checklist progress (WhatsApp/conversational step-by-step) for managers
     path('live-checklist-progress/', live_checklist_progress, name='scheduling-live-checklist-progress'),
+
+    # Recurring shifts (batch create/delete for 7Shifts-style, JWT)
+    path('recurring-shifts/batch-create/', batch_create_recurring_shifts, name='recurring-shifts-batch-create'),
+    path('recurring-shifts/batch-delete/', batch_delete_recurring_series, name='recurring-shifts-batch-delete'),
 
     # Task Management
     path('', include(router.urls)),
