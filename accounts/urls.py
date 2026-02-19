@@ -11,7 +11,14 @@ from .views import (
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
 from .views_invitations import InvitationViewSet, UserManagementViewSet
-from .views_agent import AgentContextView, accept_invitation_from_agent, get_invitation_by_phone, account_activation_from_agent
+from .views_agent import (
+    AgentContextView,
+    accept_invitation_from_agent,
+    get_invitation_by_phone,
+    account_activation_from_agent,
+    agent_list_failed_invites,
+    agent_retry_invite,
+)
 from .views_staff_report import staff_profile_report_pdf
 
 router = DefaultRouter()
@@ -57,4 +64,6 @@ urlpatterns = [
     path('agent/accept-invitation/', accept_invitation_from_agent, name='agent_accept_invitation'),
     path('agent/lookup-invitation/', get_invitation_by_phone, name='agent_lookup_invitation'),
     path('agent/account-activation/', account_activation_from_agent, name='agent_account_activation'),
+    path('agent/failed-invites/', agent_list_failed_invites, name='agent_list_failed_invites'),
+    path('agent/retry-invite/', agent_retry_invite, name='agent_retry_invite'),
 ]

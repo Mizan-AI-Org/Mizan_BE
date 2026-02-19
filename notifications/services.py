@@ -90,6 +90,23 @@ class NotificationService:
                     minutes_until = int(max(0, (shift_start - now).total_seconds() // 60)) if shift_start else 0
                     minutes_from_now = f"{minutes_until} minutes"
                     location = getattr(restaurant, 'address', None) or getattr(restaurant, 'name', None) or "Restaurant"
+                    shift_end = getattr(shift, 'end_time', None)
+                    if shift_end:
+                        try:
+                            shift_end = timezone.localtime(shift_end)
+                        except Exception:
+                            pass
+                    duration_str = ""
+                    if shift_start and shift_end and hasattr(shift_start, 'strftime') and hasattr(shift_end, 'strftime'):
+                        from datetime import timedelta
+                        dur = shift_end - shift_start
+                        if dur.total_seconds() < 0:
+                            dur = dur + timedelta(days=1)
+                        mins = int(dur.total_seconds() // 60)
+                        duration_str = f"{mins // 60}h {mins % 60}m"
+                    role = (getattr(shift, 'role', '') or '').upper() or 'Shift'
+                    notes = (getattr(shift, 'notes', '') or '').strip()
+                    shift_description = f"{role}" + (f" • {notes}" if notes else "")
                     # Prefer Miya (Lua) so the reminder comes from the assistant
                     lua_url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
                     lua_agent_id = getattr(settings, 'LUA_AGENT_ID', None)
@@ -102,6 +119,8 @@ class NotificationService:
                             location=location,
                             shift_id=getattr(shift, 'id', None),
                             template_name=getattr(settings, 'WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', 'staff_clock_in'),
+                            shift_description=shift_description,
+                            duration=duration_str,
                         )
                         if not ok:
                             # Fallback: send direct WhatsApp if Miya webhook failed
@@ -412,10 +431,13 @@ class NotificationService:
         location,
         shift_id=None,
         template_name=None,
+        shift_description=None,
+        duration=None,
     ):
         """
         Notify Miya (Lua) to send the clock-in reminder shortly before a staff shift.
-        Miya sends the WhatsApp template (e.g. staff_clock_in) so the reminder comes from the assistant.
+        Miya sends the WhatsApp template (e.g. staff_clock_in or clock_in_reminder) so the reminder comes from the assistant.
+        shift_description and duration support 5-parameter templates ({{4}} Shift, {{5}} Duration).
         """
         try:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
@@ -438,6 +460,8 @@ class NotificationService:
                     "location": (location or "Restaurant").strip(),
                     "shiftId": str(shift_id) if shift_id else None,
                     "templateName": template_name,
+                    "shiftDescription": (shift_description or "").strip() or (start_time_str or ""),
+                    "duration": (duration or "").strip() or "",
                 },
                 "timestamp": timezone.now().isoformat(),
             }
@@ -1120,6 +1144,10 @@ class NotificationService:
             logger.warning("start_conversational_checklist_after_clock_in: could not import scheduling models: %s", e)
             return False
         if not user or not active_shift:
+            return False
+        # Do not restart if checklist is already completed (safeguard)
+        existing = ShiftChecklistProgress.objects.filter(shift=active_shift, staff=user, status='COMPLETED').first()
+        if existing:
             return False
         phone = (phone_digits or (getattr(user, "phone", None) or "")).strip()
         if not phone:

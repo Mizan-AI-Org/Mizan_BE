@@ -9,7 +9,15 @@ from .views import (
     StaffDocumentViewSet,
     StaffRequestViewSet,
 )
-from .views_agent import agent_ingest_staff_request
+from .views_agent import (
+    agent_ingest_staff_request,
+    agent_list_staff_requests,
+    agent_approve_staff_request,
+    agent_reject_staff_request,
+    agent_list_incidents,
+    agent_close_incident,
+    agent_escalate_incident,
+)
 
 router = DefaultRouter()
 router.register(r'schedules', ScheduleViewSet)
@@ -30,4 +38,10 @@ urlpatterns = [
     path('', include(router.urls)),
     path('profile/<str:staff_id>/update/', update_staff_profile_by_user_id, name='update-staff-profile-by-user'),
     path('agent/requests/ingest/', agent_ingest_staff_request, name='agent-ingest-staff-request'),
+    path('agent/requests/', agent_list_staff_requests, name='agent-list-staff-requests'),
+    path('agent/requests/approve/', agent_approve_staff_request, name='agent-approve-staff-request'),
+    path('agent/requests/reject/', agent_reject_staff_request, name='agent-reject-staff-request'),
+    path('agent/incidents/', agent_list_incidents, name='agent-list-incidents'),
+    path('agent/incidents/close/', agent_close_incident, name='agent-close-incident'),
+    path('agent/incidents/escalate/', agent_escalate_incident, name='agent-escalate-incident'),
 ]

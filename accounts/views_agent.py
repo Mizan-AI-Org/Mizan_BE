@@ -256,7 +256,7 @@ def account_activation_from_agent(request):
                     'success': True,
                     'template_sent': False,
                     'user': _activation_user_payload(existing_user),
-                    'message_for_user': 'Your account has already been activated.',
+                    'message_for_user': 'Your account has been successfully activated. Welcome to the team!',
                 },
                 status=status.HTTP_200_OK,
             )
@@ -414,3 +414,127 @@ def accept_invitation_from_agent(request):
             'success': False,
             'error': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def _validate_agent_key(request):
+    auth_header = request.headers.get('Authorization')
+    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+    if not expected_key:
+        return False, "Agent key not configured"
+    if not auth_header or auth_header != f"Bearer {expected_key}":
+        return False, "Unauthorized"
+    return True, None
+
+
+def _resolve_restaurant_id_agent(request):
+    rid = request.META.get('HTTP_X_RESTAURANT_ID')
+    if not rid and getattr(request, 'data', None):
+        rid = request.data.get('restaurant_id') or request.data.get('restaurantId')
+    if not rid and request.method == 'GET':
+        rid = request.query_params.get('restaurant_id') or request.query_params.get('restaurantId')
+    if isinstance(rid, (list, tuple)):
+        rid = rid[0] if rid else None
+    return rid
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_list_failed_invites(request):
+    """
+    List failed WhatsApp invitation deliveries for the restaurant. Query: restaurant_id or X-Restaurant-Id.
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from .models import InvitationDeliveryLog
+    from .models import Restaurant
+    rid = _resolve_restaurant_id_agent(request)
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=rid.strip())
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Restaurant not found'}, status=status.HTTP_404_NOT_FOUND)
+    qs = InvitationDeliveryLog.objects.filter(
+        invitation__restaurant=restaurant,
+        channel='whatsapp',
+        status='FAILED',
+    ).order_by('-sent_at').select_related('invitation')[:30]
+    items = [
+        {
+            'id': str(log.id),
+            'invitation_id': str(log.invitation_id),
+            'recipient': log.recipient_address,
+            'error_message': (log.error_message or '')[:200],
+            'sent_at': log.sent_at.isoformat() if log.sent_at else None,
+        }
+        for log in qs
+    ]
+    return Response({'success': True, 'failed_invites': items, 'restaurant_id': str(restaurant.id)})
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_retry_invite(request):
+    """
+    Retry a failed WhatsApp invite. Body: log_id (InvitationDeliveryLog id) or invitation_id, restaurant_id.
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from .models import InvitationDeliveryLog, Restaurant
+    from notifications.services import notification_service
+    rid = _resolve_restaurant_id_agent(request)
+    if not rid:
+        rid = (request.data or {}).get('restaurant_id') or (request.data or {}).get('restaurantId')
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=rid.strip() if isinstance(rid, str) else rid)
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Restaurant not found'}, status=status.HTTP_404_NOT_FOUND)
+    data = request.data or {}
+    log_id = data.get('log_id') or data.get('logId') or data.get('id')
+    inv_id = data.get('invitation_id') or data.get('invitationId')
+    if not log_id and not inv_id:
+        return Response({'success': False, 'error': 'log_id or invitation_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if log_id:
+        log = InvitationDeliveryLog.objects.filter(
+            id=log_id,
+            invitation__restaurant=restaurant,
+            channel='whatsapp',
+            status='FAILED',
+        ).select_related('invitation', 'invitation__restaurant').first()
+    else:
+        log = InvitationDeliveryLog.objects.filter(
+            invitation_id=inv_id,
+            invitation__restaurant=restaurant,
+            channel='whatsapp',
+            status='FAILED',
+        ).select_related('invitation', 'invitation__restaurant').first()
+    if not log:
+        return Response({'success': False, 'error': 'Failed invite log not found'}, status=status.HTTP_404_NOT_FOUND)
+    inv = log.invitation
+    phone = log.recipient_address
+    invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={inv.invitation_token}"
+    language = getattr(inv.restaurant, 'language', 'en') if getattr(inv, 'restaurant', None) else 'en'
+    ok, info = notification_service.send_lua_staff_invite(
+        invitation_token=inv.invitation_token,
+        phone=phone,
+        first_name=inv.first_name,
+        restaurant_name=inv.restaurant.name,
+        invite_link=invite_link,
+        language=language,
+    )
+    log.attempt_count = getattr(log, 'attempt_count', 1) + 1
+    log.status = 'SENT' if ok else 'FAILED'
+    log.response_data = info or {}
+    log.save(update_fields=['attempt_count', 'status', 'response_data'])
+    return Response({
+        'success': ok,
+        'message': 'Invite sent.' if ok else 'Retry failed.',
+        'log_id': str(log.id),
+        'status': log.status,
+    })

@@ -46,6 +46,15 @@ from .views_agent import (
     agent_memory_list_or_save,
     agent_memory_delete,
     agent_proactive_insights,
+    agent_mark_no_show,
+    agent_assign_coverage,
+    agent_request_time_off,
+    agent_list_time_off_requests,
+    agent_approve_time_off,
+    agent_reject_time_off,
+    agent_list_shift_swaps,
+    agent_approve_shift_swap,
+    agent_reject_shift_swap,
 )
 
 router = DefaultRouter()
@@ -121,4 +130,13 @@ urlpatterns = [
     path('agent/memories/', agent_memory_list_or_save, name='agent_memory_list_or_save'),
     path('agent/memories/delete/', agent_memory_delete, name='agent_memory_delete'),
     path('agent/proactive-insights/', agent_proactive_insights, name='agent_proactive_insights'),
+    path('agent/mark-no-show/', agent_mark_no_show, name='agent_mark_no_show'),
+    path('agent/assign-coverage/', agent_assign_coverage, name='agent_assign_coverage'),
+    path('agent/time-off/request/', agent_request_time_off, name='agent_request_time_off'),
+    path('agent/time-off/requests/', agent_list_time_off_requests, name='agent_list_time_off_requests'),
+    path('agent/time-off/approve/', agent_approve_time_off, name='agent_approve_time_off'),
+    path('agent/time-off/reject/', agent_reject_time_off, name='agent_reject_time_off'),
+    path('agent/shift-swaps/', agent_list_shift_swaps, name='agent_list_shift_swaps'),
+    path('agent/shift-swaps/approve/', agent_approve_shift_swap, name='agent_approve_shift_swap'),
+    path('agent/shift-swaps/reject/', agent_reject_shift_swap, name='agent_reject_shift_swap'),
 ]

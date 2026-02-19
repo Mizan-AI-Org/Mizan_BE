@@ -2,7 +2,9 @@ from celery import shared_task
 from django.utils import timezone
 from datetime import timedelta
 from scheduling.models import AssignedShift, ShiftTask
+from timeclock.models import ClockEvent
 from .task_templates import TaskTemplate
+from .reminder_tasks import _shift_recipients
 import requests, sys
 from django.conf import settings
 from .utils import get_tasks
@@ -115,23 +117,20 @@ def send_shift_reminder_30min():
             print(f"Marked shift_reminder_sent=True for shift {shift.id}", file=sys.stderr)
 
 
-def clock_in_reminder(task):
+def clock_in_reminder(shift, recipient):
     """
-    Clock-In Reminder (10 minutes before shift start).
-    Delegates to NotificationService so Miya (Lua) sends the reminder when configured,
-    otherwise backend sends the staff_clock_in WhatsApp template directly.
+    Send clock-in reminder to one recipient. Used by send_clock_in_reminder_10min.
+    Delegates to NotificationService so Miya (Lua) sends the reminder when configured.
     """
     try:
-        if not hasattr(task, 'staff') or not task.staff:
-            return None
-        if not getattr(task.staff, 'phone', None) or not task.staff.phone:
+        if not getattr(recipient, 'phone', None) or not recipient.phone:
             return None
         ok = notification_service.send_shift_notification(
-            task, notification_type='CLOCK_IN_REMINDER'
+            shift, notification_type='CLOCK_IN_REMINDER', recipient=recipient
         )
         return 200 if ok else 400
     except Exception as e:
-        print(f"Error sending clock-in reminder for shift {task.id}: {e}", file=sys.stderr)
+        print(f"Error sending clock-in reminder for shift {shift.id} to {recipient}: {e}", file=sys.stderr)
         return None
 
 
@@ -144,12 +143,17 @@ def send_clock_in_reminder_10min():
         start_time__lte=now + timedelta(minutes=15),
         clock_in_reminder_sent=False,
         status__in=['SCHEDULED', 'CONFIRMED']
-    )
+    ).select_related('staff', 'schedule__restaurant').prefetch_related('staff_members')
 
     print(f"Found {upcoming_tasks.count()} upcoming shifts for 10-min clock-in reminders.", file=sys.stderr)
 
     for shift in upcoming_tasks:
-        if clock_in_reminder(shift) == 200:
+        sent_any = False
+        for member in _shift_recipients(shift):
+            if clock_in_reminder(shift, member) == 200:
+                sent_any = True
+                print(f"Sent clock-in reminder to {getattr(member, 'email', member)} for shift {shift.id}", file=sys.stderr)
+        if sent_any:
             shift.clock_in_reminder_sent = True
             shift.save(update_fields=['clock_in_reminder_sent'])
             print(f"Marked clock_in_reminder_sent=True for shift {shift.id}", file=sys.stderr)
@@ -194,6 +198,50 @@ def send_clock_out_reminder():
             shift.clock_out_reminder_sent = True
             shift.save(update_fields=['clock_out_reminder_sent'])
             print(f"Marked clock_out_reminder_sent=True for shift {shift.id}", file=sys.stderr)
+
+
+def auto_clock_out_after_shift_end():
+    """
+    For restaurants with automatic_clock_out=True: create a clock-out event for any staff
+    who are still clocked in after their shift has ended. Runs after a short grace period
+    (5 minutes past shift end) so the clock-out reminder can be sent first.
+    """
+    now = timezone.now()
+    grace = timedelta(minutes=5)
+    # Shifts that ended at least 5 minutes ago
+    ended_shifts = AssignedShift.objects.filter(
+        end_time__lte=now - grace,
+        status__in=['IN_PROGRESS', 'SCHEDULED', 'CONFIRMED'],
+    ).select_related('schedule__restaurant').prefetch_related('staff_members')
+
+    count = 0
+    for shift in ended_shifts:
+        restaurant = getattr(getattr(shift, 'schedule', None), 'restaurant', None)
+        if not restaurant or not getattr(restaurant, 'automatic_clock_out', False):
+            continue
+        for user in _shift_recipients(shift):
+            last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+            if not last_event or last_event.event_type != 'in':
+                continue
+            try:
+                ClockEvent.objects.create(
+                    staff=user,
+                    event_type='out',
+                    device_id='auto_clock_out',
+                    notes='Auto clock-out (shift ended)',
+                )
+                count += 1
+                print(f"Auto clock-out for {getattr(user, 'email', user.id)} (shift {shift.id})", file=sys.stderr)
+                if getattr(user, 'phone', None):
+                    try:
+                        notification_service.send_shift_review_request(user.phone, getattr(user, 'first_name', None) or 'Team Member')
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(f"Auto clock-out failed for {user.id}: {e}", file=sys.stderr)
+    if count:
+        print(f"Auto clock-out: {count} staff clocked out.", file=sys.stderr)
+    return count
 
 
 def check_list_reminder(shift):
@@ -242,6 +290,7 @@ def check_upcoming_tasks():
     send_clock_in_reminder_10min()
     send_check_list_reminder()
     send_clock_out_reminder()
+    auto_clock_out_after_shift_end()
 
 
 

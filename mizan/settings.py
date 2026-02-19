@@ -343,8 +343,11 @@ WHATSAPP_VERIFY_TOKEN = config('WHATSAPP_VERIFY_TOKEN', default='')
 # ONE-TAP activation: digits-only phone for wa.me link (e.g. 212784476751). Agent number for account activation.
 WHATSAPP_ACTIVATION_WA_PHONE = config('WHATSAPP_ACTIVATION_WA_PHONE', default='212784476751')
 WHATSAPP_INVITATION_FLOW_ID = config('WHATSAPP_INVITATION_FLOW_ID', default=None)
+WHATSAPP_TEMPLATE_INVITE = config('WHATSAPP_TEMPLATE_INVITE', default='onboarding_invite_v1')
 WHATSAPP_TEMPLATE_SHIFT_ASSIGNED = config('WHATSAPP_TEMPLATE_SHIFT_ASSIGNED', default='')
 WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_LANGUAGE = config('WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_LANGUAGE', default='en_US')
+WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED = config('WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED', default='')
+WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED_LANGUAGE = config('WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED_LANGUAGE', default='en_US')
 # After staff activation we send this template (Welcome {{1}}, account for {{2}} activated...)
 WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME = config('WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME', default='staff_activated_welcome')
 WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME_HAS_HEADER = config('WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME_HAS_HEADER', default=False, cast=str_to_bool)
@@ -371,8 +374,11 @@ SUPPORT_CONTACT = os.getenv('SUPPORT_CONTACT', '+212626154332') # Default suppor
 WHATSAPP_TEMPLATE_STAFF_CLOCK_IN = config('WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', default='staff_clock_in')
 WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION = config('WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION', default='clock_in_location_request')
 WHATSAPP_TEMPLATE_CLOCK_IN_SUCCESSFUL = config('WHATSAPP_TEMPLATE_CLOCK_IN_SUCCESSFUL', default='clock_in_success')
-# Optional: use approved staff_checklist template for each step (body {{1}} = question). Empty = use interactive buttons with dynamic task text.
-WHATSAPP_TEMPLATE_STAFF_CHECKLIST = config('WHATSAPP_TEMPLATE_STAFF_CHECKLIST', default='')
+# Clock-in window: staff can clock in from X min before shift start until Y min after (prevents early/late clock-in)
+CLOCK_IN_WINDOW_MINUTES_BEFORE = int(config('CLOCK_IN_WINDOW_MINUTES_BEFORE', default='30'))
+CLOCK_IN_WINDOW_MINUTES_AFTER = int(config('CLOCK_IN_WINDOW_MINUTES_AFTER', default='15'))
+# Optional: use approved staff_checklist template for each step (body {{1}} = question; buttons Yes/No/N/A). Empty = use interactive buttons with dynamic task text.
+WHATSAPP_TEMPLATE_STAFF_CHECKLIST = config('WHATSAPP_TEMPLATE_STAFF_CHECKLIST', default='staff_checklist')
 # Shift review: sent when staff shift ends (body {{1}} = first name; buttons Bad/Decent/Good/Great).
 WHATSAPP_TEMPLATE_SHIFT_REVIEW = config('WHATSAPP_TEMPLATE_SHIFT_REVIEW', default='shift_review')
 WHATSAPP_TEMPLATE_SHIFT_REVIEW_LANGUAGE = config('WHATSAPP_TEMPLATE_SHIFT_REVIEW_LANGUAGE', default='en_US')

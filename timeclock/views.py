@@ -13,6 +13,7 @@ from .serializers import ClockEventSerializer, ClockInSerializer, ShiftSerialize
 from accounts.models import CustomUser, AuditLog
 from accounts.views import get_client_ip
 from accounts.permissions import IsAdminOrManager
+from django.db.models import Q
 from scheduling.models import AssignedShift
 import base64  # <--- ADD THIS IMPORT
 from django.core.files.base import ContentFile  # <--- ADD THIS IMPORT
@@ -982,6 +983,197 @@ def agent_clock_in(request):
 
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+@authentication_classes([])
+def agent_clock_in_by_phone(request):
+    """
+    Clock-in by phone (for Miya fallback when staff say "clock in").
+    Resolves staff from phone; optionally validates location against restaurant geofence.
+    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Body: phone (required), latitude (optional), longitude (optional).
+    Returns: success, message_for_user (for Miya to send), staff_id, error.
+    """
+    try:
+        auth_header = request.headers.get('Authorization')
+        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        if not expected_key:
+            return Response({
+                'success': False,
+                'error': 'Agent key not configured',
+                'message_for_user': "We couldn't complete your request. Please try again later.",
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        if not auth_header or auth_header != f"Bearer {expected_key}":
+            return Response({'success': False, 'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        phone = (request.data.get('phone') or request.data.get('phoneNumber') or '').strip()
+        clean_phone = ''.join(filter(str.isdigit, str(phone)))
+        if not clean_phone or len(clean_phone) < 6:
+            return Response({
+                'success': False,
+                'error': 'Invalid or missing phone',
+                'message_for_user': "We couldn't find your account. Please contact your manager to be added.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        from accounts.services import _find_active_user_by_phone
+        user = _find_active_user_by_phone(clean_phone)
+        if not user:
+            return Response({
+                'success': False,
+                'error': 'Staff not found for this phone',
+                'message_for_user': "We couldn't find your account. Please contact your manager to be added.",
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        latitude = request.data.get('latitude')
+        longitude = request.data.get('longitude')
+        rest = getattr(user, 'restaurant', None)
+        if rest and getattr(rest, 'latitude', None) is not None and getattr(rest, 'longitude', None) is not None:
+            radius = float(getattr(rest, 'radius', None) or 100)
+            if latitude is not None and longitude is not None:
+                try:
+                    lat_f, lon_f = float(latitude), float(longitude)
+                    dist = calculate_distance(
+                        float(rest.latitude), float(rest.longitude),
+                        lat_f, lon_f
+                    )
+                    if dist > radius:
+                        return Response({
+                            'success': False,
+                            'error': 'Outside geofence',
+                            'message_for_user': (
+                                f"You are {dist:.0f}m away from the restaurant. "
+                                f"Please be within {radius:.0f}m to clock in, or share your live location."
+                            ),
+                        }, status=status.HTTP_400_BAD_REQUEST)
+                except (TypeError, ValueError):
+                    latitude = float(rest.latitude)
+                    longitude = float(rest.longitude)
+            else:
+                latitude = float(rest.latitude)
+                longitude = float(rest.longitude)
+        else:
+            latitude = None
+            longitude = None
+
+        last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+        if last_event and last_event.event_type == 'in':
+            return Response({
+                'success': False,
+                'error': 'Already clocked in',
+                'message_for_user': "You are already clocked in.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        notes = "Clock-in via Miya (by phone)" if (latitude and longitude) else "Clock-in via Miya (by phone, no location)"
+        clock_event = ClockEvent.objects.create(
+            staff=user,
+            event_type='in',
+            latitude=latitude,
+            longitude=longitude,
+            device_id="Lua Agent",
+            notes=notes,
+        )
+
+        try:
+            now_today = timezone.now()
+            active_qs = AssignedShift.objects.filter(
+                Q(staff=user) | Q(staff_members=user),
+                shift_date=now_today.date(),
+                status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
+            ).distinct()
+            active_shift = (
+                active_qs.filter(start_time__lte=now_today, end_time__gte=now_today).first()
+                or active_qs.order_by('start_time').first()
+            )
+            if active_shift and getattr(user, 'phone', None):
+                notification_service.start_conversational_checklist_after_clock_in(user, active_shift)
+        except Exception:
+            pass
+
+        first_name = getattr(user, 'first_name', None) or 'Team Member'
+        return Response({
+            'success': True,
+            'staff_id': str(user.id),
+            'message_for_user': f"You're clocked in! Have a great shift, {first_name}.",
+            'clock_event_id': str(clock_event.id),
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e),
+            'message_for_user': "Something went wrong. Please try again or contact your manager.",
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+@authentication_classes([])
+def agent_clock_out_by_phone(request):
+    """
+    Clock-out by phone (for Miya when staff say "clock out" in chat).
+    Auth: Bearer LUA_WEBHOOK_API_KEY. Body: phone (required).
+    Returns: success, message_for_user.
+    """
+    try:
+        auth_header = request.headers.get('Authorization')
+        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        if not expected_key:
+            return Response({
+                'success': False,
+                'error': 'Agent key not configured',
+                'message_for_user': "We couldn't complete your request. Please try again later.",
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        if not auth_header or auth_header != f"Bearer {expected_key}":
+            return Response({'success': False, 'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        phone = (request.data.get('phone') or request.data.get('phoneNumber') or '').strip()
+        clean_phone = ''.join(filter(str.isdigit, str(phone)))
+        if not clean_phone or len(clean_phone) < 6:
+            return Response({
+                'success': False,
+                'error': 'Invalid or missing phone',
+                'message_for_user': "We couldn't find your account. Please contact your manager.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        from accounts.services import _find_active_user_by_phone
+        user = _find_active_user_by_phone(clean_phone)
+        if not user:
+            return Response({
+                'success': False,
+                'error': 'Staff not found for this phone',
+                'message_for_user': "We couldn't find your account. Please contact your manager.",
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+        if not last_event or last_event.event_type != 'in':
+            return Response({
+                'success': False,
+                'error': 'Not clocked in',
+                'message_for_user': "You are not clocked in. No need to clock out.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        duration = timezone.now() - last_event.timestamp
+        hours = round(duration.total_seconds() / 3600, 2)
+        ClockEvent.objects.create(
+            staff=user,
+            event_type='out',
+            device_id="Lua Agent",
+            notes="Clock-out via Miya (by phone)",
+        )
+        first_name = getattr(user, 'first_name', None) or 'Team Member'
+        return Response({
+            'success': True,
+            'message_for_user': f"You're clocked out. You worked {hours} hours today. Have a great rest of your day, {first_name}!",
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e),
+            'message_for_user': "Something went wrong. Please try again or contact your manager.",
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
