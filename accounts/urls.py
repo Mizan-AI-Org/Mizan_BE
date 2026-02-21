@@ -18,6 +18,7 @@ from .views_agent import (
     account_activation_from_agent,
     agent_list_failed_invites,
     agent_retry_invite,
+    agent_miya_instructions,
 )
 from .views_staff_report import staff_profile_report_pdf
 
@@ -66,4 +67,5 @@ urlpatterns = [
     path('agent/account-activation/', account_activation_from_agent, name='agent_account_activation'),
     path('agent/failed-invites/', agent_list_failed_invites, name='agent_list_failed_invites'),
     path('agent/retry-invite/', agent_retry_invite, name='agent_retry_invite'),
+    path('agent/miya-instructions/', agent_miya_instructions, name='agent_miya_instructions'),
 ]
