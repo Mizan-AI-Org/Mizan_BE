@@ -12,7 +12,7 @@ import logging, sys
 from .models import (
     ScheduleTemplate, TemplateShift, WeeklySchedule, AssignedShift,
     ShiftSwapRequest, TaskCategory, ShiftTask, Timesheet, TimesheetEntry,
-    ShiftChecklistProgress,
+    ShiftChecklistProgress, TaskVerificationRecord,
 )
 from .serializers import (
     ScheduleTemplateSerializer,
@@ -1283,15 +1283,16 @@ def live_checklist_progress(request):
     if not restaurant:
         return Response({'detail': 'No restaurant'}, status=status.HTTP_403_FORBIDDEN)
 
-    # In progress + completed in last 24h
+    # In progress + completed + incomplete due to shift end (last 24h)
     since = timezone.now() - timedelta(hours=24)
     qs = ShiftChecklistProgress.objects.filter(
         shift__schedule__restaurant=restaurant,
-        status__in=['IN_PROGRESS', 'COMPLETED'],
+        status__in=['IN_PROGRESS', 'COMPLETED', 'INCOMPLETE_SHIFT_END'],
     ).filter(
         Q(updated_at__gte=since) | Q(status='IN_PROGRESS')
     ).select_related('shift', 'staff', 'shift__schedule').order_by('-updated_at')[:50]
 
+    from timeclock.models import ClockEvent
     out = []
     for prog in qs:
         task_ids = prog.task_ids or []
@@ -1305,6 +1306,27 @@ def live_checklist_progress(request):
         else:
             progress_percentage = 0
 
+        tasks_marked_no = [tid for tid in task_ids if responses.get(tid) == 'no']
+        tasks_needing_follow_up = tasks_marked_no
+        incomplete_task_ids = [tid for tid in task_ids if tid not in responses]
+        photo_task_ids = []
+        if task_ids:
+            has_photo = TaskVerificationRecord.objects.filter(
+                task_id__in=task_ids
+            ).exclude(photo_evidence=[]).values_list('task_id', flat=True).distinct()
+            photo_task_ids = [str(tid) for tid in has_photo]
+
+        last_clock_out = ClockEvent.objects.filter(
+            staff=prog.staff, event_type='out'
+        ).order_by('-timestamp').first()
+        last_clock_out_meta = None
+        if last_clock_out:
+            last_clock_out_meta = {
+                'device_id': last_clock_out.device_id or '',
+                'timestamp': last_clock_out.timestamp.isoformat() if last_clock_out.timestamp else None,
+                'is_auto_clock_out': (last_clock_out.device_id or '') == 'auto_clock_out',
+            }
+
         out.append({
             'id': str(prog.id),
             'shift_id': str(prog.shift_id),
@@ -1317,6 +1339,11 @@ def live_checklist_progress(request):
             'total_tasks': total_tasks,
             'completed_tasks': completed_tasks,
             'current_task_id': prog.current_task_id or None,
+            'tasks_marked_no': tasks_marked_no,
+            'tasks_needing_follow_up': tasks_needing_follow_up,
+            'incomplete_task_ids': incomplete_task_ids,
+            'photo_evidence_task_ids': photo_task_ids,
+            'last_clock_out': last_clock_out_meta,
             'updated_at': prog.updated_at.isoformat() if prog.updated_at else None,
             'completed_at': prog.completed_at.isoformat() if prog.completed_at else None,
         })

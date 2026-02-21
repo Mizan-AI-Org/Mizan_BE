@@ -256,7 +256,7 @@ def account_activation_from_agent(request):
                     'success': True,
                     'template_sent': False,
                     'user': _activation_user_payload(existing_user),
-                    'message_for_user': 'Your account has been successfully activated. Welcome to the team!',
+                    'message_for_user': 'Congratulations! Your account has been successfully activated. Welcome to the team!',
                 },
                 status=status.HTTP_200_OK,
             )

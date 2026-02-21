@@ -1,10 +1,12 @@
 from celery import shared_task
 from django.utils import timezone
+from django.db import transaction
 from datetime import timedelta
-from scheduling.models import AssignedShift, ShiftTask
+from scheduling.models import AssignedShift, ShiftTask, ShiftChecklistProgress
 from timeclock.models import ClockEvent
 from .task_templates import TaskTemplate
 from .reminder_tasks import _shift_recipients
+from scheduling.audit import AuditTrailService, AuditActionType, AuditSeverity
 import requests, sys
 from django.conf import settings
 from .utils import get_tasks
@@ -202,13 +204,16 @@ def send_clock_out_reminder():
 
 def auto_clock_out_after_shift_end():
     """
-    For restaurants with automatic_clock_out=True: create a clock-out event for any staff
-    who are still clocked in after their shift has ended. Runs after a short grace period
-    (5 minutes past shift end) so the clock-out reminder can be sent first.
+    Automatic clock-out when scheduled shift end time is reached (Miya/system-level).
+    For restaurants with automatic_clock_out=True:
+    - Creates clock-out event for staff still clocked in (idempotent).
+    - Updates shift status to COMPLETED.
+    - Marks in-progress checklists as INCOMPLETE_SHIFT_END and logs incomplete tasks.
+    - Sends optional notification to staff; logs all actions for audit.
+    Runs after a short grace period (5 minutes past shift end) so the clock-out reminder can be sent first.
     """
     now = timezone.now()
     grace = timedelta(minutes=5)
-    # Shifts that ended at least 5 minutes ago
     ended_shifts = AssignedShift.objects.filter(
         end_time__lte=now - grace,
         status__in=['IN_PROGRESS', 'SCHEDULED', 'CONFIRMED'],
@@ -219,26 +224,88 @@ def auto_clock_out_after_shift_end():
         restaurant = getattr(getattr(shift, 'schedule', None), 'restaurant', None)
         if not restaurant or not getattr(restaurant, 'automatic_clock_out', False):
             continue
+
+        shift_clocked_out_any = False
         for user in _shift_recipients(shift):
             last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
             if not last_event or last_event.event_type != 'in':
                 continue
+
             try:
-                ClockEvent.objects.create(
-                    staff=user,
-                    event_type='out',
-                    device_id='auto_clock_out',
-                    notes='Auto clock-out (shift ended)',
-                )
-                count += 1
-                print(f"Auto clock-out for {getattr(user, 'email', user.id)} (shift {shift.id})", file=sys.stderr)
-                if getattr(user, 'phone', None):
+                with transaction.atomic():
+                    # 1. Record clock-out (idempotent: we only run when last is 'in')
+                    ClockEvent.objects.create(
+                        staff=user,
+                        event_type='out',
+                        device_id='auto_clock_out',
+                        notes='Auto clock-out at shift end',
+                    )
+                    shift_clocked_out_any = True
+                    count += 1
+
+                    # 2. Calculate total hours worked (this shift)
+                    duration_seconds = (now - last_event.timestamp).total_seconds()
+                    hours_worked = round(duration_seconds / 3600, 2)
+
+                    # 3. Checklist: if in progress or not completed, mark incomplete and log
+                    prog = ShiftChecklistProgress.objects.filter(shift=shift, staff=user).first()
+                    completion_pct = 100
+                    incomplete_task_ids = []
+                    if prog and prog.status == 'IN_PROGRESS':
+                        task_ids = prog.task_ids or []
+                        responses = prog.responses or {}
+                        completed_count = sum(1 for tid in task_ids if tid in responses)
+                        total = len(task_ids)
+                        completion_pct = int((completed_count / total) * 100) if total else 100
+                        incomplete_task_ids = [tid for tid in task_ids if tid not in responses]
+                        prog.status = 'INCOMPLETE_SHIFT_END'
+                        prog.updated_at = now
+                        prog.save(update_fields=['status', 'updated_at'])
+
+                    # 4. Audit log
                     try:
-                        notification_service.send_shift_review_request(user.phone, getattr(user, 'first_name', None) or 'Team Member')
+                        AuditTrailService.log_activity(
+                            user=user,
+                            action=AuditActionType.AUTO_CLOCK_OUT,
+                            description=f"Auto clock-out at shift end (shift {shift.id}); worked {hours_worked}h; checklist {completion_pct}%",
+                            content_object=shift,
+                            new_values={
+                                'shift_id': str(shift.id),
+                                'hours_worked': hours_worked,
+                                'checklist_completion_pct': completion_pct,
+                                'incomplete_task_ids': incomplete_task_ids,
+                                'device_id': 'auto_clock_out',
+                            },
+                            severity=AuditSeverity.MEDIUM,
+                            metadata={'source': 'auto_clock_out_after_shift_end'},
+                        )
                     except Exception:
                         pass
+
+                # 5. Optional notification (outside atomic so failure doesn't rollback)
+                if getattr(user, 'phone', None):
+                    try:
+                        msg = (
+                            "Your shift has ended and you have been automatically clocked out. "
+                            "See you next shift!"
+                        )
+                        notification_service.send_whatsapp_text(user.phone, msg)
+                    except Exception:
+                        pass
+
+                print(f"Auto clock-out for {getattr(user, 'email', user.id)} (shift {shift.id})", file=sys.stderr)
             except Exception as e:
                 print(f"Auto clock-out failed for {user.id}: {e}", file=sys.stderr)
+
+        # 6. Update shift status to COMPLETED (shift end time passed; ensures accurate records)
+        try:
+            with transaction.atomic():
+                AssignedShift.objects.filter(pk=shift.pk).update(status='COMPLETED')
+            if shift_clocked_out_any:
+                print(f"Shift {shift.id} marked COMPLETED after auto clock-out.", file=sys.stderr)
+        except Exception as e:
+            print(f"Failed to update shift status for {shift.id}: {e}", file=sys.stderr)
+
     if count:
         print(f"Auto clock-out: {count} staff clocked out.", file=sys.stderr)
     return count

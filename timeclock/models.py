@@ -8,7 +8,8 @@ class ClockEvent(models.Model):
         ('break_start', 'Break Start'),
         ('break_end', 'Break End'),
     ]
-    
+    CLOCK_IN_METHOD_OVERRIDE = 'manager_override'
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     staff = models.ForeignKey('accounts.CustomUser', on_delete=models.CASCADE, related_name='clock_events')
     event_type = models.CharField(max_length=20, choices=EVENT_TYPES)
@@ -19,6 +20,12 @@ class ClockEvent(models.Model):
     device_id = models.CharField(max_length=255, blank=True)
     notes = models.TextField(blank=True)
     location_encrypted = models.TextField(db_column='location_encrypted', blank=True, default='')
+    # Manager override: when set, clock-in was performed by a manager (exception to geofence)
+    performed_by = models.ForeignKey(
+        'accounts.CustomUser', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='clock_events_performed'
+    )
+    override_reason = models.TextField(blank=True)
     class Meta:
         ordering = ['-timestamp']
     

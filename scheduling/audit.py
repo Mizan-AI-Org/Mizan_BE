@@ -63,6 +63,7 @@ class AuditActionType(models.TextChoices):
     PROGRESS_UPDATE = 'PROGRESS_UPDATE', 'Progress Update'
     CHECKPOINT_ADD = 'CHECKPOINT_ADD', 'Checkpoint Add'
     PHOTO_UPLOAD = 'PHOTO_UPLOAD', 'Photo Upload'
+    AUTO_CLOCK_OUT = 'AUTO_CLOCK_OUT', 'Auto Clock Out'
 
 class AuditSeverity(models.TextChoices):
     """Severity levels for audit events"""

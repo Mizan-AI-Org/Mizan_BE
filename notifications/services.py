@@ -1349,14 +1349,58 @@ class NotificationService:
             logger.error(f"WhatsApp buttons error: {e}")
             return False, {"error": str(e)}
 
-    def send_whatsapp_location_request(self, phone, body):
+    def send_whatsapp_location_request_interactive(self, phone, body_text):
         """
-        Prefer a pre-approved template that asks for live location.
-        Falls back to plain text prompt.
+        Send a free-form interactive message with a native "Share Location" button.
+        Use when clock_in_location_request template is not available or fails.
+        https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-messages/location-request-messages
         """
         try:
-            # If you have a Meta template for this, use it:
-            template_name = getattr(settings, 'WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION', 'clock_in_location_request')
+            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            if not token or not phone_id or not phone:
+                return False, {"error": "WhatsApp not configured"}
+            phone = ''.join(filter(str.isdigit, phone))
+            default_cc = getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '')
+            if phone.startswith('0'):
+                phone = phone.lstrip('0')
+            if not re.match(r"^\d{10,15}$", phone):
+                if default_cc and re.match(r"^\d{9,14}$", phone):
+                    phone = f"{default_cc}{phone}"
+            if not re.match(r"^\d{10,15}$", phone):
+                return False, {"error": "Invalid phone format"}
+            text = (body_text or "Please share your location to clock in.").strip()[:4096]
+            url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "interactive",
+                "interactive": {
+                    "type": "location_request_message",
+                    "body": {"text": text},
+                    "action": {"name": "send_location"}
+                }
+            }
+            resp = requests.post(url, headers={'Authorization': f"Bearer {token}"}, json=payload)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"error": resp.text}
+            ok = resp.status_code == 200
+            if not ok:
+                logger.warning("WhatsApp location request failed: %s - %s", resp.status_code, data)
+            return ok, {"status_code": resp.status_code, "data": data}
+        except Exception as e:
+            logger.error("send_whatsapp_location_request_interactive error: %s", e)
+            return False, {"error": str(e)}
+
+    def send_whatsapp_location_request(self, phone, body):
+        """
+        Send clock-in location request: try template with Share Location, then interactive
+        location request message, then plain text. Clock-in must not proceed without location.
+        """
+        template_name = getattr(settings, 'WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION', 'clock_in_location_request')
+        try:
             ok, resp = self.send_whatsapp_template(
                 phone=phone,
                 template_name=template_name,
@@ -1367,7 +1411,13 @@ class NotificationService:
                 return ok, resp
         except Exception:
             pass
-        return self.send_whatsapp_text(phone, body)
+        try:
+            ok, resp = self.send_whatsapp_location_request_interactive(phone, body or "Please share your live location to clock in.")
+            if ok:
+                return ok, resp
+        except Exception:
+            pass
+        return self.send_whatsapp_text(phone, body or "Please share your location to clock in.")
 
     # ----------------------------------------------------------------------
     # WHATSAPP MEDIA + VOICE NOTE TRANSCRIPTION
