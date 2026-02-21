@@ -1396,10 +1396,12 @@ class NotificationService:
 
     def send_whatsapp_location_request(self, phone, body):
         """
-        Send clock-in location request: try template with Share Location, then interactive
-        location request message, then plain text. Clock-in must not proceed without location.
+        Send clock-in location request with a working "Share Location" button.
+        Tries: (1) official clock_in_location_request template, (2) interactive location_request_message.
+        Never falls back to plain text (no button). Clock-in must not proceed without location payload.
         """
         template_name = getattr(settings, 'WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION', 'clock_in_location_request')
+        fallback_body = body or "Please share your live location to clock in."
         try:
             ok, resp = self.send_whatsapp_template(
                 phone=phone,
@@ -1412,12 +1414,20 @@ class NotificationService:
         except Exception:
             pass
         try:
-            ok, resp = self.send_whatsapp_location_request_interactive(phone, body or "Please share your live location to clock in.")
+            ok, resp = self.send_whatsapp_location_request_interactive(phone, fallback_body)
             if ok:
                 return ok, resp
         except Exception:
             pass
-        return self.send_whatsapp_text(phone, body or "Please share your location to clock in.")
+        # Retry interactive once; do NOT send plain text (no Share Location button)
+        try:
+            ok, resp = self.send_whatsapp_location_request_interactive(phone, fallback_body)
+            if ok:
+                return ok, resp
+        except Exception:
+            pass
+        logger.warning("send_whatsapp_location_request: template and interactive failed for %s", phone)
+        return False, {"error": "Location request (template and interactive) failed"}
 
     # ----------------------------------------------------------------------
     # WHATSAPP MEDIA + VOICE NOTE TRANSCRIPTION

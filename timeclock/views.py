@@ -1137,12 +1137,17 @@ def agent_clock_in_by_phone(request):
         rest = getattr(user, 'restaurant', None)
         # Mandatory location: staff cannot clock in without live location (no bypass)
         if latitude is None or longitude is None:
+            # Send the official template or interactive message with Share Location button ourselves.
+            # Miya must NOT send plain text—the user must get the button from this request.
+            ok, _ = notification_service.send_whatsapp_location_request(
+                clean_phone,
+                "Please share your live location to clock in.",
+            )
             return Response({
                 'success': False,
                 'error': 'Location required',
-                'message_for_user': (
-                    "Please share your live location to clock in. I can't clock you in without it."
-                ),
+                'location_request_sent': ok,
+                'message_for_user': "Tap Share Location above to clock in." if ok else "Share your location to clock in.",
             }, status=status.HTTP_400_BAD_REQUEST)
         if not rest or not getattr(rest, 'latitude', None) or not getattr(rest, 'longitude', None) or not getattr(rest, 'radius', None):
             return Response({
