@@ -6,9 +6,16 @@ from .models import ClockEvent
 from scheduling.models import AssignedShift
 
 class ClockEventSerializer(serializers.ModelSerializer):
+    clock_in_method = serializers.SerializerMethodField()
+
     class Meta:
         model = ClockEvent
         fields = '__all__'
+
+    def get_clock_in_method(self, obj):
+        if obj.event_type == 'in' and (obj.device_id or '').strip() == ClockEvent.CLOCK_IN_METHOD_OVERRIDE:
+            return ClockEvent.CLOCK_IN_METHOD_OVERRIDE
+        return obj.device_id or ''
 
 class ShiftSerializer(serializers.ModelSerializer):
     class Meta:

@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from django.db.models import Q, Count, Sum, Avg
-from scheduling.models import ShiftTask, TaskCategory
+from scheduling.models import ShiftTask, TaskCategory, ShiftChecklistProgress, TaskVerificationRecord
 from scheduling.serializers import ShiftTaskSerializer, TaskCategorySerializer
 from scheduling.process_models import Process, ProcessTask
 from attendance.models import ShiftReview
@@ -505,34 +505,49 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         
         for shift in active_shifts:
             staff = shift.staff
+            if not staff:
+                continue
             tasks = shift.tasks.all()
             
             # 1. Staff Status
             shift_status = 'ON_SHIFT' # Default logic, refine if we have real-time clock-in data
             if shift.status == 'COMPLETED': shift_status = 'OFF_SHIFT'
             
-            # 2. Current Process
-            # If a task template is assigned to the shift, use it
+            # 2. Current Process & Task Stats — prefer WhatsApp checklist progress when available
             current_process_name = "Idle / Waiting for task"
             process_progress = 0
-            
-            # Try to infer process from assigned templates
-            template = shift.task_templates.first()
-            if template:
-                current_process_name = template.name
-                # Calculate progress for this "process" (tasks linked to this shift)
-                total_process_tasks = tasks.count() # Assuming all tasks in shift belong to the process for now
-                completed_process_tasks = tasks.filter(status='COMPLETED').count()
-                process_progress = int((completed_process_tasks / total_process_tasks * 100)) if total_process_tasks > 0 else 0
-            
-            # 3. Task Stats
             total_tasks = tasks.count()
             completed_tasks = tasks.filter(status='COMPLETED').count()
+            tasks_marked_no = []
+            follow_up_needed = False
+            photo_evidence_count = 0
+            
+            checklist_prog = ShiftChecklistProgress.objects.filter(shift=shift, staff=staff).first()
+            if checklist_prog and (checklist_prog.task_ids or []):
+                task_ids = checklist_prog.task_ids or []
+                responses = checklist_prog.responses or {}
+                total_tasks = len(task_ids)
+                completed_tasks = sum(1 for tid in task_ids if tid in responses)
+                process_progress = int((completed_tasks / total_tasks * 100)) if total_tasks > 0 else 0
+                template = shift.task_templates.first()
+                current_process_name = (template.name if template else "Checklist") or "Checklist"
+                tasks_marked_no = [tid for tid in task_ids if responses.get(tid) == 'no']
+                follow_up_needed = len(tasks_marked_no) > 0
+                if task_ids:
+                    photo_evidence_count = TaskVerificationRecord.objects.filter(
+                        task_id__in=task_ids
+                    ).exclude(photo_evidence=[]).count()
+            else:
+                template = shift.task_templates.first()
+                if template:
+                    current_process_name = template.name
+                    total_process_tasks = tasks.count()
+                    completed_process_tasks = tasks.filter(status='COMPLETED').count()
+                    process_progress = int((completed_process_tasks / total_process_tasks * 100)) if total_process_tasks > 0 else 0
+            
             overdue_tasks = 0
             for t in tasks:
                 if t.priority == 'URGENT' or (t.estimated_duration and t.created_at + t.estimated_duration < now and t.status != 'COMPLETED'):
-                     # Simple overdue logic: if urgent or past estimated time (if created + duration < now)
-                     # Better logic would use due_date if available
                      overdue_tasks += 1
             
             # 4. Pace Indicator
@@ -563,12 +578,15 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                 elif elapsed_minutes > avg_minutes:
                     pace_status = 'YELLOW'
             
-            # 5. Attention Flag
+            # 5. Attention Flag (include follow-up from checklist "No" responses)
             attention_needed = False
             attention_reason = ""
             if overdue_tasks > 0:
                 attention_needed = True
                 attention_reason = f"{overdue_tasks} overdue tasks"
+            elif follow_up_needed:
+                attention_needed = True
+                attention_reason = f"{len(tasks_marked_no)} task(s) marked No — follow-up needed"
             elif pace_status == 'RED':
                 attention_needed = True
                 attention_reason = "Behind schedule"
@@ -587,7 +605,10 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                     'completed': completed_tasks,
                     'total': total_tasks,
                     'overdue': overdue_tasks,
-                    'is_completed': completed_tasks == total_tasks and total_tasks > 0
+                    'is_completed': completed_tasks == total_tasks and total_tasks > 0,
+                    'tasks_marked_no': len(tasks_marked_no),
+                    'follow_up_needed': follow_up_needed,
+                    'photo_evidence_count': photo_evidence_count,
                 },
                 'pace': {
                     'elapsed_minutes': elapsed_minutes,
@@ -625,11 +646,11 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED', 'NO_SHOW']
         ).select_related('staff').prefetch_related('staff_members')
         
-        # 2. Fetch Today's Clock Events
+        # 2. Fetch Today's Clock Events (include performed_by for manager override visibility)
         events = ClockEvent.objects.filter(
             staff__restaurant=user.restaurant,
             timestamp__range=(today_start, today_end)
-        ).select_related('staff').order_by('timestamp')
+        ).select_related('staff', 'performed_by').order_by('timestamp')
         
         # Data Structures
         summary = {
@@ -668,6 +689,9 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                     'status': shift.status
                 },
                 'clock_in': None,
+                'clock_in_method': None,
+                'is_manager_override': False,
+                'override_reason': None,
                 'status': 'scheduled', # scheduled, late, absent, on_time, on_break, clocked_out
                 'late_minutes': 0,
                 'location': 'Unknown',
@@ -690,6 +714,9 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                     },
                     'shift': {'start': None, 'end': None, 'status': 'UNSCHEDULED'},
                     'clock_in': None,
+                    'clock_in_method': None,
+                    'is_manager_override': False,
+                    'override_reason': None,
                     'status': 'present', 
                     'late_minutes': 0,
                     'location': 'Unknown',
@@ -704,6 +731,9 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             if event.event_type in ['in', 'CLOCK_IN']:
                 if not data['clock_in']: # First clock in
                     data['clock_in'] = time_str
+                    data['clock_in_method'] = getattr(event, 'device_id', '') or ''
+                    data['is_manager_override'] = (getattr(event, 'device_id', '') or '') == 'manager_override'
+                    data['override_reason'] = getattr(event, 'override_reason', '') or ''
                     unique_present.add(staff_id)
                     # Check Lateness
                     if data['shift']['start']:

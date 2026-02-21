@@ -50,6 +50,7 @@ from notifications.services import notification_service
 from notifications.models import Notification
 
 from .models import StaffRequest, StaffRequestComment
+from .models_task import SafetyConcernReport
 
 logger = logging.getLogger(__name__)
 
@@ -213,4 +214,254 @@ def agent_ingest_staff_request(request):
         'id': str(req.id),
         'status': req.status,
     }, status=status.HTTP_201_CREATED)
+
+
+def _resolve_restaurant_for_staff_agent(request):
+    """Resolve restaurant for staff agent endpoints (list/approve/reject)."""
+    from core.utils import resolve_agent_restaurant_and_user
+    payload = getattr(request, 'data', None) or {}
+    if request.method == 'GET':
+        payload = dict(request.query_params)
+    rid = request.META.get('HTTP_X_RESTAURANT_ID') or payload.get('restaurant_id') or payload.get('restaurantId')
+    if isinstance(rid, (list, tuple)):
+        rid = rid[0] if rid else None
+    if rid and isinstance(rid, str):
+        try:
+            return Restaurant.objects.get(id=rid.strip()), None
+        except (Restaurant.DoesNotExist, ValueError, TypeError):
+            pass
+    payload = dict(request.query_params)
+    if request.method == 'POST' and isinstance(getattr(request, 'data', None), dict):
+        for k, v in (request.data or {}).items():
+            if k == 'metadata' and isinstance(v, dict):
+                for mk, mv in v.items():
+                    payload.setdefault(mk, mv)
+            else:
+                payload.setdefault(k, v)
+    restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=payload)
+    if not restaurant:
+        return None, {'error': 'Unable to resolve restaurant context.', 'status': 400}
+    return restaurant, None
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_list_staff_requests(request):
+    """
+    List pending staff requests for the restaurant. Used by Miya so managers can approve/reject from WhatsApp.
+    Auth: Bearer LUA_WEBHOOK_API_KEY. Query or X-Restaurant-Id: restaurant_id.
+    """
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    restaurant, err = _resolve_restaurant_for_staff_agent(request)
+    if err:
+        return Response({'success': False, 'error': err['error']}, status=err['status'])
+    status_filter = request.query_params.get('status', 'PENDING').upper()
+    qs = StaffRequest.objects.filter(restaurant=restaurant).order_by('-created_at')
+    if status_filter != 'ALL':
+        qs = qs.filter(status=status_filter)
+    qs = qs[:50].select_related('staff')
+    items = [
+        {
+            'id': str(r.id),
+            'subject': r.subject or '',
+            'description': (r.description or '')[:200],
+            'staff_name': r.staff_name or (r.staff.get_full_name() if r.staff else ''),
+            'staff_phone': r.staff_phone or '',
+            'category': r.category,
+            'priority': r.priority,
+            'status': r.status,
+            'created_at': r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in qs
+    ]
+    return Response({'success': True, 'requests': items, 'restaurant_id': str(restaurant.id)})
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_approve_staff_request(request):
+    """
+    Approve a staff request. Miya uses this so managers can approve from WhatsApp. Notifies staff via WhatsApp.
+    Auth: Bearer LUA_WEBHOOK_API_KEY. Body: request_id, restaurant_id (or X-Restaurant-Id).
+    """
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    restaurant, err = _resolve_restaurant_for_staff_agent(request)
+    if err:
+        return Response({'success': False, 'error': err['error']}, status=err['status'])
+    data = request.data or {}
+    req_id = data.get('request_id') or data.get('requestId') or data.get('id')
+    if not req_id:
+        return Response({'success': False, 'error': 'request_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        req = StaffRequest.objects.get(id=req_id, restaurant=restaurant)
+    except StaffRequest.DoesNotExist:
+        return Response({'success': False, 'error': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
+    if req.status != 'PENDING':
+        return Response({'success': False, 'error': f'Request is already {req.status}'}, status=status.HTTP_400_BAD_REQUEST)
+    req.status = 'APPROVED'
+    req.reviewed_by = None
+    req.reviewed_at = timezone.now()
+    req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
+    StaffRequestComment.objects.create(
+        request=req, author=None, kind='status_change',
+        body='Approved via Miya (WhatsApp)',
+        metadata={'from': 'PENDING', 'to': 'APPROVED'},
+    )
+    # Notify staff via WhatsApp so they don't need the app
+    phone = req.staff_phone or (getattr(req.staff, 'phone', None) if req.staff else None)
+    if phone:
+        try:
+            notification_service.send_whatsapp_text(
+                phone,
+                f"✅ Your request \"{req.subject or 'Request'}\" has been *approved* by your manager."
+            )
+        except Exception as e:
+            logger.warning("Staff request approval WhatsApp notify failed: %s", e)
+    return Response({
+        'success': True,
+        'message': 'Request approved. Staff has been notified via WhatsApp.',
+        'request_id': str(req.id),
+        'status': req.status,
+    })
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_reject_staff_request(request):
+    """
+    Reject a staff request. Miya uses this so managers can reject from WhatsApp. Notifies staff via WhatsApp.
+    Auth: Bearer LUA_WEBHOOK_API_KEY. Body: request_id, reason (optional), restaurant_id (or X-Restaurant-Id).
+    """
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    restaurant, err = _resolve_restaurant_for_staff_agent(request)
+    if err:
+        return Response({'success': False, 'error': err['error']}, status=err['status'])
+    data = request.data or {}
+    req_id = data.get('request_id') or data.get('requestId') or data.get('id')
+    reason = (data.get('reason') or data.get('message') or '').strip()
+    if not req_id:
+        return Response({'success': False, 'error': 'request_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        req = StaffRequest.objects.get(id=req_id, restaurant=restaurant)
+    except StaffRequest.DoesNotExist:
+        return Response({'success': False, 'error': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
+    if req.status != 'PENDING':
+        return Response({'success': False, 'error': f'Request is already {req.status}'}, status=status.HTTP_400_BAD_REQUEST)
+    req.status = 'REJECTED'
+    req.reviewed_by = None
+    req.reviewed_at = timezone.now()
+    req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
+    StaffRequestComment.objects.create(
+        request=req, author=None, kind='status_change',
+        body='Rejected via Miya (WhatsApp)' + (f': {reason}' if reason else ''),
+        metadata={'from': 'PENDING', 'to': 'REJECTED', 'reason': reason},
+    )
+    phone = req.staff_phone or (getattr(req.staff, 'phone', None) if req.staff else None)
+    if phone:
+        try:
+            msg = f"Your request \"{req.subject or 'Request'}\" was not approved."
+            if reason:
+                msg += f"\nReason: {reason}"
+            notification_service.send_whatsapp_text(phone, msg)
+        except Exception as e:
+            logger.warning("Staff request rejection WhatsApp notify failed: %s", e)
+    return Response({
+        'success': True,
+        'message': 'Request rejected. Staff has been notified via WhatsApp.',
+        'request_id': str(req.id),
+        'status': req.status,
+    })
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_list_incidents(request):
+    """
+    List open incidents (safety concerns) for the restaurant. Query: restaurant_id or status.
+    """
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    restaurant, err = _resolve_restaurant_for_staff_agent(request)
+    if err:
+        return Response({'success': False, 'error': err['error']}, status=err['status'])
+    status_filter = (request.query_params.get('status') or 'REPORTED,UNDER_REVIEW').strip().upper().split(',')
+    qs = SafetyConcernReport.objects.filter(
+        restaurant=restaurant,
+        status__in=[s.strip() for s in status_filter if s.strip()],
+    ).order_by('-created_at').select_related('reporter')[:30]
+    items = [
+        {
+            'id': str(i.id),
+            'title': i.title or '',
+            'description': (i.description or '')[:200],
+            'severity': i.severity,
+            'status': i.status,
+            'created_at': i.created_at.isoformat() if i.created_at else None,
+        }
+        for i in qs
+    ]
+    return Response({'success': True, 'incidents': items, 'restaurant_id': str(restaurant.id)})
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_close_incident(request):
+    """Close/resolve an incident. Body: incident_id, resolution_notes (optional), restaurant_id."""
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    restaurant, err = _resolve_restaurant_for_staff_agent(request)
+    if err:
+        return Response({'success': False, 'error': err['error']}, status=err['status'])
+    data = request.data or {}
+    iid = data.get('incident_id') or data.get('incidentId') or data.get('id')
+    notes = (data.get('resolution_notes') or data.get('notes') or '').strip()
+    if not iid:
+        return Response({'success': False, 'error': 'incident_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        inc = SafetyConcernReport.objects.get(id=iid, restaurant=restaurant)
+    except SafetyConcernReport.DoesNotExist:
+        return Response({'success': False, 'error': 'Incident not found'}, status=status.HTTP_404_NOT_FOUND)
+    inc.status = 'RESOLVED'
+    inc.resolved_at = timezone.now()
+    inc.resolution_notes = notes or 'Closed via Miya'
+    inc.resolved_by = None
+    inc.save(update_fields=['status', 'resolved_at', 'resolution_notes', 'resolved_by', 'updated_at'])
+    return Response({'success': True, 'message': 'Incident closed.', 'incident_id': str(inc.id)})
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_escalate_incident(request):
+    """Escalate an incident to UNDER_REVIEW. Body: incident_id, restaurant_id."""
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    restaurant, err = _resolve_restaurant_for_staff_agent(request)
+    if err:
+        return Response({'success': False, 'error': err['error']}, status=err['status'])
+    data = request.data or {}
+    iid = data.get('incident_id') or data.get('incidentId') or data.get('id')
+    if not iid:
+        return Response({'success': False, 'error': 'incident_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        inc = SafetyConcernReport.objects.get(id=iid, restaurant=restaurant)
+    except SafetyConcernReport.DoesNotExist:
+        return Response({'success': False, 'error': 'Incident not found'}, status=status.HTTP_404_NOT_FOUND)
+    inc.status = 'UNDER_REVIEW'
+    inc.save(update_fields=['status', 'updated_at'])
+    return Response({'success': True, 'message': 'Incident escalated.', 'incident_id': str(inc.id)})
 

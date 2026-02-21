@@ -173,3 +173,89 @@ def send_whatsapp_from_agent(request):
     except Exception as e:
         logger.error(f"Agent WhatsApp send error: {e}")
         return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def agent_start_whatsapp_checklist(request):
+    """
+    Miya/Lua endpoint: start the step-by-step WhatsApp checklist for a staff member by phone.
+    Used when staff say "start checklist" after clock-in (e.g. if the auto-follow-up didn't run).
+    Request body: phone (required) - staff's WhatsApp phone (E.164 digits or national format).
+    Returns: success, message_for_user (for Miya to send), error.
+    """
+    ok, err_response = _validate_agent_key(request)
+    if not ok:
+        return err_response
+
+    data = request.data or {}
+    phone = (data.get("phone") or data.get("phoneNumber") or "").strip()
+    clean_phone = "".join(filter(str.isdigit, str(phone)))
+    if not clean_phone or len(clean_phone) < 6:
+        return Response(
+            {
+                "success": False,
+                "error": "Invalid or missing phone",
+                "message_for_user": "I couldn't find your account. Please make sure you're messaging from the number we have on file.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    from accounts.services import _find_active_user_by_phone
+    from notifications.views import _get_shift_for_clock_in
+
+    user = _find_active_user_by_phone(clean_phone)
+    if not user:
+        return Response(
+            {
+                "success": False,
+                "error": "Staff not found",
+                "message_for_user": "We couldn't find your account. Please contact your manager to be added.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    active_shift = _get_shift_for_clock_in(user)
+    if not active_shift:
+        return Response(
+            {
+                "success": False,
+                "error": "No shift",
+                "message_for_user": "You do not have a scheduled shift at this time.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        started = notification_service.start_conversational_checklist_after_clock_in(
+            user, active_shift, phone_digits=clean_phone
+        )
+    except Exception as e:
+        logger.warning("agent_start_whatsapp_checklist failed: %s", e)
+        return Response(
+            {
+                "success": False,
+                "error": str(e),
+                "message_for_user": "I encountered an issue while trying to start the checklist. Please try again in a moment.",
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    if started:
+        return Response(
+            {
+                "success": True,
+                "message_for_user": "Checklist started. You'll receive the first item shortly—please reply with Yes, No, or N/A for each step.",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    return Response(
+        {
+            "success": False,
+            "error": "No checklist items",
+            "message_for_user": "No checklist is assigned to your shift right now. You're all set!",
+        },
+        status=status.HTTP_200_OK,
+    )

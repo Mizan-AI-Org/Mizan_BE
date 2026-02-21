@@ -12,6 +12,75 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
+# Full OPERATIONAL INTELLIGENCE & EXECUTION SYSTEM PROMPT for Miya (enhancement to existing Lua instructions).
+# See docs/MIYA_OPERATIONAL_SYSTEM_PROMPT.md for the canonical doc.
+MIYA_OPERATIONAL_INSTRUCTIONS = """You are **Miya**, the AI Operations Manager for a specific restaurant account inside Mizan AI.
+
+You are not a general chatbot.
+You are a **database-grounded, execution-capable operational AI**.
+
+You must:
+* Provide precise answers
+* Execute operational actions
+* Generate intelligent recommendations
+* Deliver performance insights
+* Never hallucinate
+* Never go outside the restaurant account scope
+
+---
+1. ACCOUNT ISOLATION (NON-NEGOTIABLE)
+You are always scoped to: one restaurant account, one authenticated user (manager or staff), that restaurant's database only.
+You must NEVER: access or reference another restaurant's data; mix staff across accounts; answer outside the authenticated context.
+If restaurant_id or user context is unclear → STOP and request clarification.
+
+---
+2. ZERO HALLUCINATION POLICY
+Every operational answer must be: verified from database; filtered by restaurant_id; filtered by correct date; filtered by correct staff.
+Never: guess shift schedules; invent KPIs; assume clock-in status; provide estimated answers.
+If data is missing → explain what was checked.
+
+---
+3. OPERATIONAL EXECUTION CAPABILITY
+You are authorized to execute actions when requested or when policy requires (e.g. clock staff in/out, trigger checklist, send reminders, escalate missed tasks, log incidents, mark checklist complete, apply manager override).
+Before executing: validate permissions; validate staff exists; validate shift exists; confirm no duplicate action.
+All actions must be: idempotent, logged, timestamped, attributed (who triggered it).
+
+---
+4. SHIFT & SCHEDULE VERIFICATION PROTOCOL
+When asked about shifts: (1) confirm restaurant_id, (2) confirm staff belongs to restaurant, (3) confirm date (resolve ambiguity like "Tuesday 17th"), (4) query shift table with staff_id, restaurant_id, date, (5) confirm shift status. Only then respond. Never contradict visible schedule data.
+
+---
+5. ROLE-AWARE INTELLIGENCE
+If user = Manager: you may provide full team visibility, show KPIs, performance summaries, suggest optimizations, flag risks.
+If user = Staff: you may show only their own data, guide task execution, enforce workflows.
+Never expose cross-staff data to staff.
+
+---
+6. RECOMMENDATION ENGINE MODE (MANAGER ONLY)
+Proactively generate insights (staff repeatedly late, checklist completion under 80%, frequent task failures, high incident volume, overtime patterns, understaffed upcoming shifts). Recommendations must be based only on real data, include supporting metric, suggest clear action. Never fabricate insights.
+
+---
+7. OPERATIONAL AWARENESS STANDARD
+Before responding, verify: correct restaurant context, correct staff, correct date, correct shift, correct time zone, data exists. If any check fails → re-query. Accuracy is mandatory.
+
+---
+8. CONTEXT LOCK RULE
+Resolve relative dates (e.g. "Tuesday 17th") to the correct calendar week. Never default to wrong week.
+
+---
+9. WHEN PROVIDING INSIGHTS
+Differentiate: Verified Data → state confidently; Predictive Insight → label as recommendation; Missing Data → state limitation. Never blend assumption with fact.
+
+---
+10. BEHAVIORAL STANDARD
+You are: an AI assistant manager, an operational compliance engine, a shift execution controller, a performance analyst.
+You are NOT: a casual chatbot, a guessing engine, a creative storyteller.
+Precision > Creativity; Verification > Assumption; Operational Discipline > Conversational Flow.
+
+---
+FINAL DIRECTIVE
+Behave like a super-intelligent, database-connected restaurant operating system that: answers correctly every time; executes safely; recommends intelligently; protects account isolation; never contradicts system data; never hallucinates. You are mission-critical infrastructure."""
+
 class AgentContextView(APIView):
     """
     View for the AI Agent to validate a user's token and retrieve their context.
@@ -49,6 +118,39 @@ class AgentContextView(APIView):
                 # Add other necessary fields for the agent here
             }
         })
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_miya_instructions(request):
+    """
+    Return the full OPERATIONAL INTELLIGENCE & EXECUTION system prompt for Miya.
+    Auth: JWT (Bearer user token) or LUA_WEBHOOK_API_KEY.
+    Lua can call this at session start to inject instructions; dashboard uses JWT.
+    """
+    if not request.headers.get('Authorization'):
+        return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+    # Try JWT first (dashboard with user token)
+    try:
+        from rest_framework_simplejwt.authentication import JWTAuthentication
+        jwt_auth = JWTAuthentication()
+        result = jwt_auth.authenticate(request)
+        if result and result[0]:  # (user, validated_token)
+            return Response({
+                'instructions': MIYA_OPERATIONAL_INSTRUCTIONS,
+                'note': 'Append or merge with existing Miya system prompt in Lua Admin.',
+            })
+    except Exception:
+        pass
+    # Else allow agent key (Lua calling with LUA_WEBHOOK_API_KEY)
+    is_valid, _ = _validate_agent_key(request)
+    if is_valid:
+        return Response({
+            'instructions': MIYA_OPERATIONAL_INSTRUCTIONS,
+            'note': 'Append or merge with existing Miya system prompt in Lua Admin.',
+        })
+    return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
 
 
 def send_whatsapp(phone, message, template_name, language_code="en_US"):
@@ -256,7 +358,7 @@ def account_activation_from_agent(request):
                     'success': True,
                     'template_sent': False,
                     'user': _activation_user_payload(existing_user),
-                    'message_for_user': 'Your account has already been activated.',
+                    'message_for_user': 'Congratulations! Your account has been successfully activated. Welcome to the team!',
                 },
                 status=status.HTTP_200_OK,
             )
@@ -414,3 +516,128 @@ def accept_invitation_from_agent(request):
             'success': False,
             'error': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def _validate_agent_key(request):
+    """Validate LUA_WEBHOOK_API_KEY for agent-only endpoints."""
+    auth_header = request.headers.get('Authorization')
+    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+    if not expected_key:
+        return False, "Agent key not configured"
+    if not auth_header or auth_header != f"Bearer {expected_key}":
+        return False, "Unauthorized"
+    return True, None
+
+
+def _resolve_restaurant_id_agent(request):
+    rid = request.META.get('HTTP_X_RESTAURANT_ID')
+    if not rid and getattr(request, 'data', None):
+        rid = request.data.get('restaurant_id') or request.data.get('restaurantId')
+    if not rid and request.method == 'GET':
+        rid = request.query_params.get('restaurant_id') or request.query_params.get('restaurantId')
+    if isinstance(rid, (list, tuple)):
+        rid = rid[0] if rid else None
+    return rid
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_list_failed_invites(request):
+    """
+    List failed WhatsApp invitation deliveries for the restaurant. Query: restaurant_id or X-Restaurant-Id.
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from .models import InvitationDeliveryLog
+    from .models import Restaurant
+    rid = _resolve_restaurant_id_agent(request)
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=rid.strip())
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Restaurant not found'}, status=status.HTTP_404_NOT_FOUND)
+    qs = InvitationDeliveryLog.objects.filter(
+        invitation__restaurant=restaurant,
+        channel='whatsapp',
+        status='FAILED',
+    ).order_by('-sent_at').select_related('invitation')[:30]
+    items = [
+        {
+            'id': str(log.id),
+            'invitation_id': str(log.invitation_id),
+            'recipient': log.recipient_address,
+            'error_message': (log.error_message or '')[:200],
+            'sent_at': log.sent_at.isoformat() if log.sent_at else None,
+        }
+        for log in qs
+    ]
+    return Response({'success': True, 'failed_invites': items, 'restaurant_id': str(restaurant.id)})
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_retry_invite(request):
+    """
+    Retry a failed WhatsApp invite. Body: log_id (InvitationDeliveryLog id) or invitation_id, restaurant_id.
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from .models import InvitationDeliveryLog, Restaurant
+    from notifications.services import notification_service
+    rid = _resolve_restaurant_id_agent(request)
+    if not rid:
+        rid = (request.data or {}).get('restaurant_id') or (request.data or {}).get('restaurantId')
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=rid.strip() if isinstance(rid, str) else rid)
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Restaurant not found'}, status=status.HTTP_404_NOT_FOUND)
+    data = request.data or {}
+    log_id = data.get('log_id') or data.get('logId') or data.get('id')
+    inv_id = data.get('invitation_id') or data.get('invitationId')
+    if not log_id and not inv_id:
+        return Response({'success': False, 'error': 'log_id or invitation_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if log_id:
+        log = InvitationDeliveryLog.objects.filter(
+            id=log_id,
+            invitation__restaurant=restaurant,
+            channel='whatsapp',
+            status='FAILED',
+        ).select_related('invitation', 'invitation__restaurant').first()
+    else:
+        log = InvitationDeliveryLog.objects.filter(
+            invitation_id=inv_id,
+            invitation__restaurant=restaurant,
+            channel='whatsapp',
+            status='FAILED',
+        ).select_related('invitation', 'invitation__restaurant').first()
+    if not log:
+        return Response({'success': False, 'error': 'Failed invite log not found'}, status=status.HTTP_404_NOT_FOUND)
+    inv = log.invitation
+    phone = log.recipient_address
+    invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={inv.invitation_token}"
+    language = getattr(inv.restaurant, 'language', 'en') if getattr(inv, 'restaurant', None) else 'en'
+    ok, info = notification_service.send_lua_staff_invite(
+        invitation_token=inv.invitation_token,
+        phone=phone,
+        first_name=inv.first_name,
+        restaurant_name=inv.restaurant.name,
+        invite_link=invite_link,
+        language=language,
+    )
+    log.attempt_count = getattr(log, 'attempt_count', 1) + 1
+    log.status = 'SENT' if ok else 'FAILED'
+    log.response_data = info or {}
+    log.save(update_fields=['attempt_count', 'status', 'response_data'])
+    return Response({
+        'success': ok,
+        'message': 'Invite sent.' if ok else 'Retry failed.',
+        'log_id': str(log.id),
+        'status': log.status,
+    })

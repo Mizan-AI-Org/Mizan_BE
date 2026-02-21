@@ -4,6 +4,7 @@ from django.conf import settings
 from rest_framework.response import Response
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
+from django.http import Http404
 from notifications.utils import send_realtime_notification
 from notifications.services import notification_service
 
@@ -13,8 +14,12 @@ from .serializers import ClockEventSerializer, ClockInSerializer, ShiftSerialize
 from accounts.models import CustomUser, AuditLog
 from accounts.views import get_client_ip
 from accounts.permissions import IsAdminOrManager
+from django.db.models import Q
 from scheduling.models import AssignedShift
 import base64  # <--- ADD THIS IMPORT
+import logging
+
+logger = logging.getLogger(__name__)
 from django.core.files.base import ContentFile  # <--- ADD THIS IMPORT
 # Your existing geolocation endpoints (keep these)
 @api_view(['POST'])
@@ -821,11 +826,37 @@ def attendance_history(request, user_id=None):
 @permission_classes([permissions.IsAuthenticated, IsAdminOrManager])
 def manager_clock_in(request, staff_id):
     """
-    Manager/admin/super_admin clocks in a staff member (e.g. lost phone).
-    No geolocation required.
+    Manager override: clock in a staff member without location (e.g. device failure, GPS issues).
+    Requires mandatory reason. Records staff_id, shift_id, manager_id, override_reason.
+    clock_in_method = manager_override. Idempotent (no duplicate clock-in).
     """
+    import traceback
+    try:
+        return _manager_clock_in_impl(request, staff_id)
+    except Http404:
+        raise
+    except Exception as e:
+        logger.exception("Manager clock-in failed")
+        detail = str(e)
+        if settings.DEBUG:
+            detail = f"{detail}\n{traceback.format_exc()}"
+        return Response(
+            {'error': 'Manager clock-in failed.', 'detail': detail},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+def _manager_clock_in_impl(request, staff_id):
+    reason = (request.data.get('reason') or '').strip()
+    if not reason:
+        return Response(
+            {'error': 'Reason is required for manager clock-in override.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    shift_id = request.data.get('shift_id')
     staff = get_object_or_404(CustomUser, id=staff_id, is_active=True)
-    if not staff.restaurant_id or staff.restaurant_id != request.user.restaurant_id:
+    manager_restaurant_id = getattr(request.user, 'restaurant_id', None)
+    if not staff.restaurant_id or staff.restaurant_id != manager_restaurant_id:
         return Response({'error': 'Staff not in your restaurant'}, status=status.HTTP_403_FORBIDDEN)
     last_event = ClockEvent.objects.filter(staff=staff).order_by('-timestamp').first()
     if last_event and last_event.event_type == 'in':
@@ -833,28 +864,93 @@ def manager_clock_in(request, staff_id):
             'error': 'Staff is already clocked in',
             'last_clock_in': last_event.timestamp.isoformat()
         }, status=status.HTTP_400_BAD_REQUEST)
-    clock_event = ClockEvent.objects.create(
-        staff=staff,
-        event_type='in',
-        device_id=request.META.get('HTTP_USER_AGENT', ''),
-        notes=f"Manager override (clock-in by {request.user.get_full_name()}) - lost phone",
-    )
+
+    from django.db import transaction
+    from django.db.utils import OperationalError, IntegrityError
+
+    manager_name = (request.user.get_full_name() or getattr(request.user, 'email', None) or 'Manager') if request.user else 'Manager'
+    staff_name = (staff.get_full_name() or getattr(staff, 'email', None) or 'Staff') if staff else 'Staff'
+    notes_text = f"Manager override by {manager_name}: {reason[:500]}"
+
+    try:
+        with transaction.atomic():
+            clock_event = ClockEvent.objects.create(
+                staff=staff,
+                event_type='in',
+                device_id=ClockEvent.CLOCK_IN_METHOD_OVERRIDE,
+                notes=notes_text,
+                performed_by=request.user,
+                override_reason=reason,
+            )
+            if shift_id:
+                shift = AssignedShift.objects.filter(
+                    pk=shift_id,
+                    staff=staff,
+                    schedule__restaurant_id=staff.restaurant_id,
+                    status__in=['SCHEDULED', 'CONFIRMED'],
+                ).first()
+                if shift:
+                    shift.status = 'IN_PROGRESS'
+                    shift.save(update_fields=['status'])
+    except (OperationalError, IntegrityError) as e:
+        logger.warning("Manager clock-in: create with performed_by/override_reason failed (migration not applied?): %s", e)
+        with transaction.atomic():
+            clock_event = ClockEvent.objects.create(
+                staff=staff,
+                event_type='in',
+                device_id=ClockEvent.CLOCK_IN_METHOD_OVERRIDE,
+                notes=notes_text,
+            )
+            if shift_id:
+                shift = AssignedShift.objects.filter(
+                    pk=shift_id,
+                    staff=staff,
+                    schedule__restaurant_id=staff.restaurant_id,
+                    status__in=['SCHEDULED', 'CONFIRMED'],
+                ).first()
+                if shift:
+                    shift.status = 'IN_PROGRESS'
+                    shift.save(update_fields=['status'])
+
     try:
         AuditLog.create_log(
-            restaurant=request.user.restaurant,
+            restaurant=getattr(request.user, 'restaurant', None),
             user=request.user,
             action_type='CREATE',
             entity_type='CLOCK_EVENT',
             entity_id=str(clock_event.id),
-            description=f'Manager clock-in for staff {staff.get_full_name()} (lost phone)',
+            description='Manager clock-in override',
             old_values={},
-            new_values={'staff_id': str(staff.id), 'staff_name': staff.get_full_name()},
+            new_values={
+                'clock_in_method': ClockEvent.CLOCK_IN_METHOD_OVERRIDE,
+                'staff_id': str(staff.id),
+                'staff_name': staff_name,
+                'shift_id': str(shift_id) if shift_id else None,
+                'manager_id': str(request.user.id),
+                'override_reason': reason,
+            },
             ip_address=get_client_ip(request),
             user_agent=request.META.get('HTTP_USER_AGENT', ''),
         )
-    except Exception:
-        pass
-    return Response(ClockEventSerializer(clock_event).data, status=status.HTTP_201_CREATED)
+    except Exception as e:
+        logger.warning("Manager clock-in: audit log failed: %s", e)
+
+    if getattr(staff, 'phone', None):
+        try:
+            notification_service.send_whatsapp_text(
+                staff.phone,
+                "You have been clocked in by your manager."
+            )
+        except Exception:
+            pass
+
+    try:
+        payload = ClockEventSerializer(clock_event).data
+    except Exception as e:
+        logger.warning("Manager clock-in: serialize failed: %s", e)
+        payload = {'id': str(clock_event.id), 'event_type': 'in', 'timestamp': clock_event.timestamp.isoformat() if clock_event.timestamp else None}
+
+    return Response(payload, status=status.HTTP_201_CREATED)
 
 
 @api_view(['POST'])
@@ -926,16 +1022,29 @@ def agent_clock_in(request):
 
         user = get_object_or_404(CustomUser, id=staff_id, is_active=True)
 
-        # Optional lat/lon: for conversational clock-in Miya can omit location; use restaurant center or None
+        # Location required: no bypass for staff clock-in
         if latitude is None or longitude is None:
-            rest = getattr(user, 'restaurant', None)
-            if rest and getattr(rest, 'latitude', None) is not None and getattr(rest, 'longitude', None) is not None:
-                latitude = float(rest.latitude)
-                longitude = float(rest.longitude)
-            else:
-                latitude = None
-                longitude = None
-        
+            return Response({
+                'error': 'latitude and longitude required',
+                'message': 'Please share live location to clock in.',
+            }, status=status.HTTP_400_BAD_REQUEST)
+        rest = getattr(user, 'restaurant', None)
+        if rest and getattr(rest, 'latitude', None) is not None and getattr(rest, 'longitude', None) is not None and getattr(rest, 'radius', None) is not None:
+            try:
+                dist = calculate_distance(
+                    float(rest.latitude), float(rest.longitude),
+                    float(latitude), float(longitude)
+                )
+                radius = float(rest.radius or 100)
+                if dist > radius:
+                    return Response({
+                        'error': 'Outside geofence',
+                        'message': "You are not within the restaurant's approved location zone. Please move closer and try again.",
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            except (TypeError, ValueError):
+                return Response({'error': 'Invalid coordinates'}, status=status.HTTP_400_BAD_REQUEST)
+        latitude, longitude = float(latitude), float(longitude)
+
         # Check if user is already clocked in
         last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
         if last_event and last_event.event_type == 'in':
@@ -943,16 +1052,14 @@ def agent_clock_in(request):
                 'error': 'Already clocked in',
                 'last_clock_in': last_event.timestamp
             }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Create clock in event (conversational when lat/lon omitted)
-        notes = "Clock-in via WhatsApp Agent (conversational)" if (latitude is None and longitude is None) else "Clock-in via WhatsApp Agent"
+
         clock_event = ClockEvent.objects.create(
             staff=user,
             event_type='in',
             latitude=latitude,
             longitude=longitude,
             device_id="Lua Agent",
-            notes=notes
+            notes="Clock-in via WhatsApp Agent (location verified)"
         )
         if timestamp:
             try:
@@ -982,6 +1089,212 @@ def agent_clock_in(request):
 
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+@authentication_classes([])
+def agent_clock_in_by_phone(request):
+    """
+    Clock-in by phone (for Miya fallback when staff say "clock in").
+    Resolves staff from phone; optionally validates location against restaurant geofence.
+    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Body: phone (required), latitude (optional), longitude (optional).
+    Returns: success, message_for_user (for Miya to send), staff_id, error.
+    """
+    try:
+        auth_header = request.headers.get('Authorization')
+        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        if not expected_key:
+            return Response({
+                'success': False,
+                'error': 'Agent key not configured',
+                'message_for_user': "We couldn't complete your request. Please try again later.",
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        if not auth_header or auth_header != f"Bearer {expected_key}":
+            return Response({'success': False, 'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        phone = (request.data.get('phone') or request.data.get('phoneNumber') or '').strip()
+        clean_phone = ''.join(filter(str.isdigit, str(phone)))
+        if not clean_phone or len(clean_phone) < 6:
+            return Response({
+                'success': False,
+                'error': 'Invalid or missing phone',
+                'message_for_user': "We couldn't find your account. Please contact your manager to be added.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        from accounts.services import _find_active_user_by_phone
+        user = _find_active_user_by_phone(clean_phone)
+        if not user:
+            return Response({
+                'success': False,
+                'error': 'Staff not found for this phone',
+                'message_for_user': "We couldn't find your account. Please contact your manager to be added.",
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        latitude = request.data.get('latitude')
+        longitude = request.data.get('longitude')
+        rest = getattr(user, 'restaurant', None)
+        # Mandatory location: staff cannot clock in without live location (no bypass)
+        if latitude is None or longitude is None:
+            return Response({
+                'success': False,
+                'error': 'Location required',
+                'message_for_user': (
+                    "Please share your live location to clock in. I can't clock you in without it."
+                ),
+            }, status=status.HTTP_400_BAD_REQUEST)
+        if not rest or not getattr(rest, 'latitude', None) or not getattr(rest, 'longitude', None) or not getattr(rest, 'radius', None):
+            return Response({
+                'success': False,
+                'error': 'Geofence not configured',
+                'message_for_user': "Location check is not set up for your restaurant. Please contact your manager to clock in.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            lat_f, lon_f = float(latitude), float(longitude)
+            radius = float(getattr(rest, 'radius', None) or 100)
+            dist = calculate_distance(
+                float(rest.latitude), float(rest.longitude),
+                lat_f, lon_f
+            )
+            if dist > radius:
+                return Response({
+                    'success': False,
+                    'error': 'Outside geofence',
+                    'message_for_user': (
+                        "You are not within the restaurant's approved location zone. Please move closer and try again."
+                    ),
+                }, status=status.HTTP_400_BAD_REQUEST)
+            latitude, longitude = lat_f, lon_f
+        except (TypeError, ValueError):
+            return Response({
+                'success': False,
+                'error': 'Invalid coordinates',
+                'message_for_user': "Please share your live location to clock in.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+        if last_event and last_event.event_type == 'in':
+            return Response({
+                'success': False,
+                'error': 'Already clocked in',
+                'message_for_user': "You are already clocked in.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        clock_event = ClockEvent.objects.create(
+            staff=user,
+            event_type='in',
+            latitude=latitude,
+            longitude=longitude,
+            device_id="Lua Agent",
+            notes="Clock-in via Miya (by phone, location verified)",
+        )
+
+        try:
+            now_today = timezone.now()
+            active_qs = AssignedShift.objects.filter(
+                Q(staff=user) | Q(staff_members=user),
+                shift_date=now_today.date(),
+                status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
+            ).distinct()
+            active_shift = (
+                active_qs.filter(start_time__lte=now_today, end_time__gte=now_today).first()
+                or active_qs.order_by('start_time').first()
+            )
+            if active_shift:
+                started = notification_service.start_conversational_checklist_after_clock_in(
+                    user, active_shift, phone_digits=clean_phone
+                )
+                if not started and getattr(user, 'phone', None):
+                    notification_service.start_conversational_checklist_after_clock_in(user, active_shift)
+        except Exception as e:
+            logger.warning(
+                "start_conversational_checklist_after_clock_in failed after agent_clock_in_by_phone: %s", e
+            )
+
+        first_name = getattr(user, 'first_name', None) or 'Team Member'
+        return Response({
+            'success': True,
+            'staff_id': str(user.id),
+            'message_for_user': f"You're clocked in! Have a great shift, {first_name}.",
+            'clock_event_id': str(clock_event.id),
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e),
+            'message_for_user': "Something went wrong. Please try again or contact your manager.",
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+@authentication_classes([])
+def agent_clock_out_by_phone(request):
+    """
+    Clock-out by phone (for Miya when staff say "clock out" in chat).
+    Auth: Bearer LUA_WEBHOOK_API_KEY. Body: phone (required).
+    Returns: success, message_for_user.
+    """
+    try:
+        auth_header = request.headers.get('Authorization')
+        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        if not expected_key:
+            return Response({
+                'success': False,
+                'error': 'Agent key not configured',
+                'message_for_user': "We couldn't complete your request. Please try again later.",
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        if not auth_header or auth_header != f"Bearer {expected_key}":
+            return Response({'success': False, 'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        phone = (request.data.get('phone') or request.data.get('phoneNumber') or '').strip()
+        clean_phone = ''.join(filter(str.isdigit, str(phone)))
+        if not clean_phone or len(clean_phone) < 6:
+            return Response({
+                'success': False,
+                'error': 'Invalid or missing phone',
+                'message_for_user': "We couldn't find your account. Please contact your manager.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        from accounts.services import _find_active_user_by_phone
+        user = _find_active_user_by_phone(clean_phone)
+        if not user:
+            return Response({
+                'success': False,
+                'error': 'Staff not found for this phone',
+                'message_for_user': "We couldn't find your account. Please contact your manager.",
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+        if not last_event or last_event.event_type != 'in':
+            return Response({
+                'success': False,
+                'error': 'Not clocked in',
+                'message_for_user': "You are not clocked in. No need to clock out.",
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        duration = timezone.now() - last_event.timestamp
+        hours = round(duration.total_seconds() / 3600, 2)
+        ClockEvent.objects.create(
+            staff=user,
+            event_type='out',
+            device_id="Lua Agent",
+            notes="Clock-out via Miya (by phone)",
+        )
+        first_name = getattr(user, 'first_name', None) or 'Team Member'
+        return Response({
+            'success': True,
+            'message_for_user': f"You're clocked out. You worked {hours} hours today. Have a great rest of your day, {first_name}!",
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({
+            'success': False,
+            'error': str(e),
+            'message_for_user': "Something went wrong. Please try again or contact your manager.",
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])

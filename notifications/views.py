@@ -34,6 +34,94 @@ from django.conf import settings as dj_settings
 from core.i18n import whatsapp_language_code
 
 
+def _normalize_clock_in_intent(body):
+    """
+    Detect clock-in intent: case-insensitive, ignore minor punctuation, handle variations.
+    Returns True if the message means "I want to clock in".
+    """
+    if not body or not isinstance(body, str):
+        return False
+    # Normalize: lower, strip, collapse spaces, remove common punctuation
+    raw = body.strip().lower()
+    normalized = ''.join(c for c in raw if c.isalnum() or c.isspace())
+    normalized = ' '.join(normalized.split())
+    if not normalized:
+        return False
+    exact = normalized in ('clock in', 'clockin', 'clock-in')
+    phrases = (
+        'want to clock in', 'want to do clock in', 'clock me in', 'i want to clock in',
+        'i need to clock in', 'can you clock me in', 'please clock me in', 'id like to clock in',
+        'i would like to clock in', 'do clock in', 'let me clock in', 'need to clock in',
+        'wanna clock in', 'going to clock in', 'id like to clock in',
+    )
+    return exact or any(p in normalized for p in phrases)
+
+
+def _normalize_start_checklist_intent(body):
+    """
+    Detect start-checklist intent: case-insensitive, variation tolerant.
+    Returns True if the message means "I want to start my checklist / task checklist".
+    """
+    if not body or not isinstance(body, str):
+        return False
+    raw = body.strip().lower()
+    normalized = ''.join(c for c in raw if c.isalnum() or c.isspace())
+    normalized = ' '.join(normalized.split())
+    if not normalized:
+        return False
+    phrases = (
+        'start checklist', 'start my checklist', 'start the checklist',
+        'lets start the task checklist', 'let\'s start the task checklist',
+        'start task checklist', 'begin checklist', 'start my tasks',
+        'start the task checklist', 'run checklist', 'do my checklist',
+    )
+    return any(p in normalized for p in phrases)
+
+
+def _get_shift_for_checklist(user):
+    """
+    Return today's active shift for checklist (IN_PROGRESS, CONFIRMED, SCHEDULED).
+    Used when staff say "start checklist" so they can start/resume without clock-in window.
+    """
+    if not user:
+        return None
+    now = timezone.now()
+    qs = AssignedShift.objects.filter(
+        Q(staff=user) | Q(staff_members=user),
+        shift_date=now.date(),
+        status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
+    ).distinct().select_related('staff').order_by('start_time')
+    return qs.first()
+
+
+def _get_shift_for_clock_in(user):
+    """
+    Return an AssignedShift for today that is within the allowed clock-in window
+    (from CLOCK_IN_WINDOW_MINUTES_BEFORE before shift start to CLOCK_IN_WINDOW_MINUTES_AFTER after).
+    Considers staff and staff_members. Returns None if no valid shift.
+    """
+    if not user:
+        return None
+    from datetime import timedelta
+    now = timezone.now()
+    window_before = timedelta(minutes=getattr(dj_settings, 'CLOCK_IN_WINDOW_MINUTES_BEFORE', 30))
+    window_after = timedelta(minutes=getattr(dj_settings, 'CLOCK_IN_WINDOW_MINUTES_AFTER', 15))
+    qs = AssignedShift.objects.filter(
+        Q(staff=user) | Q(staff_members=user),
+        shift_date=now.date(),
+        status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
+    ).distinct().select_related('staff')
+    for shift in qs.order_by('start_time'):
+        if not shift.start_time:
+            continue
+        start = shift.start_time if timezone.is_aware(shift.start_time) else timezone.make_aware(shift.start_time)
+        earliest = start - window_before
+        latest = start + window_after
+        if earliest <= now <= latest:
+            return shift
+    return None
+
+
 def _sync_checklist_progress_create(shift, staff, phone_digits, task_ids):
     """Create ShiftChecklistProgress when starting a WhatsApp checklist."""
     try:
@@ -749,23 +837,29 @@ def whatsapp_webhook(request):
                                 continue
 
                             if btn_id == 'clock_in_now':
-                                if user:
-                                    last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
-                                    if last_event and last_event.event_type == 'in':
-                                        notification_service.send_whatsapp_text(phone_digits, "You are already clocked in.")
-                                    else:
-                                        session.state = 'awaiting_clock_in_location'
-                                        session.save(update_fields=['state'])
-                                        # Use location request template (Lua: clock_in_location or clock_in_location_request)
-                                        loc_template = getattr(dj_settings, 'WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION', 'clock_in_location_request')
-                                        notification_service.send_whatsapp_template(
-                                            phone=phone_digits,
-                                            template_name=loc_template,
-                                            language_code='en_US',
-                                            components=[]
-                                        )
-                                else:
+                                if not user:
                                     notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                                    continue
+                                last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+                                if last_event and last_event.event_type == 'in':
+                                    notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
+                                    continue
+                                if not _get_shift_for_clock_in(user):
+                                    notification_service.send_whatsapp_text(phone_digits, "You do not have a scheduled shift at this time.")
+                                    continue
+                                rest = getattr(user, 'restaurant', None)
+                                if rest and (not getattr(rest, 'latitude', None) or not getattr(rest, 'longitude', None) or not getattr(rest, 'radius', None)):
+                                    notification_service.send_whatsapp_text(
+                                        phone_digits,
+                                        "Location check is not set up for your restaurant. Please contact your manager to clock in."
+                                    )
+                                    continue
+                                session.state = 'awaiting_clock_in_location'
+                                session.save(update_fields=['state'])
+                                notification_service.send_whatsapp_location_request(
+                                    phone_digits,
+                                    "Please share your live location to clock in."
+                                )
                                 continue
 
 
@@ -820,8 +914,18 @@ def whatsapp_webhook(request):
                             # HANDLE CHECKLIST BUTTON RESPONSES (Yes/No/N/A)
                             # =====================================================
                             elif btn_id in ['yes', 'no', 'n_a', 'Yes', 'No', 'N/A'] and session.state == 'in_checklist':
-                                from scheduling.models import ShiftTask
+                                from scheduling.models import ShiftTask, TaskVerificationRecord
                                 checklist = session.context.get('checklist', {})
+                                shift_id = checklist.get('shift_id')
+                                # Lock: do not accept submissions if checklist was closed (e.g. auto clock-out)
+                                if shift_id and user:
+                                    prog = ShiftChecklistProgress.objects.filter(shift_id=shift_id, staff=user).first()
+                                    if prog and prog.status in ('INCOMPLETE_SHIFT_END', 'CANCELLED'):
+                                        notification_service.send_whatsapp_text(
+                                            phone_digits,
+                                            "This checklist was closed because your shift ended. Contact your manager if you need to update it."
+                                        )
+                                        continue
                                 tasks = checklist.get('tasks', [])
                                 responses = checklist.get('responses', {})
                                 
@@ -836,6 +940,9 @@ def whatsapp_webhook(request):
                                     current_task_id = tasks[0]
                                     
                                 if current_task_id:
+                                    # Idempotency: duplicate button taps must not create duplicate records
+                                    if str(current_task_id) in responses:
+                                        continue
                                     # Record this response
                                     response_value = btn_id.lower().replace('/', '_')  # 'N/A' -> 'n_a'
                                     responses[current_task_id] = response_value
@@ -878,10 +985,26 @@ def whatsapp_webhook(request):
                                             task.status = 'COMPLETED'
                                             task.completed_at = timezone.now()
                                             task.save(update_fields=['status', 'completed_at'])
+                                            try:
+                                                TaskVerificationRecord.objects.create(
+                                                    task=task,
+                                                    submitted_by=user,
+                                                    checklist_responses={'response': 'yes', 'checklist_item_id': str(task.id), 'shift_id': str(task.shift_id)},
+                                                )
+                                            except Exception:
+                                                pass
                                         elif response_value == 'n_a':
                                             task.status = 'CANCELLED'
                                             task.notes = (task.notes or '') + f"\nN/A ({timezone.now().strftime('%H:%M')})"
                                             task.save(update_fields=['status', 'notes'])
+                                            try:
+                                                TaskVerificationRecord.objects.create(
+                                                    task=task,
+                                                    submitted_by=user,
+                                                    checklist_responses={'response': 'n_a', 'checklist_item_id': str(task.id), 'shift_id': str(task.shift_id)},
+                                                )
+                                            except Exception:
+                                                pass
                                         elif response_value == 'no':
                                             task.status = 'IN_PROGRESS'
                                             task.started_at = task.started_at or timezone.now()
@@ -902,6 +1025,26 @@ def whatsapp_webhook(request):
                                                 {"id": "skip", "title": "⏭️ Skip"}
                                             ]
                                             notification_service.send_whatsapp_buttons(phone_digits, follow_msg, follow_buttons)
+                                            try:
+                                                TaskVerificationRecord.objects.create(
+                                                    task=task,
+                                                    submitted_by=user,
+                                                    checklist_responses={'response': 'no', 'checklist_item_id': str(task.id), 'shift_id': str(task.shift_id)},
+                                                )
+                                            except Exception:
+                                                pass
+                                            try:
+                                                AuditTrailService.log_activity(
+                                                    user=user,
+                                                    action=AuditActionType.PROGRESS_UPDATE,
+                                                    description=f"Checklist task marked No — follow-up needed: {getattr(task, 'title', 'Task')}",
+                                                    content_object=task,
+                                                    new_values={'response': 'no', 'shift_id': str(task.shift_id), 'task_id': str(task.id)},
+                                                    severity=AuditSeverity.MEDIUM,
+                                                    metadata={'source': 'whatsapp_checklist', 'follow_up': True},
+                                                )
+                                            except Exception:
+                                                pass
                                             continue
                                     except ShiftTask.DoesNotExist:
                                         pass
@@ -916,7 +1059,7 @@ def whatsapp_webhook(request):
                                         completion_msg = (
                                             f"🎉 *Checklist Complete!*\n\n"
                                             f"✅ {completed}/{total} items confirmed\n\n"
-                                            "Great job! Have a productive shift."
+                                            "Great job! Your opening checklist is complete. Have a productive shift!"
                                         )
                                         notification_service.send_whatsapp_text(phone_digits, completion_msg)
                                         _sync_checklist_progress_complete(checklist.get('shift_id'), user)
@@ -1034,6 +1177,18 @@ def whatsapp_webhook(request):
                             try:
                                 from scheduling.models import ShiftTask, TaskVerificationRecord
                                 task = ShiftTask.objects.get(id=task_id, assigned_to=user)
+                                # Lock: reject photo if checklist was closed (e.g. auto clock-out)
+                                if task.shift_id and user:
+                                    prog = ShiftChecklistProgress.objects.filter(shift_id=task.shift_id, staff=user).first()
+                                    if prog and prog.status in ('INCOMPLETE_SHIFT_END', 'CANCELLED'):
+                                        notification_service.send_whatsapp_text(
+                                            phone_digits,
+                                            "This checklist was closed because your shift ended. Contact your manager if you need to update it."
+                                        )
+                                        session.context.pop('awaiting_verification_for_task_id', None)
+                                        session.state = 'idle'
+                                        session.save(update_fields=['state', 'context'])
+                                        continue
                                 image_obj = msg.get('image') or {}
                                 media_id = image_obj.get('id')
                                 mime_type = image_obj.get('mime_type')
@@ -1045,7 +1200,15 @@ def whatsapp_webhook(request):
                                     defaults={'photo_evidence': []}
                                 )
                                 photos = list(record.photo_evidence or [])
-                                photos.append({'media_id': media_id, 'mime_type': mime_type, 'caption': caption})
+                                photos.append({
+                                    'media_id': media_id,
+                                    'mime_type': mime_type,
+                                    'caption': caption,
+                                    'timestamp': timezone.now().isoformat(),
+                                    'staff_id': str(user.id),
+                                    'shift_id': str(task.shift_id),
+                                    'task_id': str(task.id),
+                                })
                                 record.photo_evidence = photos
                                 record.save(update_fields=['photo_evidence'])
                                 
@@ -1457,84 +1620,162 @@ def whatsapp_webhook(request):
                         continue
 
                     # ------------------------------------------------------------------
-                    # 4. HANDLE LOCATION (Clock In)
+                    # 4. HANDLE LOCATION (Clock In) – production workflow
                     # ------------------------------------------------------------------
                     if msg_type == 'location':
                         loc = msg.get('location') or {}
                         lat = loc.get('latitude')
                         lon = loc.get('longitude')
-                        
-                        if user and lat and lon:
-                            # Verify if location is within geofence
-                            rest = user.restaurant
-                            dist = calculate_distance(lat, lon, float(rest.latitude or 0), float(rest.longitude or 0))
-                            radius = float(rest.radius or 100)
-                            
-                            if dist > radius:
-                                fail_msg = (
-                                    f"📍 *Location verification failed.*\n\n"
-                                    f"You are {dist:.0f}m away from the restaurant. "
-                                    f"Please be within {radius:.0f}m to clock in."
-                                )
-                                notification_service.send_whatsapp_text(phone_digits, fail_msg)
-                                continue
 
-                            # Logic: Check if already clocked in?
-                            last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
-                            
-                            if session.state == 'awaiting_clock_in_location' or (not last_event or last_event.event_type != 'in'):
-                                ClockEvent.objects.create(
-                                    staff=user,
-                                    event_type='in',
-                                    latitude=lat,
-                                    longitude=lon,
-                                    device_id='whatsapp',
-                                    location_encrypted=f"{lat},{lon}" # Populate required field
+                        if not user:
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            continue
+                        if not lat or not lon:
+                            notification_service.send_whatsapp_text(phone_digits, "Please share your location to clock in.")
+                            continue
+
+                        rest = getattr(user, 'restaurant', None)
+                        if not rest:
+                            notification_service.send_whatsapp_text(phone_digits, "You do not have a scheduled shift at this time.")
+                            continue
+
+                        # Geofence must be configured: strict location enforcement
+                        if not getattr(rest, 'latitude', None) or not getattr(rest, 'longitude', None) or not getattr(rest, 'radius', None):
+                            try:
+                                from accounts.models import AuditLog
+                                AuditLog.create_log(
+                                    restaurant=rest,
+                                    user=user,
+                                    action_type='OTHER',
+                                    entity_type='CLOCK_EVENT',
+                                    description='Clock-in attempt rejected: restaurant geofence not configured',
+                                    new_values={'phone': phone_digits},
                                 )
-                                # Find active shift for template and checklist
-                                from scheduling.models import AssignedShift, ShiftTask
-                                now_today = timezone.now()
-                                active_qs = AssignedShift.objects.filter(
-                                    staff=user,
-                                    shift_date=now_today.date(),
-                                    status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS']
+                            except Exception:
+                                pass
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                "Location check is not set up for your restaurant. Please contact your manager to clock in."
+                            )
+                            continue
+
+                        # Shift validation: must have a shift within clock-in window
+                        active_shift = _get_shift_for_clock_in(user)
+                        if not active_shift:
+                            try:
+                                from accounts.models import AuditLog
+                                AuditLog.create_log(
+                                    restaurant=rest,
+                                    user=user,
+                                    action_type='OTHER',
+                                    entity_type='CLOCK_EVENT',
+                                    description='Clock-in attempt rejected: no shift within window',
+                                    new_values={'phone': phone_digits, 'lat': lat, 'lon': lon, 'reason': 'no_shift_in_window'},
                                 )
-                                active_shift = active_qs.filter(start_time__lte=now_today, end_time__gte=now_today).first() or active_qs.order_by('start_time').first()
-                                # Send clock_in_successful template (Lua/Miya) or fallback to plain text
-                                clock_in_template = getattr(dj_settings, 'WHATSAPP_TEMPLATE_CLOCK_IN_SUCCESSFUL', 'clock_in_success')
-                                if active_shift and getattr(active_shift, 'start_time', None) and getattr(active_shift, 'end_time', None):
-                                    try:
-                                        st = timezone.localtime(active_shift.start_time).strftime('%H:%M')
-                                        et = timezone.localtime(active_shift.end_time).strftime('%H:%M')
-                                        shift_summary = f"Today {st}–{et}"
-                                    except Exception:
-                                        shift_summary = "Today"
-                                else:
-                                    shift_summary = "Today " + timezone.now().strftime('%H:%M')
-                                try:
-                                    notification_service.send_whatsapp_template(
-                                        phone_digits,
-                                        template_name=clock_in_template,
-                                        language_code='en_US',
-                                        components=[{"type": "body", "parameters": [{"type": "text", "text": shift_summary[:100]}, {"type": "text", "text": "Location verified"}]}]
-                                    )
-                                except Exception:
-                                    notification_service.send_whatsapp_text(phone_digits, R(user, 'clockin_ok', time=timezone.now().strftime('%H:%M')))
-                                
-                                # =====================================================
-                                # INITIATE CONVERSATIONAL CHECKLIST AFTER CLOCK-IN
-                                # =====================================================
-                                if active_shift:
-                                    notification_service.start_conversational_checklist_after_clock_in(
-                                        user, active_shift, phone_digits=phone_digits
-                                    )
-                                else:
+                            except Exception:
+                                pass
+                            notification_service.send_whatsapp_text(phone_digits, "You do not have a scheduled shift at this time.")
+                            session.state = 'idle'
+                            session.save(update_fields=['state'])
+                            continue
+
+                        # Geofence validation (Haversine via calculate_distance)
+                        try:
+                            dist = calculate_distance(float(lat), float(lon), float(rest.latitude or 0), float(rest.longitude or 0))
+                        except (TypeError, ValueError):
+                            dist = float('inf')
+                        radius = float(getattr(rest, 'radius', None) or 100)
+                        if dist > radius:
+                            try:
+                                from accounts.models import AuditLog
+                                AuditLog.create_log(
+                                    restaurant=rest,
+                                    user=user,
+                                    action_type='OTHER',
+                                    entity_type='CLOCK_EVENT',
+                                    description='Clock-in attempt rejected: outside geofence',
+                                    new_values={'phone': phone_digits, 'distance_m': round(dist), 'radius_m': radius},
+                                )
+                            except Exception:
+                                pass
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                "You are not within the restaurant's approved location zone. Please move closer and try again."
+                            )
+                            continue
+
+                        # Duplicate clock-in protection (idempotency)
+                        last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+                        if last_event and last_event.event_type == 'in':
+                            notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
+                            session.state = 'idle'
+                            session.save(update_fields=['state'])
+                            continue
+
+                        # Atomic: create clock-in and update shift status (idempotent: recheck inside transaction)
+                        try:
+                            with transaction.atomic():
+                                last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+                                if last_event and last_event.event_type == 'in':
+                                    notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
                                     session.state = 'idle'
                                     session.save(update_fields=['state'])
-                            else:
-                                notification_service.send_whatsapp_text(phone_digits, "You are already clocked in.")
+                                    continue
+                                clock_event = ClockEvent.objects.create(
+                                    staff=user,
+                                    event_type='in',
+                                    latitude=float(lat),
+                                    longitude=float(lon),
+                                    device_id='whatsapp',
+                                    notes=f'Clock-in via WhatsApp (location verified, distance={round(dist)}m)',
+                                    location_encrypted=f"{lat},{lon}",
+                                )
+                                active_shift.status = 'IN_PROGRESS'
+                                active_shift.save(update_fields=['status'])
+                            from accounts.models import AuditLog
+                            AuditLog.create_log(
+                                restaurant=rest,
+                                user=user,
+                                action_type='CREATE',
+                                entity_type='CLOCK_EVENT',
+                                entity_id=str(clock_event.id),
+                                description='Clock-in successful (WhatsApp, location verified)',
+                                new_values={'shift_id': str(active_shift.id), 'distance_m': round(dist)},
+                            )
+                        except Exception as e:
+                            logger.exception("Clock-in create failed: %s", e)
+                            notification_service.send_whatsapp_text(phone_digits, "Something went wrong. Please try again.")
+                            continue
+
+                        # Send clock_in_success template (Shift: {{1}}, Location verified)
+                        clock_in_template = getattr(dj_settings, 'WHATSAPP_TEMPLATE_CLOCK_IN_SUCCESSFUL', 'clock_in_success')
+                        if active_shift and getattr(active_shift, 'start_time', None) and getattr(active_shift, 'end_time', None):
+                            try:
+                                st = timezone.localtime(active_shift.start_time).strftime('%H:%M')
+                                et = timezone.localtime(active_shift.end_time).strftime('%H:%M')
+                                shift_summary = f"Today {st}–{et}"
+                            except Exception:
+                                shift_summary = "Today " + timezone.now().strftime('%H:%M')
                         else:
-                            notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            shift_summary = "Today " + timezone.now().strftime('%H:%M')
+                        try:
+                            notification_service.send_whatsapp_template(
+                                phone_digits,
+                                template_name=clock_in_template,
+                                language_code='en_US',
+                                components=[{"type": "body", "parameters": [{"type": "text", "text": shift_summary[:100]}, {"type": "text", "text": "Location verified"}]}]
+                            )
+                        except Exception:
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'clockin_ok', time=timezone.now().strftime('%H:%M')))
+
+                        if active_shift:
+                            checklist_started = notification_service.start_conversational_checklist_after_clock_in(user, active_shift, phone_digits=phone_digits)
+                            if not checklist_started:
+                                session.state = 'idle'
+                                session.save(update_fields=['state'])
+                        else:
+                            session.state = 'idle'
+                            session.save(update_fields=['state'])
                         continue
 
                     # ------------------------------------------------------------------
@@ -1584,7 +1825,7 @@ def whatsapp_webhook(request):
                                 session.context.pop('checklist', None)
                                 session.state = 'idle'
                                 session.save(update_fields=['state', 'context'])
-                                notification_service.send_whatsapp_text(phone_digits, "🎉 Checklist complete!")
+                                notification_service.send_whatsapp_text(phone_digits, "Great job! Your opening checklist is complete. Have a productive shift!")
                             else:
                                 pending_ids = {str(t.id) for t in pending}
                                 next_id = None
@@ -1761,36 +2002,39 @@ def whatsapp_webhook(request):
                         notification_service.send_whatsapp_text(phone_digits, R(user, 'help'))
                         continue
 
-                    # Conversational clock-in (fallback when notification/template fails)
-                    # Example:
-                    #   Staff: I want to clock in
-                    #   Miya:  sends clock_in_location_request template (or text prompt)
-                    #   Staff: shares location
-                    #   Backend: validates geofence and clocks in (see location handler above)
-                    _clock_in_exact = body in ['clock in', 'clock-in', 'clockin']
-                    _clock_in_phrases = (
-                        'want to do clock in', 'want to clock in', 'clock me in', 'i want to clock in',
-                        'i need to clock in', 'can you clock me in', 'please clock me in', 'id like to clock in',
-                        'i would like to clock in', 'do clock in', 'let me clock in', 'need to clock in',
-                        'wanna clock in', 'going to clock in'
-                    )
-                    _is_clock_in_intent = _clock_in_exact or any(p in body for p in _clock_in_phrases)
+                    # Re-prompt for location when awaiting clock-in and user sent text instead of location
+                    if session.state == 'awaiting_clock_in_location':
+                        notification_service.send_whatsapp_location_request(
+                            phone_digits,
+                            "Please share your live location to clock in."
+                        )
+                        continue
 
-                    if _is_clock_in_intent:
-                        if user:
-                            last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
-                            if last_event and last_event.event_type == 'in':
-                                notification_service.send_whatsapp_text(phone_digits, "You are already clocked in.")
-                            else:
-                                session.state = 'awaiting_clock_in_location'
-                                session.save(update_fields=['state'])
-                                # Use template-based location request with text fallback
-                                notification_service.send_whatsapp_location_request(
-                                    phone_digits,
-                                    R(user, 'clockin_prompt')
-                                )
-                        else:
+                    # Clock-in workflow trigger: case-insensitive, handles "clock in", "clockin", "I want to clock in", etc.
+                    if _normalize_clock_in_intent(raw_body or body):
+                        if not user:
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            continue
+                        last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
+                        if last_event and last_event.event_type == 'in':
+                            notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
+                            continue
+                        if not _get_shift_for_clock_in(user):
+                            notification_service.send_whatsapp_text(phone_digits, "You do not have a scheduled shift at this time.")
+                            continue
+                        rest = getattr(user, 'restaurant', None)
+                        if rest and (not getattr(rest, 'latitude', None) or not getattr(rest, 'longitude', None) or not getattr(rest, 'radius', None)):
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                "Location check is not set up for your restaurant. Please contact your manager to clock in."
+                            )
+                            continue
+                        session.state = 'awaiting_clock_in_location'
+                        session.save(update_fields=['state'])
+                        notification_service.send_whatsapp_location_request(
+                            phone_digits,
+                            "Please share your live location to clock in."
+                        )
                         continue
 
                     if body in ['clock out', 'clock-out', 'clockout']:
@@ -1818,6 +2062,103 @@ def whatsapp_webhook(request):
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'clockout_no'))
                         else:
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                        continue
+
+                    # Manual "start checklist" trigger (backup for Miya): validate then start or resume
+                    if _normalize_start_checklist_intent(raw_body or body):
+                        if not user:
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            continue
+                        active_shift = _get_shift_for_checklist(user)
+                        if not active_shift:
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                "You don't have an active shift right now. Please clock in first or check your schedule."
+                            )
+                            continue
+                        prog = ShiftChecklistProgress.objects.filter(
+                            shift=active_shift, staff=user
+                        ).first()
+                        if prog and prog.status == 'COMPLETED':
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                "Your checklist is already complete. Have a productive shift!"
+                            )
+                            continue
+                        if prog and prog.status in ('INCOMPLETE_SHIFT_END', 'CANCELLED'):
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                "This checklist was closed because your shift ended. Contact your manager if you need to update it."
+                            )
+                            continue
+                        if prog and prog.status == 'IN_PROGRESS':
+                            # Resume: restore session and re-send current step
+                            task_ids = prog.task_ids or []
+                            responses = prog.responses or {}
+                            current_id = prog.current_task_id or (task_ids[0] if task_ids else None)
+                            if not current_id or not task_ids:
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    "You're in a checklist. Please reply Yes, No, or N/A to the last message."
+                                )
+                                continue
+                            session.context['checklist'] = {
+                                'shift_id': str(active_shift.id),
+                                'tasks': task_ids,
+                                'current_task_id': current_id,
+                                'responses': responses,
+                                'started_at': getattr(prog, 'created_at', timezone.now()).isoformat(),
+                            }
+                            session.state = 'in_checklist'
+                            session.save(update_fields=['state', 'context'])
+                            nxt = ShiftTask.objects.filter(id=current_id).first()
+                            if nxt:
+                                idx = (task_ids.index(current_id) + 1) if current_id in task_ids else 1
+                                if getattr(nxt, 'verification_required', False) and str(getattr(nxt, 'verification_type', 'NONE')).upper() == 'PHOTO':
+                                    msg = (
+                                        f"📋 *Task {idx}/{len(task_ids)}*\n\n"
+                                        f"*{nxt.title}*\n"
+                                        f"{nxt.description or ''}\n\n"
+                                        f"📸 Please complete this task and send a photo as evidence."
+                                    )
+                                    session.context['awaiting_verification_for_task_id'] = str(nxt.id)
+                                    session.state = 'awaiting_task_photo'
+                                    session.save(update_fields=['state', 'context'])
+                                    notification_service.send_whatsapp_text(phone_digits, msg)
+                                else:
+                                    question_text = (nxt.title or '').strip()
+                                    if (getattr(nxt, 'description', None) or '').strip():
+                                        question_text = f"{question_text}. {(nxt.description or '').strip()}"
+                                    if not notification_service.send_staff_checklist_step(phone_digits, question_text):
+                                        task_msg = (
+                                            f"📋 *Task {idx}/{len(task_ids)}*\n\n"
+                                            f"*{nxt.title}*\n"
+                                            f"{nxt.description or ''}\n\n"
+                                            "Is this complete?"
+                                        )
+                                        buttons = [
+                                            {"id": "yes", "title": "✅ Yes"},
+                                            {"id": "no", "title": "❌ No"},
+                                            {"id": "n_a", "title": "➖ N/A"}
+                                        ]
+                                        notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+                            else:
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    "You're in a checklist. Please reply Yes, No, or N/A to the last message."
+                                )
+                            continue
+                        # Not started: start checklist
+                        started = notification_service.start_conversational_checklist_after_clock_in(
+                            user, active_shift, phone_digits=phone_digits
+                        )
+                        if started:
+                            pass  # First step already sent by service
+                        else:
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                "No tasks are assigned for this shift, or something went wrong. Please try again or contact your manager."
+                            )
                         continue
 
                     body_clean = (body or '').strip()

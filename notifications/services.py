@@ -90,6 +90,23 @@ class NotificationService:
                     minutes_until = int(max(0, (shift_start - now).total_seconds() // 60)) if shift_start else 0
                     minutes_from_now = f"{minutes_until} minutes"
                     location = getattr(restaurant, 'address', None) or getattr(restaurant, 'name', None) or "Restaurant"
+                    shift_end = getattr(shift, 'end_time', None)
+                    if shift_end:
+                        try:
+                            shift_end = timezone.localtime(shift_end)
+                        except Exception:
+                            pass
+                    duration_str = ""
+                    if shift_start and shift_end and hasattr(shift_start, 'strftime') and hasattr(shift_end, 'strftime'):
+                        from datetime import timedelta
+                        dur = shift_end - shift_start
+                        if dur.total_seconds() < 0:
+                            dur = dur + timedelta(days=1)
+                        mins = int(dur.total_seconds() // 60)
+                        duration_str = f"{mins // 60}h {mins % 60}m"
+                    role = (getattr(shift, 'role', '') or '').upper() or 'Shift'
+                    notes = (getattr(shift, 'notes', '') or '').strip()
+                    shift_description = f"{role}" + (f" • {notes}" if notes else "")
                     # Prefer Miya (Lua) so the reminder comes from the assistant
                     lua_url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
                     lua_agent_id = getattr(settings, 'LUA_AGENT_ID', None)
@@ -102,6 +119,8 @@ class NotificationService:
                             location=location,
                             shift_id=getattr(shift, 'id', None),
                             template_name=getattr(settings, 'WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', 'staff_clock_in'),
+                            shift_description=shift_description,
+                            duration=duration_str,
                         )
                         if not ok:
                             # Fallback: send direct WhatsApp if Miya webhook failed
@@ -412,10 +431,13 @@ class NotificationService:
         location,
         shift_id=None,
         template_name=None,
+        shift_description=None,
+        duration=None,
     ):
         """
         Notify Miya (Lua) to send the clock-in reminder shortly before a staff shift.
-        Miya sends the WhatsApp template (e.g. staff_clock_in) so the reminder comes from the assistant.
+        Miya sends the WhatsApp template (e.g. staff_clock_in or clock_in_reminder) so the reminder comes from the assistant.
+        shift_description and duration support 5-parameter templates ({{4}} Shift, {{5}} Duration).
         """
         try:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
@@ -438,6 +460,8 @@ class NotificationService:
                     "location": (location or "Restaurant").strip(),
                     "shiftId": str(shift_id) if shift_id else None,
                     "templateName": template_name,
+                    "shiftDescription": (shift_description or "").strip() or (start_time_str or ""),
+                    "duration": (duration or "").strip() or "",
                 },
                 "timestamp": timezone.now().isoformat(),
             }
@@ -1121,6 +1145,10 @@ class NotificationService:
             return False
         if not user or not active_shift:
             return False
+        # Do not restart if checklist is already completed (safeguard)
+        existing = ShiftChecklistProgress.objects.filter(shift=active_shift, staff=user, status='COMPLETED').first()
+        if existing:
+            return False
         phone = (phone_digits or (getattr(user, "phone", None) or "")).strip()
         if not phone:
             return False
@@ -1321,14 +1349,58 @@ class NotificationService:
             logger.error(f"WhatsApp buttons error: {e}")
             return False, {"error": str(e)}
 
-    def send_whatsapp_location_request(self, phone, body):
+    def send_whatsapp_location_request_interactive(self, phone, body_text):
         """
-        Prefer a pre-approved template that asks for live location.
-        Falls back to plain text prompt.
+        Send a free-form interactive message with a native "Share Location" button.
+        Use when clock_in_location_request template is not available or fails.
+        https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-messages/location-request-messages
         """
         try:
-            # If you have a Meta template for this, use it:
-            template_name = getattr(settings, 'WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION', 'clock_in_location_request')
+            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            if not token or not phone_id or not phone:
+                return False, {"error": "WhatsApp not configured"}
+            phone = ''.join(filter(str.isdigit, phone))
+            default_cc = getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '')
+            if phone.startswith('0'):
+                phone = phone.lstrip('0')
+            if not re.match(r"^\d{10,15}$", phone):
+                if default_cc and re.match(r"^\d{9,14}$", phone):
+                    phone = f"{default_cc}{phone}"
+            if not re.match(r"^\d{10,15}$", phone):
+                return False, {"error": "Invalid phone format"}
+            text = (body_text or "Please share your location to clock in.").strip()[:4096]
+            url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "interactive",
+                "interactive": {
+                    "type": "location_request_message",
+                    "body": {"text": text},
+                    "action": {"name": "send_location"}
+                }
+            }
+            resp = requests.post(url, headers={'Authorization': f"Bearer {token}"}, json=payload)
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"error": resp.text}
+            ok = resp.status_code == 200
+            if not ok:
+                logger.warning("WhatsApp location request failed: %s - %s", resp.status_code, data)
+            return ok, {"status_code": resp.status_code, "data": data}
+        except Exception as e:
+            logger.error("send_whatsapp_location_request_interactive error: %s", e)
+            return False, {"error": str(e)}
+
+    def send_whatsapp_location_request(self, phone, body):
+        """
+        Send clock-in location request: try template with Share Location, then interactive
+        location request message, then plain text. Clock-in must not proceed without location.
+        """
+        template_name = getattr(settings, 'WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION', 'clock_in_location_request')
+        try:
             ok, resp = self.send_whatsapp_template(
                 phone=phone,
                 template_name=template_name,
@@ -1339,7 +1411,13 @@ class NotificationService:
                 return ok, resp
         except Exception:
             pass
-        return self.send_whatsapp_text(phone, body)
+        try:
+            ok, resp = self.send_whatsapp_location_request_interactive(phone, body or "Please share your live location to clock in.")
+            if ok:
+                return ok, resp
+        except Exception:
+            pass
+        return self.send_whatsapp_text(phone, body or "Please share your location to clock in.")
 
     # ----------------------------------------------------------------------
     # WHATSAPP MEDIA + VOICE NOTE TRANSCRIPTION

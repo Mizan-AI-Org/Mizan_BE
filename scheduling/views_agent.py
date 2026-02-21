@@ -16,7 +16,7 @@ import unicodedata
 from difflib import SequenceMatcher
 
 from accounts.models import CustomUser, Restaurant
-from .models import AssignedShift, WeeklySchedule, AgentMemory, ShiftTask
+from .models import AssignedShift, WeeklySchedule, AgentMemory, ShiftTask, TimeOffRequest, ShiftSwapRequest
 from .serializers import AssignedShiftSerializer
 from .services import SchedulingService
 import logging
@@ -2313,4 +2313,358 @@ def agent_proactive_insights(request):
         })
     except Exception as e:
         logger.exception("Agent proactive insights error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_mark_no_show(request):
+    """
+    Mark a shift as no-show. Used by Miya when manager confirms or from proactive flow.
+    Auth: Bearer LUA_WEBHOOK_API_KEY or JWT. Body: shift_id, restaurant_id (or X-Restaurant-Id).
+    """
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        shift_id = data.get('shift_id') or data.get('shiftId')
+        if not shift_id:
+            return Response({'error': 'shift_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        shift = AssignedShift.objects.filter(
+            id=shift_id,
+            schedule__restaurant=restaurant,
+        ).select_related('staff').first()
+        if not shift:
+            return Response({'error': 'Shift not found'}, status=status.HTTP_404_NOT_FOUND)
+        if shift.status == 'NO_SHOW':
+            return Response({'success': True, 'message': 'Already marked as no-show', 'shift_id': str(shift.id)})
+        shift.status = 'NO_SHOW'
+        shift.save(update_fields=['status'])
+        return Response({
+            'success': True,
+            'message': 'Shift marked as no-show',
+            'shift_id': str(shift.id),
+            'staff_name': f"{shift.staff.first_name} {shift.staff.last_name}".strip() if shift.staff else '',
+        })
+    except Exception as e:
+        logger.exception("Agent mark no-show error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_assign_coverage(request):
+    """
+    Assign a staff member to a shift (e.g. to cover a no-show). Reassigns the shift to the new staff.
+    Auth: Bearer LUA_WEBHOOK_API_KEY or JWT. Body: shift_id, staff_id, restaurant_id (or X-Restaurant-Id).
+    """
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        shift_id = data.get('shift_id') or data.get('shiftId')
+        staff_id = data.get('staff_id') or data.get('staffId')
+        if not shift_id or not staff_id:
+            return Response({'error': 'shift_id and staff_id are required'}, status=status.HTTP_400_BAD_REQUEST)
+        shift = AssignedShift.objects.filter(
+            id=shift_id,
+            schedule__restaurant=restaurant,
+        ).select_related('staff').first()
+        if not shift:
+            return Response({'error': 'Shift not found'}, status=status.HTTP_404_NOT_FOUND)
+        new_staff = CustomUser.objects.filter(
+            id=staff_id,
+            restaurant=restaurant,
+            is_active=True,
+        ).first()
+        if not new_staff:
+            return Response({'error': 'Staff not found or not in this restaurant'}, status=status.HTTP_404_NOT_FOUND)
+        shift.staff = new_staff
+        shift.staff_members.clear()
+        shift.status = 'CONFIRMED'
+        shift.save(update_fields=['staff', 'status'])
+        return Response({
+            'success': True,
+            'message': f'Coverage assigned: {new_staff.first_name} {new_staff.last_name}',
+            'shift_id': str(shift.id),
+            'staff_id': str(new_staff.id),
+        })
+    except Exception as e:
+        logger.exception("Agent assign coverage error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_request_time_off(request):
+    """
+    Create a time-off request (staff by phone). Body: phone, start_date, end_date, request_type, reason (optional), restaurant_id.
+    """
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        phone = (data.get('phone') or data.get('phoneNumber') or '').strip()
+        phone_digits = ''.join(filter(str.isdigit, str(phone)))
+        if not phone_digits or len(phone_digits) < 6:
+            return Response({'error': 'Valid phone is required'}, status=status.HTTP_400_BAD_REQUEST)
+        from accounts.services import _find_active_user_by_phone
+        staff = _find_active_user_by_phone(phone_digits)
+        if not staff or getattr(staff, 'restaurant_id', None) != restaurant.id:
+            return Response({'error': 'Staff not found for this phone in this restaurant'}, status=status.HTTP_404_NOT_FOUND)
+        start_s = data.get('start_date') or data.get('startDate')
+        end_s = data.get('end_date') or data.get('endDate')
+        if not start_s or not end_s:
+            return Response({'error': 'start_date and end_date (YYYY-MM-DD) are required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            start_date = datetime.strptime(start_s[:10], '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_s[:10], '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'error': 'Invalid date format. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
+        if end_date < start_date:
+            return Response({'error': 'end_date must be on or after start_date'}, status=status.HTTP_400_BAD_REQUEST)
+        request_type = (data.get('request_type') or data.get('type') or 'VACATION').upper()
+        if request_type not in ('VACATION', 'SICK', 'PERSONAL', 'OTHER'):
+            request_type = 'VACATION'
+        reason = (data.get('reason') or '').strip()
+        tor = TimeOffRequest.objects.create(
+            staff=staff, start_date=start_date, end_date=end_date,
+            request_type=request_type, reason=reason or None, status='PENDING',
+        )
+        return Response({
+            'success': True,
+            'id': str(tor.id),
+            'message': 'Time-off request submitted. Your manager will be notified.',
+            'status': 'PENDING',
+        }, status=status.HTTP_201_CREATED)
+    except Exception as e:
+        logger.exception("Agent request time off error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_list_time_off_requests(request):
+    """List time-off requests (default: PENDING). Query: status, restaurant_id."""
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        status_filter = request.query_params.get('status', 'PENDING').upper()
+        qs = TimeOffRequest.objects.filter(staff__restaurant=restaurant).order_by('-start_date').select_related('staff')
+        if status_filter != 'ALL':
+            qs = qs.filter(status=status_filter)
+        qs = qs[:50]
+        items = [
+            {
+                'id': str(t.id),
+                'staff_name': f"{t.staff.first_name} {t.staff.last_name}".strip(),
+                'staff_id': str(t.staff.id),
+                'start_date': t.start_date.isoformat(),
+                'end_date': t.end_date.isoformat(),
+                'request_type': t.request_type,
+                'reason': (t.reason or '')[:200],
+                'status': t.status,
+            }
+            for t in qs
+        ]
+        return Response({'success': True, 'requests': items})
+    except Exception as e:
+        logger.exception("Agent list time off error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_approve_time_off(request):
+    """Approve a time-off request. Body: request_id, restaurant_id."""
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        data = request.data or {}
+        req_id = data.get('request_id') or data.get('requestId') or data.get('id')
+        if not req_id:
+            return Response({'error': 'request_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        tor = TimeOffRequest.objects.filter(
+            id=req_id, staff__restaurant=restaurant, status='PENDING',
+        ).select_related('staff').first()
+        if not tor:
+            return Response({'error': 'Time-off request not found or not pending'}, status=status.HTTP_404_NOT_FOUND)
+        tor.status = 'APPROVED'
+        tor.approved_by = None
+        tor.save(update_fields=['status', 'approved_by', 'updated_at'])
+        if getattr(tor.staff, 'phone', None):
+            try:
+                from notifications.services import notification_service
+                notification_service.send_whatsapp_text(
+                    tor.staff.phone,
+                    f"✅ Your time-off request ({tor.start_date} to {tor.end_date}) has been *approved*."
+                )
+            except Exception:
+                pass
+        return Response({'success': True, 'message': 'Time-off approved. Staff notified via WhatsApp.', 'request_id': str(tor.id)})
+    except Exception as e:
+        logger.exception("Agent approve time off error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_reject_time_off(request):
+    """Reject a time-off request. Body: request_id, reason (optional), restaurant_id."""
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        data = request.data or {}
+        req_id = data.get('request_id') or data.get('requestId') or data.get('id')
+        reason = (data.get('reason') or '').strip()
+        if not req_id:
+            return Response({'error': 'request_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        tor = TimeOffRequest.objects.filter(
+            id=req_id, staff__restaurant=restaurant, status='PENDING',
+        ).select_related('staff').first()
+        if not tor:
+            return Response({'error': 'Time-off request not found or not pending'}, status=status.HTTP_404_NOT_FOUND)
+        tor.status = 'DENIED'
+        tor.save(update_fields=['status', 'updated_at'])
+        if getattr(tor.staff, 'phone', None):
+            try:
+                from notifications.services import notification_service
+                notification_service.send_whatsapp_text(
+                    tor.staff.phone,
+                    f"Your time-off request ({tor.start_date} to {tor.end_date}) was not approved." + (f" Reason: {reason}" if reason else ''),
+                )
+            except Exception:
+                pass
+        return Response({'success': True, 'message': 'Time-off rejected. Staff notified via WhatsApp.', 'request_id': str(tor.id)})
+    except Exception as e:
+        logger.exception("Agent reject time off error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_list_shift_swaps(request):
+    """List pending shift swap requests. Query: restaurant_id."""
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        qs = ShiftSwapRequest.objects.filter(
+            shift_to_swap__schedule__restaurant=restaurant,
+            status='PENDING',
+        ).order_by('-created_at').select_related('requester', 'receiver', 'shift_to_swap')[:30]
+        items = []
+        for s in qs:
+            shift = s.shift_to_swap
+            items.append({
+                'id': str(s.id),
+                'requester_name': f"{s.requester.first_name} {s.requester.last_name}".strip(),
+                'requester_id': str(s.requester.id),
+                'receiver_name': f"{s.receiver.first_name} {s.receiver.last_name}".strip() if s.receiver else 'Open',
+                'receiver_id': str(s.receiver.id) if s.receiver else None,
+                'shift_id': str(shift.id),
+                'shift_date': shift.shift_date.isoformat() if shift.shift_date else '',
+                'shift_role': shift.role or '',
+                'request_message': (s.request_message or '')[:200],
+            })
+        return Response({'success': True, 'swap_requests': items})
+    except Exception as e:
+        logger.exception("Agent list shift swaps error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_approve_shift_swap(request):
+    """Approve a shift swap: reassign shift to receiver and notify. Body: swap_request_id, restaurant_id."""
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        data = request.data or {}
+        swap_id = data.get('swap_request_id') or data.get('swapRequestId') or data.get('id')
+        if not swap_id:
+            return Response({'error': 'swap_request_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        s = ShiftSwapRequest.objects.filter(
+            id=swap_id,
+            shift_to_swap__schedule__restaurant=restaurant,
+            status='PENDING',
+        ).select_related('requester', 'receiver', 'shift_to_swap').first()
+        if not s:
+            return Response({'error': 'Swap request not found or not pending'}, status=status.HTTP_404_NOT_FOUND)
+        if not s.receiver:
+            return Response({'error': 'Open swap requests need a receiver; assign one first or reject'}, status=status.HTTP_400_BAD_REQUEST)
+        original_shift = s.shift_to_swap
+        original_shift.staff = s.receiver
+        original_shift.staff_members.clear()
+        original_shift.status = 'CONFIRMED'
+        original_shift.save(update_fields=['staff', 'status'])
+        ShiftSwapRequest.objects.filter(shift_to_swap=original_shift, status='PENDING').exclude(pk=s.pk).update(status='CANCELLED')
+        s.status = 'APPROVED'
+        s.save(update_fields=['status', 'updated_at'])
+        for u in [s.requester, s.receiver]:
+            if getattr(u, 'phone', None):
+                try:
+                    from notifications.services import notification_service
+                    notification_service.send_whatsapp_text(
+                        u.phone,
+                        f"✅ Shift swap approved. {s.receiver.first_name} will now cover the shift on {original_shift.shift_date}."
+                    )
+                except Exception:
+                    pass
+        return Response({'success': True, 'message': 'Swap approved. Parties notified via WhatsApp.', 'swap_request_id': str(s.id)})
+    except Exception as e:
+        logger.exception("Agent approve shift swap error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_reject_shift_swap(request):
+    """Reject a shift swap. Body: swap_request_id, reason (optional), restaurant_id."""
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        data = request.data or {}
+        swap_id = data.get('swap_request_id') or data.get('swapRequestId') or data.get('id')
+        reason = (data.get('reason') or '').strip()
+        if not swap_id:
+            return Response({'error': 'swap_request_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        s = ShiftSwapRequest.objects.filter(
+            id=swap_id,
+            shift_to_swap__schedule__restaurant=restaurant,
+            status='PENDING',
+        ).select_related('requester', 'shift_to_swap').first()
+        if not s:
+            return Response({'error': 'Swap request not found or not pending'}, status=status.HTTP_404_NOT_FOUND)
+        s.status = 'REJECTED'
+        s.save(update_fields=['status', 'updated_at'])
+        if getattr(s.requester, 'phone', None):
+            try:
+                from notifications.services import notification_service
+                notification_service.send_whatsapp_text(
+                    s.requester.phone,
+                    f"Your shift swap request for {s.shift_to_swap.shift_date} was not approved." + (f" Reason: {reason}" if reason else ''),
+                )
+            except Exception:
+                pass
+        return Response({'success': True, 'message': 'Swap rejected. Requester notified via WhatsApp.', 'swap_request_id': str(s.id)})
+    except Exception as e:
+        logger.exception("Agent reject shift swap error")
         return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
