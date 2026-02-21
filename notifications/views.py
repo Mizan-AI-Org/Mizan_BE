@@ -652,7 +652,7 @@ def whatsapp_webhook(request):
             'en': {
                 'help': 'Welcome to Mizan. Reply with: "clock in", "clock out", "tasks", or "report".',
                 'clockin_prompt': 'Please share your live location to clock in.',
-                'clockin_tap_location': 'Please tap "Share Location" so I can verify you are at the restaurant.',
+                'clockin_tap_location': 'Tap Share Location above to clock in.',
                 'clockin_ok': 'Clock-in successful at {time}.',
                 'clockin_failed': 'Clock-in failed. You are {distance}m away from the location.',
                 'clockout_ok': 'Clock-out recorded. Duration: {duration} hours.',
@@ -673,7 +673,7 @@ def whatsapp_webhook(request):
             'ar': {
                 'help': 'مرحبًا بكم في ميزان. أجب بـ: "دخول"، "خروج"، "مهام"، أو "بلاغ".',
                 'clockin_prompt': 'يرجى مشاركة موقعك المباشر لتسجيل الدخول.',
-                'clockin_tap_location': 'يرجى النقر على "مشاركة الموقع" للتحقق من وجودك في المطعم.',
+                'clockin_tap_location': 'انقر فوق مشاركة الموقع أعلاه لتسجيل الدخول.',
                 'clockin_ok': 'تم تسجيل الدخول بنجاح في {time}.',
                 'clockin_failed': 'فشل تسجيل الدخول. أنت على بعد {distance} متر من الموقع.',
                 'clockout_ok': 'تم تسجيل الخروج. المدة: {duration} ساعة.',
@@ -694,7 +694,7 @@ def whatsapp_webhook(request):
             'fr': {
                 'help': 'Bienvenue chez Mizan. Répondez par : "clock in", "clock out", "tâches", ou "rapport".',
                 'clockin_prompt': 'Veuillez partager votre position en direct pour pointer.',
-                'clockin_tap_location': 'Veuillez appuyer sur « Partager la position » pour que je puisse vérifier que vous êtes au restaurant.',
+                'clockin_tap_location': 'Appuyez sur Partager la position ci-dessus pour pointer.',
                 'clockin_ok': 'Pointage d\'entrée réussi à {time}.',
                 'clockin_failed': 'Échec du pointage. Vous êtes à {distance}m de l\'emplacement.',
                 'clockout_ok': 'Pointage de sortie enregistré. Durée : {duration} heures.',
@@ -1623,9 +1623,7 @@ def whatsapp_webhook(request):
                         continue
 
                     # ------------------------------------------------------------------
-                    # 4. HANDLE LOCATION (Clock In) – production workflow
-                    # Only accept WhatsApp location payload (type=location, latitude, longitude).
-                    # Do not allow manual coordinate input (text); that is handled above with tap prompt + interactive.
+                    # 4. HANDLE LOCATION (Clock In)
                     # ------------------------------------------------------------------
                     if msg_type == 'location':
                         loc = msg.get('location') or {}
@@ -1636,13 +1634,9 @@ def whatsapp_webhook(request):
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                             continue
                         if not lat or not lon:
-                            notification_service.send_whatsapp_text(
-                                phone_digits,
-                                R(user, 'clockin_tap_location')
-                            )
                             notification_service.send_whatsapp_location_request_interactive(
                                 phone_digits,
-                                "Please share your live location to clock in."
+                                "Share your location to clock in."
                             )
                             continue
 
@@ -2014,14 +2008,11 @@ def whatsapp_webhook(request):
                         notification_service.send_whatsapp_text(phone_digits, R(user, 'help'))
                         continue
 
-                    # Re-prompt for location when awaiting clock-in and user sent text instead of location
+                    # Re-prompt: send Share Location button again (no extra text—just the button)
                     if session.state == 'awaiting_clock_in_location':
-                        _user = user or (session.user if session else None)
-                        tap_msg = R(_user, 'clockin_tap_location') if _user else RESP['en']['clockin_tap_location']
-                        notification_service.send_whatsapp_text(phone_digits, tap_msg)
                         notification_service.send_whatsapp_location_request_interactive(
                             phone_digits,
-                            "Please share your live location to clock in."
+                            "Share your location to clock in."
                         )
                         continue
 
