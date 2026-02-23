@@ -237,16 +237,19 @@ def agent_start_whatsapp_checklist(request):
             {
                 "success": False,
                 "error": str(e),
-                "message_for_user": "I encountered an issue while trying to start the checklist. Please try again in a moment.",
+                "message_for_user": "I'm having trouble loading your checklist. Please try again.",
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
     if started:
+        # First checklist item was already sent by start_conversational_checklist_after_clock_in.
+        # Do not tell the user to "wait" or "receive shortly"—execution was immediate.
         return Response(
             {
                 "success": True,
-                "message_for_user": "Checklist started. You'll receive the first item shortly—please reply with Yes, No, or N/A for each step.",
+                "first_item_sent": True,
+                "message_for_user": "Reply with Yes, No, or N/A for each task.",
             },
             status=status.HTTP_200_OK,
         )
