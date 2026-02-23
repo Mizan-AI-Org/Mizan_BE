@@ -74,6 +74,7 @@ def _normalize_start_checklist_intent(body):
         'lets start the task checklist', 'let\'s start the task checklist',
         'start task checklist', 'begin checklist', 'start my tasks',
         'start the task checklist', 'run checklist', 'do my checklist',
+        "let's begin tasks", 'lets begin tasks',
     )
     return any(p in normalized for p in phrases)
 
@@ -781,7 +782,15 @@ def whatsapp_webhook(request):
                             phone=phone_digits,
                             defaults={'user': activated_user, 'state': 'idle'}
                         )
-                        # Handoff done; Miya sends welcome. Skip further processing for this message.
+                        # Send welcome immediately so staff get confirmation in the same turn
+                        try:
+                            notification_service.send_staff_activated_welcome(
+                                phone=phone_digits,
+                                first_name=activated_user.first_name or "Staff",
+                                restaurant_name=activated_user.restaurant.name if getattr(activated_user, 'restaurant', None) else "",
+                            )
+                        except Exception as e:
+                            logger.warning("send_staff_activated_welcome after webhook activation: %s", e)
                         continue
                     # Resolve user: prefer session's user (restaurant-scoped); else match by phone
                     session = WhatsAppSession.objects.filter(phone=phone_digits).first()
