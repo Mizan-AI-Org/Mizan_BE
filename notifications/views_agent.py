@@ -244,12 +244,13 @@ def agent_start_whatsapp_checklist(request):
 
     if started:
         # First checklist item was already sent by start_conversational_checklist_after_clock_in.
-        # Do not tell the user to "wait" or "receive shortly"—execution was immediate.
+        # Miya must send nothing—no "Checklist started" or "you'll receive shortly" message.
         return Response(
             {
                 "success": True,
                 "first_item_sent": True,
-                "message_for_user": "Reply with Yes, No, or N/A for each task.",
+                "message_for_user": "",
+                "suppress_reply": True,
             },
             status=status.HTTP_200_OK,
         )

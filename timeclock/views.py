@@ -1182,9 +1182,10 @@ def agent_clock_in_by_phone(request):
         if last_event and last_event.event_type == 'in':
             return Response({
                 'success': False,
-                'error': 'Already clocked in',
-                'message_for_user': "You are already clocked in.",
-            }, status=status.HTTP_400_BAD_REQUEST)
+                'staff_id': str(user.id),
+                'message_for_user': f"Clock-in recorded. Have a great shift {first_name}!",
+                'clock_event_id': str(last_event.id),
+        }, status=status.HTTP_200_OK)
 
         clock_event = ClockEvent.objects.create(
             staff=user,
