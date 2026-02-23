@@ -1163,15 +1163,23 @@ class NotificationService:
             session.save(update_fields=["user"])
 
         def _ensure_shift_tasks_from_templates(shift_obj):
-            try:
-                if ShiftTask.objects.filter(shift=shift_obj).exists():
-                    return
-            except Exception:
-                return
+            """
+            Ensure ShiftTasks exist for all Process & Task templates on this shift.
+            Tasks defined under each template (Manage Processes → Edit Process → Tasks)
+            and selected during scheduling are created here and sent as the staff
+            checklist. Runs even when the shift already has ShiftTasks (e.g. custom
+            tasks), so the checklist includes both template tasks and custom tasks.
+            Reads from template.tasks (JSON) or template.sop_steps (JSON).
+            """
             try:
                 templates = list(shift_obj.task_templates.all())
             except Exception:
                 templates = []
+            existing_titles = set(
+                ShiftTask.objects.filter(shift=shift_obj)
+                .values_list("title", flat=True)
+                .distinct()
+            )
             for tpl in templates:
                 steps = []
                 try:
@@ -1185,29 +1193,37 @@ class NotificationService:
                     steps = [{"title": getattr(tpl, "name", "Task"), "description": getattr(tpl, "description", "") or ""}]
                 for step in steps:
                     if isinstance(step, str):
-                        title = step.strip()[:255] or getattr(tpl, "name", "Task")
+                        title = (step.strip()[:255] or getattr(tpl, "name", "Task")).strip()
                         desc = ""
                     elif isinstance(step, dict):
-                        title = (step.get("title") or step.get("name") or step.get("task") or getattr(tpl, "name", "Task"))[:255]
+                        title = (step.get("title") or step.get("name") or step.get("task") or getattr(tpl, "name", "Task"))[:255].strip()
                         desc = (step.get("description") or step.get("details") or "").strip()
                     else:
-                        title = getattr(tpl, "name", "Task")
+                        title = (getattr(tpl, "name", "Task") or "Task").strip()
                         desc = ""
+                    if not title:
+                        title = getattr(tpl, "name", "Task") or "Task"
+                    if title in existing_titles:
+                        continue
+                    existing_titles.add(title)
                     v_req = bool(step.get("verification_required", False) if isinstance(step, dict) else False) or bool(getattr(tpl, "verification_required", False))
                     v_type = (step.get("verification_type") or getattr(tpl, "verification_type", "NONE") or "NONE") if isinstance(step, dict) else (getattr(tpl, "verification_type", "NONE") or "NONE")
                     v_inst = (step.get("verification_instructions") or getattr(tpl, "verification_instructions", None)) if isinstance(step, dict) else getattr(tpl, "verification_instructions", None)
                     v_cl = (step.get("verification_checklist") or getattr(tpl, "verification_checklist", []) or []) if isinstance(step, dict) else (getattr(tpl, "verification_checklist", []) or [])
-                    ShiftTask.objects.create(
-                        shift=shift_obj,
-                        title=title,
-                        description=desc,
-                        status="TODO",
-                        assigned_to=user,
-                        verification_required=v_req,
-                        verification_type=v_type,
-                        verification_instructions=v_inst,
-                        verification_checklist=v_cl,
-                    )
+                    try:
+                        ShiftTask.objects.create(
+                            shift=shift_obj,
+                            title=title,
+                            description=desc,
+                            status="TODO",
+                            assigned_to=user,
+                            verification_required=v_req,
+                            verification_type=v_type,
+                            verification_instructions=v_inst,
+                            verification_checklist=v_cl,
+                        )
+                    except Exception as e:
+                        logger.warning("start_conversational_checklist_after_clock_in: create ShiftTask from template: %s", e)
 
         _ensure_shift_tasks_from_templates(active_shift)
 
@@ -1215,6 +1231,27 @@ class NotificationService:
         priority_order = {"URGENT": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
         tasks = sorted(list(tasks_qs), key=lambda t: (priority_order.get((t.priority or "MEDIUM").upper(), 2), t.created_at))
         task_ids = [str(t.id) for t in tasks]
+        # If shift has no tasks (e.g. no task_templates), create one default so staff still receive a checklist
+        if not task_ids:
+            try:
+                default_task = ShiftTask.objects.create(
+                    shift=active_shift,
+                    title="Confirm you're ready for your shift",
+                    description="",
+                    status="TODO",
+                    assigned_to=user,
+                )
+                task_ids = [str(default_task.id)]
+                tasks = [default_task]
+                logger.info(
+                    "start_conversational_checklist_after_clock_in: created default ShiftTask for shift %s (no templates)",
+                    active_shift.id,
+                )
+            except Exception as e:
+                logger.warning("start_conversational_checklist_after_clock_in: could not create default task: %s", e)
+                session.state = "idle"
+                session.save(update_fields=["state"])
+                return False
         if not task_ids:
             session.state = "idle"
             session.save(update_fields=["state"])
@@ -1259,6 +1296,8 @@ class NotificationService:
             session.save(update_fields=["state", "context"])
             return False
 
+        # Step-by-step conversational checklist: send first task now; subsequent tasks
+        # are sent one-by-one when the user replies Yes/No/N/A via WhatsApp (views.py).
         first_task = tasks[0]
         if getattr(first_task, "verification_required", False) and str(getattr(first_task, "verification_type", "NONE")).upper() == "PHOTO":
             msg = (

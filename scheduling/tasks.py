@@ -210,12 +210,11 @@ def auto_clock_out_after_shift_end():
     - Updates shift status to COMPLETED.
     - Marks in-progress checklists as INCOMPLETE_SHIFT_END and logs incomplete tasks.
     - Sends optional notification to staff; logs all actions for audit.
-    Runs after a short grace period (5 minutes past shift end) so the clock-out reminder can be sent first.
+    Runs as soon as shift end time has passed (no grace period) so staff are clocked out at shift end.
     """
     now = timezone.now()
-    grace = timedelta(minutes=5)
     ended_shifts = AssignedShift.objects.filter(
-        end_time__lte=now - grace,
+        end_time__lte=now,
         status__in=['IN_PROGRESS', 'SCHEDULED', 'CONFIRMED'],
     ).select_related('schedule__restaurant').prefetch_related('staff_members')
 

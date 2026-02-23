@@ -1221,7 +1221,7 @@ def agent_clock_in_by_phone(request):
         return Response({
             'success': True,
             'staff_id': str(user.id),
-            'message_for_user': f"You're clocked in! Have a great shift, {first_name}.",
+            'message_for_user': f"Clock-in recorded. Have a great shift {first_name}!",
             'clock_event_id': str(clock_event.id),
         }, status=status.HTTP_200_OK)
 
