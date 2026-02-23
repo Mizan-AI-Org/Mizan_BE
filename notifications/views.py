@@ -192,6 +192,193 @@ def _sync_checklist_progress_cancel(shift_id, staff):
         logger.warning("ShiftChecklistProgress cancel failed: %s", e)
 
 
+def _handle_checklist_response(notification_service, session, user, phone_digits, response_value):
+    """
+    Process one checklist step response (Yes/No/N/A) from button or typed text.
+    Returns True if the response was handled (caller should continue), False otherwise.
+    """
+    if session.state != 'in_checklist':
+        return False
+    from scheduling.models import ShiftTask, TaskVerificationRecord
+    checklist = session.context.get('checklist', {})
+    shift_id = checklist.get('shift_id')
+    if shift_id and user:
+        prog = ShiftChecklistProgress.objects.filter(shift_id=shift_id, staff=user).first()
+        if prog and prog.status in ('INCOMPLETE_SHIFT_END', 'CANCELLED'):
+            notification_service.send_whatsapp_text(
+                phone_digits,
+                "This checklist was closed because your shift ended. Contact your manager if you need to update it."
+            )
+            return True
+    tasks = checklist.get('tasks', [])
+    responses = checklist.get('responses', {})
+    current_task_id = checklist.get('current_task_id')
+    if not current_task_id and tasks:
+        current_index = int(checklist.get('current_index', 0) or 0)
+        if 0 <= current_index < len(tasks):
+            current_task_id = tasks[current_index]
+    if not current_task_id and tasks:
+        current_task_id = tasks[0]
+    if not current_task_id:
+        return False
+    if str(current_task_id) in responses:
+        return True
+    responses[current_task_id] = response_value
+    checklist['responses'] = responses
+    session.context['checklist'] = checklist
+    _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
+    try:
+        task = ShiftTask.objects.get(id=current_task_id)
+        if shift_id and user:
+            sft = AssignedShift.objects.filter(id=shift_id).first()
+            if sft and sft.end_time and timezone.now() > sft.end_time:
+                notification_service.send_whatsapp_text(phone_digits, "⏱️ Shift ended. Checklist paused.")
+                _sync_checklist_progress_cancel(shift_id, user)
+                session.context.pop('checklist', None)
+                session.state = 'idle'
+                session.save(update_fields=['state', 'context'])
+                return True
+        if response_value == 'yes':
+            if getattr(task, 'verification_required', False) and str(getattr(task, 'verification_type', 'NONE')).upper() == 'PHOTO':
+                session.context['awaiting_verification_for_task_id'] = str(task.id)
+                session.state = 'awaiting_task_photo'
+                checklist['current_task_id'] = current_task_id
+                checklist['responses'] = responses
+                session.context['checklist'] = checklist
+                session.save(update_fields=['state', 'context'])
+                msg = (
+                    f"📸 Please send a photo to complete:\n\n"
+                    f"*{task.title}*\n{task.description or ''}"
+                )
+                notification_service.send_whatsapp_text(phone_digits, msg)
+                return True
+            task.status = 'COMPLETED'
+            task.completed_at = timezone.now()
+            task.save(update_fields=['status', 'completed_at'])
+            try:
+                TaskVerificationRecord.objects.create(
+                    task=task,
+                    submitted_by=user,
+                    checklist_responses={'response': 'yes', 'checklist_item_id': str(task.id), 'shift_id': str(task.shift_id)},
+                )
+            except Exception:
+                pass
+        elif response_value == 'n_a':
+            task.status = 'CANCELLED'
+            task.notes = (task.notes or '') + f"\nN/A ({timezone.now().strftime('%H:%M')})"
+            task.save(update_fields=['status', 'notes'])
+            try:
+                TaskVerificationRecord.objects.create(
+                    task=task,
+                    submitted_by=user,
+                    checklist_responses={'response': 'n_a', 'checklist_item_id': str(task.id), 'shift_id': str(task.shift_id)},
+                )
+            except Exception:
+                pass
+        elif response_value == 'no':
+            task.status = 'IN_PROGRESS'
+            task.started_at = task.started_at or timezone.now()
+            task.notes = (task.notes or '') + f"\nNot complete ({timezone.now().strftime('%H:%M')})"
+            task.save(update_fields=['status', 'started_at', 'notes'])
+            checklist['pending_task_id'] = current_task_id
+            checklist['responses'] = responses
+            session.context['checklist'] = checklist
+            session.state = 'checklist_followup'
+            session.save(update_fields=['state', 'context'])
+            follow_msg = (
+                f"Got it — *{task.title}* isn't complete yet.\n\n"
+                "What would you like to do?"
+            )
+            follow_buttons = [
+                {"id": "need_help", "title": "❓ Need help"},
+                {"id": "delay", "title": "⏳ Delay"},
+                {"id": "skip", "title": "⏭️ Skip"}
+            ]
+            notification_service.send_whatsapp_buttons(phone_digits, follow_msg, follow_buttons)
+            try:
+                TaskVerificationRecord.objects.create(
+                    task=task,
+                    submitted_by=user,
+                    checklist_responses={'response': 'no', 'checklist_item_id': str(task.id), 'shift_id': str(task.shift_id)},
+                )
+            except Exception:
+                pass
+            try:
+                AuditTrailService.log_activity(
+                    user=user,
+                    action=AuditActionType.PROGRESS_UPDATE,
+                    description=f"Checklist task marked No — follow-up needed: {getattr(task, 'title', 'Task')}",
+                    content_object=task,
+                    new_values={'response': 'no', 'shift_id': str(task.shift_id), 'task_id': str(task.id)},
+                    severity=AuditSeverity.MEDIUM,
+                    metadata={'source': 'whatsapp_checklist', 'follow_up': True},
+                )
+            except Exception:
+                pass
+            return True
+    except ShiftTask.DoesNotExist:
+        return True
+    session.save(update_fields=['context'])
+    pending_tasks = list(ShiftTask.objects.filter(id__in=tasks).exclude(status__in=['COMPLETED', 'CANCELLED']))
+    if not pending_tasks:
+        completed = sum(1 for r in responses.values() if r == 'yes')
+        total = len(tasks)
+        completion_msg = (
+            f"🎉 *Checklist Complete!*\n\n"
+            f"✅ {completed}/{total} items confirmed\n\n"
+            "Great job! Your opening checklist is complete. Have a productive shift!"
+        )
+        notification_service.send_whatsapp_text(phone_digits, completion_msg)
+        _sync_checklist_progress_complete(checklist.get('shift_id'), user)
+        session.context.pop('checklist', None)
+        session.state = 'idle'
+        session.save(update_fields=['state', 'context'])
+        return True
+    pending_ids = {str(t.id) for t in pending_tasks}
+    next_task_id = None
+    for tid in tasks:
+        if str(tid) in pending_ids:
+            next_task_id = str(tid)
+            break
+    next_task_id = next_task_id or str(pending_tasks[0].id)
+    checklist['current_task_id'] = next_task_id
+    session.context['checklist'] = checklist
+    _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
+    session.save(update_fields=['context'])
+    next_task = ShiftTask.objects.filter(id=next_task_id).first()
+    if next_task:
+        idx = (tasks.index(next_task_id) + 1) if next_task_id in tasks else 1
+        if getattr(next_task, 'verification_required', False) and str(getattr(next_task, 'verification_type', 'NONE')).upper() == 'PHOTO':
+            msg = (
+                f"📋 *Task {idx}/{len(tasks)}*\n\n"
+                f"*{next_task.title}*\n"
+                f"{next_task.description or ''}\n\n"
+                f"📸 Please complete this task and send a photo as evidence."
+            )
+            session.context['awaiting_verification_for_task_id'] = str(next_task.id)
+            session.state = 'awaiting_task_photo'
+            session.save(update_fields=['state', 'context'])
+            notification_service.send_whatsapp_text(phone_digits, msg)
+        else:
+            question_text = (next_task.title or '').strip()
+            if (getattr(next_task, 'description', None) or '').strip():
+                question_text = f"{question_text}. {(next_task.description or '').strip()}"
+            if not notification_service.send_staff_checklist_step(phone_digits, question_text):
+                task_msg = (
+                    f"📋 *Task {idx}/{len(tasks)}*\n\n"
+                    f"*{next_task.title}*\n"
+                    f"{next_task.description or ''}\n\n"
+                    "Is this complete?"
+                )
+                buttons = [
+                    {"id": "yes", "title": "✅ Yes"},
+                    {"id": "no", "title": "❌ No"},
+                    {"id": "n_a", "title": "➖ N/A"}
+                ]
+                notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+    return True
+
+
 def _attach_whatsapp_photo_to_incident(notification_service, ticket, media_id, mime_type=None):
     """Download WhatsApp image by media_id and save to SafetyConcernReport.photo. Best-effort; logs on failure."""
     if not media_id or not ticket:
@@ -926,204 +1113,79 @@ def whatsapp_webhook(request):
                             # HANDLE CHECKLIST BUTTON RESPONSES (Yes/No/N/A)
                             # =====================================================
                             elif btn_id in ['yes', 'no', 'n_a', 'Yes', 'No', 'N/A'] and session.state == 'in_checklist':
-                                from scheduling.models import ShiftTask, TaskVerificationRecord
+                                response_value = btn_id.lower().replace('/', '_')
+                                if _handle_checklist_response(notification_service, session, user, phone_digits, response_value):
+                                    continue
+
+                            elif session.state == 'checklist_followup' and btn_id in ['need_help', 'delay', 'skip']:
+                                from scheduling.models import ShiftTask
                                 checklist = session.context.get('checklist', {})
-                                shift_id = checklist.get('shift_id')
-                                # Lock: do not accept submissions if checklist was closed (e.g. auto clock-out)
-                                if shift_id and user:
-                                    prog = ShiftChecklistProgress.objects.filter(shift_id=shift_id, staff=user).first()
-                                    if prog and prog.status in ('INCOMPLETE_SHIFT_END', 'CANCELLED'):
-                                        notification_service.send_whatsapp_text(
-                                            phone_digits,
-                                            "This checklist was closed because your shift ended. Contact your manager if you need to update it."
-                                        )
-                                        continue
-                                tasks = checklist.get('tasks', [])
-                                responses = checklist.get('responses', {})
-                                
-                                current_task_id = checklist.get('current_task_id')
-                                if not current_task_id:
-                                    current_index = int(checklist.get('current_index', 0) or 0)
-                                    if 0 <= current_index < len(tasks):
-                                        current_task_id = tasks[current_index]
-                                
-                                # Fallback if still no current_task_id
-                                if not current_task_id and tasks:
-                                    current_task_id = tasks[0]
-                                    
-                                if current_task_id:
-                                    # Idempotency: duplicate button taps must not create duplicate records
-                                    if str(current_task_id) in responses:
-                                        continue
-                                    # Record this response
-                                    response_value = btn_id.lower().replace('/', '_')  # 'N/A' -> 'n_a'
-                                    responses[current_task_id] = response_value
-                                    checklist['responses'] = responses
+                                pending_task_id = checklist.get('pending_task_id')
+                                task = ShiftTask.objects.filter(id=pending_task_id).first() if pending_task_id else None
+                                if not task:
+                                    session.state = 'in_checklist'
+                                    session.save(update_fields=['state'])
+                                    continue
+                                if btn_id == 'need_help':
+                                    session.state = 'checklist_help_text'
+                                    session.save(update_fields=['state'])
+                                    notification_service.send_whatsapp_text(phone_digits, f"Tell me what you need help with for:\n\n*{task.title}*")
+                                    continue
+                                if btn_id == 'delay':
+                                    session.state = 'checklist_delay_eta'
+                                    session.save(update_fields=['state'])
+                                    eta_msg = "When do you expect to complete it?"
+                                    eta_buttons = [
+                                        {"id": "eta_10m", "title": "10 min"},
+                                        {"id": "eta_30m", "title": "30 min"},
+                                        {"id": "eta_1h", "title": "1 hour"},
+                                        {"id": "eta_later", "title": "Later"}
+                                    ]
+                                    notification_service.send_whatsapp_buttons(phone_digits, eta_msg, eta_buttons)
+                                    continue
+                                if btn_id == 'skip':
+                                    task.status = 'CANCELLED'
+                                    task.notes = (task.notes or '') + f"\nSkipped by staff ({timezone.now().strftime('%H:%M')})"
+                                    task.save(update_fields=['status', 'notes'])
+                                    checklist.pop('pending_task_id', None)
                                     session.context['checklist'] = checklist
-                                    _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
-                                    
-                                    # Update ShiftTask status based on response
-                                    try:
-                                        task = ShiftTask.objects.get(id=current_task_id)
-                                        # Stop checklist if shift ended
-                                        try:
-                                            from scheduling.models import AssignedShift
-                                            sft = AssignedShift.objects.filter(id=checklist.get('shift_id')).first()
-                                            if sft and sft.end_time and timezone.now() > sft.end_time:
-                                                notification_service.send_whatsapp_text(phone_digits, "⏱️ Shift ended. Checklist paused.")
-                                                _sync_checklist_progress_cancel(checklist.get('shift_id'), user)
-                                                session.context.pop('checklist', None)
-                                                session.state = 'idle'
-                                                session.save(update_fields=['state', 'context'])
-                                                continue
-                                        except Exception:
-                                            pass
-
-                                        if response_value == 'yes':
-                                            # Photo verification required: request photo instead of completing
-                                            if getattr(task, 'verification_required', False) and str(getattr(task, 'verification_type', 'NONE')).upper() == 'PHOTO':
-                                                session.context['awaiting_verification_for_task_id'] = str(task.id)
-                                                session.state = 'awaiting_task_photo'
-                                                checklist['current_task_id'] = current_task_id
-                                                checklist['responses'] = responses
-                                                session.context['checklist'] = checklist
-                                                session.save(update_fields=['state', 'context'])
-                                                msg = (
-                                                    f"📸 Please send a photo to complete:\n\n"
-                                                    f"*{task.title}*\n{task.description or ''}"
-                                                )
-                                                notification_service.send_whatsapp_text(phone_digits, msg)
-                                                continue
-                                            task.status = 'COMPLETED'
-                                            task.completed_at = timezone.now()
-                                            task.save(update_fields=['status', 'completed_at'])
-                                            try:
-                                                TaskVerificationRecord.objects.create(
-                                                    task=task,
-                                                    submitted_by=user,
-                                                    checklist_responses={'response': 'yes', 'checklist_item_id': str(task.id), 'shift_id': str(task.shift_id)},
-                                                )
-                                            except Exception:
-                                                pass
-                                        elif response_value == 'n_a':
-                                            task.status = 'CANCELLED'
-                                            task.notes = (task.notes or '') + f"\nN/A ({timezone.now().strftime('%H:%M')})"
-                                            task.save(update_fields=['status', 'notes'])
-                                            try:
-                                                TaskVerificationRecord.objects.create(
-                                                    task=task,
-                                                    submitted_by=user,
-                                                    checklist_responses={'response': 'n_a', 'checklist_item_id': str(task.id), 'shift_id': str(task.shift_id)},
-                                                )
-                                            except Exception:
-                                                pass
-                                        elif response_value == 'no':
-                                            task.status = 'IN_PROGRESS'
-                                            task.started_at = task.started_at or timezone.now()
-                                            task.notes = (task.notes or '') + f"\nNot complete ({timezone.now().strftime('%H:%M')})"
-                                            task.save(update_fields=['status', 'started_at', 'notes'])
-                                            checklist['pending_task_id'] = current_task_id
-                                            checklist['responses'] = responses
-                                            session.context['checklist'] = checklist
-                                            session.state = 'checklist_followup'
-                                            session.save(update_fields=['state', 'context'])
-                                            follow_msg = (
-                                                f"Got it — *{task.title}* isn’t complete yet.\n\n"
-                                                "What would you like to do?"
-                                            )
-                                            follow_buttons = [
-                                                {"id": "need_help", "title": "❓ Need help"},
-                                                {"id": "delay", "title": "⏳ Delay"},
-                                                {"id": "skip", "title": "⏭️ Skip"}
-                                            ]
-                                            notification_service.send_whatsapp_buttons(phone_digits, follow_msg, follow_buttons)
-                                            try:
-                                                TaskVerificationRecord.objects.create(
-                                                    task=task,
-                                                    submitted_by=user,
-                                                    checklist_responses={'response': 'no', 'checklist_item_id': str(task.id), 'shift_id': str(task.shift_id)},
-                                                )
-                                            except Exception:
-                                                pass
-                                            try:
-                                                AuditTrailService.log_activity(
-                                                    user=user,
-                                                    action=AuditActionType.PROGRESS_UPDATE,
-                                                    description=f"Checklist task marked No — follow-up needed: {getattr(task, 'title', 'Task')}",
-                                                    content_object=task,
-                                                    new_values={'response': 'no', 'shift_id': str(task.shift_id), 'task_id': str(task.id)},
-                                                    severity=AuditSeverity.MEDIUM,
-                                                    metadata={'source': 'whatsapp_checklist', 'follow_up': True},
-                                                )
-                                            except Exception:
-                                                pass
-                                            continue
-                                    except ShiftTask.DoesNotExist:
-                                        pass
-
-                                    # Advance to next pending task
-                                    session.save(update_fields=['context'])
-
-                                    pending_tasks = list(ShiftTask.objects.filter(id__in=tasks).exclude(status__in=['COMPLETED', 'CANCELLED']))
-                                    if not pending_tasks:
-                                        completed = sum(1 for r in responses.values() if r == 'yes')
-                                        total = len(tasks)
-                                        completion_msg = (
-                                            f"🎉 *Checklist Complete!*\n\n"
-                                            f"✅ {completed}/{total} items confirmed\n\n"
-                                            "Great job! Your opening checklist is complete. Have a productive shift!"
-                                        )
-                                        notification_service.send_whatsapp_text(phone_digits, completion_msg)
+                                    session.state = 'in_checklist'
+                                    session.save(update_fields=['state', 'context'])
+                                    # Send next task
+                                    task_ids = checklist.get('tasks', [])
+                                    pending = list(ShiftTask.objects.filter(id__in=task_ids).exclude(status__in=['COMPLETED', 'CANCELLED']))
+                                    if not pending:
                                         _sync_checklist_progress_complete(checklist.get('shift_id'), user)
                                         session.context.pop('checklist', None)
                                         session.state = 'idle'
                                         session.save(update_fields=['state', 'context'])
-                                        continue
-
-                                    pending_ids = {str(t.id) for t in pending_tasks}
-                                    next_task_id = None
-                                    for tid in tasks:
-                                        if str(tid) in pending_ids:
-                                            next_task_id = str(tid)
-                                            break
-                                    next_task_id = next_task_id or str(pending_tasks[0].id)
-                                    checklist['current_task_id'] = next_task_id
-                                    session.context['checklist'] = checklist
-                                    _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
-                                    session.save(update_fields=['context'])
-
-                                    next_task = ShiftTask.objects.filter(id=next_task_id).first()
-                                    if next_task:
-                                        idx = (tasks.index(next_task_id) + 1) if next_task_id in tasks else 1
-                                        if getattr(next_task, 'verification_required', False) and str(getattr(next_task, 'verification_type', 'NONE')).upper() == 'PHOTO':
-                                            msg = (
-                                                f"📋 *Task {idx}/{len(tasks)}*\n\n"
-                                                f"*{next_task.title}*\n"
-                                                f"{next_task.description or ''}\n\n"
-                                                f"📸 Please complete this task and send a photo as evidence."
+                                        notification_service.send_whatsapp_text(phone_digits, "Great job! Your opening checklist is complete. Have a productive shift!")
+                                    else:
+                                        next_id = None
+                                        for tid in task_ids:
+                                            if str(tid) in {str(t.id) for t in pending}:
+                                                next_id = str(tid)
+                                                break
+                                        next_id = next_id or str(pending[0].id)
+                                        checklist['current_task_id'] = next_id
+                                        session.context['checklist'] = checklist
+                                        _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
+                                        session.save(update_fields=['context'])
+                                        nxt = ShiftTask.objects.filter(id=next_id).first()
+                                        if nxt:
+                                            idx = (task_ids.index(next_id) + 1) if next_id in task_ids else 1
+                                            task_msg = (
+                                                f"📋 *Task {idx}/{len(task_ids)}*\n\n"
+                                                f"*{nxt.title}*\n{nxt.description or ''}\n\nIs this complete?"
                                             )
-                                            session.context['awaiting_verification_for_task_id'] = str(next_task.id)
-                                            session.state = 'awaiting_task_photo'
-                                            session.save(update_fields=['state', 'context'])
-                                            notification_service.send_whatsapp_text(phone_digits, msg)
-                                        else:
-                                            question_text = (next_task.title or '').strip()
-                                            if (getattr(next_task, 'description', None) or '').strip():
-                                                question_text = f"{question_text}. {(next_task.description or '').strip()}"
-                                            if not notification_service.send_staff_checklist_step(phone_digits, question_text):
-                                                task_msg = (
-                                                    f"📋 *Task {idx}/{len(tasks)}*\n\n"
-                                                    f"*{next_task.title}*\n"
-                                                    f"{next_task.description or ''}\n\n"
-                                                    "Is this complete?"
-                                                )
-                                                buttons = [
-                                                    {"id": "yes", "title": "✅ Yes"},
-                                                    {"id": "no", "title": "❌ No"},
-                                                    {"id": "n_a", "title": "➖ N/A"}
-                                                ]
-                                                notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
-                                continue
+                                            notification_service.send_whatsapp_buttons(phone_digits, task_msg, [
+                                                {"id": "yes", "title": "✅ Yes"},
+                                                {"id": "no", "title": "❌ No"},
+                                                {"id": "n_a", "title": "➖ N/A"}
+                                            ])
+                                    continue
+
+                            # (checklist button response handled by _handle_checklist_response above)
 
                             elif session.state == 'checklist_followup' and btn_id in ['need_help', 'delay', 'skip']:
                                 from scheduling.models import ShiftTask
@@ -1178,7 +1240,6 @@ def whatsapp_webhook(request):
                                 session.save(update_fields=['state', 'context'])
                                 notification_service.send_whatsapp_text(phone_digits, "Thanks — marked as delayed. Continuing.")
                                 continue
-
 
                     # ------------------------------------------------------------------
                     # 2. HANDLE IMAGE (Verification)
@@ -1802,10 +1863,21 @@ def whatsapp_webhook(request):
                     if not body:
                         continue
 
-                    # Invalid response during checklist: guide user to use buttons or photo
+                    # Checklist: accept typed yes/no/n/a as well as button replies
                     if session.state == 'in_checklist':
+                        body_clean = body.strip()
+                        if body_clean in ('yes', 'y'):
+                            response_value = 'yes'
+                        elif body_clean == 'no':
+                            response_value = 'no'
+                        elif body_clean in ('n/a', 'na', 'n a'):
+                            response_value = 'n_a'
+                        else:
+                            response_value = None
+                        if response_value and _handle_checklist_response(notification_service, session, user, phone_digits, response_value):
+                            continue
                         checklist_invalid = (
-                            "Hmm, I didn't get that. Please choose ✅ Yes, ❌ No, or ➖ N/A for this step."
+                            "Hmm, I didn't get that. Please choose ✅ Yes, ❌ No, or ➖ N/A for this step (or type yes, no, or n/a)."
                         )
                         notification_service.send_whatsapp_text(phone_digits, checklist_invalid)
                         continue
