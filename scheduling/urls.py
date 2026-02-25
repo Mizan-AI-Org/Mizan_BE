@@ -25,6 +25,7 @@ from .template_views import ScheduleTemplateViewSet, TemplateVersionViewSet
 from .audit_views import AuditLogViewSet
 from .views_enhanced import CalendarAPIViewSet
 from .schedule_photo_views import parse_schedule_photo, parse_schedule_document, apply_parsed_schedule
+from .schedule_agent_views import agent_parse_schedule_photo, agent_parse_schedule_document, agent_apply_parsed_schedule
 from .recurring_views import batch_create_recurring_shifts, batch_delete_recurring_series
 from .views_agent import (
     agent_list_staff,
@@ -32,6 +33,8 @@ from .views_agent import (
     agent_list_task_templates,
     agent_create_task_template,
     agent_attach_templates_to_shift,
+    agent_generate_tasks,
+    agent_run_recurring,
     agent_list_shifts,
     agent_create_shift,
     agent_create_recurring_shifts,
@@ -99,6 +102,9 @@ urlpatterns = [
     path('parse-schedule-photo/', parse_schedule_photo, name='parse-schedule-photo'),
     path('parse-schedule-document/', parse_schedule_document, name='parse-schedule-document'),
     path('apply-parsed-schedule/', apply_parsed_schedule, name='apply-parsed-schedule'),
+    path('agent/parse-schedule-photo/', agent_parse_schedule_photo, name='agent_parse_schedule_photo'),
+    path('agent/parse-schedule-document/', agent_parse_schedule_document, name='agent_parse_schedule_document'),
+    path('agent/apply-parsed-schedule/', agent_apply_parsed_schedule, name='agent_apply_parsed_schedule'),
 
     # Live checklist progress (WhatsApp/conversational step-by-step) for managers
     path('live-checklist-progress/', live_checklist_progress, name='scheduling-live-checklist-progress'),
@@ -116,6 +122,8 @@ urlpatterns = [
     path('agent/task-templates/', agent_list_task_templates, name='agent_list_task_templates'),
     path('agent/create-task-template/', agent_create_task_template, name='agent_create_task_template'),
     path('agent/attach-templates-to-shift/', agent_attach_templates_to_shift, name='agent_attach_templates_to_shift'),
+    path('agent/generate-tasks/', agent_generate_tasks, name='agent_generate_tasks'),
+    path('agent/run-recurring/', agent_run_recurring, name='agent_run_recurring'),
     path('agent/list-shifts/', agent_list_shifts, name='agent_list_shifts'),
     path('agent/create-shift/', agent_create_shift, name='agent_create_shift'),
     path('agent/create-recurring-shifts/', agent_create_recurring_shifts, name='agent_create_recurring_shifts'),

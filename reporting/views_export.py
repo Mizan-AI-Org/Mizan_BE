@@ -4,7 +4,7 @@ Managers can generate and send to HR.
 """
 from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework import status
 from datetime import datetime
@@ -160,6 +160,71 @@ def attendance_export(request):
     restaurant = getattr(request.user, "restaurant", None)
     if not restaurant:
         return Response({"detail": "No restaurant associated."}, status=status.HTTP_403_FORBIDDEN)
+
+    rows = _get_attendance_report_data(restaurant, start_date, end_date)
+    restaurant_name = getattr(restaurant, "name", "") or ""
+
+    if fmt == "pdf":
+        content = _export_pdf(rows, start_date, end_date, restaurant_name)
+        resp = HttpResponse(content, content_type="application/pdf")
+        resp["Content-Disposition"] = f'attachment; filename="staff_attendance_report_{start_date}_{end_date}.pdf"'
+        return resp
+    else:
+        content = _export_excel(rows, start_date, end_date)
+        resp = HttpResponse(
+            content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        resp["Content-Disposition"] = f'attachment; filename="staff_attendance_report_{start_date}_{end_date}.xlsx"'
+        return resp
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def agent_attendance_export(request):
+    """
+    Export Staff Attendance Report for HR/payroll (agent-authenticated).
+    Query params: format=pdf|excel, start_date=YYYY-MM-DD, end_date=YYYY-MM-DD.
+    Header: X-Restaurant-Id or query param restaurant_id. Auth: Bearer LUA_WEBHOOK_API_KEY.
+    """
+    from django.conf import settings as django_settings
+    auth_header = request.headers.get("Authorization")
+    expected_key = getattr(django_settings, "LUA_WEBHOOK_API_KEY", None)
+    if not expected_key:
+        return Response({"detail": "Agent key not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    if not auth_header or auth_header != f"Bearer {expected_key}":
+        return Response({"detail": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED)
+
+    rid = request.META.get("HTTP_X_RESTAURANT_ID") or request.query_params.get("restaurant_id")
+    if not rid:
+        return Response(
+            {"detail": "restaurant_id or X-Restaurant-Id required."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    from accounts.models import Restaurant
+    try:
+        restaurant = Restaurant.objects.get(id=rid)
+    except Restaurant.DoesNotExist:
+        return Response({"detail": "Restaurant not found."}, status=status.HTTP_404_NOT_FOUND)
+
+    fmt = (request.query_params.get("format") or "excel").lower().strip()
+    if fmt not in ("pdf", "excel", "xlsx"):
+        return Response(
+            {"detail": "format must be 'pdf' or 'excel' (or 'xlsx')."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    start_date = request.query_params.get("start_date")
+    end_date = request.query_params.get("end_date")
+    if not start_date or not end_date:
+        return Response(
+            {"detail": "start_date and end_date required (YYYY-MM-DD)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+    except ValueError:
+        return Response({"detail": "Invalid date format. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
 
     rows = _get_attendance_report_data(restaurant, start_date, end_date)
     restaurant_name = getattr(restaurant, "name", "") or ""

@@ -173,6 +173,13 @@ def planned_vs_actual_hours(restaurant, start_date, end_date):
 
     result = []
     all_staff_ids = set(planned_by_staff.keys()) | set(actual_by_staff.keys())
+    # Include all active restaurant staff so the report lists everyone (paginated on frontend)
+    from accounts.models import CustomUser
+    active_staff = CustomUser.objects.filter(
+        restaurant=restaurant, is_active=True
+    ).exclude(role='SUPER_ADMIN').values_list('id', flat=True)
+    for uid in active_staff:
+        all_staff_ids.add(str(uid))
     total_planned = 0
     total_actual = 0
     late_count = 0

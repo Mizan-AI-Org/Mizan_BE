@@ -29,7 +29,7 @@ from django.template.loader import render_to_string
 from django.conf import settings
 from notifications.services import notification_service
 from .models import InvitationDeliveryLog
-from .services import sync_user_to_lua_agent, UserManagementService
+from .services import sync_user_to_lua_agent, UserManagementService, _find_active_user_by_phone
 from .permissions import IsAdminOrManager
 from core.permissions import IsOwnerOrSuperAdmin
 
@@ -712,6 +712,30 @@ class StaffActivationPendingListView(APIView):
         return Response({'pending': data, 'count': len(data)})
 
 
+class StaffActivationPendingDeleteView(APIView):
+    """
+    Delete a pending activation (staff invite that hasn't joined yet).
+    DELETE /api/staff/activation/pending/<uuid>/
+    Only records for the current user's restaurant with status NOT_ACTIVATED can be deleted.
+    """
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
+    http_method_names = ['delete', 'options']
+
+    def delete(self, request, *args, **kwargs):
+        pk = kwargs.get('pk')
+        restaurant = getattr(request.user, 'restaurant', None)
+        if not restaurant:
+            return Response({'error': 'No restaurant for this user'}, status=status.HTTP_403_FORBIDDEN)
+        record = get_object_or_404(
+            StaffActivationRecord,
+            pk=pk,
+            restaurant=restaurant,
+            status=StaffActivationRecord.STATUS_NOT_ACTIVATED,
+        )
+        record.delete()
+        return Response({'success': True, 'message': 'Pending invitation removed.'}, status=status.HTTP_200_OK)
+
+
 class AcceptInvitationView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -1177,6 +1201,46 @@ class StaffPinLoginView(APIView):
         refresh = RefreshToken.for_user(user)
 
         # 4. Return user data and tokens
+        return Response({
+            'user': CustomUserSerializer(user).data,
+            'tokens': {
+                'refresh': str(refresh),
+                'access': str(refresh.access_token),
+            }
+        }, status=status.HTTP_200_OK)
+
+
+class StaffPhoneLoginView(APIView):
+    """
+    Backup staff login: activated WhatsApp number only, no PIN and no email.
+    Primary flow is first interaction via WhatsApp/Miya; this is for web backup.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        phone_number = request.data.get('phone_number') or request.data.get('phone')
+        if not phone_number or not str(phone_number).strip():
+            return Response(
+                {'error': 'WhatsApp number is required.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        phone_digits = ''.join(c for c in str(phone_number) if c.isdigit())
+        user = _find_active_user_by_phone(phone_digits)
+        if not user:
+            return Response(
+                {'error': 'No active account found for this number. Activate via the WhatsApp link from your manager first.'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        if user.is_account_locked():
+            return Response(
+                {'error': 'Account is temporarily locked. Try again later.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        refresh = RefreshToken.for_user(user)
+        try:
+            sync_user_to_lua_agent(user, str(refresh.access_token))
+        except Exception:
+            pass
         return Response({
             'user': CustomUserSerializer(user).data,
             'tokens': {

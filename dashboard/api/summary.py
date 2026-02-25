@@ -562,12 +562,14 @@ class DashboardSummaryView(APIView):
             counts_by_level[lvl] = counts_by_level.get(lvl, 0) + 1
 
         # 5. Tasks Due Today: ShiftTasks, Dashboard Tasks, ProcessTasks, scheduling Task (merged, prioritized)
+        # Only show tasks from current and upcoming shifts (exclude past/ended shifts)
         tasks_list = []
-        # ShiftTasks from shifts today
+        # ShiftTasks from shifts today whose shift has NOT ended yet (end_time > now)
         for t in ShiftTask.objects.filter(
             shift__schedule__restaurant=restaurant,
-            shift__shift_date=today
-        ).exclude(status='COMPLETED').order_by('-priority', 'created_at')[:5]:
+            shift__shift_date=today,
+            shift__end_time__gt=now,
+        ).exclude(status='COMPLETED').select_related('shift').order_by('-priority', 'created_at')[:5]:
             status_text = "OVERDUE" if t.priority == 'URGENT' and t.status != 'COMPLETED' else t.status
             tasks_list.append({"label": t.title, "status": status_text, "priority": t.priority or 'MEDIUM'})
         # Dashboard tasks due today

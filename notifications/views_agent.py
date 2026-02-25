@@ -203,7 +203,7 @@ def agent_start_whatsapp_checklist(request):
         )
 
     from accounts.services import _find_active_user_by_phone
-    from notifications.views import _get_shift_for_clock_in
+    from notifications.views import _get_shift_for_checklist
 
     user = _find_active_user_by_phone(clean_phone)
     if not user:
@@ -216,7 +216,9 @@ def agent_start_whatsapp_checklist(request):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    active_shift = _get_shift_for_clock_in(user)
+    # Use today's active shift (SCHEDULED/CONFIRMED/IN_PROGRESS), not the clock-in window.
+    # Staff can start their checklist anytime during their scheduled shift.
+    active_shift = _get_shift_for_checklist(user)
     if not active_shift:
         return Response(
             {

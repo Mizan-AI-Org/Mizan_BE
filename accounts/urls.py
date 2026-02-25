@@ -4,9 +4,10 @@ from .views import (
     CustomTokenObtainPairView, CustomTokenRefreshView, RegisterView, VerifyEmailView, PasswordResetRequestView,
     PasswordResetConfirmView, RestaurantDetailView, RestaurantUpdateView, StaffInvitationListView, 
     StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView, StaffMemberDetailView,
-    LoginView, LogoutView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView, pin_login,
+    LoginView, LogoutView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView, StaffPhoneLoginView, pin_login,
     StaffListView, StaffPasswordResetView, InviteStaffBulkCsvView,
     StaffActivationUploadView, StaffActivationInviteLinkView, StaffActivationPendingListView,
+    StaffActivationPendingDeleteView,
     redirect_to_wa_activation,
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
@@ -20,7 +21,7 @@ from .views_agent import (
     agent_retry_invite,
     agent_miya_instructions,
 )
-from .views_staff_report import staff_profile_report_pdf
+from .views_staff_report import staff_profile_report_pdf, agent_staff_report_pdf
 
 router = DefaultRouter()
 router.register(r'settings', RestaurantSettingsViewSet, basename='settings')
@@ -50,12 +51,14 @@ urlpatterns = [
     path('auth/logout/', LogoutView.as_view(), name='logout'),
     # Use class-based view for PIN login (public endpoint)
     path('auth/pin-login/', StaffPinLoginView.as_view(), name='pin_login'),
+    path('auth/staff-phone-login/', StaffPhoneLoginView.as_view(), name='staff_phone_login'),
     path('auth/me/', MeView.as_view(), name='me'),
     path('staff/invite/', InviteStaffView.as_view(), name='invite_staff'),
     path('staff/invite-bulk-csv/', InviteStaffBulkCsvView.as_view(), name='invite_staff_bulk_csv'),
     path('staff/activation/upload/', StaffActivationUploadView.as_view(), name='staff_activation_upload'),
     path('staff/activation/invite-link/', StaffActivationInviteLinkView.as_view(), name='staff_activation_invite_link'),
     path('staff/activation/pending/', StaffActivationPendingListView.as_view(), name='staff_activation_pending'),
+    path('staff/activation/pending/<uuid:pk>/', StaffActivationPendingDeleteView.as_view(), name='staff_activation_pending_delete'),
     path('go/wa', redirect_to_wa_activation, name='wa_activation_redirect'),
     path('staff/accept-invitation/', AcceptInvitationView.as_view(), name='accept_invitation'),
     path('staff/login/', StaffPinLoginView.as_view(), name='pin_login'),
@@ -68,4 +71,5 @@ urlpatterns = [
     path('agent/failed-invites/', agent_list_failed_invites, name='agent_list_failed_invites'),
     path('agent/retry-invite/', agent_retry_invite, name='agent_retry_invite'),
     path('agent/miya-instructions/', agent_miya_instructions, name='agent_miya_instructions'),
+    path('agent/staff-report-pdf/', agent_staff_report_pdf, name='agent_staff_report_pdf'),
 ]

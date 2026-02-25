@@ -15,7 +15,7 @@ from .views import (
     LaborBudgetListCreateAPIView,
     LaborPolicyAPIView,
 )
-from .views_export import attendance_export
+from .views_export import attendance_export, agent_attendance_export
 from .views_agent import agent_create_incident
 
 urlpatterns = [
@@ -48,4 +48,5 @@ urlpatterns = [
 
     # Staff Attendance Report export for HR / payroll (PDF, Excel)
     path('attendance/export/', attendance_export, name='attendance_export'),
+    path('agent/attendance-export/', agent_attendance_export, name='agent_attendance_export'),
 ]

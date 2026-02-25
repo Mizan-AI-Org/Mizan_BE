@@ -202,6 +202,7 @@ def send_clock_out_reminder():
             print(f"Marked clock_out_reminder_sent=True for shift {shift.id}", file=sys.stderr)
 
 
+@shared_task
 def auto_clock_out_after_shift_end():
     """
     Automatic clock-out when scheduled shift end time is reached (Miya/system-level).
@@ -210,7 +211,7 @@ def auto_clock_out_after_shift_end():
     - Updates shift status to COMPLETED.
     - Marks in-progress checklists as INCOMPLETE_SHIFT_END and logs incomplete tasks.
     - Sends optional notification to staff; logs all actions for audit.
-    Runs as soon as shift end time has passed (no grace period) so staff are clocked out at shift end.
+    Runs as soon as shift end time has passed (no grace period). Scheduled every 1 min for immediate effect.
     """
     now = timezone.now()
     ended_shifts = AssignedShift.objects.filter(
@@ -356,7 +357,7 @@ def check_upcoming_tasks():
     send_clock_in_reminder_10min()
     send_check_list_reminder()
     send_clock_out_reminder()
-    auto_clock_out_after_shift_end()
+    # auto clock-out runs on its own 1-min schedule (auto_clock_out_at_shift_end) for immediate effect
 
 
 
