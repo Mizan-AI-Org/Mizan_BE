@@ -54,6 +54,7 @@ class ScheduleTaskSerializer(serializers.ModelSerializer):
 class SafetyConcernReportSerializer(serializers.ModelSerializer):
     reporter_details = UserSerializer(source='reporter', read_only=True)
     resolved_by_details = UserSerializer(source='resolved_by', read_only=True)
+    assigned_to_details = UserSerializer(source='assigned_to', read_only=True)
     restaurant_details = RestaurantSerializer(source='restaurant', read_only=True)
     
     class Meta:

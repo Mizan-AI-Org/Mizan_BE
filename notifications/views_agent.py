@@ -263,5 +263,5 @@ def agent_start_whatsapp_checklist(request):
             "error": "No checklist items",
             "message_for_user": "No checklist is assigned to your shift right now. You're all set!",
         },
-        status=status.HTTP_200_OK,
+        status=status.HTTP_400_BAD_REQUEST,
     )

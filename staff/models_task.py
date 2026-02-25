@@ -110,6 +110,7 @@ class SafetyConcernReport(models.Model):
     shift = models.ForeignKey('scheduling.AssignedShift', on_delete=models.SET_NULL, null=True, blank=True, related_name='safety_concerns')
     is_anonymous = models.BooleanField(default=True)
     reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='reported_concerns')
+    assigned_to = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_concerns')
     status = models.CharField(max_length=20, choices=[
         ('REPORTED', 'Reported'),
         ('UNDER_REVIEW', 'Under Review'),

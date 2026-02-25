@@ -152,11 +152,10 @@ class AssignedShift(models.Model):
         return f'{members or self.staff} - {self.shift_date} ({self.start_time}-{self.end_time})'
 
     def clean(self):
-        # Validation for overlapping shifts
-        # Note: In a real migration, we iterate over staff_members
-        # For now, we handle both single staff (legacy) and staff_members
-        
-        staff_list = list(self.staff_members.all())
+        if not self.start_time or not self.end_time or not self.shift_date:
+            return
+
+        staff_list = list(self.staff_members.all()) if self.pk else []
         if self.staff and self.staff not in staff_list:
             staff_list.append(self.staff)
 
@@ -194,8 +193,10 @@ class AssignedShift(models.Model):
                     existing_end = timezone.datetime.combine(existing_shift.shift_date, existing_shift.end_time)
                 if shift_start < existing_end and shift_end > existing_start:
                     staff_name = f"{staff_member.first_name} {staff_member.last_name}" or str(staff_member)
+                    ex_start_str = existing_start.strftime('%H:%M') if hasattr(existing_start, 'strftime') else str(existing_shift.start_time)
+                    ex_end_str = existing_end.strftime('%H:%M') if hasattr(existing_end, 'strftime') else str(existing_shift.end_time)
                     raise ValidationError({
-                        'staff': f"Staff member {staff_name} has an overlapping shift on {self.shift_date} from {timezone.localtime(existing_shift.start_time).strftime('%H:%M')} to {timezone.localtime(existing_shift.end_time).strftime('%H:%M')}"
+                        'staff': f"Staff member {staff_name} has an overlapping shift on {self.shift_date} from {ex_start_str} to {ex_end_str}"
                     })
     
     def save(self, *args, **kwargs):

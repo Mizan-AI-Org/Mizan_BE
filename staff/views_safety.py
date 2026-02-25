@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from django.db.models import Sum, Count
 from django.utils import timezone
 
-from accounts.models import Restaurant
+from accounts.models import Restaurant, CustomUser
 from staff.models_task import (
     StandardOperatingProcedure,
     SafetyChecklist,
@@ -135,6 +135,31 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
         
         report.save()
         
+        serializer = self.get_serializer(report)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated, IsManagerOrReadOnly])
+    def assign(self, request, pk=None):
+        """Assign an incident to a staff member to handle."""
+        report = self.get_object()
+        assigned_to_id = request.data.get('assigned_to')
+
+        if not assigned_to_id:
+            report.assigned_to = None
+            report.save(update_fields=['assigned_to', 'updated_at'])
+            serializer = self.get_serializer(report)
+            return Response(serializer.data)
+
+        try:
+            assignee = CustomUser.objects.get(id=assigned_to_id, is_active=True)
+        except CustomUser.DoesNotExist:
+            return Response({"detail": "Staff member not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        report.assigned_to = assignee
+        if report.status == 'REPORTED':
+            report.status = 'UNDER_REVIEW'
+        report.save(update_fields=['assigned_to', 'status', 'updated_at'])
+
         serializer = self.get_serializer(report)
         return Response(serializer.data)
 

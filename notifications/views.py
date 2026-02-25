@@ -81,8 +81,9 @@ def _normalize_start_checklist_intent(body):
 
 def _get_shift_for_checklist(user):
     """
-    Return today's active shift for checklist (IN_PROGRESS, CONFIRMED, SCHEDULED).
-    Used when staff say "start checklist" so they can start/resume without clock-in window.
+    Return today's shift for checklist: prefer the current or next shift (one that hasn't ended yet).
+    Staff can have multiple shifts per day; we pick the one that is in progress or upcoming so the
+    checklist runs for the right shift, not an already-ended one.
     """
     if not user:
         return None
@@ -92,6 +93,11 @@ def _get_shift_for_checklist(user):
         shift_date=now.date(),
         status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
     ).distinct().select_related('staff').order_by('start_time')
+    # Prefer a shift that hasn't ended yet (current or upcoming)
+    current_or_next = qs.filter(end_time__gt=now).order_by('start_time').first()
+    if current_or_next:
+        return current_or_next
+    # Fallback: first shift of the day (e.g. for reporting or late checklist)
     return qs.first()
 
 
@@ -340,7 +346,14 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
         if str(tid) in pending_ids:
             next_task_id = str(tid)
             break
-    next_task_id = next_task_id or str(pending_tasks[0].id)
+    next_task_id = next_task_id or (str(pending_tasks[0].id) if pending_tasks else None)
+    if not next_task_id:
+        notification_service.send_whatsapp_text(phone_digits, "✅ All checklist items completed!")
+        _sync_checklist_progress_complete(checklist.get('shift_id'), user)
+        session.context.pop('checklist', None)
+        session.state = 'idle'
+        session.save(update_fields=['state', 'context'])
+        return True
     checklist['current_task_id'] = next_task_id
     session.context['checklist'] = checklist
     _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
@@ -382,12 +395,17 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
 def _attach_whatsapp_photo_to_incident(notification_service, ticket, media_id, mime_type=None):
     """Download WhatsApp image by media_id and save to SafetyConcernReport.photo. Best-effort; logs on failure."""
     if not media_id or not ticket:
+        logger.warning("_attach_whatsapp_photo_to_incident: missing media_id=%s or ticket=%s", media_id, ticket)
         return
     try:
         media_url, resolved_mime = notification_service.fetch_whatsapp_media_url(media_id)
         mime_type = mime_type or resolved_mime or ''
-        image_bytes = notification_service.download_media_bytes(media_url) if media_url else None
+        if not media_url:
+            logger.warning("_attach_whatsapp_photo_to_incident: no media_url for media_id=%s", media_id)
+            return
+        image_bytes = notification_service.download_media_bytes(media_url)
         if not image_bytes:
+            logger.warning("_attach_whatsapp_photo_to_incident: download returned empty for media_id=%s", media_id)
             return
         ext = '.jpg'
         if 'png' in (mime_type or '').lower():
@@ -398,9 +416,9 @@ def _attach_whatsapp_photo_to_incident(notification_service, ticket, media_id, m
             ext = '.webp'
         name = f"incident_{ticket.id}{ext}"
         ticket.photo.save(name, ContentFile(image_bytes), save=True)
-        logger.info("Attached WhatsApp photo to incident %s", ticket.id)
+        logger.info("Attached WhatsApp photo to incident %s (%d bytes)", ticket.id, len(image_bytes))
     except Exception as e:
-        logger.warning("Could not attach WhatsApp photo to incident: %s", e)
+        logger.warning("Could not attach WhatsApp photo to incident %s: %s", getattr(ticket, 'id', '?'), e)
 
 
 class NotificationPagination(PageNumberPagination):
@@ -1185,45 +1203,6 @@ def whatsapp_webhook(request):
                                             ])
                                     continue
 
-                            # (checklist button response handled by _handle_checklist_response above)
-
-                            elif session.state == 'checklist_followup' and btn_id in ['need_help', 'delay', 'skip']:
-                                from scheduling.models import ShiftTask
-                                checklist = session.context.get('checklist', {})
-                                pending_task_id = checklist.get('pending_task_id')
-                                task = ShiftTask.objects.filter(id=pending_task_id).first() if pending_task_id else None
-                                if not task:
-                                    session.state = 'in_checklist'
-                                    session.save(update_fields=['state'])
-                                    continue
-                                if btn_id == 'need_help':
-                                    session.state = 'checklist_help_text'
-                                    session.save(update_fields=['state'])
-                                    notification_service.send_whatsapp_text(phone_digits, f"Tell me what you need help with for:\n\n*{task.title}*")
-                                    continue
-                                if btn_id == 'delay':
-                                    session.state = 'checklist_delay_eta'
-                                    session.save(update_fields=['state'])
-                                    eta_msg = "When do you expect to complete it?"
-                                    eta_buttons = [
-                                        {"id": "eta_10m", "title": "10 min"},
-                                        {"id": "eta_30m", "title": "30 min"},
-                                        {"id": "eta_1h", "title": "1 hour"},
-                                        {"id": "eta_later", "title": "Later"}
-                                    ]
-                                    notification_service.send_whatsapp_buttons(phone_digits, eta_msg, eta_buttons)
-                                    continue
-                                if btn_id == 'skip':
-                                    task.status = 'CANCELLED'
-                                    task.notes = (task.notes or '') + f"\nSkipped by staff ({timezone.now().strftime('%H:%M')})"
-                                    task.save(update_fields=['status', 'notes'])
-                                    checklist.pop('pending_task_id', None)
-                                    session.context['checklist'] = checklist
-                                    session.state = 'in_checklist'
-                                    session.save(update_fields=['state', 'context'])
-                                    notification_service.send_whatsapp_text(phone_digits, "Okay — skipping that item. Moving on.")
-                                    continue
-
                             elif session.state == 'checklist_delay_eta' and btn_id in ['eta_10m', 'eta_30m', 'eta_1h', 'eta_later']:
                                 from scheduling.models import ShiftTask
                                 checklist = session.context.get('checklist', {})
@@ -1410,18 +1389,6 @@ def whatsapp_webhook(request):
                                             occurred_at=occurred_at,
                                             shift=shift_obj,
                                         )
-                                        if session.context.get('incident_photo_media_id'):
-                                            _attach_whatsapp_photo_to_incident(
-                                                notification_service, ticket,
-                                                session.context.get('incident_photo_media_id'),
-                                                session.context.get('incident_photo_mime_type'),
-                                            )
-                                            session.context.pop('incident_photo_media_id', None)
-                                            session.context.pop('incident_photo_mime_type', None)
-                                        notification_service.send_lua_incident(
-                                            user, raw_body,
-                                            metadata={'channel': 'whatsapp', 'phone': phone_digits, 'ticket_id': str(ticket.id), 'incident_type': incident_type or 'General'}
-                                        )
                                         occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
                                         notification_service.send_whatsapp_text(
                                             phone_digits,
@@ -1430,6 +1397,22 @@ def whatsapp_webhook(request):
                                         session.state = 'idle'
                                         session.context.pop('pending_incident', None)
                                         session.save(update_fields=['state', 'context'])
+                                        try:
+                                            if session.context.get('incident_photo_media_id'):
+                                                _attach_whatsapp_photo_to_incident(
+                                                    notification_service, ticket,
+                                                    session.context.get('incident_photo_media_id'),
+                                                    session.context.get('incident_photo_mime_type'),
+                                                )
+                                                session.context.pop('incident_photo_media_id', None)
+                                                session.context.pop('incident_photo_mime_type', None)
+                                                session.save(update_fields=['context'])
+                                            notification_service.send_lua_incident(
+                                                user, raw_body,
+                                                metadata={'channel': 'whatsapp', 'phone': phone_digits, 'ticket_id': str(ticket.id), 'incident_type': incident_type or 'General'}
+                                            )
+                                        except Exception:
+                                            pass
                                     except Exception as e:
                                         logger.exception("Failed to create incident from image caption: %s", e)
                                         notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
@@ -1550,19 +1533,24 @@ def whatsapp_webhook(request):
                                         occurred_at=occurred_at_fb,
                                         shift=shift_obj_fb,
                                     )
-                                    if media_id_fb:
-                                        _attach_whatsapp_photo_to_incident(notification_service, ticket_fb, media_id_fb, mime_type_fb)
-                                    notification_service.send_lua_incident(user, caption_fb, metadata={
-                                        'channel': 'whatsapp', 'phone': phone_digits, 'ticket_id': str(ticket_fb.id), 'incident_type': incident_type_fb
-                                    })
                                     occurred_str_fb = occurred_at_fb.strftime('%Y-%m-%d %H:%M')
                                     notification_service.send_whatsapp_text(
                                         phone_digits,
                                         R(user, 'incident_recorded', ticket_id=str(ticket_fb.id)[:8], incident_type=incident_type_fb, occurred_at=occurred_str_fb)
                                     )
+                                    try:
+                                        if media_id_fb:
+                                            _attach_whatsapp_photo_to_incident(notification_service, ticket_fb, media_id_fb, mime_type_fb)
+                                        notification_service.send_lua_incident(user, caption_fb, metadata={
+                                            'channel': 'whatsapp', 'phone': phone_digits, 'ticket_id': str(ticket_fb.id), 'incident_type': incident_type_fb
+                                        })
+                                    except Exception:
+                                        pass
                                     continue
                                 except Exception as e:
                                     logger.exception("Failed to create incident from image+caption fallback: %s", e)
+                                    notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
+                                    continue
                         else:
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'unrecognized'))
                             continue
