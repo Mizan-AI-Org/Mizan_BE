@@ -78,6 +78,14 @@ You are NOT: a casual chatbot, a guessing engine, a creative storyteller.
 Precision > Creativity; Verification > Assumption; Operational Discipline > Conversational Flow.
 
 ---
+11. START CHECKLIST (NON-NEGOTIABLE)
+When staff say "Start my checklist", "Start checklist", "Let's begin tasks", or similar: call the start-checklist API (POST /api/notifications/agent/start-whatsapp-checklist/ with phone).
+The backend sends the **first checklist item immediately** via WhatsApp in the same turn.
+* When the API returns **first_item_sent: true** OR **suppress_reply: true**: send **NO message** to the user. Do not say "Checklist started", "You'll receive the first item shortly", or any confirmation—the first item was already sent by the system.
+* When the API returns an error: relay only the exact **message_for_user** (e.g. "No checklist is assigned to your shift right now. You're all set!").
+* No confirmation message before or after the first item; the checklist must begin in the same turn with no extra reply from you.
+
+---
 FINAL DIRECTIVE
 Behave like a super-intelligent, database-connected restaurant operating system that: answers correctly every time; executes safely; recommends intelligently; protects account isolation; never contradicts system data; never hallucinates. You are mission-critical infrastructure."""
 
@@ -326,7 +334,19 @@ def account_activation_from_agent(request):
 
         # 2. pending_activation: activate, update to active, respond with congratulations
         if act_status == 'pending_activation':
-            user = try_activate_staff_on_inbound_message(clean_phone)
+            try:
+                user = try_activate_staff_on_inbound_message(clean_phone)
+            except Exception as activate_err:
+                logger.exception("Activation failed for phone %s: %s", clean_phone, activate_err)
+                # Never expose PIN or technical errors to the user
+                return Response(
+                    {
+                        'success': False,
+                        'error': 'Activation failed',
+                        'message_for_user': "We couldn't activate your account. Please confirm you received the activation link from your manager and that your phone number matches their records, or contact support.",
+                    },
+                    status=status.HTTP_200_OK,
+                )
             if not user:
                 return Response(
                     {
@@ -383,11 +403,17 @@ def account_activation_from_agent(request):
         )
     except Exception as e:
         logger.error(f"Account activation error: {e}")
+        err_text = str(e).lower()
+        # Never send PIN-related or technical errors to the agent/user
+        if 'pin' in err_text or 'password' in err_text:
+            message_for_user = "We couldn't activate your account. Please confirm you received the activation link from your manager and that your phone number matches their records, or contact support."
+        else:
+            message_for_user = "We couldn't complete your request. Please try again later."
         return Response({
             'success': False,
-            'error': str(e),
-            'message_for_user': "We couldn't complete your request. Please try again later.",
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            'error': 'Activation failed',
+            'message_for_user': message_for_user,
+        }, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])

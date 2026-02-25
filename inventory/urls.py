@@ -11,10 +11,12 @@ from .views import (
     StockAdjustmentListCreateAPIView,
     StockAdjustmentRetrieveUpdateDestroyAPIView,
 )
+from .views_agent import agent_list_inventory_items
 
 urlpatterns = [
     # Inventory Items
     path('items/', InventoryItemListCreateAPIView.as_view(), name='inventory-item-list-create'),
+    path('agent/items/', agent_list_inventory_items, name='agent_inventory_items'),
     path('items/<uuid:pk>/', InventoryItemRetrieveUpdateDestroyAPIView.as_view(), name='inventory-item-detail'),
 
     # Suppliers

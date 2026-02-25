@@ -424,6 +424,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "scheduling.reminder_tasks.send_checklist_reminders",
         "schedule": crontab(minute='*/10'),  # Every 10 minutes
     },
+    "auto_clock_out_at_shift_end": {
+        "task": "scheduling.tasks.auto_clock_out_after_shift_end",
+        "schedule": crontab(minute='*'),  # Every minute so staff are clocked out immediately when shift ends
+    },
 }
 
 

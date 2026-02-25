@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from io import BytesIO
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
@@ -206,6 +206,65 @@ def staff_profile_report_pdf(request, pk):
     hours_monthly = _staff_hours_for_period(staff, month_start, today)
 
     # Yearly: Jan 1 – today
+    year_start = today.replace(month=1, day=1)
+    hours_yearly = _staff_hours_for_period(staff, year_start, today)
+
+    pdf_bytes = _build_staff_profile_pdf(
+        staff=staff,
+        profile=profile,
+        restaurant_name=restaurant_name,
+        hours_weekly=hours_weekly,
+        hours_monthly=hours_monthly,
+        hours_yearly=hours_yearly,
+    )
+
+    filename = f"staff_report_{staff.first_name or 'staff'}_{staff.last_name or 'member'}.pdf".replace(" ", "_")
+    response = HttpResponse(pdf_bytes, content_type="application/pdf")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([])
+def agent_staff_report_pdf(request):
+    """
+    GET /api/agent/staff-report-pdf/?staff_id=<uuid>&restaurant_id=<uuid>
+    Returns the same branded staff profile PDF. Auth: Bearer LUA_WEBHOOK_API_KEY.
+    """
+    from django.conf import settings as django_settings
+    auth_header = request.headers.get("Authorization")
+    expected_key = getattr(django_settings, "LUA_WEBHOOK_API_KEY", None)
+    if not expected_key:
+        return Response({"detail": "Agent key not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    if not auth_header or auth_header != f"Bearer {expected_key}":
+        return Response({"detail": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED)
+
+    staff_id = request.query_params.get("staff_id") or request.META.get("HTTP_X_STAFF_ID")
+    restaurant_id = request.query_params.get("restaurant_id") or request.META.get("HTTP_X_RESTAURANT_ID")
+    if not staff_id or not restaurant_id:
+        return Response(
+            {"detail": "staff_id and restaurant_id required (query or X-Staff-Id / X-Restaurant-Id)."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    from .models import Restaurant
+    try:
+        staff = CustomUser.objects.get(pk=staff_id, restaurant_id=restaurant_id)
+    except CustomUser.DoesNotExist:
+        return Response({"detail": "Staff not found or not in this restaurant."}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        profile = getattr(staff, "profile", None)
+    except StaffProfile.DoesNotExist:
+        profile = None
+
+    restaurant = getattr(staff, "restaurant", None)
+    restaurant_name = getattr(restaurant, "name", "") or "Restaurant"
+    today = date.today()
+    week_start = today - timedelta(days=today.weekday())
+    hours_weekly = _staff_hours_for_period(staff, week_start, today)
+    month_start = today.replace(day=1)
+    hours_monthly = _staff_hours_for_period(staff, month_start, today)
     year_start = today.replace(month=1, day=1)
     hours_yearly = _staff_hours_for_period(staff, year_start, today)
 

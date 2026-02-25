@@ -30,7 +30,8 @@ from .shift_auto_templates import (
     ensure_checklist_for_task_template,
     ensure_checklist_execution_for_shift,
 )
-from .task_templates import TaskTemplate
+from .task_templates import TaskTemplate, Task
+from .recurrence_service import RecurrenceService
 from .recurring_views import _dates_for_frequency, _dates_for_days_of_week
 
 logger = logging.getLogger(__name__)
@@ -578,6 +579,116 @@ def agent_attach_templates_to_shift(request):
         logger.exception("Agent attach templates to shift error")
         err = str(e).strip()[:200] if e else "Unable to attach templates"
         return Response({'error': err}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_generate_tasks(request):
+    """
+    Generate standalone tasks from a task template (due date + optional assignees).
+    Payload: template_id (UUID), due_date (YYYY-MM-DD), assigned_to (optional list of staff UUIDs), restaurant_id (or X-Restaurant-Id).
+    Auth: Bearer LUA_WEBHOOK_API_KEY or JWT.
+    """
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        template_id = data.get('template_id') or data.get('templateId') or data.get('pk')
+        due_date_str = data.get('due_date') or data.get('dueDate')
+        assigned_to_raw = data.get('assigned_to') or data.get('assignedTo') or []
+        if not template_id:
+            return Response({'error': 'template_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        if not due_date_str:
+            return Response({'error': 'due_date (YYYY-MM-DD) is required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            due_date = datetime.strptime(str(due_date_str)[:10], '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'error': 'Invalid due_date. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            template = TaskTemplate.objects.get(id=template_id, restaurant=restaurant, is_active=True)
+        except TaskTemplate.DoesNotExist:
+            return Response({'error': 'Task template not found'}, status=status.HTTP_404_NOT_FOUND)
+        acting_user = None
+        _, acting_user = _try_jwt_restaurant_and_user(request)
+        if not acting_user:
+            acting_user = CustomUser.objects.filter(
+                restaurant=restaurant,
+                role__in=['MANAGER', 'ADMIN', 'SUPER_ADMIN'],
+                is_active=True,
+            ).first()
+        assigned_to_ids = [str(x).strip() for x in (assigned_to_raw if isinstance(assigned_to_raw, list) else [assigned_to_raw]) if x]
+        tasks_created = []
+        valid_priorities = {'LOW', 'MEDIUM', 'HIGH', 'URGENT'}
+        for task_data in (template.tasks or []):
+            if not isinstance(task_data, dict):
+                continue
+            raw_priority = (task_data.get('priority') or 'MEDIUM').upper()[:20] or 'MEDIUM'
+            priority = raw_priority if raw_priority in valid_priorities else 'MEDIUM'
+            task = Task.objects.create(
+                restaurant=restaurant,
+                title=task_data.get('title') or 'Task',
+                description=str(task_data.get('description') or '')[:2000] or '',
+                priority=priority,
+                template=template,
+                due_date=due_date,
+                created_by=acting_user,
+            )
+            if assigned_to_ids:
+                task.assigned_to.set(CustomUser.objects.filter(id__in=assigned_to_ids, restaurant=restaurant, is_active=True))
+            tasks_created.append({'id': str(task.id), 'title': task.title})
+        return Response({
+            'success': True,
+            'template_id': str(template.id),
+            'template_name': template.name,
+            'due_date': str(due_date),
+            'tasks_created': len(tasks_created),
+            'tasks': tasks_created,
+            'message': f"Created {len(tasks_created)} task(s) from template '{template.name}' for {due_date}.",
+        }, status=status.HTTP_201_CREATED)
+    except Exception as e:
+        logger.exception("Agent generate tasks error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_run_recurring(request):
+    """
+    Trigger recurrence generation for active task templates.
+    Payload: frequency (optional: DAILY, WEEKLY, MONTHLY, etc.), date (optional YYYY-MM-DD), restaurant_id (or X-Restaurant-Id).
+    Auth: Bearer LUA_WEBHOOK_API_KEY or JWT.
+    """
+    try:
+        restaurant, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        frequency = (data.get('frequency') or request.query_params.get('frequency') or '').strip().upper() or None
+        date_str = data.get('date') or request.query_params.get('date')
+        date_obj = None
+        if date_str:
+            try:
+                date_obj = datetime.strptime(str(date_str)[:10], '%Y-%m-%d').date()
+            except ValueError:
+                pass
+        results = RecurrenceService.generate(
+            date=date_obj,
+            frequency=frequency if frequency else None,
+            restaurant=restaurant,
+            request=request,
+        )
+        return Response({
+            'success': True,
+            'restaurant_id': str(restaurant.id),
+            **results,
+            'message': f"Recurring run: {results.get('tasks_created', 0)} task(s) created from {results.get('templates_generated', 0)} template(s).",
+        })
+    except Exception as e:
+        logger.exception("Agent run recurring error")
+        return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])

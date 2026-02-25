@@ -203,7 +203,7 @@ def agent_start_whatsapp_checklist(request):
         )
 
     from accounts.services import _find_active_user_by_phone
-    from notifications.views import _get_shift_for_clock_in
+    from notifications.views import _get_shift_for_checklist
 
     user = _find_active_user_by_phone(clean_phone)
     if not user:
@@ -216,7 +216,9 @@ def agent_start_whatsapp_checklist(request):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    active_shift = _get_shift_for_clock_in(user)
+    # Use today's active shift (SCHEDULED/CONFIRMED/IN_PROGRESS), not the clock-in window.
+    # Staff can start their checklist anytime during their scheduled shift.
+    active_shift = _get_shift_for_checklist(user)
     if not active_shift:
         return Response(
             {
@@ -244,12 +246,13 @@ def agent_start_whatsapp_checklist(request):
 
     if started:
         # First checklist item was already sent by start_conversational_checklist_after_clock_in.
-        # Do not tell the user to "wait" or "receive shortly"—execution was immediate.
+        # Miya must send nothing—no "Checklist started" or "you'll receive shortly" message.
         return Response(
             {
                 "success": True,
                 "first_item_sent": True,
-                "message_for_user": "Reply with Yes, No, or N/A for each task.",
+                "message_for_user": "",
+                "suppress_reply": True,
             },
             status=status.HTTP_200_OK,
         )

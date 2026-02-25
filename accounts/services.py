@@ -13,6 +13,7 @@ import random
 import secrets
 from datetime import timedelta
 from django.utils import timezone
+from django.utils.crypto import get_random_string
 from django.db import transaction
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
@@ -317,18 +318,36 @@ def try_activate_staff_on_inbound_message(phone_digits):
             record.activated_at = timezone.now()
             record.save(update_fields=["status", "user", "activated_at", "updated_at"])
             return existing
-        pin_code = str(random.randint(1000, 9999))
-        user = CustomUser.objects.create_user(
-            email=email,
-            pin_code=pin_code,
-            first_name=record.first_name or "Staff",
-            last_name=record.last_name or "",
-            role=record.role,
-            restaurant=record.restaurant,
-            phone=full_phone,
-            is_verified=True,
-            is_active=True,
-        )
+        # Manager/Admin/Owner roles use password (no PIN); staff roles use PIN for one-tap login.
+        admin_roles = ['SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER']
+        use_pin = record.role not in admin_roles
+        if use_pin:
+            pin_code = str(random.randint(1000, 9999))
+            user = CustomUser.objects.create_user(
+                email=email,
+                pin_code=pin_code,
+                first_name=record.first_name or "Staff",
+                last_name=record.last_name or "",
+                role=record.role,
+                restaurant=record.restaurant,
+                phone=full_phone,
+                is_verified=True,
+                is_active=True,
+            )
+        else:
+            pin_code = None
+            temp_password = get_random_string(32)
+            user = CustomUser.objects.create_user(
+                email=email,
+                password=temp_password,
+                first_name=record.first_name or "Staff",
+                last_name=record.last_name or "",
+                role=record.role,
+                restaurant=record.restaurant,
+                phone=full_phone,
+                is_verified=True,
+                is_active=True,
+            )
         record.status = StaffActivationRecord.STATUS_ACTIVATED
         record.user = user
         record.activated_at = timezone.now()

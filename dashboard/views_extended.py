@@ -494,133 +494,139 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         today = timezone.now().date()
         now = timezone.now()
         
-        # Get active shifts (today's shifts that are confirmed, in_progress, or scheduled)
+        # Get active shifts (today's shifts that are confirmed, in_progress, or scheduled).
+        # Prefetch staff_members so we can show one row per staff on each shift (each with their own progress).
         active_shifts = AssignedShift.objects.filter(
-            schedule__restaurant=user.restaurant, 
+            schedule__restaurant=user.restaurant,
             shift_date=today,
             status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS']
-        ).select_related('staff').prefetch_related('tasks', 'task_templates')
-        
+        ).select_related('staff').prefetch_related('tasks', 'task_templates', 'staff_members')
+
         staff_metrics = []
-        
+        seen_staff_shift = set()  # (staff_id, shift_id) to avoid duplicate rows when staff is both primary and in staff_members
+
         for shift in active_shifts:
-            staff = shift.staff
-            if not staff:
+            # All staff on this shift: primary staff + staff_members (same checklist, different live progress per person)
+            staff_list = list(shift.staff_members.all())
+            if shift.staff and shift.staff not in staff_list:
+                staff_list.append(shift.staff)
+            if not staff_list:
                 continue
+
             tasks = shift.tasks.all()
-            
-            # 1. Staff Status
-            shift_status = 'ON_SHIFT' # Default logic, refine if we have real-time clock-in data
-            if shift.status == 'COMPLETED': shift_status = 'OFF_SHIFT'
-            
-            # 2. Current Process & Task Stats — prefer WhatsApp checklist progress when available
-            current_process_name = "Idle / Waiting for task"
-            process_progress = 0
-            total_tasks = tasks.count()
-            completed_tasks = tasks.filter(status='COMPLETED').count()
-            tasks_marked_no = []
-            follow_up_needed = False
-            photo_evidence_count = 0
-            
-            checklist_prog = ShiftChecklistProgress.objects.filter(shift=shift, staff=staff).first()
-            if checklist_prog and (checklist_prog.task_ids or []):
-                task_ids = checklist_prog.task_ids or []
-                responses = checklist_prog.responses or {}
-                total_tasks = len(task_ids)
-                completed_tasks = sum(1 for tid in task_ids if tid in responses)
-                process_progress = int((completed_tasks / total_tasks * 100)) if total_tasks > 0 else 0
-                template = shift.task_templates.first()
-                current_process_name = (template.name if template else "Checklist") or "Checklist"
-                tasks_marked_no = [tid for tid in task_ids if responses.get(tid) == 'no']
-                follow_up_needed = len(tasks_marked_no) > 0
-                if task_ids:
-                    photo_evidence_count = TaskVerificationRecord.objects.filter(
-                        task_id__in=task_ids
-                    ).exclude(photo_evidence=[]).count()
-            else:
-                template = shift.task_templates.first()
-                if template:
-                    current_process_name = template.name
-                    total_process_tasks = tasks.count()
-                    completed_process_tasks = tasks.filter(status='COMPLETED').count()
-                    process_progress = int((completed_process_tasks / total_process_tasks * 100)) if total_process_tasks > 0 else 0
-            
-            overdue_tasks = 0
-            for t in tasks:
-                if t.priority == 'URGENT' or (t.estimated_duration and t.created_at + t.estimated_duration < now and t.status != 'COMPLETED'):
-                     overdue_tasks += 1
-            
-            # 4. Pace Indicator
-            # Calculate elapsed time in shift vs expected
-            pace_status = 'GREEN'
-            elapsed_minutes = 0
-            avg_minutes = 0 # This would come from template historical data ideally
-            
-            if shift.start_time:
-                # If start_time is just time, combine with today
-                start_dt = shift.start_time
-                if not isinstance(start_dt, timezone.datetime):
-                    # This case should be handled by model save, but just in case
-                    start_dt = timezone.datetime.combine(today, start_dt)
-                    if timezone.is_naive(start_dt):
-                        start_dt = timezone.make_aware(start_dt)
-                
-                delta = now - start_dt
-                elapsed_minutes = int(delta.total_seconds() / 60)
-                
-                # Estimate total expected time based on tasks duration
-                total_estimated_seconds = sum([(t.estimated_duration.total_seconds() if t.estimated_duration else 15*60) for t in tasks])
-                avg_minutes = int(total_estimated_seconds / 60)
-                
-                # Pace logic
-                if elapsed_minutes > avg_minutes * 1.2:
-                    pace_status = 'RED'
-                elif elapsed_minutes > avg_minutes:
-                    pace_status = 'YELLOW'
-            
-            # 5. Attention Flag (include follow-up from checklist "No" responses)
-            attention_needed = False
-            attention_reason = ""
-            if overdue_tasks > 0:
-                attention_needed = True
-                attention_reason = f"{overdue_tasks} overdue tasks"
-            elif follow_up_needed:
-                attention_needed = True
-                attention_reason = f"{len(tasks_marked_no)} task(s) marked No — follow-up needed"
-            elif pace_status == 'RED':
-                attention_needed = True
-                attention_reason = "Behind schedule"
-                
-            staff_metrics.append({
-                'staff_id': staff.id,
-                'name': f"{staff.first_name} {staff.last_name}",
-                'role': staff.role,
-                'avatar': None, # Front-end handles avatar generation
-                'shift_status': shift_status,
-                'current_process': {
-                    'name': current_process_name,
-                    'progress': process_progress
-                },
-                'tasks': {
-                    'completed': completed_tasks,
-                    'total': total_tasks,
-                    'overdue': overdue_tasks,
-                    'is_completed': completed_tasks == total_tasks and total_tasks > 0,
-                    'tasks_marked_no': len(tasks_marked_no),
-                    'follow_up_needed': follow_up_needed,
-                    'photo_evidence_count': photo_evidence_count,
-                },
-                'pace': {
-                    'elapsed_minutes': elapsed_minutes,
-                    'avg_minutes': avg_minutes,
-                    'status': pace_status
-                },
-                'attention': {
-                    'needed': attention_needed,
-                    'reason': attention_reason
-                }
-            })
-            
+
+            for staff in staff_list:
+                key = (str(staff.id), str(shift.id))
+                if key in seen_staff_shift:
+                    continue
+                seen_staff_shift.add(key)
+
+                # 1. Staff Status
+                shift_status = 'ON_SHIFT'
+                if shift.status == 'COMPLETED':
+                    shift_status = 'OFF_SHIFT'
+
+                # 2. Current Process & Task Stats — use this staff's own checklist progress (per-staff live report)
+                current_process_name = "Idle / Waiting for task"
+                process_progress = 0
+                total_tasks = tasks.count()
+                completed_tasks = tasks.filter(status='COMPLETED').count()
+                tasks_marked_no = []
+                follow_up_needed = False
+                photo_evidence_count = 0
+
+                checklist_prog = ShiftChecklistProgress.objects.filter(shift=shift, staff=staff).first()
+                if checklist_prog and (checklist_prog.task_ids or []):
+                    task_ids = checklist_prog.task_ids or []
+                    responses = checklist_prog.responses or {}
+                    total_tasks = len(task_ids)
+                    completed_tasks = sum(1 for tid in task_ids if tid in responses)
+                    process_progress = int((completed_tasks / total_tasks * 100)) if total_tasks > 0 else 0
+                    template = shift.task_templates.first()
+                    current_process_name = (template.name if template else "Checklist") or "Checklist"
+                    tasks_marked_no = [tid for tid in task_ids if responses.get(tid) == 'no']
+                    follow_up_needed = len(tasks_marked_no) > 0
+                    if task_ids:
+                        photo_evidence_count = TaskVerificationRecord.objects.filter(
+                            task_id__in=task_ids,
+                            submitted_by=staff,
+                        ).exclude(photo_evidence=[]).count()
+                else:
+                    template = shift.task_templates.first()
+                    if template:
+                        current_process_name = template.name
+                        total_process_tasks = tasks.count()
+                        completed_process_tasks = tasks.filter(status='COMPLETED').count()
+                        process_progress = int((completed_process_tasks / total_process_tasks * 100)) if total_process_tasks > 0 else 0
+
+                overdue_tasks = 0
+                for t in tasks:
+                    if t.priority == 'URGENT' or (t.estimated_duration and t.created_at + t.estimated_duration < now and t.status != 'COMPLETED'):
+                        overdue_tasks += 1
+
+                # 4. Pace Indicator (shift-level timing; progress is per-staff above)
+                pace_status = 'GREEN'
+                elapsed_minutes = 0
+                avg_minutes = 0
+
+                if shift.start_time:
+                    start_dt = shift.start_time
+                    if not isinstance(start_dt, timezone.datetime):
+                        start_dt = timezone.datetime.combine(today, start_dt)
+                        if timezone.is_naive(start_dt):
+                            start_dt = timezone.make_aware(start_dt)
+                    delta = now - start_dt
+                    elapsed_minutes = int(delta.total_seconds() / 60)
+                    total_estimated_seconds = sum([(t.estimated_duration.total_seconds() if t.estimated_duration else 15*60) for t in tasks])
+                    avg_minutes = int(total_estimated_seconds / 60)
+                    if elapsed_minutes > avg_minutes * 1.2:
+                        pace_status = 'RED'
+                    elif elapsed_minutes > avg_minutes:
+                        pace_status = 'YELLOW'
+
+                # 5. Attention Flag (per-staff: uses this staff's follow_up_needed / completed_tasks)
+                attention_needed = False
+                attention_reason = ""
+                if overdue_tasks > 0:
+                    attention_needed = True
+                    attention_reason = f"{overdue_tasks} overdue tasks"
+                elif follow_up_needed:
+                    attention_needed = True
+                    attention_reason = f"{len(tasks_marked_no)} task(s) marked No — follow-up needed"
+                elif pace_status == 'RED':
+                    attention_needed = True
+                    attention_reason = "Behind schedule"
+
+                staff_metrics.append({
+                    'staff_id': staff.id,
+                    'name': f"{staff.first_name} {staff.last_name}",
+                    'role': staff.role,
+                    'avatar': None,
+                    'shift_status': shift_status,
+                    'current_process': {
+                        'name': current_process_name,
+                        'progress': process_progress
+                    },
+                    'tasks': {
+                        'completed': completed_tasks,
+                        'total': total_tasks,
+                        'overdue': overdue_tasks,
+                        'is_completed': completed_tasks == total_tasks and total_tasks > 0,
+                        'tasks_marked_no': len(tasks_marked_no),
+                        'follow_up_needed': follow_up_needed,
+                        'photo_evidence_count': photo_evidence_count,
+                    },
+                    'pace': {
+                        'elapsed_minutes': elapsed_minutes,
+                        'avg_minutes': avg_minutes,
+                        'status': pace_status
+                    },
+                    'attention': {
+                        'needed': attention_needed,
+                        'reason': attention_reason
+                    }
+                })
+
         return Response(staff_metrics)
 
     @action(detail=False, methods=['get'])
@@ -688,6 +694,7 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                     'end': timezone.localtime(shift.end_time).strftime('%H:%M') if shift.end_time else None,
                     'status': shift.status
                 },
+                'shift_id': str(shift.id),
                 'clock_in': None,
                 'clock_in_method': None,
                 'is_manager_override': False,
@@ -755,15 +762,27 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             elif event.event_type in ['out', 'CLOCK_OUT']:
                  if data['status'] != 'late': # Preserve late status
                      data['status'] = 'clocked_out'
+                     # Ensure UI shows "Shift Over" instead of "On Time"
+                     if data.get('signals'):
+                         data['signals'] = [s for s in data['signals'] if s != 'On Time']
+                     data['signals'] = data.get('signals') or []
+                     if 'Shift Over' not in data['signals']:
+                         data['signals'].append('Shift Over')
 
         # Analyze Absences & Final Summaries
         # Analyze Absences & Final Summaries
         now_dt = timezone.localtime(timezone.now())
         
+        NO_SHOW_LATE_MINUTES = 180  # 3 hours late => no-show, mark absent
         for staff_id, data in staff_map.items():
             # If scheduled but no clock in...
             if data['shift']['start'] and not data['clock_in']:
                 try:
+                    # Already marked no-show in DB: show as absent
+                    if data['shift'].get('status') == 'NO_SHOW':
+                        data['status'] = 'absent'
+                        summary['absent']['count'] += 1
+                        continue
                     # Construct shift datetime objects
                     s_start = datetime.strptime(data['shift']['start'], '%H:%M').time()
                     s_end = datetime.strptime(data['shift']['end'], '%H:%M').time()
@@ -782,17 +801,21 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                         data['status'] = 'absent'
                         summary['absent']['count'] += 1
                     else:
-                        # Shift has started, but not confirmed absent til end?
-                        # Or assume Late if currently running and not here?
-                        # User request: "Status should only show 'Absent' immediately the time for their shift passes"
-                        # This implies "Late" or "Missing" during the shift.
-                        # Let's count as Late for currently running.
-                        data['status'] = 'late'
-                        summary['late']['count'] += 1
-                        # Calculate minutes late so far
+                        # Shift has started, staff not clocked in
                         diff_mins = (now_dt - shift_start_dt).total_seconds() / 60
-                        data['late_minutes'] = int(diff_mins)
-                        data['signals'].append(f"Late ({int(diff_mins)}m)")
+                        if diff_mins >= NO_SHOW_LATE_MINUTES:
+                            # More than 3 hours late => no-show: mark shift and show absent
+                            data['status'] = 'absent'
+                            summary['absent']['count'] += 1
+                            shift_id = data.get('shift_id')
+                            if shift_id:
+                                AssignedShift.objects.filter(id=shift_id).update(status='NO_SHOW')
+                                data['shift']['status'] = 'NO_SHOW'
+                        else:
+                            data['status'] = 'late'
+                            summary['late']['count'] += 1
+                            data['late_minutes'] = int(diff_mins)
+                            data['signals'].append(f"Late ({int(diff_mins)}m)")
                         
                 except Exception as e:
                     print(f"Error parsing times for attendance: {e}")
