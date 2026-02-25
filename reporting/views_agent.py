@@ -89,8 +89,9 @@ def agent_create_incident(request):
 
         if not reporter and reporter_phone:
             digits = ''.join(filter(str.isdigit, str(reporter_phone)))
-            if digits:
-                reporter = CustomUser.objects.filter(phone__icontains=digits).select_related('restaurant').first()
+            if digits and len(digits) >= 9:
+                suffix = digits[-9:]
+                reporter = CustomUser.objects.filter(phone__endswith=suffix, is_active=True).select_related('restaurant').first()
                 if reporter and not restaurant and getattr(reporter, 'restaurant', None):
                     restaurant = reporter.restaurant
                     logger.info(f"[AgentIncident] Resolved restaurant from reporter_phone: {restaurant.name}")
@@ -98,7 +99,8 @@ def agent_create_incident(request):
         if not restaurant:
             return Response(
                 {
-                    'error': 'Unable to resolve restaurant context. Provide restaurant_id, or include sessionId/userId/email/phone/token in the payload. Ensure your phone number is linked to a staff account.'
+                    'error': 'Unable to resolve restaurant context. Provide restaurant_id, or include sessionId/userId/email/phone/token in the payload. Ensure your phone number is linked to a staff account.',
+                    'message_for_user': "We couldn't link this report to your restaurant. Please make sure you're messaging from the phone number we have on file for your staff account.",
                 },
                 status=status.HTTP_400_BAD_REQUEST
             )
@@ -145,7 +147,11 @@ def agent_create_incident(request):
         
     except Exception as e:
         logger.error(f"[AgentIncident] Error creating incident: {e}")
+        err_msg = str(e)
         return Response(
-            {'error': str(e)},
+            {
+                'error': err_msg,
+                'message_for_user': "Something went wrong while saving the report. Please try again or contact your manager.",
+            },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )

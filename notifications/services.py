@@ -1257,6 +1257,16 @@ class NotificationService:
             session.save(update_fields=["state"])
             return False
 
+        shift_end_dt = active_shift.end_time
+        if shift_end_dt and not isinstance(shift_end_dt, timezone.datetime):
+            from datetime import datetime as _dt
+            shift_end_dt = timezone.make_aware(_dt.combine(active_shift.shift_date, shift_end_dt)) if hasattr(active_shift, 'shift_date') and active_shift.shift_date else None
+        if shift_end_dt and timezone.now() > shift_end_dt:
+            self.send_whatsapp_text(phone_digits, "⏱️ This shift has already ended. No checklist to run.")
+            session.state = "idle"
+            session.save(update_fields=["state"])
+            return False
+
         try:
             ShiftChecklistProgress.objects.update_or_create(
                 shift=active_shift,
@@ -1282,19 +1292,6 @@ class NotificationService:
         }
         session.state = "in_checklist"
         session.save(update_fields=["state", "context"])
-
-        if active_shift.end_time and timezone.now() > active_shift.end_time:
-            self.send_whatsapp_text(phone_digits, "⏱️ This shift has already ended. No checklist to run.")
-            try:
-                ShiftChecklistProgress.objects.filter(
-                    shift=active_shift, staff=user, status="IN_PROGRESS"
-                ).update(status="CANCELLED", completed_at=timezone.now())
-            except Exception:
-                pass
-            session.context.pop("checklist", None)
-            session.state = "idle"
-            session.save(update_fields=["state", "context"])
-            return False
 
         # Step-by-step conversational checklist: send first task now; subsequent tasks
         # are sent one-by-one when the user replies Yes/No/N/A via WhatsApp (views.py).

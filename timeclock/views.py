@@ -15,8 +15,10 @@ from accounts.models import CustomUser, AuditLog
 from accounts.views import get_client_ip
 from accounts.permissions import IsAdminOrManager
 from django.db.models import Q
+from django.db import transaction
 from scheduling.models import AssignedShift
-import base64  # <--- ADD THIS IMPORT
+from datetime import datetime
+import base64
 import logging
 
 logger = logging.getLogger(__name__)
@@ -1132,6 +1134,8 @@ def agent_clock_in_by_phone(request):
                 'message_for_user': "We couldn't find your account. Please contact your manager to be added.",
             }, status=status.HTTP_404_NOT_FOUND)
 
+        first_name = getattr(user, 'first_name', None) or 'Team Member'
+
         latitude = request.data.get('latitude')
         longitude = request.data.get('longitude')
         rest = getattr(user, 'restaurant', None)
@@ -1178,24 +1182,31 @@ def agent_clock_in_by_phone(request):
                 'message_for_user': "Please share your live location to clock in.",
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
-        if last_event and last_event.event_type == 'in':
-            return Response({
-                'success': False,
-                'staff_id': str(user.id),
-                'message_for_user': f"Clock-in recorded. Have a great shift {first_name}!",
-                'clock_event_id': str(last_event.id),
-        }, status=status.HTTP_200_OK)
+        with transaction.atomic():
+            last_event = (
+                ClockEvent.objects.select_for_update()
+                .filter(staff=user)
+                .order_by('-timestamp')
+                .first()
+            )
+            if last_event and last_event.event_type == 'in':
+                return Response({
+                    'success': True,
+                    'staff_id': str(user.id),
+                    'message_for_user': f"Clock-in recorded. Have a great shift {first_name}!",
+                    'clock_event_id': str(last_event.id),
+                }, status=status.HTTP_200_OK)
 
-        clock_event = ClockEvent.objects.create(
-            staff=user,
-            event_type='in',
-            latitude=latitude,
-            longitude=longitude,
-            device_id="Lua Agent",
-            notes="Clock-in via Miya (by phone, location verified)",
-        )
+            clock_event = ClockEvent.objects.create(
+                staff=user,
+                event_type='in',
+                latitude=latitude,
+                longitude=longitude,
+                device_id="Lua Agent",
+                notes="Clock-in via Miya (by phone, location verified)",
+            )
 
+        success_message = f"Clock-in recorded. Have a great shift {first_name}!"
         try:
             now_today = timezone.now()
             active_qs = AssignedShift.objects.filter(
@@ -1203,8 +1214,10 @@ def agent_clock_in_by_phone(request):
                 shift_date=now_today.date(),
                 status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
             ).distinct()
+            # Prefer current or next shift (hasn't ended yet) so staff with multiple shifts get the right checklist
             active_shift = (
-                active_qs.filter(start_time__lte=now_today, end_time__gte=now_today).first()
+                active_qs.filter(end_time__gt=now_today).order_by('start_time').first()
+                or active_qs.filter(start_time__lte=now_today, end_time__gte=now_today).first()
                 or active_qs.order_by('start_time').first()
             )
             if active_shift:
@@ -1218,11 +1231,10 @@ def agent_clock_in_by_phone(request):
                 "start_conversational_checklist_after_clock_in failed after agent_clock_in_by_phone: %s", e
             )
 
-        first_name = getattr(user, 'first_name', None) or 'Team Member'
         return Response({
             'success': True,
             'staff_id': str(user.id),
-            'message_for_user': f"Clock-in recorded. Have a great shift {first_name}!",
+            'message_for_user': success_message,
             'clock_event_id': str(clock_event.id),
         }, status=status.HTTP_200_OK)
 
@@ -1376,7 +1388,7 @@ def agent_attendance_report(request):
 
         # 1. Get all scheduled shifts for today
         shifts = AssignedShift.objects.filter(
-            weekly_schedule__restaurant_id=restaurant_id,
+            schedule__restaurant_id=restaurant_id,
             shift_date=report_date
         ).select_related('staff')
 
@@ -1400,19 +1412,25 @@ def agent_attendance_report(request):
             
             if clock_in_time:
                 status_text = "Present"
-                # Combine date and time for comparison
-                shift_start = timezone.make_aware(datetime.combine(shift.shift_date, shift.start_time))
-                if clock_in_time > shift_start:
-                    diff = clock_in_time - shift_start
-                    lateness_minutes = int(diff.total_seconds() / 60)
-                    if lateness_minutes > 5: # 5 min grace period
-                        status_text = "Late"
+                if shift.start_time:
+                    if isinstance(shift.start_time, datetime):
+                        shift_start = shift.start_time if timezone.is_aware(shift.start_time) else timezone.make_aware(shift.start_time)
+                    else:
+                        shift_start = timezone.make_aware(datetime.combine(shift.shift_date, shift.start_time))
+                    if clock_in_time > shift_start:
+                        diff = clock_in_time - shift_start
+                        lateness_minutes = int(diff.total_seconds() / 60)
+                        if lateness_minutes > 5:
+                            status_text = "Late"
             else:
-                # If shift has already started, mark as absent/late to clock in
                 now = timezone.now()
-                shift_start = timezone.make_aware(datetime.combine(shift.shift_date, shift.start_time))
-                if now > shift_start:
-                    status_text = "Missing"
+                if shift.start_time:
+                    if isinstance(shift.start_time, datetime):
+                        shift_start = shift.start_time if timezone.is_aware(shift.start_time) else timezone.make_aware(shift.start_time)
+                    else:
+                        shift_start = timezone.make_aware(datetime.combine(shift.shift_date, shift.start_time))
+                    if now > shift_start:
+                        status_text = "Missing"
 
             report.append({
                 'staff_id': str(staff.id),
