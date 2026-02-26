@@ -1663,19 +1663,31 @@ def agent_get_restaurant_details(request):
             'breakfast': {'start': '07:00', 'end': '10:30'}
         }
         
-        # Build response data
+        from .services import SchedulingService
+        labor_policy = SchedulingService._get_labor_policy(restaurant)
+
         data = {
             'id': str(restaurant.id),
             'name': restaurant.name,
             'timezone': str(restaurant.timezone) if hasattr(restaurant, 'timezone') else 'Africa/Casablanca',
             'operating_hours': getattr(restaurant, 'operating_hours', {}),
             'restaurant_type': getattr(restaurant, 'restaurant_type', 'CASUAL_DINING'),
-            'max_weekly_hours': float(getattr(restaurant, 'max_weekly_hours', 40.0)),
-            'min_rest_hours': float(getattr(restaurant, 'min_rest_hours', 11.0)),
+            'max_weekly_hours': float(labor_policy['max_hours_per_week']),
+            'min_rest_hours': float(labor_policy['min_rest_hours_between_shifts']),
             'general_settings': {
                 'peak_periods': getattr(restaurant, 'general_settings', {}).get('peak_periods', peak_definitions) if isinstance(getattr(restaurant, 'general_settings', None), dict) else peak_definitions
             },
-            'break_duration': getattr(restaurant, 'break_duration', 30)
+            'break_duration': getattr(restaurant, 'break_duration', 30),
+            'labor_policy': {
+                'max_hours_per_day': float(labor_policy['max_hours_per_day']),
+                'max_hours_per_week': float(labor_policy['max_hours_per_week']),
+                'min_rest_between_shifts': float(labor_policy['min_rest_hours_between_shifts']),
+                'break_required_after_hours': float(labor_policy['break_required_after_hours']),
+                'overtime_threshold_weekly': float(labor_policy['overtime_after_hours_per_week']),
+                'overtime_rate': float(labor_policy['overtime_rate_multiplier']),
+                'mandatory_rest_day_per_week': labor_policy['mandatory_rest_day_per_week'],
+            },
+            'labor_target_percent': float(restaurant.labor_target_percent) if getattr(restaurant, 'labor_target_percent', None) else None,
         }
         
         return Response(data)
@@ -1727,18 +1739,40 @@ def agent_get_operational_advice(request):
                 {'type': 'DINNER_PEAK', 'time': '18:00-22:00', 'reason': 'High volume expected during dinner.'}
             ]
         
+        from .services import SchedulingService
+        labor_policy = SchedulingService._get_labor_policy(restaurant)
+        min_rest = labor_policy['min_rest_hours_between_shifts']
+        max_daily = labor_policy['max_hours_per_day']
+        max_weekly = labor_policy['max_hours_per_week']
+
+        best_practices = [
+            "Schedule your strongest team for peak hours.",
+            f"Ensure at least {min_rest}h rest between shifts (clopening prevention).",
+            f"Max {max_daily}h per day, {max_weekly}h per week per staff member.",
+            f"A break is required after {labor_policy['break_required_after_hours']}h of continuous work.",
+        ]
+        if labor_policy['mandatory_rest_day_per_week']:
+            best_practices.append("Every staff member must have at least 1 rest day per 7-day period.")
+        r_type = getattr(restaurant, 'restaurant_type', 'CASUAL_DINING')
+        best_practices.append(
+            f"For {r_type.lower().replace('_', ' ')} style, focus on {'service consistency' if r_type == 'FINE_DINING' else 'speed of service'}."
+        )
+
         return Response({
             'status': 'success',
             'date': date_str,
             'demand_level': current_demand,
             'optimal_staffing': required_roles,
             'shift_split_suggestions': shift_splits,
-            'restaurant_type': getattr(restaurant, 'restaurant_type', 'CASUAL_DINING'),
-            'best_practices': [
-                "Schedule your strongest team for peak hours.",
-                "Ensure at least 11 hours of rest between shifts (clopening prevention).",
-                f"For {getattr(restaurant, 'restaurant_type', 'CASUAL_DINING').lower()} style, focus on { 'service consistency' if restaurant.restaurant_type == 'FINE_DINING' else 'speed of service' }."
-            ]
+            'restaurant_type': r_type,
+            'labor_policy': {
+                'max_hours_per_day': float(max_daily),
+                'max_hours_per_week': float(max_weekly),
+                'min_rest_between_shifts': float(min_rest),
+                'overtime_threshold': float(labor_policy['overtime_after_hours_per_week']),
+                'overtime_rate': float(labor_policy['overtime_rate_multiplier']),
+            },
+            'best_practices': best_practices,
         })
 
     except Exception as e:

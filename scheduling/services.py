@@ -77,8 +77,12 @@ class SchedulingService:
         - Availability preferences
         - Approved time off
         - Restaurant holidays
-        - Weekly hour limits
+        - Weekly hour limits (from LaborPolicy or Restaurant defaults)
+        - Daily hour limits
         - Minimum rest periods (Clopening)
+        - Mandatory rest day (consecutive days check)
+        - Break requirement for long shifts
+        - Overtime detection
         - Location/Station overcapacity
         """
         conflicts = []
@@ -88,8 +92,9 @@ class SchedulingService:
             restaurant = staff.restaurant
         except CustomUser.DoesNotExist:
             return conflicts
+
+        policy = SchedulingService._get_labor_policy(restaurant)
         
-        # 0. Convert times to datetime objects for comparison
         from datetime import time as time_type
         if isinstance(start_time, time_type):
             shift_start = timezone.make_aware(timezone.datetime.combine(shift_date, start_time))
@@ -101,7 +106,9 @@ class SchedulingService:
             shift_start = start_time
             shift_end = end_time
 
-        # 1. Check for OVERLAPPING shifts for THIS staff
+        new_shift_hours = (shift_end - shift_start).total_seconds() / 3600
+
+        # 1. OVERLAPPING shifts
         existing_shifts = AssignedShift.objects.filter(
             staff=staff,
             shift_date=shift_date,
@@ -118,7 +125,7 @@ class SchedulingService:
                     'shift_id': str(existing.id)
                 })
 
-        # 2. Check for TIME OFF
+        # 2. TIME OFF
         time_off = TimeOffRequest.objects.filter(
             staff=staff,
             status='APPROVED',
@@ -132,7 +139,7 @@ class SchedulingService:
                 'request_id': str(tor.id)
             })
 
-        # 3. Check for AVAILABILITY
+        # 3. AVAILABILITY preferences
         availability = StaffAvailability.objects.filter(
             staff=staff,
             day_of_week=shift_date.weekday()
@@ -155,7 +162,7 @@ class SchedulingService:
                     'message': "Outside of staff's preferred availability"
                 })
 
-        # 4. Check for HOLIDAYS
+        # 4. HOLIDAYS
         if restaurant:
             holidays = Holiday.objects.filter(restaurant=restaurant, date=shift_date, is_closed=True)
             for holiday in holidays:
@@ -164,39 +171,102 @@ class SchedulingService:
                     'message': f"Restaurant is closed for holiday: {holiday.name}"
                 })
 
-        # 5. Check for WEEKLY HOURS LIMIT
-        if restaurant and restaurant.max_weekly_hours:
+        # 5. WEEKLY HOURS LIMIT
+        max_weekly = policy['max_hours_per_week']
+        if max_weekly:
             week_start = shift_date - timedelta(days=shift_date.weekday())
             week_end = week_start + timedelta(days=6)
             week_stats = SchedulingService.calculate_staff_hours(staff_id, week_start, week_end)
             current_hours = float(week_stats.get('total_hours', 0))
-            new_shift_hours = (shift_end - shift_start).total_seconds() / 3600
             
-            if current_hours + new_shift_hours > float(restaurant.max_weekly_hours):
+            if current_hours + new_shift_hours > float(max_weekly):
                 conflicts.append({
                     'type': 'WEEKLY_LIMIT',
-                    'message': f"Exceeds max weekly hours ({restaurant.max_weekly_hours}h). Total would be {current_hours + new_shift_hours:.1f}h"
+                    'message': f"Exceeds max weekly hours ({max_weekly}h). Total would be {current_hours + new_shift_hours:.1f}h"
                 })
 
-        # 6. Check for MINIMUM REST PERIOD (Clopening)
-        if restaurant and restaurant.min_rest_hours:
-            # Check previous day's last shift
+            # 5b. OVERTIME WARNING (not a blocker, but flagged)
+            overtime_threshold = policy['overtime_after_hours_per_week']
+            if overtime_threshold and current_hours + new_shift_hours > float(overtime_threshold):
+                overtime_hours = current_hours + new_shift_hours - float(overtime_threshold)
+                rate = policy['overtime_rate_multiplier']
+                conflicts.append({
+                    'type': 'OVERTIME_WARNING',
+                    'message': f"Creates {overtime_hours:.1f}h overtime (>{overtime_threshold}h/week). Overtime rate: {rate}x",
+                    'severity': 'warning'
+                })
+
+        # 6. MINIMUM REST PERIOD (anti-clopening)
+        min_rest = policy['min_rest_hours_between_shifts']
+        if min_rest:
             prev_day = shift_date - timedelta(days=1)
             last_shift = AssignedShift.objects.filter(
                 staff=staff, 
-                shift_date=prev_day,
+                shift_date__in=[prev_day, shift_date],
                 status__in=['SCHEDULED', 'CONFIRMED', 'COMPLETED']
-            ).order_by('-end_time').first()
+            ).exclude(id=ignore_shift_id or '').order_by('-end_time').first()
             
-            if last_shift:
+            if last_shift and last_shift.end_time < shift_start:
                 rest_duration = (shift_start - last_shift.end_time).total_seconds() / 3600
-                if rest_duration < float(restaurant.min_rest_hours):
+                if rest_duration < float(min_rest):
+                    safe_start = last_shift.end_time + timedelta(hours=float(min_rest))
                     conflicts.append({
                         'type': 'REST_PERIOD',
-                        'message': f"Less than {restaurant.min_rest_hours}h rest since previous shift (only {rest_duration:.1f}h rest)"
+                        'message': f"Only {rest_duration:.1f}h rest since previous shift (minimum {min_rest}h). Earliest safe start: {safe_start.strftime('%H:%M')}",
+                        'suggested_start': safe_start.strftime('%H:%M')
                     })
 
-        # 7. Check for LOCATION OVERCAPACITY
+        # 7. MAX DAILY HOURS
+        max_daily = policy['max_hours_per_day']
+        if max_daily:
+            day_shifts = AssignedShift.objects.filter(
+                staff=staff,
+                shift_date=shift_date,
+                status__in=['SCHEDULED', 'CONFIRMED']
+            )
+            if ignore_shift_id:
+                day_shifts = day_shifts.exclude(id=ignore_shift_id)
+            existing_day_hours = sum(
+                (s.end_time - s.start_time).total_seconds() / 3600 for s in day_shifts
+            )
+            if existing_day_hours + new_shift_hours > float(max_daily):
+                conflicts.append({
+                    'type': 'DAILY_LIMIT',
+                    'message': f"Exceeds max daily hours ({max_daily}h). Total would be {existing_day_hours + new_shift_hours:.1f}h"
+                })
+
+        # 8. BREAK REQUIREMENT for long shifts
+        break_after = policy['break_required_after_hours']
+        if break_after and new_shift_hours > float(break_after):
+            break_mins = getattr(restaurant, 'break_duration', 30) if restaurant else 30
+            conflicts.append({
+                'type': 'BREAK_REQUIRED',
+                'message': f"Shift is {new_shift_hours:.1f}h — a {break_mins}-minute break is required after {break_after}h of work",
+                'severity': 'warning'
+            })
+
+        # 9. MANDATORY REST DAY (consecutive days worked)
+        if policy['mandatory_rest_day_per_week']:
+            consecutive = 0
+            check_date = shift_date - timedelta(days=1)
+            while consecutive < 6:
+                has_shift = AssignedShift.objects.filter(
+                    staff=staff,
+                    shift_date=check_date,
+                    status__in=['SCHEDULED', 'CONFIRMED', 'COMPLETED']
+                ).exists()
+                if not has_shift:
+                    break
+                consecutive += 1
+                check_date -= timedelta(days=1)
+            
+            if consecutive >= 6:
+                conflicts.append({
+                    'type': 'CONSECUTIVE_DAYS',
+                    'message': f"Staff has worked {consecutive} consecutive days. Labor law requires at least 1 rest day per 7-day period"
+                })
+
+        # 10. LOCATION OVERCAPACITY
         if workspace_location and restaurant:
             location_conflicts = AssignedShift.objects.filter(
                 schedule__restaurant=restaurant,
@@ -217,7 +287,46 @@ class SchedulingService:
 
         return conflicts
 
-        return conflicts
+    @staticmethod
+    def _get_labor_policy(restaurant) -> Dict:
+        """
+        Load labor policy from LaborPolicy model if it exists, falling back to
+        Restaurant-level fields, then to Morocco defaults.
+        """
+        defaults = {
+            'max_hours_per_week': 44, 'max_hours_per_day': 10,
+            'min_rest_hours_between_shifts': 12, 'break_required_after_hours': 6,
+            'overtime_after_hours_per_week': 44, 'overtime_rate_multiplier': 1.25,
+            'mandatory_rest_day_per_week': True,
+        }
+        if not restaurant:
+            return defaults
+
+        try:
+            from reporting.models import LaborPolicy
+            lp = LaborPolicy.objects.filter(restaurant=restaurant).first()
+            if lp:
+                return {
+                    'max_hours_per_week': lp.max_hours_per_week or defaults['max_hours_per_week'],
+                    'max_hours_per_day': lp.max_hours_per_day or defaults['max_hours_per_day'],
+                    'min_rest_hours_between_shifts': lp.min_rest_hours_between_shifts or defaults['min_rest_hours_between_shifts'],
+                    'break_required_after_hours': lp.break_required_after_hours or defaults['break_required_after_hours'],
+                    'overtime_after_hours_per_week': lp.overtime_after_hours_per_week or defaults['overtime_after_hours_per_week'],
+                    'overtime_rate_multiplier': float(lp.overtime_rate_multiplier) if lp.overtime_rate_multiplier else defaults['overtime_rate_multiplier'],
+                    'mandatory_rest_day_per_week': lp.mandatory_rest_day_per_week if lp.mandatory_rest_day_per_week is not None else defaults['mandatory_rest_day_per_week'],
+                }
+        except Exception:
+            pass
+
+        return {
+            'max_hours_per_week': float(restaurant.max_weekly_hours) if restaurant.max_weekly_hours else defaults['max_hours_per_week'],
+            'max_hours_per_day': defaults['max_hours_per_day'],
+            'min_rest_hours_between_shifts': float(restaurant.min_rest_hours) if restaurant.min_rest_hours else defaults['min_rest_hours_between_shifts'],
+            'break_required_after_hours': defaults['break_required_after_hours'],
+            'overtime_after_hours_per_week': float(restaurant.max_weekly_hours) if restaurant.max_weekly_hours else defaults['overtime_after_hours_per_week'],
+            'overtime_rate_multiplier': defaults['overtime_rate_multiplier'],
+            'mandatory_rest_day_per_week': defaults['mandatory_rest_day_per_week'],
+        }
     
     @staticmethod
     def calculate_staff_hours(staff_id: str, start_date, end_date) -> Dict:

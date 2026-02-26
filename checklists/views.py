@@ -906,13 +906,15 @@ def get_shift_checklists(request):
     """
     user = request.user
     today = timezone.now().date()
+    now = timezone.now()
     
-    # Find the active shift for today
-    active_shift = AssignedShift.objects.filter(
-        staff=user,
+    # Find the active shift for today — prefer current/upcoming when multiple shifts exist
+    shift_qs = AssignedShift.objects.filter(
+        Q(staff=user) | Q(staff_members=user),
         shift_date=today,
         status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS']
-    ).prefetch_related('task_templates').first()
+    ).distinct().prefetch_related('task_templates').order_by('start_time')
+    active_shift = shift_qs.filter(end_time__gt=now).first() or shift_qs.first()
     
     if not active_shift:
         return Response({
@@ -1020,13 +1022,15 @@ def agent_get_shift_checklists(request):
         return Response({'error': 'Staff not found'}, status=status.HTTP_404_NOT_FOUND)
         
     today = timezone.now().date()
+    now = timezone.now()
     
-    # Find the active shift for today
-    active_shift = AssignedShift.objects.filter(
-        staff=user,
+    # Find the active shift for today — prefer current/upcoming when multiple shifts exist
+    shift_qs = AssignedShift.objects.filter(
+        Q(staff=user) | Q(staff_members=user),
         shift_date=today,
         status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS']
-    ).prefetch_related('task_templates').first()
+    ).distinct().prefetch_related('task_templates').order_by('start_time')
+    active_shift = shift_qs.filter(end_time__gt=now).first() or shift_qs.first()
     
     if not active_shift:
         return Response({

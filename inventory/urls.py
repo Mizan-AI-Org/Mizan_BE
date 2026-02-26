@@ -12,11 +12,23 @@ from .views import (
     StockAdjustmentRetrieveUpdateDestroyAPIView,
 )
 from .views_agent import agent_list_inventory_items
+from . import views_agent_morocco as morocco
 
 urlpatterns = [
     # Inventory Items
     path('items/', InventoryItemListCreateAPIView.as_view(), name='inventory-item-list-create'),
     path('agent/items/', agent_list_inventory_items, name='agent_inventory_items'),
+
+    # Waste Reporting (Miya)
+    path('agent/waste/', morocco.agent_report_waste, name='agent-report-waste'),
+    path('agent/waste/summary/', morocco.agent_waste_summary, name='agent-waste-summary'),
+
+    # Inventory Counts (Miya)
+    path('agent/count/start/', morocco.agent_start_inventory_count, name='agent-start-count'),
+    path('agent/count/item/', morocco.agent_count_item, name='agent-count-item'),
+
+    # Supplier WhatsApp Ordering (Miya)
+    path('agent/supplier-order/', morocco.agent_send_supplier_order, name='agent-supplier-order'),
     path('items/<uuid:pk>/', InventoryItemRetrieveUpdateDestroyAPIView.as_view(), name='inventory-item-detail'),
 
     # Suppliers

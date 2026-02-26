@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from inventory.views_agent_morocco import agent_open_cash_session, agent_close_cash_session
 
 urlpatterns = [
     # Existing mobile endpoints
@@ -31,4 +32,8 @@ urlpatterns = [
     path('agent/clock-out-by-phone/', views.agent_clock_out_by_phone, name='agent-clock-out-by-phone'),
     path('agent/clock-out/', views.agent_clock_out, name='agent-clock-out'),
     path('agent/attendance-report/', views.agent_attendance_report, name='agent-attendance-report'),
+
+    # Cash reconciliation (Miya)
+    path('agent/cash/open/', agent_open_cash_session, name='agent-cash-open'),
+    path('agent/cash/close/', agent_close_cash_session, name='agent-cash-close'),
 ]

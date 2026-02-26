@@ -92,6 +92,15 @@ class Restaurant(models.Model):
     # Target labor as % of sales (for sales → labor recommendation); e.g. 30.0 = 30%
     labor_target_percent = models.DecimalField(max_digits=5, decimal_places=2, null=True, blank=True)
     
+    # Ramadan / Cultural Operations
+    ramadan_mode = models.BooleanField(default=False, help_text="Enable Ramadan-specific scheduling and workflows")
+    iftar_time = models.TimeField(null=True, blank=True, help_text="Daily Iftar time (auto-adjusts prep schedules)")
+    suhoor_time = models.TimeField(null=True, blank=True, help_text="Daily Suhoor time")
+    prayer_break_minutes = models.IntegerField(default=15, help_text="Minutes allocated for prayer breaks")
+
+    # Morocco / Regional
+    country_code = models.CharField(max_length=5, default='MA', help_text="ISO country code for labor law & compliance")
+
     # POS Integration Fields
     pos_provider = models.CharField(max_length=50, choices=[
         ('STRIPE', 'Stripe'),

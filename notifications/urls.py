@@ -39,4 +39,5 @@ urlpatterns = [
     path('agent/send-whatsapp/', views_agent.send_whatsapp_from_agent, name='agent-send-whatsapp'),
     path('agent/announcement/', views_agent.agent_send_announcement, name='agent-send-announcement'),
     path('agent/start-whatsapp-checklist/', views_agent.agent_start_whatsapp_checklist, name='agent-start-whatsapp-checklist'),
+    path('agent/preview-checklist/', views_agent.agent_preview_checklist, name='agent-preview-checklist'),
 ]
