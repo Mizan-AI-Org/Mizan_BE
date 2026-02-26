@@ -134,20 +134,37 @@ class LaborBudget(models.Model):
 
 
 class LaborPolicy(models.Model):
-    """Labor compliance rules per restaurant (max hours, rest, breaks, overtime)."""
+    """Labor compliance rules per restaurant. Morocco defaults: 44hr/week, 10hr/day."""
+    COUNTRY_PRESETS = {
+        'MA': {'max_hours_per_week': 44, 'max_hours_per_day': 10, 'min_rest_hours_between_shifts': 12,
+               'break_required_after_hours': 6, 'overtime_after_hours_per_week': 44,
+               'overtime_rate_multiplier': 1.25, 'mandatory_rest_day_per_week': True, 'late_threshold_minutes': 5},
+        'US': {'max_hours_per_week': 40, 'max_hours_per_day': 8, 'min_rest_hours_between_shifts': 8,
+               'break_required_after_hours': 6, 'overtime_after_hours_per_week': 40,
+               'overtime_rate_multiplier': 1.50, 'mandatory_rest_day_per_week': False, 'late_threshold_minutes': 7},
+    }
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.OneToOneField(Restaurant, on_delete=models.CASCADE, related_name='labor_policy')
-    max_hours_per_week = models.DecimalField(max_digits=5, decimal_places=2, default=40, null=True, blank=True)
-    max_hours_per_day = models.DecimalField(max_digits=4, decimal_places=2, default=8, null=True, blank=True)
-    min_rest_hours_between_shifts = models.DecimalField(max_digits=4, decimal_places=2, default=11, null=True, blank=True)
+    max_hours_per_week = models.DecimalField(max_digits=5, decimal_places=2, default=44, null=True, blank=True)
+    max_hours_per_day = models.DecimalField(max_digits=4, decimal_places=2, default=10, null=True, blank=True)
+    min_rest_hours_between_shifts = models.DecimalField(max_digits=4, decimal_places=2, default=12, null=True, blank=True)
     break_required_after_hours = models.DecimalField(max_digits=4, decimal_places=2, default=6, null=True, blank=True)
-    overtime_after_hours_per_week = models.DecimalField(max_digits=5, decimal_places=2, default=40, null=True, blank=True)
-    late_threshold_minutes = models.IntegerField(default=15, help_text="Minutes after shift start to count as late")
+    overtime_after_hours_per_week = models.DecimalField(max_digits=5, decimal_places=2, default=44, null=True, blank=True)
+    overtime_rate_multiplier = models.DecimalField(max_digits=4, decimal_places=2, default=1.25, help_text="e.g. 1.25 = 125% pay for overtime")
+    mandatory_rest_day_per_week = models.BooleanField(default=True, help_text="Morocco requires 1 rest day per 7-day period")
+    late_threshold_minutes = models.IntegerField(default=5, help_text="Minutes after shift start to count as late")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'labor_policies'
+
+    @classmethod
+    def create_for_country(cls, restaurant, country_code='MA'):
+        """Create a LaborPolicy with country-specific defaults."""
+        defaults = cls.COUNTRY_PRESETS.get(country_code, cls.COUNTRY_PRESETS['MA'])
+        return cls.objects.create(restaurant=restaurant, **defaults)
 
     def __str__(self):
         return f"Labor policy - {self.restaurant.name}"

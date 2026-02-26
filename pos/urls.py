@@ -7,6 +7,7 @@ from .views import (
 )
 from . import webhooks
 from . import views_agent
+from . import views_oauth
 
 router = DefaultRouter()
 router.register(r'tables', TableViewSet, basename='pos-table')
@@ -37,4 +38,12 @@ urlpatterns = [
     path('agent/sales-summary/', views_agent.agent_get_pos_sales_summary, name='agent-pos-sales-summary'),
     path('agent/top-items/', views_agent.agent_get_top_items, name='agent-pos-top-items'),
     path('agent/status/', views_agent.agent_get_pos_status, name='agent-pos-status'),
+    path('agent/sales-analysis/', views_agent.agent_get_sales_analysis, name='agent-pos-sales-analysis'),
+    path('agent/prep-list/', views_agent.agent_get_prep_list, name='agent-pos-prep-list'),
+
+    # Square OAuth connect/disconnect
+    path('square/authorize/', views_oauth.square_authorize, name='square-authorize'),
+    path('square/callback/', views_oauth.square_callback, name='square-callback'),
+    path('square/disconnect/', views_oauth.square_disconnect, name='square-disconnect'),
+    path('connection-status/', views_oauth.pos_connection_status, name='pos-connection-status'),
 ]

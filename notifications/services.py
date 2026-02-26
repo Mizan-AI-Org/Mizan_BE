@@ -20,6 +20,69 @@ logger = logging.getLogger(__name__)
 LUA_WEBHOOK_TIMEOUT = 25
 
 
+KNOWN_COUNTRY_CODES = [
+    '1', '7',
+    '20', '27', '30', '31', '32', '33', '34', '36', '39', '40', '41', '43', '44', '45', '46', '47', '48', '49',
+    '51', '52', '53', '54', '55', '56', '57', '58', '60', '61', '62', '63', '64', '65', '66',
+    '81', '82', '84', '86', '90', '91', '92', '93', '94', '95', '98',
+    '211', '212', '213', '216', '218', '220', '221', '222', '223', '224', '225', '226', '227', '228',
+    '229', '230', '231', '232', '233', '234', '235', '236', '237', '238', '239', '240', '241', '242',
+    '243', '244', '245', '246', '247', '248', '249', '250', '251', '252', '253', '254', '255', '256',
+    '257', '258', '260', '261', '262', '263', '264', '265', '266', '267', '268', '269',
+    '290', '291', '297', '298', '299',
+    '350', '351', '352', '353', '354', '355', '356', '357', '358', '359',
+    '370', '371', '372', '373', '374', '375', '376', '377', '378', '380', '381', '382', '383', '385', '386', '387', '389',
+    '420', '421', '423',
+    '500', '501', '502', '503', '504', '505', '506', '507', '508', '509',
+    '590', '591', '592', '593', '594', '595', '596', '597', '598', '599',
+    '670', '672', '673', '674', '675', '676', '677', '678', '679', '680', '681', '682', '683', '685', '686', '687', '688', '689',
+    '690', '691', '692',
+    '850', '852', '853', '855', '856',
+    '880', '886',
+    '960', '961', '962', '963', '964', '965', '966', '967', '968', '970', '971', '972', '973', '974', '975', '976', '977',
+    '992', '993', '994', '995', '996', '998',
+]
+
+
+def normalize_whatsapp_phone(phone: str) -> tuple[str, str | None]:
+    """
+    Normalize a phone number for WhatsApp delivery.
+    Returns (normalized_phone, error_message).
+    If error_message is not None, the phone is invalid.
+    
+    Logic:
+      1. Strip to digits only.
+      2. Strip leading '0' (local format).
+      3. If result is 10-15 digits and starts with a known country code → use as-is (already international).
+      4. Otherwise, prepend WHATSAPP_DEFAULT_COUNTRY_CODE if the number is short (local).
+      5. Final check: must be 10-15 digits.
+    """
+    if not phone:
+        return '', 'No phone number provided'
+
+    digits = ''.join(filter(str.isdigit, str(phone)))
+    if digits.startswith('00'):
+        digits = digits[2:]
+    if digits.startswith('0'):
+        digits = digits.lstrip('0')
+
+    if re.match(r'^\d{10,15}$', digits):
+        for cc in sorted(KNOWN_COUNTRY_CODES, key=len, reverse=True):
+            if digits.startswith(cc):
+                return digits, None
+
+    default_cc = ''.join(filter(str.isdigit, str(getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '') or '')))
+    if default_cc and re.match(r'^\d{5,14}$', digits):
+        candidate = f'{default_cc}{digits}'
+        if re.match(r'^\d{10,15}$', candidate):
+            return candidate, None
+
+    if re.match(r'^\d{10,15}$', digits):
+        return digits, None
+
+    return digits, f'Invalid phone format ({digits}). Ensure the number includes the country code (e.g. +212... or +220...).'
+
+
 class NotificationService:
     """Unified notification service (NO DUPLICATES)"""
 
@@ -792,15 +855,9 @@ class NotificationService:
             phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
             if not token or not phone_id or not phone:
                 return False, None
-            phone = ''.join(filter(str.isdigit, phone))
-            default_cc = getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '')
-            if phone.startswith('0'):
-                phone = phone.lstrip('0')
-            if not re.match(r"^\d{10,15}$", phone):
-                if default_cc and re.match(r"^\d{9,14}$", phone):
-                    phone = f"{default_cc}{phone}"
-            if not re.match(r"^\d{10,15}$", phone):
-                return False, {"error": "Invalid recipient phone format"}
+            phone, phone_err = normalize_whatsapp_phone(phone)
+            if phone_err:
+                return False, {"error": phone_err}
             url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
             template_name = getattr(settings, 'WHATSAPP_TEMPLATE_INVITE', 'onboarding_invite_v1')
             brand = getattr(settings, 'WHATSAPP_BRAND_NAME', 'Mizan AI')
@@ -844,18 +901,13 @@ class NotificationService:
             from .models import NotificationLog
             token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
             phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
-            if not token or not phone_id or not phone:
-                return False, {"error": "WhatsApp not configured"}
-            
-            phone = ''.join(filter(str.isdigit, phone))
-            default_cc = getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '')
-            if phone.startswith('0'):
-                phone = phone.lstrip('0')
-            if not re.match(r"^\d{10,15}$", phone):
-                if default_cc and re.match(r"^\d{9,14}$", phone):
-                    phone = f"{default_cc}{phone}"
-            if not re.match(r"^\d{10,15}$", phone):
-                return False, {"error": "Invalid phone format"}
+            if not token or not phone_id:
+                return False, {"error": "WhatsApp not configured on backend (missing access token or phone number ID)"}
+
+            phone, phone_err = normalize_whatsapp_phone(phone)
+            if phone_err:
+                logger.warning("WhatsApp send_text: %s (raw: %s)", phone_err, phone)
+                return False, {"error": phone_err}
             
             url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
             payload = {
@@ -1012,16 +1064,10 @@ class NotificationService:
             phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
             if not token or not phone_id or not phone:
                 return False, {"error": "WhatsApp not configured"}
-            
-            phone = ''.join(filter(str.isdigit, phone))
-            default_cc = getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '')
-            if phone.startswith('0'):
-                phone = phone.lstrip('0')
-            if not re.match(r"^\d{10,15}$", phone):
-                if default_cc and re.match(r"^\d{9,14}$", phone):
-                    phone = f"{default_cc}{phone}"
-            if not re.match(r"^\d{10,15}$", phone):
-                return False, {"error": "Invalid phone format"}
+
+            phone, phone_err = normalize_whatsapp_phone(phone)
+            if phone_err:
+                return False, {"error": phone_err}
             
             url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
             payload = {
@@ -1144,16 +1190,19 @@ class NotificationService:
             logger.warning("start_conversational_checklist_after_clock_in: could not import scheduling models: %s", e)
             return False
         if not user or not active_shift:
+            logger.warning("start_conversational_checklist: missing user or shift (user=%s, shift=%s)", user, active_shift)
             return False
-        # Do not restart if checklist is already completed (safeguard)
         existing = ShiftChecklistProgress.objects.filter(shift=active_shift, staff=user, status='COMPLETED').first()
         if existing:
+            logger.info("start_conversational_checklist: checklist already completed for shift %s, user %s", active_shift.id, user.id)
             return False
         phone = (phone_digits or (getattr(user, "phone", None) or "")).strip()
         if not phone:
+            logger.warning("start_conversational_checklist: no phone for user %s", user.id)
             return False
         phone_digits = "".join(filter(str.isdigit, phone))
-        if len(phone_digits) < 10:
+        if len(phone_digits) < 6:
+            logger.warning("start_conversational_checklist: phone too short (%s) for user %s", phone_digits, user.id)
             return False
         session = WhatsAppSession.objects.filter(phone=phone_digits).first()
         if not session:
@@ -1337,15 +1386,9 @@ class NotificationService:
             if not token or not phone_id or not phone:
                 return False, {"error": "WhatsApp not configured"}
 
-            phone = ''.join(filter(str.isdigit, phone))
-            default_cc = getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '')
-            if phone.startswith('0'):
-                phone = phone.lstrip('0')
-            if not re.match(r"^\d{10,15}$", phone):
-                if default_cc and re.match(r"^\d{9,14}$", phone):
-                    phone = f"{default_cc}{phone}"
-            if not re.match(r"^\d{10,15}$", phone):
-                return False, {"error": "Invalid phone format"}
+            phone, phone_err = normalize_whatsapp_phone(phone)
+            if phone_err:
+                return False, {"error": phone_err}
 
             btns = list(buttons or [])[:3]
             action_buttons = []
@@ -1396,15 +1439,9 @@ class NotificationService:
             phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
             if not token or not phone_id or not phone:
                 return False, {"error": "WhatsApp not configured"}
-            phone = ''.join(filter(str.isdigit, phone))
-            default_cc = getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '')
-            if phone.startswith('0'):
-                phone = phone.lstrip('0')
-            if not re.match(r"^\d{10,15}$", phone):
-                if default_cc and re.match(r"^\d{9,14}$", phone):
-                    phone = f"{default_cc}{phone}"
-            if not re.match(r"^\d{10,15}$", phone):
-                return False, {"error": "Invalid phone format"}
+            phone, phone_err = normalize_whatsapp_phone(phone)
+            if phone_err:
+                return False, {"error": phone_err}
             text = (body_text or "Please share your location to clock in.").strip()[:4096]
             url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
             payload = {

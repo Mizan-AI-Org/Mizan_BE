@@ -59,6 +59,14 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
             data['settingsVersion'] = version
             # Provide phone_restaurant alias for compatibility
             data['phone_restaurant'] = data.get('phone')
+
+            # Expose Custom API config (URL only, not key) for frontend pre-fill
+            if restaurant.pos_provider == 'CUSTOM':
+                root = restaurant.get_pos_oauth() or {}
+                custom_cfg = root.get('custom') or {}
+                data['pos_custom_api_url'] = custom_cfg.get('api_url', '')
+                data['pos_custom_api_key_set'] = bool(custom_cfg.get('api_key'))
+
             return Response(data)
 
         # PUT
@@ -92,11 +100,24 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
         old_name = restaurant.name
 
         # Update POS settings if provided
-        if 'pos_provider' in payload or 'pos_merchant_id' in payload or 'pos_api_key' in payload:
-            restaurant.pos_provider = payload.get('pos_provider', restaurant.pos_provider)
+        if 'pos_provider' in payload or 'pos_merchant_id' in payload or 'pos_api_key' in payload or 'pos_custom_api_url' in payload:
+            new_provider = payload.get('pos_provider', restaurant.pos_provider)
+            restaurant.pos_provider = new_provider
             restaurant.pos_merchant_id = payload.get('pos_merchant_id', restaurant.pos_merchant_id)
-            # Store API key without exposing it in GET response
             restaurant.pos_api_key = payload.get('pos_api_key', restaurant.pos_api_key)
+
+            if new_provider == 'CUSTOM':
+                custom_url = payload.get('pos_custom_api_url', '').strip()
+                custom_key = payload.get('pos_custom_api_key', '').strip()
+                root = restaurant.get_pos_oauth() or {}
+                custom_cfg = root.get('custom') or {}
+                if custom_url:
+                    custom_cfg['api_url'] = custom_url
+                if custom_key:
+                    custom_cfg['api_key'] = custom_key
+                root['custom'] = custom_cfg
+                restaurant.set_pos_oauth(root)
+                restaurant.pos_is_connected = False
 
         # Update AI settings if provided
         ai_enabled = payload.get('ai_enabled')
@@ -420,7 +441,24 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                     except Exception:
                         pass
 
-            elif restaurant.pos_provider in ('TOAST', 'LIGHTSPEED', 'CLOVER', 'CUSTOM'):
+            elif restaurant.pos_provider == 'CUSTOM':
+                root = restaurant.get_pos_oauth() or {}
+                custom_cfg = root.get('custom') or {}
+                api_url = (custom_cfg.get('api_url') or '').strip()
+                api_key = (custom_cfg.get('api_key') or '').strip()
+                if not api_url:
+                    return Response({
+                        'connected': False,
+                        'provider': 'CUSTOM',
+                        'message': 'Custom API URL is not configured. Save it first.',
+                    })
+                headers = {}
+                if api_key:
+                    headers['Authorization'] = f'Bearer {api_key}'
+                test_resp = requests.get(api_url, headers=headers, timeout=10)
+                connected = test_resp.status_code == 200
+
+            elif restaurant.pos_provider in ('TOAST', 'LIGHTSPEED', 'CLOVER'):
                 return Response({
                     'connected': False,
                     'provider': restaurant.pos_provider,
@@ -428,9 +466,7 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                 })
             
             else:
-                # Custom API test
-                response = requests.get(restaurant.pos_api_key, timeout=5)
-                connected = response.status_code == 200
+                connected = False
             
             if connected:
                 restaurant.pos_is_connected = True
@@ -460,7 +496,11 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
             return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
         if not settings.SQUARE_APPLICATION_ID or not settings.SQUARE_REDIRECT_URI:
-            return Response({'error': 'Square OAuth is not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {'error': 'Square OAuth is not configured on this server. Please add SQUARE_APPLICATION_ID and SQUARE_REDIRECT_URI to your environment.',
+                 'detail': 'Square OAuth credentials are not configured. Contact your administrator.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
         restaurant = request.user.restaurant
         nonce = secrets.token_urlsafe(24)

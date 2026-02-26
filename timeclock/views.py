@@ -22,7 +22,61 @@ import base64
 import logging
 
 logger = logging.getLogger(__name__)
-from django.core.files.base import ContentFile  # <--- ADD THIS IMPORT
+from django.core.files.base import ContentFile
+
+
+def _find_shift_for_clock_in(user):
+    """
+    Find the correct shift for a clock-in when a staff member may have
+    multiple shifts in a day. Priority:
+      1. A shift whose start_time <= now <= end_time (currently active window)
+      2. The nearest upcoming shift (start_time > now) — handles early clock-in
+      3. The most recent past shift that hasn't been completed yet
+    Always marks the matched shift as IN_PROGRESS.
+    """
+    from datetime import timedelta
+    now = timezone.now()
+    qs = AssignedShift.objects.filter(
+        Q(staff=user) | Q(staff_members=user),
+        shift_date=now.date(),
+        status__in=['SCHEDULED', 'CONFIRMED'],
+    ).distinct().order_by('start_time')
+
+    window = timedelta(minutes=30)
+
+    # 1. Shift whose window covers "now" (start - 30min <= now <= end)
+    for shift in qs:
+        if not shift.start_time or not shift.end_time:
+            continue
+        start = shift.start_time if timezone.is_aware(shift.start_time) else timezone.make_aware(shift.start_time)
+        end = shift.end_time if timezone.is_aware(shift.end_time) else timezone.make_aware(shift.end_time)
+        if (start - window) <= now <= end:
+            shift.status = 'IN_PROGRESS'
+            shift.save(update_fields=['status'])
+            return shift
+
+    # 2. Nearest upcoming shift (early clock-in)
+    upcoming = qs.filter(start_time__gt=now).first()
+    if upcoming:
+        upcoming.status = 'IN_PROGRESS'
+        upcoming.save(update_fields=['status'])
+        return upcoming
+
+    # 3. Most recent past shift not yet completed
+    past = qs.order_by('-start_time').first()
+    if past:
+        past.status = 'IN_PROGRESS'
+        past.save(update_fields=['status'])
+        return past
+
+    # 4. Already IN_PROGRESS shift (someone clocked in via another channel)
+    return AssignedShift.objects.filter(
+        Q(staff=user) | Q(staff_members=user),
+        shift_date=now.date(),
+        status='IN_PROGRESS',
+    ).distinct().order_by('start_time').first()
+
+
 # Your existing geolocation endpoints (keep these)
 @api_view(['POST'])
 def clock_in(request):
@@ -280,22 +334,13 @@ def web_clock_in(request):
     except Exception:
         pass
 
-    # Start conversational checklist (WhatsApp step-by-step) so staff receive it immediately after clock-in
+    # Find and mark the correct shift as IN_PROGRESS, then start the checklist
     try:
-        now_today = timezone.now()
-        active_qs = AssignedShift.objects.filter(
-            staff=user,
-            shift_date=now_today.date(),
-            status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
-        )
-        active_shift = (
-            active_qs.filter(start_time__lte=now_today, end_time__gte=now_today).first()
-            or active_qs.order_by('start_time').first()
-        )
+        active_shift = _find_shift_for_clock_in(user)
         if active_shift and getattr(user, 'phone', None):
             notification_service.start_conversational_checklist_after_clock_in(user, active_shift)
     except Exception:
-        pass
+        logger.exception("web_clock_in: error finding shift / starting checklist for user %s", user.id)
 
     return Response(response_data)
 
@@ -1070,22 +1115,13 @@ def agent_clock_in(request):
             except Exception:
                 pass
 
-        # Start conversational checklist (WhatsApp) so staff receive step-by-step tasks after clock-in
+        # Find and mark the correct shift as IN_PROGRESS, then start the checklist
         try:
-            now_today = timezone.now()
-            active_qs = AssignedShift.objects.filter(
-                staff=user,
-                shift_date=now_today.date(),
-                status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
-            )
-            active_shift = (
-                active_qs.filter(start_time__lte=now_today, end_time__gte=now_today).first()
-                or active_qs.order_by('start_time').first()
-            )
+            active_shift = _find_shift_for_clock_in(user)
             if active_shift and getattr(user, 'phone', None):
                 notification_service.start_conversational_checklist_after_clock_in(user, active_shift)
         except Exception:
-            pass
+            logger.exception("agent_clock_in: error finding shift / starting checklist for user %s", user.id)
 
         return Response(ClockEventSerializer(clock_event).data)
 

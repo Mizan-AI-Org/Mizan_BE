@@ -1,9 +1,12 @@
+import logging
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from django.db.models import Q, Count, Sum, Avg
+
+logger = logging.getLogger(__name__)
 from scheduling.models import ShiftTask, TaskCategory, ShiftChecklistProgress, TaskVerificationRecord
 from scheduling.serializers import ShiftTaskSerializer, TaskCategorySerializer
 from scheduling.process_models import Process, ProcessTask
@@ -666,87 +669,124 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             'on_leave': {'count': 0, 'subtitle': 'Approved'} 
         }
         
-        staff_map = {}
+        staff_map = {}  # keyed by "<staff_id>_<shift_id>" to support multiple shifts per staff
+        staff_id_to_keys = {}  # staff_id -> list of keys in staff_map (for clock event matching)
         unique_present = set()
         total_late_minutes = 0
         
-        # Initialize staff map with shifts
+        # Initialize staff map with shifts — one entry per staff-shift combination
         for shift in shifts:
-            # Get all assigned staff members for this shift
             assigned_staff_list = list(shift.staff_members.all())
             if shift.staff and shift.staff not in assigned_staff_list:
                 assigned_staff_list.append(shift.staff)
                 
             for staff in assigned_staff_list:
                 staff_id = staff.id
-                if staff_id in staff_map:
-                    continue # Avoid double entry if overlap exists
-                    
-                staff_map[staff_id] = {
+                entry_key = f"{staff_id}_{shift.id}"
+
+                if staff_id not in staff_id_to_keys:
+                    staff_id_to_keys[staff_id] = []
+                staff_id_to_keys[staff_id].append(entry_key)
+
+                staff_map[entry_key] = {
                     'staff': {
                         'id': staff_id,
                         'name': f"{staff.first_name} {staff.last_name}",
                         'role': staff.role,
                         'avatar': None
                     },
-                'shift': {
-                    'start': timezone.localtime(shift.start_time).strftime('%H:%M') if shift.start_time else None,
-                    'end': timezone.localtime(shift.end_time).strftime('%H:%M') if shift.end_time else None,
-                    'status': shift.status
-                },
-                'shift_id': str(shift.id),
-                'clock_in': None,
-                'clock_in_method': None,
-                'is_manager_override': False,
-                'override_reason': None,
-                'status': 'scheduled', # scheduled, late, absent, on_time, on_break, clocked_out
-                'late_minutes': 0,
-                'location': 'Unknown',
-                'timeline': [], # For visual bar
-                'signals': [] # "Late 3x", "Perfect Attendance"
-            }
-            
-        # Process Clock Events
-        for event in events:
-            staff_id = event.staff.id
-            
-            # If staff clocked in but has no shift, add them (unplanned shift)
-            if staff_id not in staff_map:
-                staff_map[staff_id] = {
-                    'staff': {
-                        'id': staff_id,
-                        'name': f"{event.staff.first_name} {event.staff.last_name}",
-                        'role': event.staff.role,
-                        'avatar': None
+                    'shift': {
+                        'start': timezone.localtime(shift.start_time).strftime('%H:%M') if shift.start_time else None,
+                        'end': timezone.localtime(shift.end_time).strftime('%H:%M') if shift.end_time else None,
+                        'status': shift.status
                     },
-                    'shift': {'start': None, 'end': None, 'status': 'UNSCHEDULED'},
+                    'shift_id': str(shift.id),
+                    'shift_start_dt': shift.start_time,
+                    'shift_end_dt': shift.end_time,
                     'clock_in': None,
                     'clock_in_method': None,
                     'is_manager_override': False,
                     'override_reason': None,
-                    'status': 'present', 
+                    'status': 'scheduled',
                     'late_minutes': 0,
                     'location': 'Unknown',
                     'timeline': [],
-                    'signals': ['Unscheduled Shift']
+                    'signals': []
                 }
+            
+        def _find_best_entry_for_event(staff_id, event_timestamp):
+            """Match a clock event to the best shift entry for that staff member."""
+            keys = staff_id_to_keys.get(staff_id, [])
+            if not keys:
+                return None
+            if len(keys) == 1:
+                return keys[0]
+            # Multiple shifts: find the one whose time window best covers this event
+            event_dt = event_timestamp
+            best_key = None
+            best_distance = None
+            for key in keys:
+                entry = staff_map[key]
+                s_start = entry.get('shift_start_dt')
+                s_end = entry.get('shift_end_dt')
+                if s_start and s_end:
+                    s_start_aware = timezone.localtime(s_start) if timezone.is_aware(s_start) else s_start
+                    s_end_aware = timezone.localtime(s_end) if timezone.is_aware(s_end) else s_end
+                    if s_start_aware <= event_dt <= s_end_aware:
+                        return key
+                    dist = min(abs((event_dt - s_start_aware).total_seconds()),
+                               abs((event_dt - s_end_aware).total_seconds()))
+                    if best_distance is None or dist < best_distance:
+                        best_distance = dist
+                        best_key = key
+            return best_key or keys[0]
 
-            data = staff_map[staff_id]
+        # Process Clock Events
+        for event in events:
+            staff_id = event.staff.id
+            
+            entry_key = _find_best_entry_for_event(staff_id, event.timestamp)
+            
+            # If staff clocked in but has no shift, add them (unplanned shift)
+            if not entry_key:
+                entry_key = f"{staff_id}_unscheduled"
+                if entry_key not in staff_map:
+                    staff_map[entry_key] = {
+                        'staff': {
+                            'id': staff_id,
+                            'name': f"{event.staff.first_name} {event.staff.last_name}",
+                            'role': event.staff.role,
+                            'avatar': None
+                        },
+                        'shift': {'start': None, 'end': None, 'status': 'UNSCHEDULED'},
+                        'shift_id': None,
+                        'shift_start_dt': None,
+                        'shift_end_dt': None,
+                        'clock_in': None,
+                        'clock_in_method': None,
+                        'is_manager_override': False,
+                        'override_reason': None,
+                        'status': 'present', 
+                        'late_minutes': 0,
+                        'location': 'Unknown',
+                        'timeline': [],
+                        'signals': ['Unscheduled Shift']
+                    }
+
+            data = staff_map[entry_key]
             time_str = timezone.localtime(event.timestamp).strftime('%H:%M')
             data['timeline'].append({'time': time_str, 'type': event.event_type})
             
             if event.event_type in ['in', 'CLOCK_IN']:
-                if not data['clock_in']: # First clock in
+                if not data['clock_in']:
                     data['clock_in'] = time_str
                     data['clock_in_method'] = getattr(event, 'device_id', '') or ''
                     data['is_manager_override'] = (getattr(event, 'device_id', '') or '') == 'manager_override'
                     data['override_reason'] = getattr(event, 'override_reason', '') or ''
                     unique_present.add(staff_id)
-                    # Check Lateness
                     if data['shift']['start']:
                         shift_start_dt = datetime.strptime(data['shift']['start'], '%H:%M')
                         clock_in_dt = datetime.strptime(time_str, '%H:%M')
-                        # 5 min grace period
                         diff_mins = (clock_in_dt - shift_start_dt).total_seconds() / 60
                         if diff_mins > 5:
                             data['status'] = 'late'
@@ -757,54 +797,45 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                             data['status'] = 'on_time'
                             data['signals'].append("On Time")
                     else:
-                         data['status'] = 'present'
+                        data['status'] = 'present'
 
             elif event.event_type in ['out', 'CLOCK_OUT']:
-                 if data['status'] != 'late': # Preserve late status
-                     data['status'] = 'clocked_out'
-                     # Ensure UI shows "Shift Over" instead of "On Time"
-                     if data.get('signals'):
-                         data['signals'] = [s for s in data['signals'] if s != 'On Time']
-                     data['signals'] = data.get('signals') or []
-                     if 'Shift Over' not in data['signals']:
-                         data['signals'].append('Shift Over')
+                if data['status'] != 'late':
+                    data['status'] = 'clocked_out'
+                    if data.get('signals'):
+                        data['signals'] = [s for s in data['signals'] if s != 'On Time']
+                    data['signals'] = data.get('signals') or []
+                    if 'Shift Over' not in data['signals']:
+                        data['signals'].append('Shift Over')
 
-        # Analyze Absences & Final Summaries
         # Analyze Absences & Final Summaries
         now_dt = timezone.localtime(timezone.now())
         
-        NO_SHOW_LATE_MINUTES = 180  # 3 hours late => no-show, mark absent
-        for staff_id, data in staff_map.items():
-            # If scheduled but no clock in...
+        NO_SHOW_LATE_MINUTES = 180
+        for entry_key, data in staff_map.items():
             if data['shift']['start'] and not data['clock_in']:
                 try:
-                    # Already marked no-show in DB: show as absent
                     if data['shift'].get('status') == 'NO_SHOW':
                         data['status'] = 'absent'
                         summary['absent']['count'] += 1
                         continue
-                    # Construct shift datetime objects
                     s_start = datetime.strptime(data['shift']['start'], '%H:%M').time()
                     s_end = datetime.strptime(data['shift']['end'], '%H:%M').time()
                     
                     shift_start_dt = timezone.make_aware(datetime.combine(today, s_start))
                     shift_end_dt = timezone.make_aware(datetime.combine(today, s_end))
                     
-                    # Handle overnight shifts if needed (end < start)
                     if shift_end_dt < shift_start_dt:
                         shift_end_dt += timedelta(days=1)
                         
                     if now_dt < shift_start_dt:
                         data['status'] = 'scheduled'
-                        # Not absent or late yet
                     elif now_dt > shift_end_dt:
                         data['status'] = 'absent'
                         summary['absent']['count'] += 1
                     else:
-                        # Shift has started, staff not clocked in
                         diff_mins = (now_dt - shift_start_dt).total_seconds() / 60
                         if diff_mins >= NO_SHOW_LATE_MINUTES:
-                            # More than 3 hours late => no-show: mark shift and show absent
                             data['status'] = 'absent'
                             summary['absent']['count'] += 1
                             shift_id = data.get('shift_id')
@@ -818,7 +849,7 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                             data['signals'].append(f"Late ({int(diff_mins)}m)")
                         
                 except Exception as e:
-                    print(f"Error parsing times for attendance: {e}")
+                    logger.warning("Error parsing times for attendance entry %s: %s", entry_key, e)
                     data['status'] = 'scheduled'
 
             elif data['status'] == 'late':
@@ -826,12 +857,16 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         
         summary['present']['count'] = len(unique_present)
         if summary['present']['total'] > 0:
-             summary['present']['percentage'] = int((summary['present']['count'] / summary['present']['total']) * 100)
+            summary['present']['percentage'] = int((summary['present']['count'] / summary['present']['total']) * 100)
              
         if summary['late']['count'] > 0:
             summary['late']['avg_minutes'] = int(total_late_minutes / summary['late']['count'])
 
-        # Sort: Late -> Absent -> Present -> Others
+        # Clean up internal fields before sending response
+        for data in staff_map.values():
+            data.pop('shift_start_dt', None)
+            data.pop('shift_end_dt', None)
+
         def sort_key(item):
             s = item['status']
             if s == 'late': return 1

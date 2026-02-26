@@ -67,7 +67,10 @@ def agent_sync_orders(request):
         sync_square_orders_for_restaurant.delay(str(restaurant.id))
         return Response({"success": True, "queued": True, "provider": "SQUARE"})
 
-    result = IntegrationManager.sync_orders(restaurant)
+    from django.utils.dateparse import parse_date
+    start_date = parse_date(request.data.get("start_date", "") or "") if request.data else None
+    end_date = parse_date(request.data.get("end_date", "") or "") if request.data else None
+    result = IntegrationManager.sync_orders(restaurant, start_date, end_date)
     return Response(result, status=status.HTTP_200_OK if result.get("success") else status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -186,4 +189,47 @@ def agent_get_pos_status(request):
         "merchant_id": restaurant.pos_merchant_id,
         "location_id": restaurant.pos_location_id,
     })
+
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_get_sales_analysis(request):
+    """AI-powered sales analysis with trends and recommendations."""
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
+
+    restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
+    if not restaurant:
+        return Response({"error": "Unable to resolve restaurant context."}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        days = int(request.query_params.get("days") or 7)
+    except Exception:
+        days = 7
+
+    result = IntegrationManager.get_sales_analysis(restaurant, days)
+    return Response(result)
+
+
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_get_prep_list(request):
+    """Generate daily prep list from sales forecast + recipes + inventory."""
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
+
+    restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
+    if not restaurant:
+        return Response({"error": "Unable to resolve restaurant context."}, status=status.HTTP_400_BAD_REQUEST)
+
+    date_str = request.query_params.get("date")
+    from django.utils.dateparse import parse_date
+    target_date = parse_date(date_str) if date_str else None
+
+    result = IntegrationManager.generate_prep_list(restaurant, target_date)
+    return Response(result)
 

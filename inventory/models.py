@@ -91,6 +91,72 @@ class PurchaseOrderItem(models.Model):
     def __str__(self):
         return f"{self.quantity} x {self.inventory_item.name} for PO#{self.purchase_order.id.hex[:8]}"
 
+class WasteEntry(models.Model):
+    """Individual waste report — staff report via WhatsApp to Miya.
+    Tracks what was wasted, quantity, reason, and cost."""
+    REASON_CHOICES = [
+        ('EXPIRED', 'Expired'),
+        ('SPOILED', 'Spoiled'),
+        ('OVERPRODUCTION', 'Overproduction'),
+        ('DROPPED', 'Dropped / Damaged'),
+        ('RETURNED', 'Customer Return'),
+        ('QUALITY', 'Quality Issue'),
+        ('OTHER', 'Other'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='waste_entries')
+    inventory_item = models.ForeignKey(InventoryItem, on_delete=models.SET_NULL, null=True, blank=True, related_name='waste_entries')
+    item_name = models.CharField(max_length=255, help_text="Free-text name (used when item not in inventory system)")
+    quantity = models.DecimalField(max_digits=10, decimal_places=2)
+    unit = models.CharField(max_length=20, blank=True)
+    estimated_cost = models.DecimalField(max_digits=10, decimal_places=2, default=0, help_text="Auto-calculated from inventory cost_per_unit or manual")
+    reason = models.CharField(max_length=20, choices=REASON_CHOICES, default='OTHER')
+    notes = models.TextField(blank=True)
+    reported_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='waste_reports')
+    photo = models.ImageField(upload_to='waste_photos/', null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    waste_date = models.DateField(help_text="Date the waste occurred")
+
+    class Meta:
+        db_table = 'waste_entries'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['restaurant', 'waste_date']),
+        ]
+
+    def __str__(self):
+        return f"Waste: {self.quantity} {self.unit} {self.item_name} ({self.waste_date})"
+
+
+class InventoryCountSession(models.Model):
+    """A conversational inventory count session — Miya walks staff through items one by one."""
+    STATUS_CHOICES = [
+        ('IN_PROGRESS', 'In Progress'),
+        ('COMPLETED', 'Completed'),
+        ('CANCELLED', 'Cancelled'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='inventory_count_sessions')
+    counted_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='IN_PROGRESS')
+    items_total = models.IntegerField(default=0)
+    items_counted = models.IntegerField(default=0)
+    current_item_index = models.IntegerField(default=0, help_text="Index into the ordered item list")
+    count_data = models.JSONField(default=dict, help_text="Map of item_id -> {counted: Decimal, expected: Decimal, variance: Decimal}")
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    count_date = models.DateField()
+
+    class Meta:
+        db_table = 'inventory_count_sessions'
+        ordering = ['-count_date']
+
+    def __str__(self):
+        return f"Count {self.count_date} by {self.counted_by} ({self.status})"
+
+
 class StockAdjustment(models.Model):
     ADJUSTMENT_TYPES = (
         ('ADD', 'Add Stock'),

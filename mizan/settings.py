@@ -284,7 +284,7 @@ EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # ---------------------------
 # Default to local dev URL; can be overridden via environment
-FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:8081')
+FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:8080')
 
 # ---------------------------
 # Security settings (production)
