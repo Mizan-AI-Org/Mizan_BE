@@ -763,23 +763,6 @@ def agent_create_shift(request):
                 'error': 'Unable to resolve restaurant context (provide restaurant_id or include sessionId/userId/email/phone/token).'
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Each shift must have at least one Process & Task Template or one Custom Task
-        task_template_ids_raw = data.get('task_template_ids') or data.get('taskTemplateIds') or []
-        if isinstance(task_template_ids_raw, str):
-            task_template_ids_raw = [x.strip() for x in task_template_ids_raw.split(',') if x.strip()]
-        custom_tasks = data.get('tasks') or []
-        if isinstance(custom_tasks, str):
-            try:
-                import json
-                custom_tasks = json.loads(custom_tasks) if custom_tasks.strip() else []
-            except Exception:
-                custom_tasks = []
-        if not task_template_ids_raw and not custom_tasks:
-            return Response({
-                'success': False,
-                'error': 'Each shift must have at least one Process & Task Template (task_template_ids) or at least one Custom Task (tasks array with title).'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
         # Validate staff
         try:
             staff = CustomUser.objects.get(id=staff_id, restaurant=restaurant)
