@@ -361,34 +361,7 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
     next_task = ShiftTask.objects.filter(id=next_task_id).first()
     if next_task:
         idx = (tasks.index(next_task_id) + 1) if next_task_id in tasks else 1
-        if getattr(next_task, 'verification_required', False) and str(getattr(next_task, 'verification_type', 'NONE')).upper() == 'PHOTO':
-            msg = (
-                f"📋 *Task {idx}/{len(tasks)}*\n\n"
-                f"*{next_task.title}*\n"
-                f"{next_task.description or ''}\n\n"
-                f"📸 Please complete this task and send a photo as evidence."
-            )
-            session.context['awaiting_verification_for_task_id'] = str(next_task.id)
-            session.state = 'awaiting_task_photo'
-            session.save(update_fields=['state', 'context'])
-            notification_service.send_whatsapp_text(phone_digits, msg)
-        else:
-            question_text = (next_task.title or '').strip()
-            if (getattr(next_task, 'description', None) or '').strip():
-                question_text = f"{question_text}. {(next_task.description or '').strip()}"
-            if not notification_service.send_staff_checklist_step(phone_digits, question_text):
-                task_msg = (
-                    f"📋 *Task {idx}/{len(tasks)}*\n\n"
-                    f"*{next_task.title}*\n"
-                    f"{next_task.description or ''}\n\n"
-                    "Is this complete?"
-                )
-                buttons = [
-                    {"id": "yes", "title": "✅ Yes"},
-                    {"id": "no", "title": "❌ No"},
-                    {"id": "n_a", "title": "➖ N/A"}
-                ]
-                notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+        notification_service._send_task_step_to_whatsapp(phone_digits, next_task, idx, len(tasks), session)
     return True
 
 
@@ -1192,15 +1165,7 @@ def whatsapp_webhook(request):
                                         nxt = ShiftTask.objects.filter(id=next_id).first()
                                         if nxt:
                                             idx = (task_ids.index(next_id) + 1) if next_id in task_ids else 1
-                                            task_msg = (
-                                                f"📋 *Task {idx}/{len(task_ids)}*\n\n"
-                                                f"*{nxt.title}*\n{nxt.description or ''}\n\nIs this complete?"
-                                            )
-                                            notification_service.send_whatsapp_buttons(phone_digits, task_msg, [
-                                                {"id": "yes", "title": "✅ Yes"},
-                                                {"id": "no", "title": "❌ No"},
-                                                {"id": "n_a", "title": "➖ N/A"}
-                                            ])
+                                            notification_service._send_task_step_to_whatsapp(phone_digits, nxt, idx, len(task_ids), session)
                                     continue
 
                             elif session.state == 'checklist_delay_eta' and btn_id in ['eta_10m', 'eta_30m', 'eta_1h', 'eta_later']:
@@ -1299,34 +1264,7 @@ def whatsapp_webhook(request):
                                         nxt = ShiftTask.objects.filter(id=next_id).first()
                                         if nxt:
                                             idx = (task_ids.index(next_id) + 1) if next_id in task_ids else 1
-                                            if getattr(nxt, 'verification_required', False) and str(getattr(nxt, 'verification_type', 'NONE')).upper() == 'PHOTO':
-                                                msg = (
-                                                    f"📋 *Task {idx}/{len(task_ids)}*\n\n"
-                                                    f"*{nxt.title}*\n"
-                                                    f"{nxt.description or ''}\n\n"
-                                                    f"📸 Please complete this task and send a photo as evidence."
-                                                )
-                                                session.context['awaiting_verification_for_task_id'] = str(nxt.id)
-                                                session.state = 'awaiting_task_photo'
-                                                session.save(update_fields=['state', 'context'])
-                                                notification_service.send_whatsapp_text(phone_digits, msg)
-                                            else:
-                                                question_text = (nxt.title or '').strip()
-                                                if (getattr(nxt, 'description', None) or '').strip():
-                                                    question_text = f"{question_text}. {(nxt.description or '').strip()}"
-                                                if not notification_service.send_staff_checklist_step(phone_digits, question_text):
-                                                    task_msg = (
-                                                        f"📋 *Task {idx}/{len(task_ids)}*\n\n"
-                                                        f"*{nxt.title}*\n"
-                                                        f"{nxt.description or ''}\n\n"
-                                                        "Is this complete?"
-                                                    )
-                                                    buttons = [
-                                                        {"id": "yes", "title": "✅ Yes"},
-                                                        {"id": "no", "title": "❌ No"},
-                                                        {"id": "n_a", "title": "➖ N/A"}
-                                                    ]
-                                                    notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+                                            notification_service._send_task_step_to_whatsapp(phone_digits, nxt, idx, len(task_ids), session)
                                 except Exception:
                                     pass
                             else:
@@ -1920,36 +1858,8 @@ def whatsapp_webhook(request):
                                 nxt = ShiftTask.objects.filter(id=next_id).first()
                                 if nxt:
                                     idx = (task_ids.index(next_id) + 1) if next_id in task_ids else 1
-                                    if getattr(nxt, 'verification_required', False) and str(getattr(nxt, 'verification_type', 'NONE')).upper() == 'PHOTO':
-                                        msg = (
-                                            f"📋 *Task {idx}/{len(task_ids)}*\n\n"
-                                            f"*{nxt.title}*\n"
-                                            f"{nxt.description or ''}\n\n"
-                                            f"📸 Please complete this task and send a photo as evidence."
-                                        )
-                                        session.context['awaiting_verification_for_task_id'] = str(nxt.id)
-                                        session.state = 'awaiting_task_photo'
-                                        session.save(update_fields=['state', 'context'])
-                                        notification_service.send_whatsapp_text(phone_digits, msg)
-                                    else:
-                                        question_text = (nxt.title or '').strip()
-                                        if (getattr(nxt, 'description', None) or '').strip():
-                                            question_text = f"{question_text}. {(nxt.description or '').strip()}"
-                                        if not notification_service.send_staff_checklist_step(phone_digits, question_text):
-                                            task_msg = (
-                                                f"📋 *Task {idx}/{len(task_ids)}*\n\n"
-                                                f"*{nxt.title}*\n"
-                                                f"{nxt.description or ''}\n\n"
-                                                "Is this complete?"
-                                            )
-                                            buttons = [
-                                                {"id": "yes", "title": "✅ Yes"},
-                                                {"id": "no", "title": "❌ No"},
-                                                {"id": "n_a", "title": "➖ N/A"}
-                                            ]
-                                            notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+                                    notification_service._send_task_step_to_whatsapp(phone_digits, nxt, idx, len(task_ids), session)
                         except Exception:
-                            # Fall back without breaking the chat
                             session.state = 'in_checklist'
                             session.save(update_fields=['state'])
                         continue
@@ -2193,34 +2103,7 @@ def whatsapp_webhook(request):
                             nxt = ShiftTask.objects.filter(id=current_id).first()
                             if nxt:
                                 idx = (task_ids.index(current_id) + 1) if current_id in task_ids else 1
-                                if getattr(nxt, 'verification_required', False) and str(getattr(nxt, 'verification_type', 'NONE')).upper() == 'PHOTO':
-                                    msg = (
-                                        f"📋 *Task {idx}/{len(task_ids)}*\n\n"
-                                        f"*{nxt.title}*\n"
-                                        f"{nxt.description or ''}\n\n"
-                                        f"📸 Please complete this task and send a photo as evidence."
-                                    )
-                                    session.context['awaiting_verification_for_task_id'] = str(nxt.id)
-                                    session.state = 'awaiting_task_photo'
-                                    session.save(update_fields=['state', 'context'])
-                                    notification_service.send_whatsapp_text(phone_digits, msg)
-                                else:
-                                    question_text = (nxt.title or '').strip()
-                                    if (getattr(nxt, 'description', None) or '').strip():
-                                        question_text = f"{question_text}. {(nxt.description or '').strip()}"
-                                    if not notification_service.send_staff_checklist_step(phone_digits, question_text):
-                                        task_msg = (
-                                            f"📋 *Task {idx}/{len(task_ids)}*\n\n"
-                                            f"*{nxt.title}*\n"
-                                            f"{nxt.description or ''}\n\n"
-                                            "Is this complete?"
-                                        )
-                                        buttons = [
-                                            {"id": "yes", "title": "✅ Yes"},
-                                            {"id": "no", "title": "❌ No"},
-                                            {"id": "n_a", "title": "➖ N/A"}
-                                        ]
-                                        notification_service.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+                                notification_service._send_task_step_to_whatsapp(phone_digits, nxt, idx, len(task_ids), session)
                             else:
                                 notification_service.send_whatsapp_text(
                                     phone_digits,
