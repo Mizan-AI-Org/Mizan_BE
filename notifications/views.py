@@ -1853,22 +1853,26 @@ def whatsapp_webhook(request):
 
                     # Checklist: accept typed yes/no/n/a as well as button replies
                     if session.state == 'in_checklist':
-                        body_clean = body.strip()
-                        if body_clean in ('yes', 'y'):
-                            response_value = 'yes'
-                        elif body_clean == 'no':
-                            response_value = 'no'
-                        elif body_clean in ('n/a', 'na', 'n a'):
-                            response_value = 'n_a'
+                        # Let "start checklist" / "clock out" intents pass through
+                        if _normalize_start_checklist_intent(raw_body or body) or body in ['clock out', 'clock-out', 'clockout']:
+                            pass  # Fall through to the handlers below
                         else:
-                            response_value = None
-                        if response_value and _handle_checklist_response(notification_service, session, user, phone_digits, response_value):
+                            body_clean = body.strip()
+                            if body_clean in ('yes', 'y'):
+                                response_value = 'yes'
+                            elif body_clean == 'no':
+                                response_value = 'no'
+                            elif body_clean in ('n/a', 'na', 'n a'):
+                                response_value = 'n_a'
+                            else:
+                                response_value = None
+                            if response_value and _handle_checklist_response(notification_service, session, user, phone_digits, response_value):
+                                continue
+                            checklist_invalid = (
+                                "Hmm, I didn't get that. Please choose ✅ Yes, ❌ No, or ➖ N/A for this step (or type yes, no, or n/a)."
+                            )
+                            notification_service.send_whatsapp_text(phone_digits, checklist_invalid)
                             continue
-                        checklist_invalid = (
-                            "Hmm, I didn't get that. Please choose ✅ Yes, ❌ No, or ➖ N/A for this step (or type yes, no, or n/a)."
-                        )
-                        notification_service.send_whatsapp_text(phone_digits, checklist_invalid)
-                        continue
                     if session.state == 'awaiting_task_photo':
                         notification_service.send_whatsapp_text(
                             phone_digits,

@@ -293,7 +293,6 @@ def agent_preview_checklist(request):
                 "shift": {"start": shift_start, "end": shift_end},
                 "tasks": all_items,
                 "total_items": len(all_items),
-                "message_for_user": "Your checklist is in progress. I've re-sent your current task.",
             })
 
         try:
@@ -314,7 +313,6 @@ def agent_preview_checklist(request):
                 "shift": {"start": shift_start, "end": shift_end},
                 "tasks": all_items,
                 "total_items": len(all_items),
-                "message_for_user": "Your checklist has been started! Check your messages for the first task.",
             })
 
     # Not clocked in or auto-start failed: return preview
@@ -463,7 +461,6 @@ def agent_start_whatsapp_checklist(request):
                 "first_item_sent": True,
                 "suppress_reply": True,
                 "clocked_in": True,
-                "message_for_user": "Your checklist is in progress. I've re-sent your current task.",
             })
 
     try:
@@ -485,7 +482,6 @@ def agent_start_whatsapp_checklist(request):
                 "first_item_sent": True,
                 "suppress_reply": True,
                 "clocked_in": True,
-                "message_for_user": "Your checklist has been started! You should receive the first task now.",
             },
             status=status.HTTP_200_OK,
         )
