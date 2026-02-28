@@ -1197,7 +1197,10 @@ class NotificationService:
             logger.info("start_conversational_checklist: checklist already completed for shift %s, user %s", active_shift.id, user.id)
             return False
         if existing and existing.status == 'IN_PROGRESS':
-            logger.info("start_conversational_checklist: checklist already in progress for shift %s, user %s — skipping duplicate start", active_shift.id, user.id)
+            logger.info("start_conversational_checklist: checklist already in progress for shift %s, user %s — resuming", active_shift.id, user.id)
+            phone_clean = "".join(filter(str.isdigit, str(phone_digits or (getattr(user, "phone", None) or ""))))
+            if phone_clean and len(phone_clean) >= 6:
+                return self.resume_conversational_checklist(user, active_shift, phone_clean)
             return True
         phone = (phone_digits or (getattr(user, "phone", None) or "")).strip()
         if not phone:
@@ -1386,19 +1389,23 @@ class NotificationService:
         try:
             from scheduling.models import ShiftTask, ShiftChecklistProgress
         except Exception:
+            logger.warning("resume_conversational_checklist: could not import models")
             return False
         phone_digits = "".join(filter(str.isdigit, str(phone_digits or "")))
         if not phone_digits or len(phone_digits) < 6:
+            logger.warning("resume_conversational_checklist: invalid phone %s", phone_digits)
             return False
         prog = ShiftChecklistProgress.objects.filter(
             shift=active_shift, staff=user, status='IN_PROGRESS'
         ).first()
         if not prog:
+            logger.warning("resume_conversational_checklist: no IN_PROGRESS progress for shift %s, user %s", active_shift.id, user.id)
             return False
         task_ids = prog.task_ids or []
         responses = prog.responses or {}
         current_id = prog.current_task_id or (task_ids[0] if task_ids else None)
         if not current_id or not task_ids:
+            logger.warning("resume_conversational_checklist: empty task_ids or current_id for shift %s, user %s (task_ids=%s, current_id=%s)", active_shift.id, user.id, task_ids, current_id)
             return False
 
         session = WhatsAppSession.objects.filter(phone=phone_digits).first()
@@ -1416,7 +1423,9 @@ class NotificationService:
 
         nxt = ShiftTask.objects.filter(id=current_id).first()
         if not nxt:
+            logger.warning("resume_conversational_checklist: ShiftTask %s not found for shift %s", current_id, active_shift.id)
             return False
+        logger.info("resume_conversational_checklist: re-sending task %s/%s '%s' for shift %s, user %s", task_ids.index(current_id) + 1 if current_id in task_ids else '?', len(task_ids), nxt.title, active_shift.id, user.id)
         idx = (task_ids.index(current_id) + 1) if current_id in task_ids else 1
         if getattr(nxt, 'verification_required', False) and str(getattr(nxt, 'verification_type', 'NONE')).upper() == 'PHOTO':
             msg = (
