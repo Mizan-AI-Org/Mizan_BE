@@ -227,8 +227,11 @@ def _is_staff_clocked_in(user):
 @permission_classes([AllowAny])
 def agent_preview_checklist(request):
     """
-    Miya/Lua endpoint: preview the checklist items for a staff member's upcoming/current shift.
-    Staff do NOT need to be clocked in. Returns the list of checklist items so they can prepare.
+    Miya/Lua endpoint: preview OR auto-start the checklist for a staff member's shift.
+    - If staff is clocked in: automatically starts the conversational checklist
+      (tasks sent one-by-one via WhatsApp) so progress is recorded on the Live Board.
+    - If staff is NOT clocked in: returns a preview of the tasks and asks them to clock in.
+    Includes both process/template tasks AND custom ShiftTasks.
     Request body: phone (required).
     """
     ok, err_response = _validate_agent_key(request)
@@ -239,59 +242,170 @@ def agent_preview_checklist(request):
     if err:
         return err
 
-    from checklists.models import ChecklistTemplate
-
-    task_templates = active_shift.task_templates.filter(is_active=True)
-    checklist_templates = ChecklistTemplate.objects.filter(
-        task_template__in=task_templates, is_active=True
-    ).prefetch_related('steps').distinct()
-
-    if not checklist_templates.exists() and task_templates.exists():
-        task_types = task_templates.values_list('template_type', flat=True)
-        checklist_templates = ChecklistTemplate.objects.filter(
-            restaurant=user.restaurant, is_active=True, category__in=task_types
-        ).prefetch_related('steps').distinct()
-
+    from scheduling.models import ShiftTask, ShiftChecklistProgress
     from django.utils import timezone as tz
+
     shift_start = tz.localtime(active_shift.start_time).strftime('%H:%M') if active_shift.start_time else None
     shift_end = tz.localtime(active_shift.end_time).strftime('%H:%M') if active_shift.end_time else None
-
-    checklists_data = []
-    for tpl in checklist_templates:
-        steps = tpl.steps.all().order_by('order')
-        checklists_data.append({
-            'name': tpl.name,
-            'category': tpl.category,
-            'total_steps': steps.count(),
-            'estimated_duration_minutes': int(tpl.estimated_duration.total_seconds() / 60) if tpl.estimated_duration else None,
-            'steps': [{'order': s.order, 'title': s.title, 'requires_photo': s.requires_photo} for s in steps],
-        })
-
     clocked_in = _is_staff_clocked_in(user)
 
-    if not checklists_data:
+    # Build the task list for the response (process template tasks + custom ShiftTasks)
+    all_items = _collect_shift_task_items(active_shift)
+
+    if not all_items:
         return Response({
             "success": True,
             "mode": "preview",
             "clocked_in": clocked_in,
             "shift": {"start": shift_start, "end": shift_end},
-            "checklists": [],
-            "message_for_user": "No checklists are assigned to your shift right now. You're all set!",
+            "tasks": [],
+            "total_items": 0,
+            "message_for_user": "No tasks or checklists are assigned to your shift right now. You're all set!",
         })
 
-    total_items = sum(c['total_steps'] for c in checklists_data)
+    # If staff is clocked in, auto-start the conversational checklist
+    if clocked_in:
+        existing_prog = ShiftChecklistProgress.objects.filter(
+            shift=active_shift, staff=user
+        ).first()
+
+        if existing_prog and existing_prog.status == 'COMPLETED':
+            return Response({
+                "success": True,
+                "mode": "completed",
+                "clocked_in": True,
+                "shift": {"start": shift_start, "end": shift_end},
+                "tasks": all_items,
+                "total_items": len(all_items),
+                "message_for_user": "Your checklist is already complete. Great work!",
+            })
+
+        if existing_prog and existing_prog.status == 'IN_PROGRESS':
+            return Response({
+                "success": True,
+                "mode": "in_progress",
+                "first_item_sent": True,
+                "suppress_reply": True,
+                "clocked_in": True,
+                "shift": {"start": shift_start, "end": shift_end},
+                "tasks": all_items,
+                "total_items": len(all_items),
+                "message_for_user": "Your checklist is already in progress. Check your messages for the current task.",
+            })
+
+        try:
+            started = notification_service.start_conversational_checklist_after_clock_in(
+                user, active_shift, phone_digits=clean_phone
+            )
+        except Exception as e:
+            logger.exception("agent_preview_checklist auto-start failed for user %s: %s", user.id, e)
+            started = False
+
+        if started:
+            return Response({
+                "success": True,
+                "mode": "started",
+                "first_item_sent": True,
+                "suppress_reply": True,
+                "clocked_in": True,
+                "shift": {"start": shift_start, "end": shift_end},
+                "tasks": all_items,
+                "total_items": len(all_items),
+                "message_for_user": "Your checklist has been started! Check your messages for the first task.",
+            })
+
+    # Not clocked in or auto-start failed: return preview
+    task_list_text = "\n".join(
+        f"{i+1}. {item['title']}" for i, item in enumerate(all_items)
+    )
+
     return Response({
         "success": True,
         "mode": "preview",
         "clocked_in": clocked_in,
         "shift": {"start": shift_start, "end": shift_end},
-        "checklists": checklists_data,
-        "total_items": total_items,
+        "tasks": all_items,
+        "total_items": len(all_items),
         "message_for_user": (
-            f"Your shift ({shift_start} – {shift_end}) has {len(checklists_data)} checklist(s) "
-            f"with {total_items} item(s) total."
+            f"Your shift ({shift_start} – {shift_end}) has {len(all_items)} task(s):\n{task_list_text}\n\n"
+            "Clock in first, then I'll start your checklist."
         ),
     })
+
+
+def _collect_shift_task_items(active_shift):
+    """
+    Build a merged list of task items for a shift: process template tasks
+    (from TaskTemplate.tasks / sop_steps JSON) + custom ShiftTasks.
+    """
+    from scheduling.models import ShiftTask
+
+    template_items = []
+    try:
+        templates = list(active_shift.task_templates.all())
+    except Exception:
+        templates = []
+
+    for tpl in templates:
+        steps = []
+        try:
+            if getattr(tpl, "sop_steps", None):
+                steps = list(tpl.sop_steps or [])
+            elif getattr(tpl, "tasks", None):
+                steps = list(tpl.tasks or [])
+        except Exception:
+            steps = []
+        if not steps:
+            steps = [{"title": getattr(tpl, "name", "Task"), "description": getattr(tpl, "description", "") or ""}]
+        for step in steps:
+            if isinstance(step, str):
+                title = (step.strip()[:255] or getattr(tpl, "name", "Task")).strip()
+                desc = ""
+            elif isinstance(step, dict):
+                title = (step.get("title") or step.get("name") or step.get("task") or getattr(tpl, "name", "Task"))[:255].strip()
+                desc = (step.get("description") or step.get("details") or "").strip()
+            else:
+                title = (getattr(tpl, "name", "Task") or "Task").strip()
+                desc = ""
+            if not title:
+                title = getattr(tpl, "name", "Task") or "Task"
+            requires_photo = bool(
+                (step.get("verification_type") if isinstance(step, dict) else None) == "PHOTO"
+                or getattr(tpl, "verification_type", "NONE") == "PHOTO"
+            )
+            template_items.append({
+                "title": title,
+                "description": desc,
+                "source": "process_template",
+                "template_name": getattr(tpl, "name", ""),
+                "requires_photo": requires_photo,
+            })
+
+    custom_tasks = ShiftTask.objects.filter(shift=active_shift).exclude(
+        status__in=["COMPLETED", "CANCELLED"]
+    )
+    custom_items = []
+    for t in custom_tasks:
+        custom_items.append({
+            "title": t.title,
+            "description": t.description or "",
+            "source": "custom_task",
+            "priority": t.priority or "MEDIUM",
+            "requires_photo": getattr(t, "verification_type", "NONE") == "PHOTO",
+            "status": t.status,
+        })
+
+    all_items = []
+    seen_titles = set()
+    for item in custom_items:
+        seen_titles.add(item["title"])
+        all_items.append(item)
+    for item in template_items:
+        if item["title"] not in seen_titles:
+            seen_titles.add(item["title"])
+            all_items.append(item)
+
+    return all_items
 
 
 @api_view(["POST"])
@@ -301,6 +415,8 @@ def agent_start_whatsapp_checklist(request):
     """
     Miya/Lua endpoint: start the step-by-step WhatsApp checklist for a staff member by phone.
     Staff MUST be clocked in. If not, returns a message telling them to clock in first.
+    Handles the case where the checklist was already started (e.g. by the webhook handler)
+    by resuming it instead of erroring.
     Request body: phone (required).
     """
     ok, err_response = _validate_agent_key(request)
@@ -322,6 +438,28 @@ def agent_start_whatsapp_checklist(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    from scheduling.models import ShiftChecklistProgress
+
+    existing_prog = ShiftChecklistProgress.objects.filter(
+        shift=active_shift, staff=user
+    ).first()
+    if existing_prog:
+        if existing_prog.status == 'COMPLETED':
+            return Response({
+                "success": True,
+                "suppress_reply": True,
+                "clocked_in": True,
+                "message_for_user": "Your checklist is already complete. Have a productive shift!",
+            })
+        if existing_prog.status == 'IN_PROGRESS':
+            return Response({
+                "success": True,
+                "first_item_sent": True,
+                "suppress_reply": True,
+                "clocked_in": True,
+                "message_for_user": "Your checklist is already in progress. Check your messages for the current task.",
+            })
+
     try:
         started = notification_service.start_conversational_checklist_after_clock_in(
             user, active_shift, phone_digits=clean_phone
@@ -339,6 +477,7 @@ def agent_start_whatsapp_checklist(request):
             {
                 "success": True,
                 "first_item_sent": True,
+                "suppress_reply": True,
                 "clocked_in": True,
                 "message_for_user": "Your checklist has been started! You should receive the first task now.",
             },
@@ -347,6 +486,6 @@ def agent_start_whatsapp_checklist(request):
 
     return Response(
         {"success": False, "error": "No checklist items",
-         "message_for_user": "No checklist is assigned to your shift right now. You're all set!"},
+         "message_for_user": "No tasks are assigned to your shift right now. You're all set!"},
         status=status.HTTP_400_BAD_REQUEST,
     )

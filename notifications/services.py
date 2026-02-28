@@ -1192,10 +1192,13 @@ class NotificationService:
         if not user or not active_shift:
             logger.warning("start_conversational_checklist: missing user or shift (user=%s, shift=%s)", user, active_shift)
             return False
-        existing = ShiftChecklistProgress.objects.filter(shift=active_shift, staff=user, status='COMPLETED').first()
-        if existing:
+        existing = ShiftChecklistProgress.objects.filter(shift=active_shift, staff=user).first()
+        if existing and existing.status == 'COMPLETED':
             logger.info("start_conversational_checklist: checklist already completed for shift %s, user %s", active_shift.id, user.id)
             return False
+        if existing and existing.status == 'IN_PROGRESS':
+            logger.info("start_conversational_checklist: checklist already in progress for shift %s, user %s — skipping duplicate start", active_shift.id, user.id)
+            return True
         phone = (phone_digits or (getattr(user, "phone", None) or "")).strip()
         if not phone:
             logger.warning("start_conversational_checklist: no phone for user %s", user.id)
