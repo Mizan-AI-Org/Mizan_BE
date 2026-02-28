@@ -281,6 +281,9 @@ def agent_preview_checklist(request):
             })
 
         if existing_prog and existing_prog.status == 'IN_PROGRESS':
+            notification_service.resume_conversational_checklist(
+                user, active_shift, phone_digits=clean_phone
+            )
             return Response({
                 "success": True,
                 "mode": "in_progress",
@@ -290,7 +293,7 @@ def agent_preview_checklist(request):
                 "shift": {"start": shift_start, "end": shift_end},
                 "tasks": all_items,
                 "total_items": len(all_items),
-                "message_for_user": "Your checklist is already in progress. Check your messages for the current task.",
+                "message_for_user": "Your checklist is in progress. I've re-sent your current task.",
             })
 
         try:
@@ -452,12 +455,15 @@ def agent_start_whatsapp_checklist(request):
                 "message_for_user": "Your checklist is already complete. Have a productive shift!",
             })
         if existing_prog.status == 'IN_PROGRESS':
+            notification_service.resume_conversational_checklist(
+                user, active_shift, phone_digits=clean_phone
+            )
             return Response({
                 "success": True,
                 "first_item_sent": True,
                 "suppress_reply": True,
                 "clocked_in": True,
-                "message_for_user": "Your checklist is already in progress. Check your messages for the current task.",
+                "message_for_user": "Your checklist is in progress. I've re-sent your current task.",
             })
 
     try:
