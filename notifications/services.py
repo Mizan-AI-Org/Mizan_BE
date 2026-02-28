@@ -1351,6 +1351,7 @@ class NotificationService:
         # Step-by-step conversational checklist: send first task now; subsequent tasks
         # are sent one-by-one when the user replies Yes/No/N/A via WhatsApp (views.py).
         first_task = tasks[0]
+        logger.info("start_conversational_checklist: sending first task '%s' to %s (shift %s, %d total tasks)", first_task.title, phone_digits, active_shift.id, len(task_ids))
         if getattr(first_task, "verification_required", False) and str(getattr(first_task, "verification_type", "NONE")).upper() == "PHOTO":
             msg = (
                 f"📋 *Task 1/{len(task_ids)}*\n\n"
@@ -1366,7 +1367,9 @@ class NotificationService:
             question_text = (first_task.title or "").strip()
             if (getattr(first_task, "description", None) or "").strip():
                 question_text = f"{question_text}. {(first_task.description or '').strip()}"
-            if not self.send_staff_checklist_step(phone_digits, question_text):
+            template_ok = self.send_staff_checklist_step(phone_digits, question_text)
+            logger.info("start_conversational_checklist: template send result=%s for phone %s", template_ok, phone_digits)
+            if not template_ok:
                 task_msg = (
                     f"📋 *Task 1/{len(task_ids)}*\n\n"
                     f"*{first_task.title}*\n"
@@ -1378,7 +1381,8 @@ class NotificationService:
                     {"id": "no", "title": "❌ No"},
                     {"id": "n_a", "title": "➖ N/A"},
                 ]
-                self.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+                btn_ok, btn_resp = self.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+                logger.info("start_conversational_checklist: buttons fallback result=%s resp=%s", btn_ok, btn_resp)
         return True
 
     def resume_conversational_checklist(self, user, active_shift, phone_digits):
