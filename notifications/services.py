@@ -1378,6 +1378,76 @@ class NotificationService:
                 self.send_whatsapp_buttons(phone_digits, task_msg, buttons)
         return True
 
+    def resume_conversational_checklist(self, user, active_shift, phone_digits):
+        """
+        Resume an IN_PROGRESS checklist by re-sending the current task step.
+        Returns True if the current step was re-sent, False if nothing to resume.
+        """
+        try:
+            from scheduling.models import ShiftTask, ShiftChecklistProgress
+        except Exception:
+            return False
+        phone_digits = "".join(filter(str.isdigit, str(phone_digits or "")))
+        if not phone_digits or len(phone_digits) < 6:
+            return False
+        prog = ShiftChecklistProgress.objects.filter(
+            shift=active_shift, staff=user, status='IN_PROGRESS'
+        ).first()
+        if not prog:
+            return False
+        task_ids = prog.task_ids or []
+        responses = prog.responses or {}
+        current_id = prog.current_task_id or (task_ids[0] if task_ids else None)
+        if not current_id or not task_ids:
+            return False
+
+        session = WhatsAppSession.objects.filter(phone=phone_digits).first()
+        if not session:
+            session = WhatsAppSession.objects.create(phone=phone_digits, user=user)
+        session.context['checklist'] = {
+            'shift_id': str(active_shift.id),
+            'tasks': task_ids,
+            'current_task_id': current_id,
+            'responses': responses,
+            'started_at': getattr(prog, 'created_at', timezone.now()).isoformat(),
+        }
+        session.state = 'in_checklist'
+        session.save(update_fields=['state', 'context'])
+
+        nxt = ShiftTask.objects.filter(id=current_id).first()
+        if not nxt:
+            return False
+        idx = (task_ids.index(current_id) + 1) if current_id in task_ids else 1
+        if getattr(nxt, 'verification_required', False) and str(getattr(nxt, 'verification_type', 'NONE')).upper() == 'PHOTO':
+            msg = (
+                f"📋 *Task {idx}/{len(task_ids)}*\n\n"
+                f"*{nxt.title}*\n"
+                f"{nxt.description or ''}\n\n"
+                f"📸 Please complete this task and send a photo as evidence."
+            )
+            session.context['awaiting_verification_for_task_id'] = str(nxt.id)
+            session.state = 'awaiting_task_photo'
+            session.save(update_fields=['state', 'context'])
+            self.send_whatsapp_text(phone_digits, msg)
+        else:
+            question_text = (nxt.title or '').strip()
+            if (getattr(nxt, 'description', None) or '').strip():
+                question_text = f"{question_text}. {(nxt.description or '').strip()}"
+            if not self.send_staff_checklist_step(phone_digits, question_text):
+                task_msg = (
+                    f"📋 *Task {idx}/{len(task_ids)}*\n\n"
+                    f"*{nxt.title}*\n"
+                    f"{nxt.description or ''}\n\n"
+                    "Is this complete?"
+                )
+                buttons = [
+                    {"id": "yes", "title": "✅ Yes"},
+                    {"id": "no", "title": "❌ No"},
+                    {"id": "n_a", "title": "➖ N/A"},
+                ]
+                self.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+        return True
+
     def send_whatsapp_buttons(self, phone, body, buttons):
         """
         Send an interactive WhatsApp message with up to 3 quick-reply buttons.
