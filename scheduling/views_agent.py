@@ -15,6 +15,7 @@ import uuid
 import unicodedata
 from difflib import SequenceMatcher
 
+from django.core import exceptions as django_exc
 from accounts.models import CustomUser, Restaurant
 from .models import AssignedShift, WeeklySchedule, AgentMemory, ShiftTask, TimeOffRequest, ShiftSwapRequest
 from .serializers import AssignedShiftSerializer
@@ -763,7 +764,16 @@ def agent_create_shift(request):
                 'error': 'Unable to resolve restaurant context (provide restaurant_id or include sessionId/userId/email/phone/token).'
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Validate staff
+        # Validate staff_id is a valid UUID before querying
+        try:
+            import uuid as _uuid
+            _uuid.UUID(str(staff_id))
+        except (ValueError, AttributeError):
+            return Response({
+                'success': False,
+                'error': f'Invalid staff_id format: expected a UUID, got "{staff_id}"'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
         try:
             staff = CustomUser.objects.get(id=staff_id, restaurant=restaurant)
         except CustomUser.DoesNotExist:
@@ -867,7 +877,7 @@ def agent_create_shift(request):
                 workspace_location=workspace_location,
             )
 
-        # Create the shift
+        # Create the shift (ensure FK fields are None, not empty string)
         shift = AssignedShift.objects.create(
             schedule=schedule,
             staff=staff,
@@ -875,16 +885,13 @@ def agent_create_shift(request):
             start_time=start_datetime,
             end_time=end_datetime,
             role=role.upper(),
-            # Frontend calendar uses `notes` as the visible shift title.
             notes=shift_title,
-            # Keep instructions separate so the title stays clean.
             preparation_instructions=shift_notes,
-            department=department,
-            workspace_location=workspace_location,
-            status='SCHEDULED'
-            ,
-            created_by=acting_user,
-            last_modified_by=acting_user,
+            department=department or None,
+            workspace_location=workspace_location or None,
+            status='SCHEDULED',
+            created_by=acting_user or None,
+            last_modified_by=acting_user or None,
         )
         
         # Add staff to staff_members M2M
@@ -901,7 +908,16 @@ def agent_create_shift(request):
         task_template_ids_raw = data.get('task_template_ids') or data.get('taskTemplateIds') or []
         if isinstance(task_template_ids_raw, str):
             task_template_ids_raw = [x.strip() for x in task_template_ids_raw.split(',') if x.strip()]
-        task_template_ids = [str(x).strip() for x in task_template_ids_raw if x]
+        task_template_ids = []
+        for _raw_tid in task_template_ids_raw:
+            _tid = str(_raw_tid).strip() if _raw_tid else ''
+            if not _tid or _tid == 'null':
+                continue
+            try:
+                uuid.UUID(_tid)
+                task_template_ids.append(_tid)
+            except ValueError:
+                logger.warning("agent_create_shift: skipping invalid template UUID '%s'", _tid)
         custom_tasks_payload = data.get('tasks') or []
         if isinstance(custom_tasks_payload, str):
             try:
@@ -1024,15 +1040,20 @@ def agent_create_shift(request):
             'message': f"Successfully scheduled {staff.first_name} for {shift_date} from {start_time_str} to {end_time_str}"
         }, status=status.HTTP_201_CREATED)
         
+    except django_exc.ValidationError as ve:
+        logger.warning("Agent create shift validation error: %s", ve)
+        msgs = ve.messages if hasattr(ve, 'messages') else [str(ve)]
+        return Response({
+            'success': False,
+            'error': f"Validation error: {'; '.join(msgs)}"
+        }, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         logger.exception("Agent create shift error")
-        # Return a short, agent-friendly message so Miya doesn't show "try again later"
         err = str(e).strip() if e else "Unknown error"
         if "conflict" in err.lower() or "already has" in err.lower():
             return Response({'success': False, 'error': err}, status=status.HTTP_409_CONFLICT)
         if "not found" in err.lower() or "does not exist" in err.lower():
             return Response({'success': False, 'error': err}, status=status.HTTP_404_NOT_FOUND)
-        # Keep message brief for the agent to relay
         if len(err) > 200:
             err = err[:197] + "..."
         return Response({
@@ -1159,6 +1180,15 @@ def agent_create_recurring_shifts(request):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
+            import uuid as _uuid
+            _uuid.UUID(str(staff_id))
+        except (ValueError, AttributeError):
+            return Response({
+                'success': False,
+                'error': f'Invalid staff_id format: expected a UUID, got "{staff_id}"'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
             staff = CustomUser.objects.get(id=staff_id, restaurant=restaurant)
         except CustomUser.DoesNotExist:
             return Response({
@@ -1200,7 +1230,16 @@ def agent_create_recurring_shifts(request):
         workspace_location = data.get('workspace_location') or data.get('workspaceLocation') or None
         shift_notes = data.get('notes', '') or ''
         shift_title = data.get('shift_title') or data.get('shiftTitle') or data.get('title') or ''
-        task_template_ids = [str(x).strip() for x in task_template_ids_raw if x]
+        task_template_ids = []
+        for _raw_tid in task_template_ids_raw:
+            _tid = str(_raw_tid).strip() if _raw_tid else ''
+            if not _tid or _tid == 'null':
+                continue
+            try:
+                uuid.UUID(_tid)
+                task_template_ids.append(_tid)
+            except ValueError:
+                logger.warning("agent_create_recurring: skipping invalid template UUID '%s'", _tid)
         recurrence_group_id = uuid.uuid4()
         if not shift_title:
             start_datetime_ctx = timezone.datetime.combine(start_date, start_time)
@@ -1267,11 +1306,11 @@ def agent_create_recurring_shifts(request):
                 role=role.upper(),
                 notes=shift_title,
                 preparation_instructions=shift_notes,
-                department=department,
-                workspace_location=workspace_location,
+                department=department or None,
+                workspace_location=workspace_location or None,
                 status='SCHEDULED',
-                created_by=acting_user,
-                last_modified_by=acting_user,
+                created_by=acting_user or None,
+                last_modified_by=acting_user or None,
                 is_recurring=True,
                 recurrence_group_id=recurrence_group_id,
             )
@@ -1368,6 +1407,13 @@ def agent_create_recurring_shifts(request):
             'message': f"Created {len(created_shifts)} recurring shift(s) for {staff.first_name} from {start_date} to {end_date} on {_days_summary(days_of_week)}."
         }, status=status.HTTP_201_CREATED)
 
+    except django_exc.ValidationError as ve:
+        logger.warning("Agent create recurring shifts validation error: %s", ve)
+        msgs = ve.messages if hasattr(ve, 'messages') else [str(ve)]
+        return Response({
+            'success': False,
+            'error': f"Validation error: {'; '.join(msgs)}"
+        }, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         logger.exception("Agent create recurring shifts error")
         err = str(e).strip() if e else "Unknown error"
