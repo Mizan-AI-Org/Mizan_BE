@@ -1306,11 +1306,11 @@ class NotificationService:
                 logger.warning("start_conversational_checklist_after_clock_in: could not create default task: %s", e)
                 session.state = "idle"
                 session.save(update_fields=["state"])
-                return False
+                return None
         if not task_ids:
             session.state = "idle"
             session.save(update_fields=["state"])
-            return False
+            return None
 
         shift_end_dt = active_shift.end_time
         if shift_end_dt and not isinstance(shift_end_dt, timezone.datetime):
@@ -1352,38 +1352,66 @@ class NotificationService:
         # are sent one-by-one when the user replies Yes/No/N/A via WhatsApp (views.py).
         first_task = tasks[0]
         logger.info("start_conversational_checklist: sending first task '%s' to %s (shift %s, %d total tasks)", first_task.title, phone_digits, active_shift.id, len(task_ids))
-        if getattr(first_task, "verification_required", False) and str(getattr(first_task, "verification_type", "NONE")).upper() == "PHOTO":
+        delivered = self._send_task_step_to_whatsapp(phone_digits, first_task, 1, len(task_ids), session)
+        return delivered if delivered is not None else True
+
+    def _send_task_step_to_whatsapp(self, phone_digits, task, step_num, total_steps, session=None):
+        """
+        Send a single checklist task step to the staff member via WhatsApp.
+        Tries: approved template → interactive buttons → plain text.
+        Returns True if any delivery method succeeded, False if all failed.
+        """
+        if getattr(task, "verification_required", False) and str(getattr(task, "verification_type", "NONE")).upper() == "PHOTO":
             msg = (
-                f"📋 *Task 1/{len(task_ids)}*\n\n"
-                f"*{first_task.title}*\n"
-                f"{first_task.description or ''}\n\n"
+                f"📋 *Task {step_num}/{total_steps}*\n\n"
+                f"*{task.title}*\n"
+                f"{task.description or ''}\n\n"
                 f"📸 Please complete this task and send a photo as evidence."
             )
-            session.context["awaiting_verification_for_task_id"] = str(first_task.id)
-            session.state = "awaiting_task_photo"
-            session.save(update_fields=["state", "context"])
-            self.send_whatsapp_text(phone_digits, msg)
-        else:
-            question_text = (first_task.title or "").strip()
-            if (getattr(first_task, "description", None) or "").strip():
-                question_text = f"{question_text}. {(first_task.description or '').strip()}"
-            template_ok = self.send_staff_checklist_step(phone_digits, question_text)
-            logger.info("start_conversational_checklist: template send result=%s for phone %s", template_ok, phone_digits)
-            if not template_ok:
-                task_msg = (
-                    f"📋 *Task 1/{len(task_ids)}*\n\n"
-                    f"*{first_task.title}*\n"
-                    f"{first_task.description or ''}\n\n"
-                    "Is this complete?"
-                )
-                buttons = [
-                    {"id": "yes", "title": "✅ Yes"},
-                    {"id": "no", "title": "❌ No"},
-                    {"id": "n_a", "title": "➖ N/A"},
-                ]
-                btn_ok, btn_resp = self.send_whatsapp_buttons(phone_digits, task_msg, buttons)
-                logger.info("start_conversational_checklist: buttons fallback result=%s resp=%s", btn_ok, btn_resp)
-        return True
+            if session:
+                session.context["awaiting_verification_for_task_id"] = str(task.id)
+                session.state = "awaiting_task_photo"
+                session.save(update_fields=["state", "context"])
+            ok, resp = self.send_whatsapp_text(phone_digits, msg)
+            logger.info("_send_task_step_to_whatsapp: photo task text send ok=%s resp=%s", ok, resp)
+            return ok
+
+        question_text = (task.title or "").strip()
+        if (getattr(task, "description", None) or "").strip():
+            question_text = f"{question_text}. {(task.description or '').strip()}"
+
+        template_ok = self.send_staff_checklist_step(phone_digits, question_text)
+        logger.info("_send_task_step_to_whatsapp: template send result=%s for phone %s", template_ok, phone_digits)
+        if template_ok:
+            return True
+
+        task_msg = (
+            f"📋 *Task {step_num}/{total_steps}*\n\n"
+            f"*{task.title}*\n"
+            f"{task.description or ''}\n\n"
+            "Is this complete?"
+        )
+        buttons = [
+            {"id": "yes", "title": "Yes"},
+            {"id": "no", "title": "No"},
+            {"id": "n_a", "title": "N/A"},
+        ]
+        btn_ok, btn_resp = self.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+        logger.info("_send_task_step_to_whatsapp: buttons send ok=%s resp=%s", btn_ok, btn_resp)
+        if btn_ok:
+            return True
+
+        text_msg = (
+            f"📋 *Task {step_num}/{total_steps}*\n\n"
+            f"*{task.title}*\n"
+            f"{task.description or ''}\n\n"
+            "Reply *Yes*, *No*, or *N/A*"
+        )
+        txt_ok, txt_resp = self.send_whatsapp_text(phone_digits, text_msg)
+        logger.info("_send_task_step_to_whatsapp: text fallback ok=%s resp=%s", txt_ok, txt_resp)
+        if not txt_ok:
+            logger.error("_send_task_step_to_whatsapp: ALL delivery methods failed for phone %s, task '%s'. resp=%s", phone_digits, task.title, txt_resp)
+        return txt_ok
 
     def resume_conversational_checklist(self, user, active_shift, phone_digits):
         """
@@ -1431,34 +1459,7 @@ class NotificationService:
             return False
         logger.info("resume_conversational_checklist: re-sending task %s/%s '%s' for shift %s, user %s", task_ids.index(current_id) + 1 if current_id in task_ids else '?', len(task_ids), nxt.title, active_shift.id, user.id)
         idx = (task_ids.index(current_id) + 1) if current_id in task_ids else 1
-        if getattr(nxt, 'verification_required', False) and str(getattr(nxt, 'verification_type', 'NONE')).upper() == 'PHOTO':
-            msg = (
-                f"📋 *Task {idx}/{len(task_ids)}*\n\n"
-                f"*{nxt.title}*\n"
-                f"{nxt.description or ''}\n\n"
-                f"📸 Please complete this task and send a photo as evidence."
-            )
-            session.context['awaiting_verification_for_task_id'] = str(nxt.id)
-            session.state = 'awaiting_task_photo'
-            session.save(update_fields=['state', 'context'])
-            self.send_whatsapp_text(phone_digits, msg)
-        else:
-            question_text = (nxt.title or '').strip()
-            if (getattr(nxt, 'description', None) or '').strip():
-                question_text = f"{question_text}. {(nxt.description or '').strip()}"
-            if not self.send_staff_checklist_step(phone_digits, question_text):
-                task_msg = (
-                    f"📋 *Task {idx}/{len(task_ids)}*\n\n"
-                    f"*{nxt.title}*\n"
-                    f"{nxt.description or ''}\n\n"
-                    "Is this complete?"
-                )
-                buttons = [
-                    {"id": "yes", "title": "✅ Yes"},
-                    {"id": "no", "title": "❌ No"},
-                    {"id": "n_a", "title": "➖ N/A"},
-                ]
-                self.send_whatsapp_buttons(phone_digits, task_msg, buttons)
+        self._send_task_step_to_whatsapp(phone_digits, nxt, idx, len(task_ids), session)
         return True
 
     def send_whatsapp_buttons(self, phone, body, buttons):

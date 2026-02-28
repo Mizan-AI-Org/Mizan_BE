@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.conf import settings as dj_settings
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 from .services import notification_service
 import logging
 
@@ -216,10 +217,15 @@ def _resolve_staff_and_shift(request_data):
 
 
 def _is_staff_clocked_in(user):
-    """Check if the staff member is currently clocked in (last event is 'in')."""
+    """Check if the staff member is currently clocked in (today's last event is 'in' or 'break_start'/'break_end')."""
     from timeclock.models import ClockEvent
-    last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
-    return last_event is not None and last_event.event_type == 'in'
+    today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    last_event = ClockEvent.objects.filter(
+        staff=user, timestamp__gte=today_start
+    ).order_by('-timestamp').first()
+    if not last_event:
+        return False
+    return last_event.event_type in ('in', 'break_start', 'break_end')
 
 
 @api_view(["POST"])
@@ -303,7 +309,7 @@ def agent_preview_checklist(request):
             logger.exception("agent_preview_checklist auto-start failed for user %s: %s", user.id, e)
             started = False
 
-        if started:
+        if started is True:
             return Response({
                 "success": True,
                 "mode": "started",
@@ -315,7 +321,26 @@ def agent_preview_checklist(request):
                 "total_items": len(all_items),
             })
 
-    # Not clocked in or auto-start failed: return preview
+        if started is False:
+            # WhatsApp delivery failed; return the task list so Miya can relay it
+            task_list_text = "\n".join(f"{i+1}. *{item['title']}*" for i, item in enumerate(all_items))
+            logger.warning("agent_preview_checklist: WhatsApp delivery failed, returning task text for Miya (phone=%s)", clean_phone)
+            return Response({
+                "success": True,
+                "mode": "started",
+                "first_item_sent": False,
+                "suppress_reply": False,
+                "clocked_in": True,
+                "shift": {"start": shift_start, "end": shift_end},
+                "tasks": all_items,
+                "total_items": len(all_items),
+                "message_for_user": (
+                    f"📋 *Your shift has {len(all_items)} task(s):*\n\n{task_list_text}\n\n"
+                    "Reply *Yes*, *No*, or *N/A* for each task as I send them."
+                ),
+            })
+
+    # Not clocked in or no tasks: return preview
     task_list_text = "\n".join(
         f"{i+1}. {item['title']}" for i, item in enumerate(all_items)
     )
@@ -329,7 +354,7 @@ def agent_preview_checklist(request):
         "total_items": len(all_items),
         "message_for_user": (
             f"Your shift ({shift_start} – {shift_end}) has {len(all_items)} task(s):\n{task_list_text}\n\n"
-            "Clock in first, then I'll start your checklist."
+            + ("Say *Start checklist* when you're ready to begin." if clocked_in else "Clock in first, then I'll start your checklist.")
         ),
     })
 
@@ -475,6 +500,13 @@ def agent_start_whatsapp_checklist(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
+    if started is None:
+        return Response(
+            {"success": False, "error": "No checklist items",
+             "message_for_user": "No tasks are assigned to your shift right now. You're all set!"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     if started:
         return Response(
             {
@@ -486,8 +518,26 @@ def agent_start_whatsapp_checklist(request):
             status=status.HTTP_200_OK,
         )
 
+    # started == False: checklist was created but WhatsApp delivery failed.
+    # Return the first task text so Miya can send it as a fallback.
+    all_items = _collect_shift_task_items(active_shift)
+    first_task_text = ""
+    if all_items:
+        lines = [f"📋 *Your shift has {len(all_items)} task(s):*\n"]
+        for i, item in enumerate(all_items):
+            lines.append(f"{i+1}. *{item['title']}*")
+            if item.get("description"):
+                lines.append(f"   {item['description']}")
+        lines.append("\nReply *Yes*, *No*, or *N/A* for each task as I send them.")
+        first_task_text = "\n".join(lines)
+    logger.warning("agent_start_whatsapp_checklist: WhatsApp delivery failed, returning task text for Miya fallback (phone=%s)", clean_phone)
     return Response(
-        {"success": False, "error": "No checklist items",
-         "message_for_user": "No tasks are assigned to your shift right now. You're all set!"},
-        status=status.HTTP_400_BAD_REQUEST,
+        {
+            "success": True,
+            "first_item_sent": False,
+            "suppress_reply": False,
+            "clocked_in": True,
+            "message_for_user": first_task_text or "Your checklist has been started! Check your messages for the first task.",
+        },
+        status=status.HTTP_200_OK,
     )
