@@ -206,7 +206,18 @@ def _resolve_staff_and_shift(request_data):
 
     active_shift = _get_shift_for_checklist(user)
     if not active_shift:
-        logger.warning("agent_checklist: no active shift for user %s (phone %s) on %s", user.id, clean_phone, timezone.now().date())
+        today = timezone.localdate()
+        from scheduling.models import AssignedShift
+        from django.db.models import Q
+        any_shifts = AssignedShift.objects.filter(
+            Q(staff=user) | Q(staff_members=user),
+            shift_date=today,
+        ).values_list('id', 'status', 'start_time', 'end_time')
+        logger.warning(
+            "agent_checklist: no active shift for user %s (%s %s, phone %s) on %s. "
+            "All shifts today: %s",
+            user.id, user.first_name, user.last_name, clean_phone, today, list(any_shifts),
+        )
         return user, None, clean_phone, Response(
             {"success": False, "error": "No shift",
              "message_for_user": "You do not have a scheduled shift at this time. If you believe this is wrong, please ask your manager to check your shift assignment."},
@@ -219,7 +230,9 @@ def _resolve_staff_and_shift(request_data):
 def _is_staff_clocked_in(user):
     """Check if the staff member is currently clocked in (today's last event is 'in' or 'break_start'/'break_end')."""
     from timeclock.models import ClockEvent
-    today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    import datetime as _dt
+    today = timezone.localdate()
+    today_start = timezone.make_aware(_dt.datetime.combine(today, _dt.time.min))
     last_event = ClockEvent.objects.filter(
         staff=user, timestamp__gte=today_start
     ).order_by('-timestamp').first()
