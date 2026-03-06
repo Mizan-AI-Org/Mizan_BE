@@ -364,6 +364,7 @@ LUA_AGENT_ID = config('LUA_AGENT_ID', default='')
 LUA_WEBHOOK_API_KEY = config('LUA_WEBHOOK_API_KEY', default='')
 LUA_USER_EVENTS_WEBHOOK = config('LUA_USER_EVENTS_WEBHOOK', default='')
 LUA_USER_AUTHENTICATION_WEBHOOK = config('LUA_USER_AUTHENTICATION_WEBHOOK', default='')
+LUA_WHATSAPP_WEBHOOK_URL = config('LUA_WHATSAPP_WEBHOOK_URL', default='')
 
 # WhatsApp Invitation Automation (Delegates to Lua Agent by default)
 AUTO_WHATSAPP_INVITES = str_to_bool(os.getenv('AUTO_WHATSAPP_INVITES', True))

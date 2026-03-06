@@ -12,6 +12,8 @@ from accounts.permissions import IsAdminOrManager
 from rest_framework.parsers import MultiPartParser, FormParser
 import logging
 import json
+import threading
+import requests as http_requests
 
 logger = logging.getLogger(__name__)
 from .models import Notification, NotificationPreference, DeviceToken, NotificationAttachment, NotificationIssue, WhatsAppMessageProcessed
@@ -807,6 +809,18 @@ def register_device_token(request):
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
+def _forward_to_lua_whatsapp(payload):
+    """Fire-and-forget forward of WhatsApp webhook payload to Lua agent."""
+    lua_url = getattr(dj_settings, 'LUA_WHATSAPP_WEBHOOK_URL', '')
+    if not lua_url:
+        return
+    try:
+        resp = http_requests.post(lua_url, json=payload, timeout=10)
+        logger.info("Forwarded WhatsApp payload to Lua: %s %s", resp.status_code, resp.text[:200])
+    except Exception as exc:
+        logger.warning("Failed to forward WhatsApp payload to Lua: %s", exc)
+
+
 @api_view(['GET', 'POST'])
 @permission_classes([permissions.AllowAny])
 def whatsapp_webhook(request):
@@ -819,6 +833,18 @@ def whatsapp_webhook(request):
             return Response(status=status.HTTP_403_FORBIDDEN)
         
         payload = request.data
+
+        # Forward the raw payload to Lua/Miya in a background thread
+        lua_url = getattr(dj_settings, 'LUA_WHATSAPP_WEBHOOK_URL', '')
+        if lua_url:
+            threading.Thread(
+                target=_forward_to_lua_whatsapp,
+                args=(payload,),
+                daemon=True
+            ).start()
+            # Lua/Miya handles the conversation — still process status updates below
+            # but skip direct message handling to avoid duplicate responses
+
         entries = payload.get('entry', [])
         
         def lang_for(user):
@@ -937,7 +963,12 @@ def whatsapp_webhook(request):
                                     notif.save(update_fields=['read_at', 'is_read'])
 
                 messages = value.get('messages', [])
-                
+
+                # When Lua is handling WhatsApp, skip Django's direct message processing
+                if lua_url and messages:
+                    logger.info("WhatsApp messages forwarded to Lua/Miya (%d msg(s)), skipping Django processing.", len(messages))
+                    continue
+
                 for msg in messages:
                     wamid = msg.get('id')
                     if wamid:
