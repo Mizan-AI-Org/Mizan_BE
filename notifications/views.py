@@ -1023,7 +1023,11 @@ def whatsapp_webhook(request):
                         'awaiting_task_photo', 'awaiting_feedback',
                         'awaiting_incident', 'awaiting_incident_details',
                     }
-                    if lua_url and session and session.state not in _active_django_states:
+                    # Image and location messages are always handled by Django (Lua
+                    # cannot download WhatsApp media). Django processes incident photos,
+                    # verification photos, and clock-in locations directly.
+                    _django_only_msg_types = {'image', 'location'}
+                    if lua_url and session and session.state not in _active_django_states and msg_type not in _django_only_msg_types:
                         logger.info("Session state '%s' for %s — deferring to Lua/Miya.", session.state, phone_digits)
                         continue
                     
