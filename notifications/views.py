@@ -1489,13 +1489,13 @@ def whatsapp_webhook(request):
                         elif user and not session.context.get('awaiting_verification_for_task_id'):
                             image_obj_fb = msg.get('image') or {}
                             caption_fb = (image_obj_fb.get('caption') or '').strip()
-                            if caption_fb and infer_incident_type(caption_fb):
+                            if caption_fb:
                                 from staff.models_task import SafetyConcernReport
                                 from scheduling.models import AssignedShift
                                 media_id_fb = image_obj_fb.get('id')
                                 mime_type_fb = image_obj_fb.get('mime_type')
                                 now = timezone.now()
-                                incident_type_fb = infer_incident_type(caption_fb)
+                                incident_type_fb = infer_incident_type(caption_fb) or 'General'
                                 occurred_at_fb = now
                                 def _infer_shift_fb(u, when_dt):
                                     try:
@@ -1541,7 +1541,36 @@ def whatsapp_webhook(request):
                                     notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
                                     continue
                         else:
-                            notification_service.send_whatsapp_text(phone_digits, R(user, 'unrecognized'))
+                            image_obj_nc = msg.get('image') or {}
+                            media_id_nc = image_obj_nc.get('id')
+                            if user and media_id_nc:
+                                from staff.models_task import SafetyConcernReport
+                                now = timezone.now()
+                                try:
+                                    ticket_nc = SafetyConcernReport.objects.create(
+                                        restaurant=user.restaurant,
+                                        reporter=user,
+                                        is_anonymous=False,
+                                        incident_type='General',
+                                        title='General incident',
+                                        description='Incident reported with photo (no caption).',
+                                        severity='MEDIUM',
+                                        status='REPORTED',
+                                        occurred_at=now,
+                                    )
+                                    _attach_whatsapp_photo_to_incident(
+                                        notification_service, ticket_nc,
+                                        media_id_nc, image_obj_nc.get('mime_type'),
+                                    )
+                                    notification_service.send_whatsapp_text(
+                                        phone_digits,
+                                        R(user, 'incident_recorded', ticket_id=str(ticket_nc.id)[:8], incident_type='General', occurred_at=now.strftime('%Y-%m-%d %H:%M'))
+                                    )
+                                except Exception as e:
+                                    logger.exception("Failed to create incident from photo-only: %s", e)
+                                    notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
+                            else:
+                                notification_service.send_whatsapp_text(phone_digits, R(user, 'unrecognized'))
                             continue
 
                     # ------------------------------------------------------------------
