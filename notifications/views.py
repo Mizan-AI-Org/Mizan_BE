@@ -981,11 +981,6 @@ def whatsapp_webhook(request):
 
                 messages = value.get('messages', [])
 
-                # When Lua is handling WhatsApp, skip Django's direct message processing
-                if lua_url and messages:
-                    logger.info("WhatsApp messages forwarded to Lua/Miya (%d msg(s)), skipping Django processing.", len(messages))
-                    continue
-
                 for msg in messages:
                     wamid = msg.get('id')
                     if wamid:
@@ -1036,6 +1031,22 @@ def whatsapp_webhook(request):
                         session.save(update_fields=['user'])
                     
                     from accounts.utils import calculate_distance
+
+                    # When Lua/Miya handles WhatsApp, Django only processes messages
+                    # for flows that Miya cannot handle (location sharing, photo uploads).
+                    # Checklists are now fully Miya-driven (she sends tasks & records responses).
+                    _active_django_states = {
+                        'awaiting_clock_in_location',
+                        'awaiting_task_photo', 'awaiting_feedback',
+                        'awaiting_incident', 'awaiting_incident_details',
+                    }
+                    # Image and location messages are always handled by Django (Lua
+                    # cannot download WhatsApp media). Django processes incident photos,
+                    # verification photos, and clock-in locations directly.
+                    _django_only_msg_types = {'image', 'location'}
+                    if lua_url and session and session.state not in _active_django_states and msg_type not in _django_only_msg_types:
+                        logger.info("Session state '%s' for %s — deferring to Lua/Miya.", session.state, phone_digits)
+                        continue
                     
                     # ------------------------------------------------------------------
                     # 1. HANDLE INTERACTIVE (Buttons)

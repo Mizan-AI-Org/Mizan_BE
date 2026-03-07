@@ -155,6 +155,9 @@ class AssignedShift(models.Model):
         if not self.start_time or not self.end_time or not self.shift_date:
             return
 
+        if getattr(self, '_skip_overlap_check', False):
+            return
+
         staff_list = list(self.staff_members.all()) if self.pk else []
         if self.staff and self.staff not in staff_list:
             staff_list.append(self.staff)
