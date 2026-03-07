@@ -478,14 +478,34 @@ def agent_start_whatsapp_checklist(request):
                 "message_for_user": "Your checklist is already complete. Have a productive shift!",
             })
         if existing_prog.status == 'IN_PROGRESS':
-            notification_service.resume_conversational_checklist(
+            resume_result = notification_service.resume_conversational_checklist(
                 user, active_shift, phone_digits=clean_phone
+            )
+            delivered = (
+                resume_result.get("delivered", False)
+                if isinstance(resume_result, dict) else bool(resume_result)
+            )
+            if delivered:
+                return Response({
+                    "success": True,
+                    "first_item_sent": True,
+                    "suppress_reply": True,
+                    "clocked_in": True,
+                })
+            task_text = (
+                resume_result.get("task_text", "")
+                if isinstance(resume_result, dict) else ""
+            )
+            logger.warning(
+                "agent_start_whatsapp_checklist: resume WhatsApp delivery failed, "
+                "returning task text for Miya fallback (phone=%s)", clean_phone
             )
             return Response({
                 "success": True,
-                "first_item_sent": True,
-                "suppress_reply": True,
+                "first_item_sent": False,
+                "suppress_reply": False,
                 "clocked_in": True,
+                "message_for_user": task_text or "Your checklist is ready — here's your current task.",
             })
 
     try:

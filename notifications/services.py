@@ -1400,6 +1400,7 @@ class NotificationService:
         logger.info("_send_task_step_to_whatsapp: buttons send ok=%s resp=%s", btn_ok, btn_resp)
         if btn_ok:
             return True
+        logger.warning("_send_task_step_to_whatsapp: buttons failed for %s, falling back to plain text. resp=%s", phone_digits, btn_resp)
 
         text_msg = (
             f"📋 *Task {step_num}/{total_steps}*\n\n"
@@ -1410,13 +1411,19 @@ class NotificationService:
         txt_ok, txt_resp = self.send_whatsapp_text(phone_digits, text_msg)
         logger.info("_send_task_step_to_whatsapp: text fallback ok=%s resp=%s", txt_ok, txt_resp)
         if not txt_ok:
-            logger.error("_send_task_step_to_whatsapp: ALL delivery methods failed for phone %s, task '%s'. resp=%s", phone_digits, task.title, txt_resp)
+            logger.error(
+                "_send_task_step_to_whatsapp: ALL delivery methods failed for phone %s, task '%s'. "
+                "Check WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID are correct for the current WABA. "
+                "Last response: %s", phone_digits, task.title, txt_resp
+            )
         return txt_ok
 
     def resume_conversational_checklist(self, user, active_shift, phone_digits):
         """
         Resume an IN_PROGRESS checklist by re-sending the current task step.
-        Returns True if the current step was re-sent, False if nothing to resume.
+        Returns a dict: {"delivered": bool, "task_text": str, "step": int, "total": int}
+        or False if nothing to resume. Legacy callers treating the result as bool
+        still work because a non-empty dict is truthy.
         """
         try:
             from scheduling.models import ShiftTask, ShiftChecklistProgress
@@ -1457,10 +1464,13 @@ class NotificationService:
         if not nxt:
             logger.warning("resume_conversational_checklist: ShiftTask %s not found for shift %s", current_id, active_shift.id)
             return False
-        logger.info("resume_conversational_checklist: re-sending task %s/%s '%s' for shift %s, user %s", task_ids.index(current_id) + 1 if current_id in task_ids else '?', len(task_ids), nxt.title, active_shift.id, user.id)
         idx = (task_ids.index(current_id) + 1) if current_id in task_ids else 1
-        self._send_task_step_to_whatsapp(phone_digits, nxt, idx, len(task_ids), session)
-        return True
+        total = len(task_ids)
+        logger.info("resume_conversational_checklist: re-sending task %s/%s '%s' for shift %s, user %s", idx, total, nxt.title, active_shift.id, user.id)
+        delivered = self._send_task_step_to_whatsapp(phone_digits, nxt, idx, total, session)
+        task_text = f"📋 *Task {idx}/{total}*\n\n*{nxt.title}*\n{nxt.description or ''}\n\nReply *Yes*, *No*, or *N/A*"
+        logger.info("resume_conversational_checklist: delivered=%s for phone %s", delivered, phone_digits)
+        return {"delivered": delivered, "task_text": task_text, "step": idx, "total": total}
 
     def send_whatsapp_buttons(self, phone, body, buttons):
         """
