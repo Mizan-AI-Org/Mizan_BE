@@ -6,6 +6,7 @@ from rest_framework import status, permissions
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.response import Response
 from django.conf import settings
+from django.utils import timezone
 from .models import Incident
 from accounts.models import Restaurant, CustomUser
 import logging
@@ -123,26 +124,41 @@ def agent_create_incident(request):
         else:
             priority = priority_upper
         
-        # Create the incident
-        incident = Incident.objects.create(
+        # Create both: SafetyConcernReport (shown on dashboard) and Incident (for reporting)
+        from staff.models_task import SafetyConcernReport
+        concern = SafetyConcernReport.objects.create(
             restaurant=restaurant,
             reporter=reporter,
+            is_anonymous=False,
+            incident_type=category,
             title=title,
             description=description,
-            category=category,
-            priority=priority,
-            status='OPEN'
+            severity=priority,
+            status='REPORTED',
+            occurred_at=timezone.now(),
         )
-        
-        logger.info(f"[AgentIncident] Created incident {incident.id} for restaurant {restaurant.name}")
+        logger.info(f"[AgentIncident] Created SafetyConcernReport {concern.id} for restaurant {restaurant.name}")
+
+        try:
+            Incident.objects.create(
+                restaurant=restaurant,
+                reporter=reporter,
+                title=title,
+                description=description,
+                category=category,
+                priority=priority,
+                status='OPEN',
+            )
+        except Exception:
+            pass
         
         return Response({
             'success': True,
-            'id': str(incident.id),
-            'title': incident.title,
-            'priority': incident.priority,
-            'status': incident.status,
-            'created_at': incident.created_at.isoformat()
+            'id': str(concern.id),
+            'title': concern.title,
+            'priority': concern.severity,
+            'status': concern.status,
+            'created_at': concern.created_at.isoformat()
         }, status=status.HTTP_201_CREATED)
         
     except Exception as e:
