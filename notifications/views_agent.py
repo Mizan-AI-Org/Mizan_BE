@@ -644,8 +644,9 @@ def agent_checklist_respond(request):
 
     # All tasks answered — checklist complete
     prog.status = "COMPLETED"
+    prog.completed_at = timezone.now()
     prog.responses = responses
-    prog.save(update_fields=["status", "responses", "updated_at"])
+    prog.save(update_fields=["status", "completed_at", "responses", "updated_at"])
     yes_count = sum(1 for v in responses.values() if v == "yes")
     no_count = sum(1 for v in responses.values() if v == "no")
     na_count = sum(1 for v in responses.values() if v == "n_a")
