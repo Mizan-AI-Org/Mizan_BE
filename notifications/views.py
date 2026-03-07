@@ -834,16 +834,25 @@ def whatsapp_webhook(request):
         
         payload = request.data
 
-        # Forward the raw payload to Lua/Miya in a background thread
+        # Forward the raw payload to Lua/Miya in a background thread,
+        # but NOT if it contains image/location messages (Lua cannot
+        # download WhatsApp media — Django handles those directly).
         lua_url = getattr(dj_settings, 'LUA_WHATSAPP_WEBHOOK_URL', '')
+        _lua_skip_types = {'image', 'location'}
+        _has_media_msg = False
         if lua_url:
-            threading.Thread(
-                target=_forward_to_lua_whatsapp,
-                args=(payload,),
-                daemon=True
-            ).start()
-            # Lua/Miya handles the conversation — still process status updates below
-            # but skip direct message handling to avoid duplicate responses
+            for entry in payload.get('entry', []):
+                for change in entry.get('changes', []):
+                    for msg in change.get('value', {}).get('messages', []):
+                        if msg.get('type') in _lua_skip_types:
+                            _has_media_msg = True
+                            break
+            if not _has_media_msg:
+                threading.Thread(
+                    target=_forward_to_lua_whatsapp,
+                    args=(payload,),
+                    daemon=True
+                ).start()
 
         entries = payload.get('entry', [])
         
