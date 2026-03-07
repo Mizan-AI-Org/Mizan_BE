@@ -1177,6 +1177,129 @@ class NotificationService:
         components = [{"type": "body", "parameters": [{"type": "text", "text": first_name}]}]
         return self.send_whatsapp_template(phone, template_name, language_code=lang, components=components)
 
+    def prepare_checklist_for_miya(self, user, active_shift, phone_digits=None):
+        """
+        Prepare a checklist for Miya-driven delivery. Creates ShiftChecklistProgress
+        and returns task list — Miya handles all WhatsApp delivery.
+        Returns dict with tasks or None if no tasks.
+        """
+        try:
+            from scheduling.models import ShiftTask, ShiftChecklistProgress
+        except Exception as e:
+            logger.warning("prepare_checklist_for_miya: could not import models: %s", e)
+            return None
+
+        if not user or not active_shift:
+            return None
+
+        phone = (phone_digits or (getattr(user, "phone", None) or "")).strip()
+        phone_digits_clean = "".join(filter(str.isdigit, phone))
+        if len(phone_digits_clean) < 6:
+            return None
+
+        self._ensure_shift_tasks_from_templates(user, active_shift)
+
+        tasks_qs = ShiftTask.objects.filter(shift=active_shift).exclude(
+            status__in=["COMPLETED", "CANCELLED"]
+        )
+        priority_order = {"URGENT": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+        tasks = sorted(
+            list(tasks_qs),
+            key=lambda t: (priority_order.get((t.priority or "MEDIUM").upper(), 2), t.created_at),
+        )
+        if not tasks:
+            return None
+
+        task_ids = [str(t.id) for t in tasks]
+
+        ShiftChecklistProgress.objects.update_or_create(
+            shift=active_shift,
+            staff=user,
+            defaults={
+                "channel": "whatsapp",
+                "phone": phone_digits_clean,
+                "task_ids": task_ids,
+                "current_task_id": task_ids[0],
+                "responses": {},
+                "status": "IN_PROGRESS",
+            },
+        )
+
+        session = WhatsAppSession.objects.filter(phone=phone_digits_clean).first()
+        if not session:
+            session = WhatsAppSession.objects.create(phone=phone_digits_clean, user=user)
+        session.state = "in_checklist"
+        session.save(update_fields=["state"])
+
+        tasks_out = []
+        for t in tasks:
+            tasks_out.append({
+                "id": str(t.id),
+                "title": t.title,
+                "description": t.description or "",
+            })
+
+        first = tasks[0]
+        return {
+            "success": True,
+            "status": "started",
+            "clocked_in": True,
+            "tasks": tasks_out,
+            "total": len(tasks),
+            "current_task": {
+                "id": str(first.id),
+                "index": 1,
+                "title": first.title,
+                "description": first.description or "",
+            },
+        }
+
+    def _ensure_shift_tasks_from_templates(self, user, active_shift):
+        """Create ShiftTasks from task templates if they don't already exist."""
+        try:
+            from scheduling.models import ShiftTask
+            templates = list(active_shift.task_templates.all())
+        except Exception:
+            return
+        existing_titles = set(
+            ShiftTask.objects.filter(shift=active_shift)
+            .values_list("title", flat=True)
+            .distinct()
+        )
+        for tpl in templates:
+            steps = []
+            try:
+                if getattr(tpl, "sop_steps", None):
+                    steps = list(tpl.sop_steps or [])
+                elif getattr(tpl, "tasks", None):
+                    steps = list(tpl.tasks or [])
+            except Exception:
+                steps = []
+            if not steps:
+                steps = [{"title": getattr(tpl, "name", "Task"), "description": getattr(tpl, "description", "") or ""}]
+            for step in steps:
+                if isinstance(step, str):
+                    title = (step.strip()[:255] or getattr(tpl, "name", "Task")).strip()
+                    desc = ""
+                elif isinstance(step, dict):
+                    title = (step.get("title") or step.get("name") or step.get("task") or getattr(tpl, "name", "Task"))[:255].strip()
+                    desc = (step.get("description") or step.get("details") or "").strip()
+                else:
+                    title = (getattr(tpl, "name", "Task") or "Task").strip()
+                    desc = ""
+                if not title:
+                    title = getattr(tpl, "name", "Task") or "Task"
+                if title in existing_titles:
+                    continue
+                existing_titles.add(title)
+                try:
+                    ShiftTask.objects.create(
+                        shift=active_shift, title=title, description=desc,
+                        status="TODO", assigned_to=user,
+                    )
+                except Exception as e:
+                    logger.warning("_ensure_shift_tasks_from_templates: %s", e)
+
     def start_conversational_checklist_after_clock_in(self, user, active_shift, phone_digits=None):
         """
         Start the step-by-step conversational checklist (WhatsApp) for a staff who just clocked in.

@@ -1016,10 +1016,10 @@ def whatsapp_webhook(request):
                     from accounts.utils import calculate_distance
 
                     # When Lua/Miya handles WhatsApp, Django only processes messages
-                    # for active stateful flows (checklists, awaiting location, etc.)
-                    # All other messages are handled by Miya AI.
+                    # for flows that Miya cannot handle (location sharing, photo uploads).
+                    # Checklists are now fully Miya-driven (she sends tasks & records responses).
                     _active_django_states = {
-                        'in_checklist', 'awaiting_clock_in_location',
+                        'awaiting_clock_in_location',
                         'awaiting_task_photo', 'awaiting_feedback',
                         'awaiting_incident', 'awaiting_incident_details',
                     }

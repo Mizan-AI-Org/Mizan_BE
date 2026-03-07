@@ -439,11 +439,10 @@ def _collect_shift_task_items(active_shift):
 @permission_classes([AllowAny])
 def agent_start_whatsapp_checklist(request):
     """
-    Miya/Lua endpoint: start the step-by-step WhatsApp checklist for a staff member by phone.
-    Staff MUST be clocked in. If not, returns a message telling them to clock in first.
-    Handles the case where the checklist was already started (e.g. by the webhook handler)
-    by resuming it instead of erroring.
-    Request body: phone (required).
+    Miya/Lua endpoint: start (or resume) the checklist for a staff member.
+    Returns the task list so Miya delivers tasks conversationally — Django
+    never sends WhatsApp messages for checklists.
+    Body: {phone}
     """
     ok, err_response = _validate_agent_key(request)
     if not ok:
@@ -464,52 +463,54 @@ def agent_start_whatsapp_checklist(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    from scheduling.models import ShiftChecklistProgress
+    from scheduling.models import ShiftChecklistProgress, ShiftTask
 
     existing_prog = ShiftChecklistProgress.objects.filter(
         shift=active_shift, staff=user
     ).first()
-    if existing_prog:
-        if existing_prog.status == 'COMPLETED':
-            return Response({
-                "success": True,
-                "suppress_reply": True,
-                "clocked_in": True,
-                "message_for_user": "Your checklist is already complete. Have a productive shift!",
-            })
-        if existing_prog.status == 'IN_PROGRESS':
-            resume_result = notification_service.resume_conversational_checklist(
-                user, active_shift, phone_digits=clean_phone
-            )
-            delivered = (
-                resume_result.get("delivered", False)
-                if isinstance(resume_result, dict) else bool(resume_result)
-            )
-            if delivered:
-                return Response({
-                    "success": True,
-                    "first_item_sent": True,
-                    "suppress_reply": True,
-                    "clocked_in": True,
+
+    if existing_prog and existing_prog.status == 'COMPLETED':
+        return Response({
+            "success": True,
+            "status": "completed",
+            "clocked_in": True,
+            "message_for_user": "Your checklist is already complete. Have a productive shift!",
+        })
+
+    if existing_prog and existing_prog.status == 'IN_PROGRESS':
+        task_ids = existing_prog.task_ids or []
+        responses = existing_prog.responses or {}
+        current_id = existing_prog.current_task_id or (task_ids[0] if task_ids else None)
+        tasks_qs = ShiftTask.objects.filter(id__in=task_ids)
+        tasks_map = {str(t.id): t for t in tasks_qs}
+        tasks_out = []
+        for tid in task_ids:
+            t = tasks_map.get(tid)
+            if t:
+                tasks_out.append({
+                    "id": str(t.id), "title": t.title,
+                    "description": t.description or "",
+                    "status": t.status,
+                    "response": responses.get(tid),
                 })
-            task_text = (
-                resume_result.get("task_text", "")
-                if isinstance(resume_result, dict) else ""
-            )
-            logger.warning(
-                "agent_start_whatsapp_checklist: resume WhatsApp delivery failed, "
-                "returning task text for Miya fallback (phone=%s)", clean_phone
-            )
-            return Response({
-                "success": True,
-                "first_item_sent": False,
-                "suppress_reply": False,
-                "clocked_in": True,
-                "message_for_user": task_text or "Your checklist is ready — here's your current task.",
-            })
+        current_task = tasks_map.get(current_id)
+        current_idx = (task_ids.index(current_id) + 1) if current_id and current_id in task_ids else 1
+        return Response({
+            "success": True,
+            "status": "in_progress",
+            "clocked_in": True,
+            "tasks": tasks_out,
+            "total": len(task_ids),
+            "current_task": {
+                "id": current_id,
+                "index": current_idx,
+                "title": current_task.title if current_task else "",
+                "description": (current_task.description or "") if current_task else "",
+            } if current_id else None,
+        })
 
     try:
-        started = notification_service.start_conversational_checklist_after_clock_in(
+        result = notification_service.prepare_checklist_for_miya(
             user, active_shift, phone_digits=clean_phone
         )
     except Exception as e:
@@ -520,44 +521,146 @@ def agent_start_whatsapp_checklist(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    if started is None:
+    if result is None:
         return Response(
             {"success": False, "error": "No checklist items",
              "message_for_user": "No tasks are assigned to your shift right now. You're all set!"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    if started:
+    return Response(result, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def agent_checklist_respond(request):
+    """
+    Miya/Lua endpoint: record a staff response to the current checklist task
+    and return the next task (or completion status).
+    Body: {phone, response: "yes"|"no"|"n_a", notes?: str}
+    """
+    ok, err_response = _validate_agent_key(request)
+    if not ok:
+        return err_response
+
+    user, active_shift, clean_phone, err = _resolve_staff_and_shift(request.data or {})
+    if err:
+        return err
+
+    response_value = (request.data.get("response") or "").strip().lower().replace("/", "_")
+    if response_value not in ("yes", "no", "n_a"):
         return Response(
-            {
-                "success": True,
-                "first_item_sent": True,
-                "suppress_reply": True,
-                "clocked_in": True,
-            },
-            status=status.HTTP_200_OK,
+            {"success": False, "error": "Invalid response",
+             "message_for_user": "Please reply Yes, No, or N/A."},
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # started == False: checklist was created but WhatsApp delivery failed.
-    # Return the first task text so Miya can send it as a fallback.
-    all_items = _collect_shift_task_items(active_shift)
-    first_task_text = ""
-    if all_items:
-        lines = [f"📋 *Your shift has {len(all_items)} task(s):*\n"]
-        for i, item in enumerate(all_items):
-            lines.append(f"{i+1}. *{item['title']}*")
-            if item.get("description"):
-                lines.append(f"   {item['description']}")
-        lines.append("\nReply *Yes*, *No*, or *N/A* for each task as I send them.")
-        first_task_text = "\n".join(lines)
-    logger.warning("agent_start_whatsapp_checklist: WhatsApp delivery failed, returning task text for Miya fallback (phone=%s)", clean_phone)
-    return Response(
-        {
+    from scheduling.models import ShiftChecklistProgress, ShiftTask, TaskVerificationRecord
+
+    prog = ShiftChecklistProgress.objects.filter(
+        shift=active_shift, staff=user, status='IN_PROGRESS'
+    ).first()
+    if not prog:
+        return Response(
+            {"success": False, "error": "No active checklist",
+             "message_for_user": "You don't have an active checklist. Say 'Start checklist' to begin."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    task_ids = prog.task_ids or []
+    responses = prog.responses or {}
+    current_id = prog.current_task_id
+    if not current_id:
+        return Response(
+            {"success": False, "error": "No current task"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    task = ShiftTask.objects.filter(id=current_id).first()
+    if not task:
+        return Response(
+            {"success": False, "error": "Task not found"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    # Record the response
+    responses[current_id] = response_value
+    if response_value == "yes":
+        task.status = "COMPLETED"
+        task.completed_at = timezone.now()
+    elif response_value == "no":
+        task.status = "IN_PROGRESS"
+        task.started_at = task.started_at or timezone.now()
+        if request.data.get("notes"):
+            task.notes = (task.notes or "") + f"\n[Staff] {request.data['notes']}"
+    elif response_value == "n_a":
+        task.status = "CANCELLED"
+    task.save(update_fields=["status", "completed_at", "started_at", "notes"])
+
+    try:
+        TaskVerificationRecord.objects.create(
+            task=task,
+            submitted_by=user,
+            checklist_responses={
+                "response": response_value,
+                "checklist_item_id": str(task.id),
+                "shift_id": str(active_shift.id),
+            },
+        )
+    except Exception:
+        pass
+
+    # Find next unanswered task
+    next_task = None
+    next_idx = None
+    for i, tid in enumerate(task_ids):
+        if tid not in responses:
+            next_task_obj = ShiftTask.objects.filter(id=tid).first()
+            if next_task_obj and next_task_obj.status not in ("COMPLETED", "CANCELLED"):
+                next_task = next_task_obj
+                next_idx = i + 1
+                break
+
+    answered = len(responses)
+    total = len(task_ids)
+
+    if next_task:
+        prog.current_task_id = str(next_task.id)
+        prog.responses = responses
+        prog.save(update_fields=["current_task_id", "responses", "updated_at"])
+        return Response({
             "success": True,
-            "first_item_sent": False,
-            "suppress_reply": False,
-            "clocked_in": True,
-            "message_for_user": first_task_text or "Your checklist has been started! Check your messages for the first task.",
+            "status": "next_task",
+            "answered": answered,
+            "total": total,
+            "current_task": {
+                "id": str(next_task.id),
+                "index": next_idx,
+                "title": next_task.title,
+                "description": next_task.description or "",
+            },
+        })
+
+    # All tasks answered — checklist complete
+    prog.status = "COMPLETED"
+    prog.responses = responses
+    prog.save(update_fields=["status", "responses", "updated_at"])
+    yes_count = sum(1 for v in responses.values() if v == "yes")
+    no_count = sum(1 for v in responses.values() if v == "no")
+    na_count = sum(1 for v in responses.values() if v == "n_a")
+    return Response({
+        "success": True,
+        "status": "completed",
+        "answered": answered,
+        "total": total,
+        "summary": {
+            "yes": yes_count,
+            "no": no_count,
+            "n_a": na_count,
         },
-        status=status.HTTP_200_OK,
-    )
+        "message_for_user": (
+            f"✅ Checklist complete! {yes_count} done, "
+            f"{no_count} not done, {na_count} skipped out of {total} tasks."
+        ),
+    })
