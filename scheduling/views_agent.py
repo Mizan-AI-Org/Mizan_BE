@@ -837,8 +837,9 @@ def agent_create_shift(request):
         if timezone.is_naive(end_datetime):
             end_datetime = timezone.make_aware(end_datetime)
         
-        # Check for conflicts
+        # Check for conflicts (skip when manager explicitly confirms with force=true)
         workspace_location = data.get('workspace_location') or data.get('workspaceLocation')
+        force = str(data.get('force', '')).lower() in ('true', '1', 'yes')
         conflicts = SchedulingService.detect_scheduling_conflicts(
             staff_id,
             shift_date,
@@ -847,14 +848,14 @@ def agent_create_shift(request):
             workspace_location=workspace_location
         )
         
-        if conflicts:
-            # Use the descriptive message from the first conflict
+        if conflicts and not force:
             conflict = conflicts[0]
             message = conflict.get('message', f"{staff.first_name} has a conflict at this time")
             return Response({
                 'success': False,
                 'error': f"Scheduling conflict: {message}",
-                'conflicts': conflicts
+                'conflicts': conflicts,
+                'can_force': True,
             }, status=status.HTTP_409_CONFLICT)
         
         # Optional shift title/context (used for auto template association)
@@ -878,7 +879,7 @@ def agent_create_shift(request):
             )
 
         # Create the shift (ensure FK fields are None, not empty string)
-        shift = AssignedShift.objects.create(
+        shift = AssignedShift(
             schedule=schedule,
             staff=staff,
             shift_date=shift_date,
@@ -893,6 +894,9 @@ def agent_create_shift(request):
             created_by=acting_user or None,
             last_modified_by=acting_user or None,
         )
+        if force:
+            shift._skip_overlap_check = True
+        shift.save()
         
         # Add staff to staff_members M2M
         shift.staff_members.add(staff)
