@@ -407,7 +407,7 @@ def _resolve_restaurant_for_agent(request):
         restaurant, acting_user = resolve_agent_restaurant_and_user(request=request, payload=payload)
 
     if not restaurant:
-        return None, None, {'error': 'Unable to resolve restaurant context.', 'status': 400}
+        return None, None, {'error': 'Unable to resolve restaurant context. Please ensure restaurant_id is a valid UUID.', 'status': 400}
 
     return restaurant, acting_user, None
 
@@ -1076,9 +1076,10 @@ def agent_create_shift(request):
         logger.warning("Agent create shift validation error: %s", ve)
         msgs = ve.messages if hasattr(ve, 'messages') else [str(ve)]
         err_text = '; '.join(msgs)
-        # Replace cryptic UUID errors with actionable message
-        if 'not a valid UUID' in err_text or '""' in err_text:
-            err_text = "Invalid ID format. Please ensure staff and restaurant IDs are correct. If using names, ensure the staff member exists in your staff list."
+        # Improve cryptic UUID/FK errors while preserving real ones (like overlaps)
+        if 'not a valid UUID' in err_text:
+            err_text = "Invalid ID format for staff or restaurant. " + err_text
+        
         return Response({
             'success': False,
             'error': f"Validation error: {err_text}"
@@ -1246,8 +1247,8 @@ def agent_create_shifts_by_role(request):
         logger.warning("Agent create shifts by role validation error: %s", ve)
         msgs = ve.messages if hasattr(ve, 'messages') else [str(ve)]
         err_text = '; '.join(msgs)
-        if 'not a valid UUID' in err_text or '""' in err_text:
-            err_text = "Invalid ID format. Please ensure restaurant and staff IDs are correct."
+        if 'not a valid UUID' in err_text:
+            err_text = "Invalid ID format for staff or restaurant. " + err_text
         return Response({
             'success': False,
             'error': f"Validation error: {err_text}"
