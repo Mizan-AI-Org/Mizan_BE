@@ -157,7 +157,7 @@ def agent_list_staff(request):
         queryset = CustomUser.objects.filter(
             restaurant=restaurant,
             is_active=True
-        ).exclude(role='SUPER_ADMIN')
+        )
 
         # Optional role filter (e.g. role=WAITER for "list all waiters")
         role_val = payload.get('role') or payload.get('roleName')
@@ -1166,7 +1166,7 @@ def agent_create_shifts_by_role(request):
             restaurant=restaurant,
             is_active=True,
             role=role
-        ).exclude(role='SUPER_ADMIN')
+        )
 
         if not staff_qs.exists():
             return Response({

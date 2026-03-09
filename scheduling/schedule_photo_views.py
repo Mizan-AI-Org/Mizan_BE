@@ -38,7 +38,7 @@ def _match_employee_name_to_staff(name: str, restaurant, for_agent=False) -> Cus
     if not name:
         return None
     if for_agent:
-        staff = CustomUser.objects.filter(restaurant=restaurant, is_active=True).exclude(role='SUPER_ADMIN')
+        staff = CustomUser.objects.filter(restaurant=restaurant, is_active=True)
     else:
         staff = _get_restaurant_staff(restaurant)
     name_lower = name.lower()
@@ -61,6 +61,12 @@ def _match_employee_name_to_staff(name: str, restaurant, for_agent=False) -> Cus
                 return u
             if (parts[0] == last and len(parts) > 1 and parts[1] == first):
                 return u
+        # Prefix match for First Name (e.g. "Adam" matches "Adama")
+        if first and len(name_lower) >= 3 and first.startswith(name_lower):
+            return u
+        # Or vice-versa (e.g. user says "Adama" but DB has "Adam")
+        if first and len(first) >= 3 and name_lower.startswith(first):
+            return u
     return None
 
 
