@@ -104,17 +104,35 @@ def _agent_payload_from_request(request):
     return payload
 
 
+def _normalize_restaurant_id(val):
+    """Extract and normalize restaurant ID from header/body value. Handles objects, lists, empty strings."""
+    if val is None:
+        return None
+    if isinstance(val, (list, tuple)) and val:
+        val = val[0]
+    if isinstance(val, dict) and val.get("id"):
+        val = val["id"]
+    s = (val or "").strip() if isinstance(val, str) else str(val or "").strip()
+    if not s or s.lower() in ("null", "undefined"):
+        return None
+    try:
+        uuid.UUID(s)
+        return s
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
 def _explicit_restaurant_id_from_request(request):
     """Get restaurant ID from header or body when Miya sends it from context (widget). Prefer this so dashboard context wins."""
     rid = request.META.get('HTTP_X_RESTAURANT_ID')
     if rid:
-        return rid.strip() or None
+        return _normalize_restaurant_id(rid)
     payload = _agent_payload_from_request(request)
     meta = payload.get('metadata') if isinstance(payload.get('metadata'), dict) else {}
     for key in ('restaurant_id', 'restaurantId', 'restaurant'):
         val = payload.get(key) or meta.get(key)
         if val:
-            return val[0] if isinstance(val, (list, tuple)) and val else val
+            return _normalize_restaurant_id(val)
     return None
 
 
@@ -133,12 +151,10 @@ def agent_list_staff(request):
         # 1) Prefer X-Restaurant-Id first (Miya sends this from widget context; ensures dashboard and agent see same restaurant)
         explicit_rid = _explicit_restaurant_id_from_request(request)
         if explicit_rid:
-            rid = explicit_rid[0] if isinstance(explicit_rid, (list, tuple)) and explicit_rid else explicit_rid
-            if rid and isinstance(rid, str) and rid.strip():
-                try:
-                    restaurant = Restaurant.objects.get(id=rid.strip())
-                except (Restaurant.DoesNotExist, ValueError, TypeError):
-                    pass
+            try:
+                restaurant = Restaurant.objects.get(id=explicit_rid)
+            except (Restaurant.DoesNotExist, ValueError, TypeError):
+                pass
         # 2) Else try JWT (dashboard token as Bearer)
         if not restaurant:
             restaurant, _ = _try_jwt_restaurant_and_user(request)
@@ -160,6 +176,17 @@ def agent_list_staff(request):
             restaurant=restaurant,
             is_active=True
         ).exclude(role='SUPER_ADMIN')
+
+        # Optional role filter (e.g. role=WAITER for "list all waiters")
+        role_val = payload.get('role') or payload.get('roleName')
+        if role_val is not None:
+            role_str = (role_val[0] if isinstance(role_val, (list, tuple)) and role_val else role_val) or ""
+            role_str = str(role_str).strip().upper().replace(' ', '_')
+            if role_str:
+                # Map common aliases
+                role_map = {'WAITERS': 'WAITER', 'SERVERS': 'WAITER', 'SERVER': 'WAITER', 'CHEFS': 'CHEF'}
+                role_str = role_map.get(role_str, role_str)
+                queryset = queryset.filter(role=role_str)
 
         # If only count is requested (e.g. "how many staff?"), return count + breakdown so one tool can serve both list and count
         _co = payload.get('count_only') or payload.get('countOnly')
@@ -695,6 +722,21 @@ def agent_run_recurring(request):
 @api_view(['POST'])
 @authentication_classes([])  # Bypass JWT auth
 @permission_classes([permissions.AllowAny])
+def _normalize_uuid(val):
+    """Return val if it's a valid non-empty UUID string, else None. Prevents '"" is not a valid UUID' errors."""
+    if val is None:
+        return None
+    s = (val or "").strip()
+    if not s or s.lower() in ("null", "undefined"):
+        return None
+    try:
+        import uuid as _uuid
+        _uuid.UUID(s)
+        return s
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
 def agent_create_shift(request):
     """
     Create a single shift for a staff member.
@@ -729,6 +771,7 @@ def agent_create_shift(request):
             )
             if isinstance(restaurant_id, (list, tuple)) and restaurant_id:
                 restaurant_id = restaurant_id[0]
+            restaurant_id = _normalize_uuid(restaurant_id)  # Prevent "" is not a valid UUID
             restaurant = None
             acting_user = None
             if restaurant_id:
@@ -747,15 +790,17 @@ def agent_create_shift(request):
                 if v is not None and v != '':
                     return v[0] if isinstance(v, (list, tuple)) and v else v
             return None
-        staff_id = _get_val(data, 'staff_id', 'staffId') or _get_val(payload, 'staff_id', 'staffId')
+        staff_id_raw = _get_val(data, 'staff_id', 'staffId') or _get_val(payload, 'staff_id', 'staffId')
+        staff_id = _normalize_uuid(staff_id_raw)  # Prevent "" is not a valid UUID
+        staff_name = (_get_val(data, 'staff_name', 'staffName') or _get_val(payload, 'staff_name', 'staffName') or "").strip() or None
         shift_date_str = _get_val(data, 'shift_date', 'shiftDate') or _get_val(payload, 'shift_date', 'shiftDate')
         start_time_str = _get_val(data, 'start_time', 'startTime') or _get_val(payload, 'start_time', 'startTime')
         end_time_str = _get_val(data, 'end_time', 'endTime') or _get_val(payload, 'end_time', 'endTime')
         
-        if not all([staff_id, shift_date_str, start_time_str, end_time_str]):
+        if not all([shift_date_str, start_time_str, end_time_str]):
             return Response({
                 'success': False,
-                'error': 'Missing required fields: staff_id, shift_date, start_time, end_time'
+                'error': 'Missing required fields: staff_id or staff_name, shift_date, start_time, end_time'
             }, status=status.HTTP_400_BAD_REQUEST)
         
         if not restaurant:
@@ -764,23 +809,36 @@ def agent_create_shift(request):
                 'error': 'Unable to resolve restaurant context (provide restaurant_id or include sessionId/userId/email/phone/token).'
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Validate staff_id is a valid UUID before querying
-        try:
-            import uuid as _uuid
-            _uuid.UUID(str(staff_id))
-        except (ValueError, AttributeError):
+        # Resolve staff: staff_id (UUID) or staff_name (fallback for Miya when names are used)
+        staff = None
+        if staff_id:
+            try:
+                import uuid as _uuid
+                _uuid.UUID(str(staff_id))
+                staff = CustomUser.objects.get(id=staff_id, restaurant=restaurant)
+            except (ValueError, AttributeError):
+                return Response({
+                    'success': False,
+                    'error': f'Invalid staff_id format: expected a UUID, got "{staff_id}"'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            except CustomUser.DoesNotExist:
+                return Response({
+                    'success': False,
+                    'error': 'Staff member not found in this restaurant'
+                }, status=status.HTTP_404_NOT_FOUND)
+        elif staff_name and restaurant:
+            from .schedule_photo_views import _match_employee_name_to_staff
+            staff = _match_employee_name_to_staff(staff_name, restaurant)
+            if not staff:
+                return Response({
+                    'success': False,
+                    'error': f'No staff member found matching name "{staff_name}". Use staff_id (UUID) or ensure the name exists in your staff list.'
+                }, status=status.HTTP_404_NOT_FOUND)
+        else:
             return Response({
                 'success': False,
-                'error': f'Invalid staff_id format: expected a UUID, got "{staff_id}"'
+                'error': 'Either staff_id (UUID) or staff_name is required'
             }, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            staff = CustomUser.objects.get(id=staff_id, restaurant=restaurant)
-        except CustomUser.DoesNotExist:
-            return Response({
-                'success': False,
-                'error': 'Staff member not found in this restaurant'
-            }, status=status.HTTP_404_NOT_FOUND)
         
         # Parse date and times
         try:
@@ -841,7 +899,7 @@ def agent_create_shift(request):
         workspace_location = data.get('workspace_location') or data.get('workspaceLocation')
         force = str(data.get('force', '')).lower() in ('true', '1', 'yes')
         conflicts = SchedulingService.detect_scheduling_conflicts(
-            staff_id,
+            str(staff.id),
             shift_date,
             start_time,
             end_time,
@@ -1047,9 +1105,13 @@ def agent_create_shift(request):
     except django_exc.ValidationError as ve:
         logger.warning("Agent create shift validation error: %s", ve)
         msgs = ve.messages if hasattr(ve, 'messages') else [str(ve)]
+        err_text = '; '.join(msgs)
+        # Replace cryptic UUID errors with actionable message
+        if 'not a valid UUID' in err_text or '""' in err_text:
+            err_text = "Invalid ID format. Please ensure staff and restaurant IDs are correct. If using names, ensure the staff member exists in your staff list."
         return Response({
             'success': False,
-            'error': f"Validation error: {'; '.join(msgs)}"
+            'error': f"Validation error: {err_text}"
         }, status=status.HTTP_400_BAD_REQUEST)
     except Exception as e:
         logger.exception("Agent create shift error")
@@ -1063,6 +1125,196 @@ def agent_create_shift(request):
         return Response({
             'success': False,
             'error': f"Could not create shift: {err}"
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# Role name -> STAFF_ROLES_CHOICES mapping for "schedule all waiters" type requests
+_ROLE_ALIASES = {
+    'waiter': 'WAITER', 'waiters': 'WAITER', 'server': 'WAITER', 'servers': 'WAITER',
+    'chef': 'CHEF', 'chefs': 'CHEF', 'bartender': 'BARTENDER', 'bartenders': 'BARTENDER',
+    'cashier': 'CASHIER', 'cashiers': 'CASHIER', 'receptionist': 'RECEPTIONIST',
+    'host': 'HOST', 'hosts': 'HOST', 'kitchen': 'KITCHEN_HELP', 'kitchen_help': 'KITCHEN_HELP',
+    'cleaner': 'CLEANER', 'cleaners': 'CLEANER', 'security': 'SECURITY',
+}
+VALID_ROLES_SET = {c[0] for c in getattr(settings, 'STAFF_ROLES_CHOICES', [])}
+
+
+@api_view(['POST'])
+@authentication_classes([])  # Bypass JWT auth
+@permission_classes([permissions.AllowAny])
+def agent_create_shifts_by_role(request):
+    """
+    Create shifts for ALL staff with a given role on specified dates.
+    Used by Miya for requests like "schedule all waiters on March 4 and 5 from 6 to 8pm".
+
+    Payload:
+    - restaurant_id: uuid (or from context)
+    - role: "WAITER" | "waiter" | "waiters" | "CHEF" | etc.
+    - shift_dates: ["2026-03-04", "2026-03-05"]  (list of YYYY-MM-DD)
+    - start_time: "18:00"
+    - end_time: "20:00"
+    - notes: optional
+    """
+    try:
+        restaurant, acting_user = _try_jwt_restaurant_and_user(request)
+        if not restaurant:
+            is_valid, error = validate_agent_key(request)
+            if not is_valid:
+                return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+            payload = _agent_payload_from_request(request)
+            restaurant_id = (
+                payload.get('restaurant_id') or payload.get('restaurantId')
+                or request.META.get('HTTP_X_RESTAURANT_ID')
+            )
+            if isinstance(restaurant_id, (list, tuple)) and restaurant_id:
+                restaurant_id = restaurant_id[0]
+            restaurant_id = _normalize_uuid(restaurant_id)  # Prevent "" is not a valid UUID
+            restaurant = None
+            acting_user = None
+            if restaurant_id:
+                try:
+                    restaurant = Restaurant.objects.get(id=restaurant_id)
+                except Restaurant.DoesNotExist:
+                    restaurant = None
+            if not restaurant:
+                restaurant, acting_user = resolve_agent_restaurant_and_user(request=request, payload=payload)
+
+        if not restaurant:
+            return Response({
+                'success': False,
+                'error': 'Unable to resolve restaurant context (provide restaurant_id or X-Restaurant-Id).'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
+        payload = _agent_payload_from_request(request)
+
+        def _g(k, *alt):
+            v = data.get(k) or payload.get(k)
+            for a in alt:
+                v = v or data.get(a) or payload.get(a)
+            if v is None:
+                return None
+            if isinstance(v, (list, tuple)) and v:
+                return v[0] if isinstance(v[0], str) else str(v[0])
+            return str(v).strip() if v else None
+
+        role_raw = (_g('role', 'roleName') or '').strip().upper().replace(' ', '_')
+        role = _ROLE_ALIASES.get(role_raw.lower(), role_raw) if role_raw else None
+        if not role or role not in VALID_ROLES_SET:
+            role = 'WAITER'  # safe default
+
+        shift_dates_raw = data.get('shift_dates') or data.get('shiftDates') or payload.get('shift_dates') or payload.get('shiftDates')
+        if isinstance(shift_dates_raw, str):
+            shift_dates_raw = [d.strip() for d in shift_dates_raw.split(',') if d.strip()]
+        if not isinstance(shift_dates_raw, (list, tuple)) or not shift_dates_raw:
+            return Response({
+                'success': False,
+                'error': 'shift_dates is required (list of YYYY-MM-DD, e.g. ["2026-03-04", "2026-03-05"])'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        start_time_str = _g('start_time', 'startTime') or '09:00'
+        end_time_str = _g('end_time', 'endTime') or '17:00'
+
+        staff_qs = CustomUser.objects.filter(
+            restaurant=restaurant,
+            is_active=True,
+            role=role
+        ).exclude(role='SUPER_ADMIN')
+
+        if not staff_qs.exists():
+            return Response({
+                'success': False,
+                'error': f'No staff members with role "{role}" found in this restaurant. Add staff with that role first.'
+            }, status=status.HTTP_404_NOT_FOUND)
+
+        parsed_dates = []
+        for d in shift_dates_raw:
+            try:
+                parsed_dates.append(datetime.strptime(str(d).strip()[:10], '%Y-%m-%d').date())
+            except (ValueError, TypeError):
+                continue
+
+        if not parsed_dates:
+            return Response({
+                'success': False,
+                'error': 'No valid dates in shift_dates. Use YYYY-MM-DD format.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            start_time = datetime.strptime(start_time_str[:5], '%H:%M').time()
+            end_time = datetime.strptime(end_time_str[:5], '%H:%M').time()
+        except (ValueError, TypeError):
+            return Response({
+                'success': False,
+                'error': 'Invalid start_time or end_time. Use HH:MM format.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        created = []
+        for staff in staff_qs:
+            for shift_date in parsed_dates:
+                days_since_monday = shift_date.weekday()
+                week_start = shift_date - timedelta(days=days_since_monday)
+                week_end = week_start + timedelta(days=6)
+                schedule, _ = WeeklySchedule.objects.get_or_create(
+                    restaurant=restaurant,
+                    week_start=week_start,
+                    defaults={'week_end': week_end}
+                )
+                start_dt = timezone.make_aware(timezone.datetime.combine(shift_date, start_time))
+                end_dt = timezone.make_aware(timezone.datetime.combine(shift_date, end_time))
+
+                shift = AssignedShift(
+                    schedule=schedule,
+                    staff=staff,
+                    shift_date=shift_date,
+                    start_time=start_dt,
+                    end_time=end_dt,
+                    role=role,
+                    notes=f"{role} shift",
+                    status='SCHEDULED',
+                    created_by=acting_user,
+                    last_modified_by=acting_user,
+                )
+                shift.save()
+                shift.staff_members.add(staff)
+                try:
+                    SchedulingService.ensure_shift_color(shift)
+                except Exception:
+                    pass
+                created.append({
+                    'id': str(shift.id),
+                    'staff_id': str(staff.id),
+                    'staff_name': f"{(staff.first_name or '').strip()} {(staff.last_name or '').strip()}",
+                    'shift_date': str(shift_date),
+                })
+
+        return Response({
+            'success': True,
+            'created': len(created),
+            'shifts': created,
+            'message': f'Scheduled {len(created)} shift(s) for {staff_qs.count()} {role}(s) on {len(parsed_dates)} date(s).'
+        }, status=status.HTTP_201_CREATED)
+
+    except django_exc.ValidationError as ve:
+        logger.warning("Agent create shifts by role validation error: %s", ve)
+        msgs = ve.messages if hasattr(ve, 'messages') else [str(ve)]
+        err_text = '; '.join(msgs)
+        if 'not a valid UUID' in err_text or '""' in err_text:
+            err_text = "Invalid ID format. Please ensure restaurant and staff IDs are correct."
+        return Response({
+            'success': False,
+            'error': f"Validation error: {err_text}"
+        }, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        logger.exception("Agent create shifts by role error")
+        err = str(e).strip() if e else "Unknown error"
+        if 'not a valid UUID' in err or '""' in err:
+            err = "Invalid ID format. Please ensure restaurant and staff IDs are correct."
+        if len(err) > 200:
+            err = err[:197] + "..."
+        return Response({
+            'success': False,
+            'error': f"Could not create shifts: {err}"
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -1139,7 +1391,8 @@ def agent_create_recurring_shifts(request):
                     return v[0] if isinstance(v, (list, tuple)) and v else v
             return None
 
-        staff_id = _get_val(data, 'staff_id', 'staffId') or _get_val(payload, 'staff_id', 'staffId')
+        staff_id_raw = _get_val(data, 'staff_id', 'staffId') or _get_val(payload, 'staff_id', 'staffId')
+        staff_id = (staff_id_raw or "").strip() or None  # Normalize empty string to None
         start_date_str = _get_val(data, 'start_date', 'startDate')
         end_date_str = _get_val(data, 'end_date', 'endDate')
         frequency_raw = (data.get('frequency') or payload.get('frequency') or '').upper()

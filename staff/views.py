@@ -87,6 +87,18 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
             metadata=metadata or {},
         )
 
+    def _notify_staff_via_whatsapp(self, req: StaffRequest, message: str):
+        """Send WhatsApp message to staff about their request update."""
+        phone = req.staff_phone or (getattr(req.staff, 'phone', None) if req.staff else None)
+        if not phone:
+            return
+        try:
+            from notifications.services import notification_service
+            notification_service.send_whatsapp_text(phone, message)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Staff request WhatsApp notify failed: %s", e)
+
     def _notify_managers(self, req: StaffRequest):
         """
         Send real-time in-app notifications to managers/admins for this restaurant.
@@ -152,6 +164,7 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
         if not body:
             return Response({'success': False, 'error': 'body is required'}, status=status.HTTP_400_BAD_REQUEST)
         self._add_comment(req, request.user, body, kind='comment')
+        self._notify_staff_via_whatsapp(req, f"📩 *Message from your manager* (re: \"{req.subject or 'Request'}\"):\n\n{body}")
         return Response({'success': True, 'request': self.get_serializer(req).data})
 
     @action(detail=True, methods=['post'])
@@ -165,6 +178,7 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
         req.reviewed_at = timezone.now()
         req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
         self._add_comment(req, request.user, f"Approved by {request.user.get_full_name()}", kind='status_change', metadata={'from': old, 'to': 'APPROVED'})
+        self._notify_staff_via_whatsapp(req, f"✅ Your request \"{req.subject or 'Request'}\" has been *approved* by your manager.")
         return Response({'success': True, 'request': self.get_serializer(req).data})
 
     @action(detail=True, methods=['post'])
@@ -185,6 +199,10 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
             kind='status_change',
             metadata={'from': old, 'to': 'REJECTED', 'reason': reason},
         )
+        msg = f"Your request \"{req.subject or 'Request'}\" was not approved."
+        if reason:
+            msg += f"\nReason: {reason}"
+        self._notify_staff_via_whatsapp(req, msg)
         return Response({'success': True, 'request': self.get_serializer(req).data})
 
     @action(detail=True, methods=['post'])
@@ -205,6 +223,10 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
             kind='status_change',
             metadata={'from': old, 'to': 'ESCALATED', 'note': note},
         )
+        msg = f"📋 Your request \"{req.subject or 'Request'}\" has been *escalated* for further review."
+        if note:
+            msg += f"\nNote: {note}"
+        self._notify_staff_via_whatsapp(req, msg)
         return Response({'success': True, 'request': self.get_serializer(req).data})
 
     @action(detail=True, methods=['post'])
@@ -218,6 +240,7 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
         req.reviewed_at = timezone.now()
         req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
         self._add_comment(req, request.user, f"Closed by {request.user.get_full_name()}", kind='status_change', metadata={'from': old, 'to': 'CLOSED'})
+        self._notify_staff_via_whatsapp(req, f"Your request \"{req.subject or 'Request'}\" has been *closed*.")
         return Response({'success': True, 'request': self.get_serializer(req).data})
 
 # Task Management ViewSets
@@ -508,6 +531,43 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
             "report_id": report.id,
             "new_status": report.status
         })
+
+    @action(detail=True, methods=['post'])
+    def assign(self, request, pk=None):
+        """Assign an incident to a staff member to handle."""
+        report = self.get_object()
+        user = request.user
+        if user.role not in ['SUPER_ADMIN', 'ADMIN']:
+            return Response(
+                {"error": "Only administrators can assign incidents"},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        assigned_to_id = request.data.get('assigned_to')
+
+        if not assigned_to_id:
+            report.assigned_to = None
+            report.save(update_fields=['assigned_to', 'updated_at'])
+            serializer = self.get_serializer(report)
+            return Response(serializer.data)
+
+        try:
+            assignee = CustomUser.objects.get(id=assigned_to_id, is_active=True)
+        except CustomUser.DoesNotExist:
+            return Response({"detail": "Staff member not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if report.restaurant_id and assignee.restaurant_id != report.restaurant_id:
+            return Response(
+                {"detail": "Cannot assign to staff from another restaurant."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        report.assigned_to = assignee
+        if report.status == 'REPORTED':
+            report.status = 'UNDER_REVIEW'
+        report.save(update_fields=['assigned_to', 'status', 'updated_at'])
+
+        serializer = self.get_serializer(report)
+        return Response(serializer.data)
 
 class SafetyRecognitionViewSet(viewsets.ModelViewSet):
     """API endpoint for Safety Recognition"""

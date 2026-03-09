@@ -77,6 +77,25 @@ class ScheduleDocumentServiceTests(SimpleTestCase):
         self.assertEqual(s["start_time"], "09:30")
         self.assertEqual(s["end_time"], "18:00")
 
+    def test_parses_french_headers_nom_role_heures(self):
+        """French spreadsheet with Nom, Rôle, Date, Heures columns."""
+        csv_bytes = (
+            "Nom,Rôle,Date,Shift,Heures\n"
+            "ABDELLALI AROUA,RECEPTIONIST,2026-03-03,Lunch,11:00 - 15:00\n"
+            "ABDERRAHIM HAMADI,WAITER,2026-03-04,Dinner,18:30 - 23:30\n"
+        ).encode("utf-8")
+        out = parse_schedule_document(csv_bytes, filename="planning.csv", content_type="text/csv")
+        self.assertFalse(out.get("error"))
+        self.assertEqual(len(out["shifts"]), 2)
+        self.assertEqual(out["shifts"][0]["employee_name"], "ABDELLALI AROUA")
+        self.assertEqual(out["shifts"][0]["role"], "RECEPTIONIST")
+        self.assertEqual(out["shifts"][0]["start_time"], "11:00")
+        self.assertEqual(out["shifts"][0]["end_time"], "15:00")
+        self.assertEqual(out["shifts"][1]["employee_name"], "ABDERRAHIM HAMADI")
+        self.assertEqual(out["shifts"][1]["role"], "WAITER")
+        self.assertEqual(out["shifts"][1]["start_time"], "18:30")
+        self.assertEqual(out["shifts"][1]["end_time"], "23:30")
+
     def test_parses_grid_schedule_with_day_columns(self):
         csv_bytes = (
             "Name,Role,Mon,Tue,Wed,Thu,Fri\n"

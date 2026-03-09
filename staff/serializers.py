@@ -163,6 +163,7 @@ class StaffRequestCommentSerializer(serializers.ModelSerializer):
 
 class StaffRequestSerializer(serializers.ModelSerializer):
     staff_details = CustomUserSerializer(source='staff', read_only=True)
+    staff_display_name = serializers.SerializerMethodField()
     comments = StaffRequestCommentSerializer(many=True, read_only=True)
 
     class Meta:
@@ -173,6 +174,7 @@ class StaffRequestSerializer(serializers.ModelSerializer):
             'staff',
             'staff_details',
             'staff_name',
+            'staff_display_name',
             'staff_phone',
             'category',
             'priority',
@@ -193,12 +195,24 @@ class StaffRequestSerializer(serializers.ModelSerializer):
             'restaurant',
             'staff',
             'staff_details',
+            'staff_display_name',
             'created_at',
             'updated_at',
             'reviewed_by',
             'reviewed_at',
             'comments',
         ]
+
+    def get_staff_display_name(self, obj):
+        """Best display name: from linked staff user, else staff_name from request."""
+        if obj.staff:
+            try:
+                name = obj.staff.get_full_name() or f"{getattr(obj.staff, 'first_name', '')} {getattr(obj.staff, 'last_name', '')}".strip()
+                if name:
+                    return name
+            except Exception:
+                pass
+        return obj.staff_name or 'Staff'
         
     def create(self, validated_data):
         request = self.context.get('request')

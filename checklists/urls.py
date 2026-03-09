@@ -29,4 +29,6 @@ urlpatterns = [
     path('api/checklists/agent/review/list/', agent_list_checklists_for_review, name='agent-list-checklists-for-review'),
     path('api/checklists/agent/review/approve/', agent_approve_checklist, name='agent-approve-checklist'),
     path('api/checklists/agent/review/reject/', agent_reject_checklist, name='agent-reject-checklist'),
+    path('api/checklists/shift-progress/<uuid:pk>/', views.shift_checklist_detail, name='shift-checklist-detail'),
+    path('api/checklists/shift-progress/<uuid:pk>/manager_review/', views.shift_checklist_manager_review, name='shift-checklist-manager-review'),
 ]

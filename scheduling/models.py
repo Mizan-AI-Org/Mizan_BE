@@ -706,6 +706,15 @@ class ShiftChecklistProgress(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Manager review (mirrors ChecklistExecution)
+    manager_notes = models.TextField(blank=True, null=True, help_text='Manager comments or feedback on this submission')
+    supervisor_approved = models.BooleanField(default=False)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='approved_shift_checklists'
+    )
+    approved_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         db_table = 'shift_checklist_progress'
         unique_together = ['shift', 'staff']

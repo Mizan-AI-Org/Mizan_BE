@@ -22,11 +22,12 @@ logger = logging.getLogger(__name__)
 VALID_ROLES = {c[0] for c in getattr(settings, "STAFF_ROLES_CHOICES", [])}
 
 # Flexible column mapping: header (lower) substring -> our key
-NAME_KEYS = ("name", "employee", "staff", "full name", "fullname", "worker", "person")
-ROLE_KEYS = ("role", "position", "title", "job", "function", "type")
-DATE_KEYS = ("date", "day", "schedule date", "shift date", "dátum")
-START_KEYS = ("start", "in", "from", "begin", "clock in", "start time", "time in")
-END_KEYS = ("end", "out", "to", "finish", "clock out", "end time", "time out")
+# Include French: nom, employé, rôle, heures
+NAME_KEYS = ("name", "nom", "employee", "employé", "staff", "full name", "fullname", "worker", "person")
+ROLE_KEYS = ("role", "rôle", "position", "title", "job", "function", "type")
+DATE_KEYS = ("date", "day", "schedule date", "shift date", "dátum", "jour")
+START_KEYS = ("start", "in", "from", "begin", "clock in", "start time", "time in", "heures", "hours", "début")
+END_KEYS = ("end", "out", "to", "finish", "clock out", "end time", "time out", "heures", "hours", "fin")
 DEPT_KEYS = ("department", "dept", "section", "area")
 
 
@@ -282,8 +283,19 @@ def _row_to_shift(row: List[Any], col_map: Dict[str, int]) -> Optional[Dict[str,
 
     start_val = row[col_map["start_time"]] if "start_time" in col_map and col_map["start_time"] < len(row) else (get("start_time") or get("start"))
     end_val = row[col_map["end_time"]] if "end_time" in col_map and col_map["end_time"] < len(row) else (get("end_time") or get("end"))
-    start = _parse_time_any(start_val) or "09:00"
-    end = _parse_time_any(end_val) or "17:00"
+    # When start and end come from same column (e.g. "Heures" with "11:00 - 15:00"), parse the range
+    if start_val == end_val and start_val and ("-" in str(start_val) or "–" in str(start_val)):
+        ranges = _parse_time_ranges(start_val)
+        if ranges:
+            start, end = ranges[0]
+            start = start or "09:00"
+            end = end or "17:00"
+        else:
+            start = _parse_time_any(start_val) or "09:00"
+            end = "17:00"
+    else:
+        start = _parse_time_any(start_val) or "09:00"
+        end = _parse_time_any(end_val) or "17:00"
 
     name = get("name") or get("employee") or get("staff")
     dept = get("department")
