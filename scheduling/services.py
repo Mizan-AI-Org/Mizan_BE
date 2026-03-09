@@ -200,11 +200,14 @@ class SchedulingService:
         min_rest = policy['min_rest_hours_between_shifts']
         if min_rest:
             prev_day = shift_date - timedelta(days=1)
-            last_shift = AssignedShift.objects.filter(
+            last_shift_qs = AssignedShift.objects.filter(
                 staff=staff, 
                 shift_date__in=[prev_day, shift_date],
                 status__in=['SCHEDULED', 'CONFIRMED', 'COMPLETED']
-            ).exclude(id=ignore_shift_id or '').order_by('-end_time').first()
+            )
+            if ignore_shift_id:
+                last_shift_qs = last_shift_qs.exclude(id=ignore_shift_id)
+            last_shift = last_shift_qs.order_by('-end_time').first()
             
             if last_shift and last_shift.end_time < shift_start:
                 rest_duration = (shift_start - last_shift.end_time).total_seconds() / 3600

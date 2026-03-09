@@ -789,6 +789,8 @@ def agent_create_shift(request):
         start_time_str = _get_val(data, 'start_time', 'startTime') or _get_val(payload, 'start_time', 'startTime')
         end_time_str = _get_val(data, 'end_time', 'endTime') or _get_val(payload, 'end_time', 'endTime')
         
+        logger.info(f"agent_create_shift input: staff_id={staff_id}, staff_name={staff_name}, date={shift_date_str}, start={start_time_str}, end={end_time_str}")
+        
         if not all([shift_date_str, start_time_str, end_time_str]):
             return Response({
                 'success': False,
@@ -807,8 +809,8 @@ def agent_create_shift(request):
         if not staff and staff_name and restaurant:
             from .schedule_photo_views import _match_employee_name_to_staff
             staff = _match_employee_name_to_staff(staff_name, restaurant, for_agent=True)
-        if not staff:
-            if staff_name:
+            logger.info(f"agent_create_shift: matched staff_name='{staff_name}' to staff={staff}")
+        if not staff:            if staff_name:
                 return Response({
                     'success': False,
                     'error': f'No staff member found matching "{staff_name}". Ensure the name exists in your staff list.'
@@ -1055,7 +1057,7 @@ def agent_create_shift(request):
 
         # Immediately notify the assigned staff (WhatsApp + in-app), with audit logging
         try:
-            from .services import SchedulingService
+
             # This triggers the actual notification engine
             # SchedulingService.notify_shift_created(shift, notify_user=staff)
             pass
@@ -1911,7 +1913,7 @@ def agent_get_restaurant_details(request):
             'breakfast': {'start': '07:00', 'end': '10:30'}
         }
         
-        from .services import SchedulingService
+
         labor_policy = SchedulingService._get_labor_policy(restaurant)
 
         data = {
@@ -1987,7 +1989,7 @@ def agent_get_operational_advice(request):
                 {'type': 'DINNER_PEAK', 'time': '18:00-22:00', 'reason': 'High volume expected during dinner.'}
             ]
         
-        from .services import SchedulingService
+
         labor_policy = SchedulingService._get_labor_policy(restaurant)
         min_rest = labor_policy['min_rest_hours_between_shifts']
         max_daily = labor_policy['max_hours_per_day']
