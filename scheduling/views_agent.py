@@ -808,7 +808,15 @@ def agent_create_shift(request):
             return _normalize_uuid(str(val))
         staff_id_raw = _get_val(data, 'staff_id', 'staffId') or _get_val(payload, 'staff_id', 'staffId')
         staff_id = _extract_uuid(staff_id_raw)
-        staff_name = (_get_val(data, 'staff_name', 'staffName') or _get_val(payload, 'staff_name', 'staffName') or "").strip() or None
+        # Accept staff_name (singular) or staff_names (plural) — agent often sends staff_names: ["Joshua"]
+        staff_name_raw = _get_val(data, 'staff_name', 'staffName') or _get_val(payload, 'staff_name', 'staffName')
+        if not staff_name_raw:
+            staff_names_arr = _get_val(data, 'staff_names', 'staffNames') or _get_val(payload, 'staff_names', 'staffNames')
+            if isinstance(staff_names_arr, (list, tuple)) and staff_names_arr:
+                staff_name_raw = staff_names_arr[0]
+            elif staff_names_arr and not isinstance(staff_names_arr, (list, tuple)):
+                staff_name_raw = staff_names_arr
+        staff_name = (staff_name_raw or "").strip() or None
         shift_date_str = _get_val(data, 'shift_date', 'shiftDate') or _get_val(payload, 'shift_date', 'shiftDate')
         start_time_str = _get_val(data, 'start_time', 'startTime') or _get_val(payload, 'start_time', 'startTime')
         end_time_str = _get_val(data, 'end_time', 'endTime') or _get_val(payload, 'end_time', 'endTime')
