@@ -8,6 +8,7 @@ from django.db.models import Q
 from django.core.files.base import ContentFile
 import base64
 import uuid
+from datetime import datetime, date, time, timedelta
 
 from .task_templates import TaskTemplate, Task
 from .models import TaskCategory, ShiftTask
@@ -111,7 +112,7 @@ class TaskTemplateViewSet(viewsets.ModelViewSet):
         if date:
             try:
                 from django.utils import timezone
-                date_obj = timezone.datetime.strptime(date, '%Y-%m-%d').date()
+                date_obj = datetime.strptime(date, '%Y-%m-%d').date()
             except Exception:
                 return Response({'detail': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -532,7 +533,7 @@ class TaskViewSet(viewsets.ModelViewSet):
             # default by due_date asc with None at end
             def _due_ts(x):
                 d = x.get('due_date')
-                return timezone.datetime.max if d in (None, '') else timezone.datetime.fromisoformat(str(d))
+                return datetime.max if d in (None, '') else datetime.fromisoformat(str(d))
             items.sort(key=_due_ts)
 
         # Pagination (simple slice)

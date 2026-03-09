@@ -148,29 +148,10 @@ def agent_list_staff(request):
     Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT> (dashboard token).
     """
     try:
-        restaurant = None
-        # 1) Prefer X-Restaurant-Id first (Miya sends this from widget context; ensures dashboard and agent see same restaurant)
-        explicit_rid = _explicit_restaurant_id_from_request(request)
-        if explicit_rid:
-            try:
-                restaurant = Restaurant.objects.get(id=explicit_rid)
-            except (Restaurant.DoesNotExist, ValueError, TypeError):
-                pass
-        # 2) Else try JWT (dashboard token as Bearer)
-        if not restaurant:
-            restaurant, _ = _try_jwt_restaurant_and_user(request)
-        # 3) Else agent key + resolve from payload/sessionId
-        if not restaurant:
-            is_valid, error = validate_agent_key(request)
-            if not is_valid:
-                return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
-            payload = _agent_payload_from_request(request)
-            restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=payload)
-        if not restaurant:
-            return Response(
-                {'error': 'Unable to resolve restaurant context (no restaurant_id/sessionId/userId/email/phone/token provided).'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        
         payload = _agent_payload_from_request(request)
         # Get staff for this restaurant (queryset used for count_only and list)
         queryset = CustomUser.objects.filter(
@@ -351,23 +332,10 @@ def agent_staff_count(request):
     Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT> (dashboard token).
     """
     try:
-        restaurant = None
-        explicit_rid = _explicit_restaurant_id_from_request(request)
-        if explicit_rid:
-            rid = explicit_rid[0] if isinstance(explicit_rid, (list, tuple)) and explicit_rid else explicit_rid
-            if rid and isinstance(rid, str) and rid.strip():
-                try:
-                    restaurant = Restaurant.objects.get(id=rid.strip())
-                except (Restaurant.DoesNotExist, ValueError, TypeError):
-                    pass
-        if not restaurant:
-            restaurant, _ = _try_jwt_restaurant_and_user(request)
-        if not restaurant:
-            is_valid, error = validate_agent_key(request)
-            if not is_valid:
-                return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
-            payload = _agent_payload_from_request(request)
-            restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=payload)
+        restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'error': err['error']}, status=err['status'])
+        payload = _agent_payload_from_request(request)
         if not restaurant:
             return Response(
                 {'error': 'Unable to resolve restaurant context (no restaurant_id/sessionId/userId/email/phone/token provided).'},
@@ -400,27 +368,48 @@ def agent_staff_count(request):
 
 
 def _resolve_restaurant_for_agent(request):
-    """Resolve restaurant for agent endpoints."""
+    """
+    Resolve (restaurant, acting_user, err) context for agent endpoints.
+    Priority:
+    1. Explicit X-Restaurant-Id header or restaurant_id in body/payload.
+       Essential for Super Admins managing specific restaurants in the dashboard.
+    2. JWT Authorization token (Bearer).
+    3. Agent API Key + sessionId/payload metadata resolution.
+    """
     restaurant = None
+    acting_user = None
+
+    # 1) Try explicit restaurant ID first (header/body)
     explicit_rid = _explicit_restaurant_id_from_request(request)
     if explicit_rid:
+        # Normalize rid: _explicit_restaurant_id_from_request returns str or None
         rid = explicit_rid[0] if isinstance(explicit_rid, (list, tuple)) and explicit_rid else explicit_rid
         if rid and isinstance(rid, str) and rid.strip():
             try:
                 restaurant = Restaurant.objects.get(id=rid.strip())
             except (Restaurant.DoesNotExist, ValueError, TypeError):
                 pass
-    if not restaurant:
-        restaurant, _ = _try_jwt_restaurant_and_user(request)
+
+    # 2) Try JWT for acting user and fallback restaurant
+    jwt_rest, jwt_user = _try_jwt_restaurant_and_user(request)
+    if jwt_user:
+        acting_user = jwt_user
+        # If we didn't have an explicit restaurant, or explicit resolve failed, use JWT restaurant
+        if not restaurant:
+            restaurant = jwt_rest
+
+    # 3) Fallback to agent key + payload resolution
     if not restaurant:
         is_valid, error = validate_agent_key(request)
         if not is_valid:
-            return None, {'error': error, 'status': 401}
+            return None, None, {'error': error, 'status': 401}
         payload = _agent_payload_from_request(request)
-        restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=payload)
+        restaurant, acting_user = resolve_agent_restaurant_and_user(request=request, payload=payload)
+
     if not restaurant:
-        return None, {'error': 'Unable to resolve restaurant context.', 'status': 400}
-    return restaurant, None
+        return None, None, {'error': 'Unable to resolve restaurant context.', 'status': 400}
+
+    return restaurant, acting_user, None
 
 
 @api_view(['GET'])
@@ -434,7 +423,7 @@ def agent_list_task_templates(request):
     Query: restaurant_id (or X-Restaurant-Id header).
     """
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         templates = TaskTemplate.objects.filter(
@@ -463,9 +452,10 @@ def agent_create_task_template(request):
              tasks: [{title, description?, priority?}]
     """
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
+        
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
         name = (data.get('name') or '').strip()
         if not name:
@@ -538,7 +528,7 @@ def agent_attach_templates_to_shift(request):
     Payload: shift_id, task_template_ids: [uuid1, uuid2]
     """
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
@@ -620,7 +610,7 @@ def agent_generate_tasks(request):
     Auth: Bearer LUA_WEBHOOK_API_KEY or JWT.
     """
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
@@ -639,8 +629,6 @@ def agent_generate_tasks(request):
             template = TaskTemplate.objects.get(id=template_id, restaurant=restaurant, is_active=True)
         except TaskTemplate.DoesNotExist:
             return Response({'error': 'Task template not found'}, status=status.HTTP_404_NOT_FOUND)
-        acting_user = None
-        _, acting_user = _try_jwt_restaurant_and_user(request)
         if not acting_user:
             acting_user = CustomUser.objects.filter(
                 restaurant=restaurant,
@@ -691,7 +679,7 @@ def agent_run_recurring(request):
     Auth: Bearer LUA_WEBHOOK_API_KEY or JWT.
     """
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
@@ -760,29 +748,9 @@ def agent_create_shift(request):
     }
     """
     try:
-        # Resolve restaurant: try JWT first (Miya/Lua can send user token as Bearer)
-        restaurant, acting_user = _try_jwt_restaurant_and_user(request)
-        if not restaurant:
-            is_valid, error = validate_agent_key(request)
-            if not is_valid:
-                return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
-            payload = _agent_payload_from_request(request)
-            restaurant_id = (
-                payload.get('restaurant_id') or payload.get('restaurantId')
-                or request.META.get('HTTP_X_RESTAURANT_ID')
-            )
-            if isinstance(restaurant_id, (list, tuple)) and restaurant_id:
-                restaurant_id = restaurant_id[0]
-            restaurant_id = _normalize_uuid(restaurant_id)  # Prevent "" is not a valid UUID
-            restaurant = None
-            acting_user = None
-            if restaurant_id:
-                try:
-                    restaurant = Restaurant.objects.get(id=restaurant_id)
-                except Restaurant.DoesNotExist:
-                    restaurant = None
-            if not restaurant:
-                restaurant, acting_user = resolve_agent_restaurant_and_user(request=request, payload=payload)
+        restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'success': False, 'error': err['error']}, status=err['status'])
         
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
         payload = _agent_payload_from_request(request)
@@ -825,12 +793,6 @@ def agent_create_shift(request):
             return Response({
                 'success': False,
                 'error': 'Missing required fields: staff_id or staff_name, shift_date, start_time, end_time'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        if not restaurant:
-            return Response({
-                'success': False,
-                'error': 'Unable to resolve restaurant context (provide restaurant_id or include sessionId/userId/email/phone/token).'
             }, status=status.HTTP_400_BAD_REQUEST)
 
         # Resolve staff: staff_id (UUID) or staff_name (fallback for Miya when names are used)
@@ -907,8 +869,8 @@ def agent_create_shift(request):
         )
         
         # Create datetime objects for start and end
-        start_datetime = timezone.datetime.combine(shift_date, start_time)
-        end_datetime = timezone.datetime.combine(shift_date, end_time)
+        start_datetime = datetime.combine(shift_date, start_time)
+        end_datetime = datetime.combine(shift_date, end_time)
         
         # Make timezone-aware if needed
         if timezone.is_naive(start_datetime):
@@ -1022,7 +984,6 @@ def agent_create_shift(request):
                     from core.i18n import get_effective_language, normalize_language
                     lang = normalize_language(get_effective_language(user=staff, restaurant=restaurant) or 'en')
                     created_shift_tasks = 0
-                    created_executions = 0
                     for tpl in templates:
                         created_shift_tasks += instantiate_shift_tasks_from_template(
                             shift=shift,
@@ -1031,18 +992,6 @@ def agent_create_shift(request):
                             created_by=acting_user,
                             language=lang,
                         )
-                        ct = ensure_checklist_for_task_template(
-                            restaurant=restaurant,
-                            task_template=tpl,
-                            created_by=acting_user,
-                            language=lang,
-                        )
-                        if ct:
-                            created_executions += ensure_checklist_execution_for_shift(
-                                checklist_template=ct,
-                                assignee=staff,
-                                shift=shift,
-                            )
                     attach_result = AutoAttachResult(
                         shift_context=detect_shift_context(
                             shift_title=shift_title,
@@ -1179,35 +1128,10 @@ def agent_create_shifts_by_role(request):
     - notes: optional
     """
     try:
-        restaurant, acting_user = _try_jwt_restaurant_and_user(request)
-        if not restaurant:
-            is_valid, error = validate_agent_key(request)
-            if not is_valid:
-                return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
-            payload = _agent_payload_from_request(request)
-            restaurant_id = (
-                payload.get('restaurant_id') or payload.get('restaurantId')
-                or request.META.get('HTTP_X_RESTAURANT_ID')
-            )
-            if isinstance(restaurant_id, (list, tuple)) and restaurant_id:
-                restaurant_id = restaurant_id[0]
-            restaurant_id = _normalize_uuid(restaurant_id)  # Prevent "" is not a valid UUID
-            restaurant = None
-            acting_user = None
-            if restaurant_id:
-                try:
-                    restaurant = Restaurant.objects.get(id=restaurant_id)
-                except Restaurant.DoesNotExist:
-                    restaurant = None
-            if not restaurant:
-                restaurant, acting_user = resolve_agent_restaurant_and_user(request=request, payload=payload)
-
-        if not restaurant:
-            return Response({
-                'success': False,
-                'error': 'Unable to resolve restaurant context (provide restaurant_id or X-Restaurant-Id).'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
+        restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'success': False, 'error': err['error']}, status=err['status'])
+        
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
         payload = _agent_payload_from_request(request)
 
@@ -1283,8 +1207,8 @@ def agent_create_shifts_by_role(request):
                     week_start=week_start,
                     defaults={'week_end': week_end}
                 )
-                start_dt = timezone.make_aware(timezone.datetime.combine(shift_date, start_time))
-                end_dt = timezone.make_aware(timezone.datetime.combine(shift_date, end_time))
+                start_dt = timezone.make_aware(datetime.combine(shift_date, start_time))
+                end_dt = timezone.make_aware(datetime.combine(shift_date, end_time))
 
                 shift = AssignedShift(
                     schedule=schedule,
@@ -1522,8 +1446,8 @@ def agent_create_recurring_shifts(request):
                 logger.warning("agent_create_recurring: skipping invalid template UUID '%s'", _tid)
         recurrence_group_id = uuid.uuid4()
         if not shift_title:
-            start_datetime_ctx = timezone.datetime.combine(start_date, start_time)
-            end_datetime_ctx = timezone.datetime.combine(start_date, end_time)
+            start_datetime_ctx = datetime.combine(start_date, start_time)
+            end_datetime_ctx = datetime.combine(start_date, end_time)
             if timezone.is_naive(start_datetime_ctx):
                 start_datetime_ctx = timezone.make_aware(start_datetime_ctx)
             if timezone.is_naive(end_datetime_ctx):
@@ -1559,8 +1483,8 @@ def agent_create_recurring_shifts(request):
                 week_start=week_start,
                 defaults={'week_end': week_end}
             )
-            start_datetime = timezone.datetime.combine(shift_date, start_time)
-            end_datetime = timezone.datetime.combine(shift_date, end_time)
+            start_datetime = datetime.combine(shift_date, start_time)
+            end_datetime = datetime.combine(shift_date, end_time)
             if timezone.is_naive(start_datetime):
                 start_datetime = timezone.make_aware(start_datetime)
             if timezone.is_naive(end_datetime):
@@ -2646,7 +2570,7 @@ def agent_proactive_insights(request):
 
         # No-shows: shifts with status NO_SHOW or SCHEDULED/CONFIRMED where clock-in never happened
         from timeclock.models import ClockEvent
-        today_start = timezone.datetime.combine(target_date, time(0, 0))
+        today_start = datetime.combine(target_date, time(0, 0))
         if timezone.is_naive(today_start):
             today_start = timezone.make_aware(today_start)
         today_end = today_start + timedelta(days=1)

@@ -225,10 +225,10 @@ def apply_parsed_schedule(request):
             end_time_str = (s.get("end_time") or "17:00")[:5]
             try:
                 start_dt = timezone.make_aware(
-                    timezone.datetime.combine(shift_date, datetime.strptime(start_time_str, "%H:%M").time())
+                    datetime.combine(shift_date, datetime.strptime(start_time_str, "%H:%M").time())
                 )
                 end_dt = timezone.make_aware(
-                    timezone.datetime.combine(shift_date, datetime.strptime(end_time_str, "%H:%M").time())
+                    datetime.combine(shift_date, datetime.strptime(end_time_str, "%H:%M").time())
                 )
             except (ValueError, TypeError):
                 continue

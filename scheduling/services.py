@@ -97,11 +97,11 @@ class SchedulingService:
         
         from datetime import time as time_type
         if isinstance(start_time, time_type):
-            shift_start = timezone.make_aware(timezone.datetime.combine(shift_date, start_time))
+            shift_start = timezone.make_aware(datetime.combine(shift_date, start_time))
             end_date = shift_date
             if end_time < start_time:
                 end_date = shift_date + timedelta(days=1)
-            shift_end = timezone.make_aware(timezone.datetime.combine(end_date, end_time))
+            shift_end = timezone.make_aware(datetime.combine(end_date, end_time))
         else:
             shift_start = start_time
             shift_end = end_time
@@ -430,10 +430,10 @@ class SchedulingService:
                     
                     if not conflicts:
                         # Use full datetime so clock-in/reminder tasks find shifts (they filter by start_time range)
-                        start_dt = timezone.make_aware(timezone.datetime.combine(shift_date, ts.start_time)) if ts.start_time else timezone.now()
-                        end_dt = timezone.make_aware(timezone.datetime.combine(shift_date, ts.end_time)) if ts.end_time else start_dt + timedelta(hours=4)
+                        start_dt = timezone.make_aware(datetime.combine(shift_date, ts.start_time)) if ts.start_time else timezone.now()
+                        end_dt = timezone.make_aware(datetime.combine(shift_date, ts.end_time)) if ts.end_time else start_dt + timedelta(hours=4)
                         if ts.end_time and ts.end_time < ts.start_time:
-                            end_dt = timezone.make_aware(timezone.datetime.combine(shift_date + timedelta(days=1), ts.end_time))
+                            end_dt = timezone.make_aware(datetime.combine(shift_date + timedelta(days=1), ts.end_time))
                         AssignedShift.objects.create(
                             schedule=schedule,
                             staff=staff,

@@ -200,8 +200,8 @@ def batch_create_recurring_shifts(request):
                     week_start=week_start,
                     defaults={"week_end": week_end},
                 )
-                start_dt = timezone.datetime.combine(shift_date, start_time)
-                end_dt = timezone.datetime.combine(shift_date, end_time)
+                start_dt = datetime.combine(shift_date, start_time)
+                end_dt = datetime.combine(shift_date, end_time)
                 if timezone.is_naive(start_dt):
                     start_dt = timezone.make_aware(start_dt)
                 if timezone.is_naive(end_dt):
