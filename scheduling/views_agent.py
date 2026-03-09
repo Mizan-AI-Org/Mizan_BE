@@ -792,8 +792,22 @@ def agent_create_shift(request):
                 if v is not None and v != '':
                     return v[0] if isinstance(v, (list, tuple)) and v else v
             return None
+        def _extract_uuid(val):
+            """Extract UUID string from val (handles objects, nested dicts, etc.)."""
+            if val is None:
+                return None
+            if isinstance(val, str):
+                return _normalize_uuid(val)
+            if isinstance(val, dict):
+                for k in ('id', 'staff_id', 'staffId', 'user_id', 'userId'):
+                    v = val.get(k)
+                    if v:
+                        out = _normalize_uuid(str(v))
+                        if out:
+                            return out
+            return _normalize_uuid(str(val))
         staff_id_raw = _get_val(data, 'staff_id', 'staffId') or _get_val(payload, 'staff_id', 'staffId')
-        staff_id = _normalize_uuid(staff_id_raw)  # Prevent "" is not a valid UUID
+        staff_id = _extract_uuid(staff_id_raw)
         staff_name = (_get_val(data, 'staff_name', 'staffName') or _get_val(payload, 'staff_name', 'staffName') or "").strip() or None
         shift_date_str = _get_val(data, 'shift_date', 'shiftDate') or _get_val(payload, 'shift_date', 'shiftDate')
         start_time_str = _get_val(data, 'start_time', 'startTime') or _get_val(payload, 'start_time', 'startTime')
@@ -818,25 +832,17 @@ def agent_create_shift(request):
                 import uuid as _uuid
                 _uuid.UUID(str(staff_id))
                 staff = CustomUser.objects.get(id=staff_id, restaurant=restaurant)
-            except (ValueError, AttributeError):
-                return Response({
-                    'success': False,
-                    'error': f'Invalid staff_id format: expected a UUID, got "{staff_id}"'
-                }, status=status.HTTP_400_BAD_REQUEST)
-            except CustomUser.DoesNotExist:
-                return Response({
-                    'success': False,
-                    'error': 'Staff member not found in this restaurant'
-                }, status=status.HTTP_404_NOT_FOUND)
-        elif staff_name and restaurant:
+            except (ValueError, AttributeError, CustomUser.DoesNotExist):
+                staff_id = None
+        if not staff and staff_name and restaurant:
             from .schedule_photo_views import _match_employee_name_to_staff
             staff = _match_employee_name_to_staff(staff_name, restaurant)
-            if not staff:
+        if not staff:
+            if staff_name:
                 return Response({
                     'success': False,
-                    'error': f'No staff member found matching name "{staff_name}". Use staff_id (UUID) or ensure the name exists in your staff list.'
+                    'error': f'No staff member found matching "{staff_name}". Ensure the name exists in your staff list.'
                 }, status=status.HTTP_404_NOT_FOUND)
-        else:
             return Response({
                 'success': False,
                 'error': 'Either staff_id (UUID) or staff_name is required'

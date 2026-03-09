@@ -34,7 +34,6 @@ def _match_employee_name_to_staff(name: str, restaurant) -> CustomUser | None:
         return None
     staff = _get_restaurant_staff(restaurant)
     name_lower = name.lower()
-    # "John Doe" or "Doe, John"
     parts = [p.strip() for p in re.split(r"[\s,]+", name) if p.strip()]
     for u in staff:
         first = (u.first_name or "").lower()
@@ -46,6 +45,8 @@ def _match_employee_name_to_staff(name: str, restaurant) -> CustomUser | None:
         if first and name_lower == first:
             return u
         if last and name_lower == last:
+            return u
+        if name_lower in full.split() or name_lower in rev.split():
             return u
         if parts and first and last:
             if (parts[0] == first and (len(parts) == 1 or parts[-1] == last)):
