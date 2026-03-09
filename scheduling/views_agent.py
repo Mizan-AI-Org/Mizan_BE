@@ -866,8 +866,13 @@ def agent_create_shift(request):
                 'error': 'Invalid time format. Use HH:MM or HH:MM:SS'
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Determine role
-        role = data.get('role') or staff.role or 'SERVER'
+        # Determine role (must be in STAFF_ROLES_CHOICES; SERVER/HOST map to WAITER)
+        role_raw = (data.get('role') or staff.role or 'WAITER')
+        role_str = str(role_raw).strip().upper().replace(' ', '_')
+        _role_fixes = {'SERVER': 'WAITER', 'SERVERS': 'WAITER', 'HOST': 'WAITER', 'HOSTS': 'WAITER'}
+        role = _role_fixes.get(role_str, role_str) if role_str in VALID_ROLES_SET else _role_fixes.get(role_str, 'WAITER')
+        if role not in VALID_ROLES_SET:
+            role = 'WAITER'
 
         # Optional metadata to improve titles/context
         department = data.get('department') or None
@@ -1128,12 +1133,13 @@ def agent_create_shift(request):
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# Role name -> STAFF_ROLES_CHOICES mapping for "schedule all waiters" type requests
+# Role name -> STAFF_ROLES_CHOICES mapping for "schedule all waiters" type requests.
+# HOST/SERVER map to WAITER (not in STAFF_ROLES_CHOICES).
 _ROLE_ALIASES = {
     'waiter': 'WAITER', 'waiters': 'WAITER', 'server': 'WAITER', 'servers': 'WAITER',
     'chef': 'CHEF', 'chefs': 'CHEF', 'bartender': 'BARTENDER', 'bartenders': 'BARTENDER',
     'cashier': 'CASHIER', 'cashiers': 'CASHIER', 'receptionist': 'RECEPTIONIST',
-    'host': 'HOST', 'hosts': 'HOST', 'kitchen': 'KITCHEN_HELP', 'kitchen_help': 'KITCHEN_HELP',
+    'host': 'WAITER', 'hosts': 'WAITER', 'kitchen': 'KITCHEN_HELP', 'kitchen_help': 'KITCHEN_HELP',
     'cleaner': 'CLEANER', 'cleaners': 'CLEANER', 'security': 'SECURITY',
 }
 VALID_ROLES_SET = {c[0] for c in getattr(settings, 'STAFF_ROLES_CHOICES', [])}
