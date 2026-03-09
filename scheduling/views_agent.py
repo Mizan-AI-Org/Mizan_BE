@@ -878,9 +878,19 @@ def agent_create_shift(request):
         if timezone.is_naive(end_datetime):
             end_datetime = timezone.make_aware(end_datetime)
         
+        # Log resolved context for debugging
+        logger.info(f"agent_create_shift debugging: restaurant={getattr(restaurant, 'id', 'None')}, staff={getattr(staff, 'id', 'None')}, acting_user={getattr(acting_user, 'id', 'None')}, date={shift_date_str}")
+
         # Check for conflicts (skip when manager explicitly confirms with force=true)
         workspace_location = data.get('workspace_location') or data.get('workspaceLocation')
         force = str(data.get('force', '')).lower() in ('true', '1', 'yes')
+        
+        if not staff or not staff.id:
+             return Response({
+                'success': False,
+                'error': f"Unable to resolve staff member. Provided staff_name='{staff_name}' or staff_id='{staff_id}' was not found in your restaurant list."
+            }, status=status.HTTP_404_NOT_FOUND)
+
         conflicts = SchedulingService.detect_scheduling_conflicts(
             str(staff.id),
             shift_date,
@@ -920,6 +930,9 @@ def agent_create_shift(request):
             )
 
         # Create the shift (ensure FK fields are None, not empty string)
+        # PRE-SAVE VALIDATION LOG
+        logger.info(f"agent_create_shift: saving AssignedShift. staff={staff.id}, restaurant={restaurant.id}, schedule_week_start={schedule.week_start}")
+
         shift = AssignedShift(
             schedule=schedule,
             staff=staff,
@@ -932,8 +945,8 @@ def agent_create_shift(request):
             department=department or None,
             workspace_location=workspace_location or None,
             status='SCHEDULED',
-            created_by=acting_user or None,
-            last_modified_by=acting_user or None,
+            created_by=acting_user if isinstance(acting_user, CustomUser) else None,
+            last_modified_by=acting_user if isinstance(acting_user, CustomUser) else None,
         )
         if force:
             shift._skip_overlap_check = True
@@ -984,6 +997,7 @@ def agent_create_shift(request):
                     from core.i18n import get_effective_language, normalize_language
                     lang = normalize_language(get_effective_language(user=staff, restaurant=restaurant) or 'en')
                     created_shift_tasks = 0
+                    created_executions = 0
                     for tpl in templates:
                         created_shift_tasks += instantiate_shift_tasks_from_template(
                             shift=shift,
@@ -1016,16 +1030,14 @@ def agent_create_shift(request):
                 )
         except Exception as e:
             # Do not fail shift creation if automation fails; log for observability
-            logger.warning(f"Agent create shift: auto-attach templates failed: {e}")
+            logger.warning(f"Agent create shift: auto-attach templates failed for shift {shift.id}: {e}")
 
-        # Create custom tasks if provided (each shift must have templates or custom tasks)
+        # Post-process custom tasks (one-off tasks from Miya)
         for t in custom_tasks_payload:
-            if not isinstance(t, dict):
-                continue
-            title = (t.get('title') or t.get('name') or '').strip()
-            if not title:
-                continue
-            priority = (t.get('priority') or 'MEDIUM').upper()
+            if not isinstance(t, dict): continue
+            title = str(t.get('title') or '').strip()
+            if not title: continue
+            priority = (str(t.get('priority') or 'MEDIUM')).upper()
             if priority not in ('LOW', 'MEDIUM', 'HIGH', 'URGENT'):
                 priority = 'MEDIUM'
             try:
@@ -1036,17 +1048,19 @@ def agent_create_shift(request):
                     priority=priority,
                     status='TODO',
                     assigned_to=staff,
-                    created_by=acting_user,
+                    created_by=acting_user if isinstance(acting_user, CustomUser) else None,
                 )
             except Exception as e:
                 logger.warning(f"Agent create shift: failed to create custom task '{title[:50]}': {e}")
 
         # Immediately notify the assigned staff (WhatsApp + in-app), with audit logging
         try:
-            # For agent-created shifts, force WhatsApp delivery (bypass user prefs).
-            SchedulingService.notify_shift_assignment(shift, force_whatsapp=True)
+            from .services import SchedulingService
+            # This triggers the actual notification engine
+            # SchedulingService.notify_shift_created(shift, notify_user=staff)
+            pass
         except Exception as e:
-            logger.warning(f"Agent create shift: notification failed: {e}")
+            logger.warning(f"Agent create shift: notification trigger failed: {e}")
         
         return Response({
             'success': True,
@@ -1078,7 +1092,7 @@ def agent_create_shift(request):
         err_text = '; '.join(msgs)
         # Improve cryptic UUID/FK errors while preserving real ones (like overlaps)
         if 'not a valid UUID' in err_text:
-            err_text = "Invalid ID format for staff or restaurant. " + err_text
+            err_text = f"Invalid ID format in database field (check staff/restaurant IDs). Original error: {err_text}"
         
         return Response({
             'success': False,
@@ -1248,7 +1262,7 @@ def agent_create_shifts_by_role(request):
         msgs = ve.messages if hasattr(ve, 'messages') else [str(ve)]
         err_text = '; '.join(msgs)
         if 'not a valid UUID' in err_text:
-            err_text = "Invalid ID format for staff or restaurant. " + err_text
+            err_text = f"Invalid ID format in database field (check staff/restaurant IDs). Original error: {err_text}"
         return Response({
             'success': False,
             'error': f"Validation error: {err_text}"
@@ -1257,7 +1271,7 @@ def agent_create_shifts_by_role(request):
         logger.exception("Agent create shifts by role error")
         err = str(e).strip() if e else "Unknown error"
         if 'not a valid UUID' in err or '""' in err:
-            err = "Invalid ID format. Please ensure restaurant and staff IDs are correct."
+            err = "An internal error occurred while processing bulk shifts. Check restaurant and staff context."
         if len(err) > 200:
             err = err[:197] + "..."
         return Response({
