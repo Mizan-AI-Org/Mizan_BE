@@ -2,6 +2,7 @@
 Agent-specific views for scheduling operations.
 These endpoints use LUA_WEBHOOK_API_KEY authentication instead of JWT.
 """
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.response import Response
 from rest_framework import status, permissions
@@ -719,9 +720,6 @@ def agent_run_recurring(request):
         return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@api_view(['POST'])
-@authentication_classes([])  # Bypass JWT auth
-@permission_classes([permissions.AllowAny])
 def _normalize_uuid(val):
     """Return val if it's a valid non-empty UUID string, else None. Prevents '"" is not a valid UUID' errors."""
     if val is None:
@@ -737,6 +735,10 @@ def _normalize_uuid(val):
         return None
 
 
+@csrf_exempt
+@api_view(['POST'])
+@authentication_classes([])  # Bypass JWT auth
+@permission_classes([permissions.AllowAny])
 def agent_create_shift(request):
     """
     Create a single shift for a staff member.
@@ -1145,6 +1147,7 @@ _ROLE_ALIASES = {
 VALID_ROLES_SET = {c[0] for c in getattr(settings, 'STAFF_ROLES_CHOICES', [])}
 
 
+@csrf_exempt
 @api_view(['POST'])
 @authentication_classes([])  # Bypass JWT auth
 @permission_classes([permissions.AllowAny])

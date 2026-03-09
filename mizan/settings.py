@@ -101,6 +101,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',       # REQUIRED before auth
     'django.middleware.common.CommonMiddleware',
+    'core.middleware.AgentPathCsrfExemptMiddleware',              # Before CSRF: exempt agent API paths
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',    # REQUIRED for admin
     'django.contrib.messages.middleware.MessageMiddleware',       # REQUIRED for admin
