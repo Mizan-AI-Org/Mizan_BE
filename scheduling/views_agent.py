@@ -844,7 +844,7 @@ def agent_create_shift(request):
                 staff_id = None
         if not staff and staff_name and restaurant:
             from .schedule_photo_views import _match_employee_name_to_staff
-            staff = _match_employee_name_to_staff(staff_name, restaurant)
+            staff = _match_employee_name_to_staff(staff_name, restaurant, for_agent=True)
         if not staff:
             if staff_name:
                 return Response({
