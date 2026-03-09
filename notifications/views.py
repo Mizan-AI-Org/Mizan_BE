@@ -29,11 +29,34 @@ from scheduling.audit import AuditTrailService, AuditActionType, AuditSeverity
 from core.utils import build_tenant_context
 from .models import WhatsAppSession
 from accounts.models import CustomUser
+from accounts.utils import calculate_distance
 from accounts.services import UserManagementService, try_activate_staff_on_inbound_message
 from timeclock.models import ClockEvent
 from scheduling.models import ShiftTask, AssignedShift, ShiftChecklistProgress
 from django.conf import settings as dj_settings
 from core.i18n import whatsapp_language_code
+
+
+def _is_likely_shared_static_location(loc, rest, lat, lon):
+    """
+    Detect if the location is a shared/pinned location (e.g. restaurant from map) rather than live GPS.
+    Staff can bypass by sharing the restaurant's location; we reject:
+    1. Locations with name/address - map pins have these, live location typically does not
+    2. Locations suspiciously close to restaurant (< 5m) - real GPS has 5-20m variance
+    """
+    if not loc or not rest:
+        return False, None
+    name = (loc.get('name') or '').strip()
+    address = (loc.get('address') or '').strip()
+    if name or address:
+        return True, "Please share your *live location* (tap Share Location, then choose 'Share live location' or send your current position). Do not share a pinned location from the map."
+    try:
+        dist = calculate_distance(float(lat), float(lon), float(rest.latitude or 0), float(rest.longitude or 0))
+        if dist < 2:
+            return True, "Your location appears to match the restaurant address exactly. Please share your *live location* from your current position—not a location from the map."
+    except (TypeError, ValueError):
+        pass
+    return False, None
 
 
 def _normalize_clock_in_intent(body):
@@ -851,16 +874,25 @@ def whatsapp_webhook(request):
         
         payload = request.data
 
-        # Forward the raw payload to Lua/Miya in a background thread
+        # Forward the raw payload to Lua/Miya in a background thread,
+        # but NOT if it contains image/location messages (Lua cannot
+        # download WhatsApp media — Django handles those directly).
         lua_url = getattr(dj_settings, 'LUA_WHATSAPP_WEBHOOK_URL', '')
+        _lua_skip_types = {'image', 'location'}
+        _has_media_msg = False
         if lua_url:
-            threading.Thread(
-                target=_forward_to_lua_whatsapp,
-                args=(payload,),
-                daemon=True
-            ).start()
-            # Lua/Miya handles the conversation — still process status updates below
-            # but skip direct message handling to avoid duplicate responses
+            for entry in payload.get('entry', []):
+                for change in entry.get('changes', []):
+                    for msg in change.get('value', {}).get('messages', []):
+                        if msg.get('type') in _lua_skip_types:
+                            _has_media_msg = True
+                            break
+            if not _has_media_msg:
+                threading.Thread(
+                    target=_forward_to_lua_whatsapp,
+                    args=(payload,),
+                    daemon=True
+                ).start()
 
         entries = payload.get('entry', [])
         
@@ -1497,13 +1529,13 @@ def whatsapp_webhook(request):
                         elif user and not session.context.get('awaiting_verification_for_task_id'):
                             image_obj_fb = msg.get('image') or {}
                             caption_fb = (image_obj_fb.get('caption') or '').strip()
-                            if caption_fb and infer_incident_type(caption_fb):
+                            if caption_fb:
                                 from staff.models_task import SafetyConcernReport
                                 from scheduling.models import AssignedShift
                                 media_id_fb = image_obj_fb.get('id')
                                 mime_type_fb = image_obj_fb.get('mime_type')
                                 now = timezone.now()
-                                incident_type_fb = infer_incident_type(caption_fb)
+                                incident_type_fb = infer_incident_type(caption_fb) or 'General'
                                 occurred_at_fb = now
                                 def _infer_shift_fb(u, when_dt):
                                     try:
@@ -1549,7 +1581,36 @@ def whatsapp_webhook(request):
                                     notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
                                     continue
                         else:
-                            notification_service.send_whatsapp_text(phone_digits, R(user, 'unrecognized'))
+                            image_obj_nc = msg.get('image') or {}
+                            media_id_nc = image_obj_nc.get('id')
+                            if user and media_id_nc:
+                                from staff.models_task import SafetyConcernReport
+                                now = timezone.now()
+                                try:
+                                    ticket_nc = SafetyConcernReport.objects.create(
+                                        restaurant=user.restaurant,
+                                        reporter=user,
+                                        is_anonymous=False,
+                                        incident_type='General',
+                                        title='General incident',
+                                        description='Incident reported with photo (no caption).',
+                                        severity='MEDIUM',
+                                        status='REPORTED',
+                                        occurred_at=now,
+                                    )
+                                    _attach_whatsapp_photo_to_incident(
+                                        notification_service, ticket_nc,
+                                        media_id_nc, image_obj_nc.get('mime_type'),
+                                    )
+                                    notification_service.send_whatsapp_text(
+                                        phone_digits,
+                                        R(user, 'incident_recorded', ticket_id=str(ticket_nc.id)[:8], incident_type='General', occurred_at=now.strftime('%Y-%m-%d %H:%M'))
+                                    )
+                                except Exception as e:
+                                    logger.exception("Failed to create incident from photo-only: %s", e)
+                                    notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
+                            else:
+                                notification_service.send_whatsapp_text(phone_digits, R(user, 'unrecognized'))
                             continue
 
                     # ------------------------------------------------------------------
@@ -1738,6 +1799,24 @@ def whatsapp_webhook(request):
                             notification_service.send_whatsapp_text(phone_digits, "You do not have a scheduled shift at this time.")
                             session.state = 'idle'
                             session.save(update_fields=['state'])
+                            continue
+
+                        # Live location validation: reject shared/pinned locations (bypass prevention)
+                        is_shared, reject_msg = _is_likely_shared_static_location(loc, rest, lat, lon)
+                        if is_shared and reject_msg:
+                            try:
+                                from accounts.models import AuditLog
+                                AuditLog.create_log(
+                                    restaurant=rest,
+                                    user=user,
+                                    action_type='OTHER',
+                                    entity_type='CLOCK_EVENT',
+                                    description='Clock-in attempt rejected: shared/pinned location (not live)',
+                                    new_values={'phone': phone_digits, 'lat': lat, 'lon': lon, 'has_name': bool(loc.get('name')), 'has_address': bool(loc.get('address'))},
+                                )
+                            except Exception:
+                                pass
+                            notification_service.send_whatsapp_text(phone_digits, reject_msg)
                             continue
 
                         # Geofence validation (Haversine via calculate_distance)

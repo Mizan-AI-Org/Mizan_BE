@@ -95,7 +95,23 @@ def agent_send_announcement(request):
             )
         whatsapp_sent = details.get("whatsapp_sent", count)
         recipients_without_phone = details.get("recipients_without_phone") or []
+        recipients_whatsapp_failed = details.get("recipients_whatsapp_failed") or []
         # When staff don't use the app, WhatsApp is the only way to reach them; surface when we couldn't send WhatsApp.
+        if recipients_whatsapp_failed:
+            names = [r.get("full_name") or r.get("id", "") for r in recipients_whatsapp_failed]
+            return Response(
+                {
+                    "success": False,
+                    "error": (
+                        f"Message sent in-app to {count} recipient(s), but WhatsApp delivery failed for: {', '.join(names)}. "
+                        "Please check that WhatsApp Business API is configured correctly (valid access token and phone number ID) in your dashboard settings."
+                    ),
+                    "notification_count": count,
+                    "whatsapp_sent": whatsapp_sent,
+                    "recipients_whatsapp_failed": recipients_whatsapp_failed,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if recipients_without_phone:
             names = [r.get("full_name") or r.get("id", "") for r in recipients_without_phone]
             message_text = (
@@ -657,8 +673,9 @@ def agent_checklist_respond(request):
 
     # All tasks answered — checklist complete
     prog.status = "COMPLETED"
+    prog.completed_at = timezone.now()
     prog.responses = responses
-    prog.save(update_fields=["status", "responses", "updated_at"])
+    prog.save(update_fields=["status", "completed_at", "responses", "updated_at"])
     yes_count = sum(1 for v in responses.values() if v == "yes")
     no_count = sum(1 for v in responses.values() if v == "no")
     na_count = sum(1 for v in responses.values() if v == "n_a")

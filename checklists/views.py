@@ -2,7 +2,7 @@
 API Views for Checklist Management System
 """
 from rest_framework import viewsets, status, permissions
-from rest_framework.decorators import action
+from rest_framework.decorators import action, api_view, permission_classes as perm_classes
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, JSONParser
 from django_filters.rest_framework import DjangoFilterBackend
@@ -36,7 +36,7 @@ from .services import (
 from accounts.permissions import IsAdminOrSuperAdmin, IsAdminOrManager
 from accounts.models import AuditLog, CustomUser
 from core.permissions import IsRestaurantOwnerOrManager
-from scheduling.models import ShiftTask
+from scheduling.models import ShiftTask, ShiftChecklistProgress, AssignedShift
 from scheduling.task_templates import TaskTemplate
 
 
@@ -585,7 +585,7 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def submitted(self, request):
-        """List completed submissions for managers of the current restaurant"""
+        """List completed submissions for managers: template checklists + Shift/WhatsApp checklists"""
         user = request.user
         restaurant = getattr(user, 'restaurant', None)
         if not restaurant:
@@ -596,34 +596,112 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
         if str(getattr(user, 'role', '')).upper() not in allowed_roles:
             return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
 
+        date_str = request.query_params.get('date')
+        submitted_by = request.query_params.get('submitted_by')
+        type_param = request.query_params.get('type')
+        page_size = int(request.query_params.get('page_size', 200))
+        page_size = min(max(page_size, 1), 500)
+
+        # 1. Template checklist executions (ChecklistExecution)
         qs = (
             ChecklistExecution.objects
             .filter(template__restaurant=restaurant, status='COMPLETED')
             .select_related('template', 'assigned_to', 'approved_by')
             .prefetch_related('step_responses__step', 'step_responses__evidence', 'actions')
         )
-
-        # Optional date filter
-        date_str = request.query_params.get('date')
         if date_str:
             try:
-                from datetime import datetime
-                target = datetime.fromisoformat(date_str)
                 from django.db.models.functions import TruncDate
+                target = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                 qs = qs.annotate(comp_date=TruncDate('completed_at')).filter(comp_date=target.date())
             except Exception:
                 pass
-
-        # Order newest completions first
+        if submitted_by:
+            qs = qs.filter(assigned_to_id=submitted_by)
+        if type_param:
+            qs = qs.filter(template__category=type_param)
         qs = qs.order_by('-completed_at', '-updated_at')
 
-        page = self.paginate_queryset(qs)
-        if page is not None:
-            serializer = ChecklistSubmissionListSerializer(page, many=True, context={'request': request})
-            return self.get_paginated_response(serializer.data)
+        exec_items = list(ChecklistSubmissionListSerializer(qs, many=True, context={'request': request}).data)
+        for item in exec_items:
+            item['source_type'] = 'execution'
 
-        serializer = ChecklistSubmissionListSerializer(qs, many=True, context={'request': request})
-        return Response(serializer.data)
+        # 2. Shift/WhatsApp checklists (ShiftChecklistProgress)
+        shift_qs = (
+            ShiftChecklistProgress.objects
+            .filter(shift__schedule__restaurant=restaurant, status='COMPLETED')
+            .select_related('shift', 'staff', 'approved_by')
+        )
+        if date_str:
+            try:
+                from django.db.models.functions import TruncDate
+                target = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+                shift_qs = shift_qs.annotate(comp_date=TruncDate('completed_at')).filter(comp_date=target.date())
+            except Exception:
+                pass
+        if submitted_by:
+            shift_qs = shift_qs.filter(staff_id=submitted_by)
+        shift_qs = shift_qs.order_by('-completed_at', '-updated_at')
+
+        shift_items = []
+        for prog in shift_qs:
+            task_ids = prog.task_ids or []
+            responses = prog.responses or {}
+            total_tasks = len(task_ids)
+            completed_tasks = sum(1 for tid in task_ids if tid in responses)
+            tasks_marked_no = [tid for tid in task_ids if responses.get(tid) == 'no']
+            staff_name = prog.staff.get_full_name() if prog.staff else (f"{getattr(prog.staff, 'first_name', '')} {getattr(prog.staff, 'last_name', '')}".strip() or str(prog.staff_id))
+            submitted_at = prog.completed_at or prog.updated_at
+            status_display = 'APPROVED' if prog.supervisor_approved else 'COMPLETED'
+            shift_items.append({
+                'id': str(prog.id),
+                'source_type': 'shift_progress',
+                'template': {
+                    'id': str(prog.shift_id) if prog.shift_id else None,
+                    'name': 'Shift Checklist (WhatsApp)',
+                    'description': f"Shift on {prog.shift.shift_date.isoformat()}" if prog.shift and prog.shift.shift_date else 'WhatsApp checklist',
+                    'category': prog.channel or 'whatsapp',
+                },
+                'submitted_by': {'id': str(prog.staff_id), 'name': staff_name},
+                'submitted_at': timezone.localtime(submitted_at).isoformat() if submitted_at else None,
+                'status': status_display,
+                'supervisor_approved': prog.supervisor_approved,
+                'approved_at': prog.approved_at.isoformat() if prog.approved_at else None,
+                'notes': prog.manager_notes,
+                'compiled_summary': {
+                    'total_steps': total_tasks,
+                    'completed_steps': completed_tasks,
+                    'completion_rate': int(round((completed_tasks / total_tasks) * 100)) if total_tasks else 0,
+                    'failed_steps': len(tasks_marked_no),
+                    'required_missing': 0,
+                    'out_of_range_measurements': 0,
+                    'actions_open': 0,
+                },
+                'analysis_results': {},
+            })
+            if prog.approved_by:
+                shift_items[-1]['approved_by_details'] = {
+                    'id': str(prog.approved_by.id),
+                    'name': prog.approved_by.get_full_name(),
+                }
+
+        # 3. Merge and sort by submitted_at descending
+        merged = exec_items + shift_items
+        merged.sort(key=lambda x: (x.get('submitted_at') or ''), reverse=True)
+
+        # 4. Paginate
+        page_num = int(request.query_params.get('page', 1))
+        page_num = max(1, page_num)
+        start = (page_num - 1) * page_size
+        end = start + page_size
+        page_data = merged[start:end]
+
+        return Response({
+            'count': len(merged),
+            'next': f'?page={page_num + 1}&page_size={page_size}' if end < len(merged) else None,
+            'previous': f'?page={page_num - 1}&page_size={page_size}' if page_num > 1 else None,
+            'results': page_data,
+        })
 
     @action(detail=True, methods=['post'])
     def manager_review(self, request, pk=None):
@@ -816,6 +894,106 @@ class ChecklistActionViewSet(viewsets.ModelViewSet):
         
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+
+
+@api_view(['GET'])
+@perm_classes([permissions.IsAuthenticated])
+def shift_checklist_detail(request, pk):
+    """Get shift checklist progress detail for manager view."""
+    user = request.user
+    allowed_roles = {'SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER'}
+    if str(getattr(user, 'role', '')).upper() not in allowed_roles:
+        return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        prog = ShiftChecklistProgress.objects.select_related('shift', 'staff', 'approved_by').get(
+            id=pk, shift__schedule__restaurant=user.restaurant
+        )
+    except ShiftChecklistProgress.DoesNotExist:
+        return Response({'error': 'Shift checklist not found'}, status=status.HTTP_404_NOT_FOUND)
+    task_ids = prog.task_ids or []
+    responses = prog.responses or {}
+    tasks_data = []
+    for tid in task_ids:
+        try:
+            task = ShiftTask.objects.get(id=tid)
+            tasks_data.append({
+                'id': str(task.id),
+                'title': task.title,
+                'description': task.description,
+                'response': responses.get(tid),
+                'status': 'COMPLETED' if tid in responses else 'PENDING',
+            })
+        except ShiftTask.DoesNotExist:
+            tasks_data.append({'id': tid, 'title': 'Unknown task', 'response': responses.get(tid), 'status': 'PENDING'})
+    return Response({
+        'id': str(prog.id),
+        'source_type': 'shift_progress',
+        'staff': {'id': str(prog.staff_id), 'name': prog.staff.get_full_name() if prog.staff else ''},
+        'submitted_at': prog.completed_at.isoformat() if prog.completed_at else prog.updated_at.isoformat(),
+        'status': prog.status,
+        'channel': prog.channel or 'whatsapp',
+        'manager_notes': prog.manager_notes,
+        'supervisor_approved': prog.supervisor_approved,
+        'approved_by': {'id': str(prog.approved_by.id), 'name': prog.approved_by.get_full_name()} if prog.approved_by else None,
+        'approved_at': prog.approved_at.isoformat() if prog.approved_at else None,
+        'shift': {
+            'id': str(prog.shift_id),
+            'shift_date': prog.shift.shift_date.isoformat() if prog.shift and prog.shift.shift_date else None,
+            'start_time': prog.shift.start_time.isoformat() if prog.shift and prog.shift.start_time else None,
+            'end_time': prog.shift.end_time.isoformat() if prog.shift and prog.shift.end_time else None,
+            'role': prog.shift.role if prog.shift else None,
+        } if prog.shift else None,
+        'step_responses': tasks_data,
+        'compiled_summary': {
+            'total_steps': len(task_ids),
+            'completed_steps': sum(1 for tid in task_ids if tid in responses),
+            'failed_steps': sum(1 for tid in task_ids if responses.get(tid) == 'no'),
+        },
+    })
+
+
+@api_view(['POST'])
+@perm_classes([permissions.IsAuthenticated])
+def shift_checklist_manager_review(request, pk):
+    """Manager approval/rejection and comments for shift checklist."""
+    user = request.user
+    allowed_roles = {'SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER'}
+    if str(getattr(user, 'role', '')).upper() not in allowed_roles:
+        return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+    try:
+        prog = ShiftChecklistProgress.objects.get(id=pk, shift__schedule__restaurant=user.restaurant)
+    except ShiftChecklistProgress.DoesNotExist:
+        return Response({'error': 'Shift checklist not found'}, status=status.HTTP_404_NOT_FOUND)
+    decision = str(request.data.get('decision', '')).upper()
+    notes = str(request.data.get('reason', request.data.get('notes', ''))).strip()
+    if decision not in {'APPROVED', 'REJECTED'}:
+        return Response({'error': 'Invalid decision. Use APPROVED or REJECTED'}, status=status.HTTP_400_BAD_REQUEST)
+    prog.manager_notes = notes or prog.manager_notes
+    prog.supervisor_approved = (decision == 'APPROVED')
+    prog.approved_by = user if decision == 'APPROVED' else None
+    prog.approved_at = timezone.now() if decision == 'APPROVED' else None
+    prog.save()
+    try:
+        AuditLog.create_log(
+            restaurant=user.restaurant,
+            user=user,
+            action_type='OTHER',
+            entity_type='ShiftChecklistProgress',
+            entity_id=str(prog.id),
+            description=f'Manager review: {decision}',
+            old_values={},
+            new_values={'decision': decision, 'notes': notes[:200] if notes else ''},
+            ip_address=request.META.get('REMOTE_ADDR', ''),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')
+        )
+    except Exception:
+        pass
+    return Response({
+        'success': True,
+        'review_status': decision,
+        'manager_notes': prog.manager_notes,
+        'approved_at': prog.approved_at.isoformat() if prog.approved_at else None,
+    })
 
 
 class ChecklistAnalyticsViewSet(viewsets.ViewSet):

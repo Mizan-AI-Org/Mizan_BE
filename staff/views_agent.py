@@ -161,13 +161,13 @@ def agent_ingest_staff_request(request):
     phone_raw = data.get('phone') or data.get('phoneNumber') or data.get('from')
     phone_digits = ''.join(filter(str.isdigit, str(phone_raw or '')))
 
-    staff_name = ''
+    staff_name = (data.get('staff_name') or data.get('name') or data.get('sender_name') or '').strip()
     staff_phone = phone_raw or ''
     if staff:
         try:
-            staff_name = staff.get_full_name() or f"{staff.first_name} {staff.last_name}".strip()
+            staff_name = staff_name or staff.get_full_name() or f"{staff.first_name} {staff.last_name}".strip()
         except Exception:
-            staff_name = f"{getattr(staff, 'first_name', '')} {getattr(staff, 'last_name', '')}".strip()
+            staff_name = staff_name or f"{getattr(staff, 'first_name', '')} {getattr(staff, 'last_name', '')}".strip()
         staff_phone = getattr(staff, 'phone', '') or staff_phone
     else:
         # Best-effort link by phone within restaurant
@@ -179,7 +179,7 @@ def agent_ingest_staff_request(request):
                     is_active=True
                 ).exclude(role='SUPER_ADMIN').first()
                 if staff:
-                    staff_name = staff.get_full_name() or f"{staff.first_name} {staff.last_name}".strip()
+                    staff_name = staff_name or staff.get_full_name() or f"{staff.first_name} {staff.last_name}".strip()
                     staff_phone = getattr(staff, 'phone', '') or staff_phone
             except Exception:
                 staff = None

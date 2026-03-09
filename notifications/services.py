@@ -50,14 +50,16 @@ def normalize_whatsapp_phone(phone: str) -> tuple[str, str | None]:
     Returns (normalized_phone, error_message).
     If error_message is not None, the phone is invalid.
     
+    Handles: +212..., 212..., 00212..., 0661234567 (local), 661234567, 212 66 12 34 56, etc.
+    
     Logic:
-      1. Strip to digits only.
-      2. Strip leading '0' (local format).
-      3. If result is 10-15 digits and starts with a known country code → use as-is (already international).
+      1. Strip to digits only (handles +, spaces, dashes, parentheses).
+      2. Strip leading '00' or '0' (international/local prefix).
+      3. If 10-15 digits and starts with a known country code → use as-is.
       4. Otherwise, prepend WHATSAPP_DEFAULT_COUNTRY_CODE if the number is short (local).
       5. Final check: must be 10-15 digits.
     """
-    if not phone:
+    if not phone or not str(phone).strip():
         return '', 'No phone number provided'
 
     digits = ''.join(filter(str.isdigit, str(phone)))
@@ -66,21 +68,27 @@ def normalize_whatsapp_phone(phone: str) -> tuple[str, str | None]:
     if digits.startswith('0'):
         digits = digits.lstrip('0')
 
+    if not digits:
+        return '', 'No phone number provided'
+
+    # Already international format (starts with known country code)
     if re.match(r'^\d{10,15}$', digits):
         for cc in sorted(KNOWN_COUNTRY_CODES, key=len, reverse=True):
             if digits.startswith(cc):
                 return digits, None
 
+    # Local format: prepend default country code
     default_cc = ''.join(filter(str.isdigit, str(getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '') or '')))
     if default_cc and re.match(r'^\d{5,14}$', digits):
         candidate = f'{default_cc}{digits}'
         if re.match(r'^\d{10,15}$', candidate):
             return candidate, None
 
+    # Fallback: 10-15 digits without known CC (e.g. US 10-digit) — accept
     if re.match(r'^\d{10,15}$', digits):
         return digits, None
 
-    return digits, f'Invalid phone format ({digits}). Ensure the number includes the country code (e.g. +212... or +220...).'
+    return digits, f'Invalid phone format. Use international format with country code (e.g. +212 661 234 567 or 212661234567).'
 
 
 class NotificationService:
@@ -703,27 +711,26 @@ class NotificationService:
     # ----------------------------------------------------------------------
 
     def _send_whatsapp_notification(self, data):
-        print(f"data for WhatsApp: {data}", flush=True, file=sys.stderr)
         try:
             from .models import NotificationLog
             recipient = data['recipient']
             phone = getattr(recipient, 'phone', None)
             title = data['title']
             message = data['message']
-            # phone = getattr(recipient, 'phone', None)
-            print(f"Recipient object: {recipient}", flush=True, file=sys.stderr)
             if not phone:
                 return False
-            print(f"Recipient phone: {phone}", flush=True, file=sys.stderr)
             token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
             phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
             
             if not token or not phone_id:
+                logger.warning("WhatsApp not configured: missing token or phone_id")
                 return False
 
-            phone_digits = ''.join(filter(str.isdigit, phone))
+            phone_digits, phone_err = normalize_whatsapp_phone(phone)
+            if phone_err:
+                logger.warning("WhatsApp _send_whatsapp_notification: %s (recipient=%s)", phone_err, getattr(recipient, 'id', '?'))
+                return False
             url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
-            print(f"WhatsApp URL: {url}", flush=True)
 
             # For general notifications, use plain text (templates are handled by dedicated methods)
             body = message or ""
@@ -737,13 +744,11 @@ class NotificationService:
                 "text": {"body": body}
             }
 
-            print(f"WhatsApp payload: {payload}", flush=True)
             resp = requests.post(
                 url,
                 headers={'Authorization': f"Bearer {token}"},
                 json=payload
             )
-            print(f"WhatsApp response: {resp.status_code} - {resp.text}", flush=True)
             ok = resp.status_code == 200
             external_id = None
             response_data = {}
@@ -771,8 +776,7 @@ class NotificationService:
             return ok
 
         except Exception as e:
-            logger.error(f"WhatsApp error: {e}")
-            print(f"WhatsApp exception: {e}", flush=True)
+            logger.error("WhatsApp error: %s", e)
             # Best-effort audit log
             try:
                 from .models import NotificationLog
@@ -1020,6 +1024,7 @@ class NotificationService:
             sent = 0
             whatsapp_sent = 0
             recipients_without_phone = []  # got in-app only (no WhatsApp) — so Miya can say "couldn't reach by WhatsApp"
+            recipients_whatsapp_failed = []  # has phone but WhatsApp delivery failed (token/config/API error)
             for recipient in recipients:
                 try:
                     notification = Notification.objects.create(
@@ -1043,14 +1048,23 @@ class NotificationService:
                     if ok:
                         sent += 1
                         channels_used = getattr(notification, "channels_sent", []) or []
+                        has_phone = bool((getattr(recipient, "phone", None) or "").strip())
                         if "whatsapp" in channels_used:
                             whatsapp_sent += 1
-                        elif "whatsapp" in channels and not (getattr(recipient, "phone", None) or "").strip():
-                            full_name = f"{(getattr(recipient, 'first_name') or '').strip()} {(getattr(recipient, 'last_name') or '').strip()}".strip() or str(recipient.id)
-                            recipients_without_phone.append({"id": str(recipient.id), "full_name": full_name})
+                        elif "whatsapp" in channels:
+                            if not has_phone:
+                                full_name = f"{(getattr(recipient, 'first_name') or '').strip()} {(getattr(recipient, 'last_name') or '').strip()}".strip() or str(recipient.id)
+                                recipients_without_phone.append({"id": str(recipient.id), "full_name": full_name})
+                            else:
+                                full_name = f"{(getattr(recipient, 'first_name') or '').strip()} {(getattr(recipient, 'last_name') or '').strip()}".strip() or str(recipient.id)
+                                recipients_whatsapp_failed.append({"id": str(recipient.id), "full_name": full_name})
                 except Exception as e:
                     logger.warning("Announcement send failed for %s: %s", recipient.id, e)
-            details = {"whatsapp_sent": whatsapp_sent, "recipients_without_phone": recipients_without_phone}
+            details = {
+                "whatsapp_sent": whatsapp_sent,
+                "recipients_without_phone": recipients_without_phone,
+                "recipients_whatsapp_failed": recipients_whatsapp_failed,
+            }
             return True, sent, None, details
         except Exception as e:
             logger.exception("send_announcement_to_audience failed: %s", e)

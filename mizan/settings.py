@@ -340,6 +340,9 @@ WHATSAPP_PHONE_NUMBER_ID = config('WHATSAPP_PHONE_NUMBER_ID', default='')
 WHATSAPP_API_VERSION = config('WHATSAPP_API_VERSION', default='v22.0')
 WHATSAPP_BUSINESS_ACCOUNT_ID = config('WHATSAPP_BUSINESS_ACCOUNT_ID', default='')
 WHATSAPP_VERIFY_TOKEN = config('WHATSAPP_VERIFY_TOKEN', default='')
+# Default country code for local phone numbers. Morocco (212) by default; override via env for other countries (e.g. 220 Gambia, 33 France).
+# Only used when staff phone lacks country code; numbers with valid country code are used as-is.
+WHATSAPP_DEFAULT_COUNTRY_CODE = config('WHATSAPP_DEFAULT_COUNTRY_CODE', default='212')
 # ONE-TAP activation: digits-only phone for wa.me link (e.g. 212784476751). Agent number for account activation.
 WHATSAPP_ACTIVATION_WA_PHONE = config('WHATSAPP_ACTIVATION_WA_PHONE', default='212784476751')
 WHATSAPP_INVITATION_FLOW_ID = config('WHATSAPP_INVITATION_FLOW_ID', default=None)
