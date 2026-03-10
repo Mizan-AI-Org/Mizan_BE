@@ -754,9 +754,32 @@ def agent_create_shift(request):
         
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
         payload = _agent_payload_from_request(request)
+        # Merge nested tool payloads so Lua/webhook can send args in body, metadata, input, or arguments
+        def _merged_source(*sources):
+            out = {}
+            for d in sources:
+                if not isinstance(d, dict):
+                    continue
+                for k, v in d.items():
+                    if v is None or v == '':
+                        continue
+                    if k in ('input', 'arguments', 'parameters') and isinstance(v, dict):
+                        for nk, nv in v.items():
+                            if nv is not None and nv != '':
+                                out.setdefault(nk, nv)
+                    else:
+                        out.setdefault(k, v)
+            return out
+        merged = _merged_source(data, payload, data.get('metadata') or {})
         def _get_val(d, *keys):
             for k in keys:
                 v = d.get(k)
+                if v is not None and v != '':
+                    return v[0] if isinstance(v, (list, tuple)) and v else v
+            return None
+        def _get_from_any(*keys):
+            for k in keys:
+                v = merged.get(k)
                 if v is not None and v != '':
                     return v[0] if isinstance(v, (list, tuple)) and v else v
             return None
@@ -774,20 +797,31 @@ def agent_create_shift(request):
                         if out:
                             return out
             return _normalize_uuid(str(val))
-        staff_id_raw = _get_val(data, 'staff_id', 'staffId') or _get_val(payload, 'staff_id', 'staffId')
+        staff_id_raw = _get_from_any('staff_id', 'staffId') or _get_val(data, 'staff_id', 'staffId') or _get_val(payload, 'staff_id', 'staffId')
         staff_id = _extract_uuid(staff_id_raw)
         # Accept staff_name (singular) or staff_names (plural) — agent often sends staff_names: ["Joshua"]
-        staff_name_raw = _get_val(data, 'staff_name', 'staffName') or _get_val(payload, 'staff_name', 'staffName')
+        staff_name_raw = _get_from_any('staff_name', 'staffName')
         if not staff_name_raw:
-            staff_names_arr = _get_val(data, 'staff_names', 'staffNames') or _get_val(payload, 'staff_names', 'staffNames')
+            staff_names_arr = _get_from_any('staff_names', 'staffNames')
             if isinstance(staff_names_arr, (list, tuple)) and staff_names_arr:
                 staff_name_raw = staff_names_arr[0]
             elif staff_names_arr and not isinstance(staff_names_arr, (list, tuple)):
                 staff_name_raw = staff_names_arr
-        staff_name = (staff_name_raw or "").strip() or None
-        shift_date_str = _get_val(data, 'shift_date', 'shiftDate') or _get_val(payload, 'shift_date', 'shiftDate')
-        start_time_str = _get_val(data, 'start_time', 'startTime') or _get_val(payload, 'start_time', 'startTime')
-        end_time_str = _get_val(data, 'end_time', 'endTime') or _get_val(payload, 'end_time', 'endTime')
+        if not staff_name_raw:
+            staff_name_raw = _get_val(data, 'staff_name', 'staffName') or _get_val(payload, 'staff_name', 'staffName')
+            if not staff_name_raw:
+                staff_names_arr = _get_val(data, 'staff_names', 'staffNames') or _get_val(payload, 'staff_names', 'staffNames')
+                if isinstance(staff_names_arr, (list, tuple)) and staff_names_arr:
+                    staff_name_raw = staff_names_arr[0]
+                elif staff_names_arr:
+                    staff_name_raw = staff_names_arr
+        if isinstance(staff_name_raw, dict):
+            staff_name = ((staff_name_raw.get('first_name') or '') + ' ' + (staff_name_raw.get('last_name') or '')).strip() or None
+        else:
+            staff_name = (staff_name_raw or "").strip() or None
+        shift_date_str = _get_from_any('shift_date', 'shiftDate') or _get_val(data, 'shift_date', 'shiftDate') or _get_val(payload, 'shift_date', 'shiftDate')
+        start_time_str = _get_from_any('start_time', 'startTime') or _get_val(data, 'start_time', 'startTime') or _get_val(payload, 'start_time', 'startTime')
+        end_time_str = _get_from_any('end_time', 'endTime') or _get_val(data, 'end_time', 'endTime') or _get_val(payload, 'end_time', 'endTime')
         
         logger.info(f"agent_create_shift input: staff_id={staff_id}, staff_name={staff_name}, date={shift_date_str}, start={start_time_str}, end={end_time_str}")
         

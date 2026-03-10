@@ -126,7 +126,8 @@ class ScheduleTaskSerializer(serializers.ModelSerializer):
 
 class SafetyConcernReportSerializer(serializers.ModelSerializer):
     reporter_details = CustomUserSerializer(source='reporter', read_only=True, required=False)
-    
+    assigned_to_details = CustomUserSerializer(source='assigned_to', read_only=True)
+
     class Meta:
         model = SafetyConcernReport
         fields = '__all__'
