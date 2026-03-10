@@ -468,6 +468,48 @@ class DashboardSummaryView(APIView):
                 )
             )
 
+        # Resolved incidents: keep on dashboard for visibility (recent 7 days)
+        seven_days_ago = now - timedelta(days=7)
+        resolved_safety = SafetyConcernReport.objects.filter(
+            restaurant=restaurant,
+            status__in=['ADDRESSED', 'RESOLVED', 'DISMISSED'],
+            updated_at__gte=seven_days_ago,
+        ).order_by('-resolved_at', '-updated_at')[:3]
+        for r in resolved_safety:
+            sev = str(r.severity).upper()
+            insights.append(
+                _build_insight(
+                    insight_id=f"safety_resolved:{r.id}",
+                    level="RESOLVED",
+                    category="incidents_resolved",
+                    urgency=50,
+                    summary=f"Resolved: {r.title}",
+                    recommended_action="View details in Checklists & Incidents.",
+                    impacted={"incident_id": str(r.id), "location": r.location, "severity": sev},
+                    action_url="/dashboard/analytics",
+                )
+            )
+
+        resolved_incidents = Incident.objects.filter(
+            restaurant=restaurant,
+            status__in=['RESOLVED', 'CLOSED'],
+            updated_at__gte=seven_days_ago,
+        ).order_by('-resolved_at', '-updated_at')[:3]
+        for r in resolved_incidents:
+            sev = str(r.priority).upper()
+            insights.append(
+                _build_insight(
+                    insight_id=f"incident_resolved:{r.id}",
+                    level="RESOLVED",
+                    category="incidents_resolved",
+                    urgency=45,
+                    summary=f"Resolved: {r.title}",
+                    recommended_action="View details in Checklists & Incidents.",
+                    impacted={"incident_id": str(r.id), "category": r.category, "priority": sev},
+                    action_url="/dashboard/analytics",
+                )
+            )
+
         # Compliance: clock-in missing geolocation
         bad_geo = []
         for sid, ev in clockin_by_staff.items():
@@ -555,7 +597,7 @@ class DashboardSummaryView(APIView):
 
         # Sort insights by urgency and return only top items to avoid overwhelming
         insights.sort(key=lambda x: int(x.get("urgency") or 0), reverse=True)
-        insights_top = insights[:5]
+        insights_top = insights[:8]
         counts_by_level = {}
         for it in insights:
             lvl = str(it.get("level") or "OTHER").upper()

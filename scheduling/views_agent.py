@@ -1093,9 +1093,15 @@ def agent_create_shift(request):
         logger.warning("Agent create shift validation error: %s", ve)
         msgs = ve.messages if hasattr(ve, 'messages') else [str(ve)]
         err_text = '; '.join(msgs)
+        # Include field name when present (Django ValidationError can have message_dict)
+        field_hint = ''
+        if hasattr(ve, 'message_dict') and ve.message_dict:
+            fields = list(ve.message_dict.keys())
+            if fields:
+                field_hint = f" (field(s): {', '.join(str(f) for f in fields)})"
         # Improve cryptic UUID/FK errors while preserving real ones (like overlaps)
         if 'not a valid UUID' in err_text:
-            err_text = f"Invalid ID format in database field (check staff/restaurant IDs). Original error: {err_text}"
+            err_text = f"Invalid ID format in database field{field_hint}. Check that staff_id and restaurant_id are valid UUIDs from the staff list and dashboard. Original error: {err_text}"
         
         return Response({
             'success': False,
