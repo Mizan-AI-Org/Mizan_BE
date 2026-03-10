@@ -810,7 +810,8 @@ def agent_create_shift(request):
             from .schedule_photo_views import _match_employee_name_to_staff
             staff = _match_employee_name_to_staff(staff_name, restaurant, for_agent=True)
             logger.info(f"agent_create_shift: matched staff_name='{staff_name}' to staff={staff}")
-        if not staff:            if staff_name:
+        if not staff:
+            if staff_name:
                 return Response({
                     'success': False,
                     'error': f'No staff member found matching "{staff_name}". Ensure the name exists in your staff list.'
