@@ -433,6 +433,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "scheduling.tasks.auto_clock_out_after_shift_end",
         "schedule": crontab(minute='*'),  # Every minute so staff are clocked out immediately when shift ends
     },
+    "sync_pos_orders_hourly": {
+        "task": "pos.tasks.sync_orders_for_connected_pos_restaurants",
+        "schedule": crontab(minute=0),  # Every hour: pull orders for all connected POS
+    },
 }
 
 

@@ -46,6 +46,11 @@ class BasePOSIntegration(ABC):
         """Process payment through external POS"""
         pass
 
+    def get_item_sales_for_date_range(self, start_date, end_date) -> Dict:
+        """Fetch item-level sales from POS for prep list forecasting.
+        Returns {date: {item_name: quantity}}. Override in providers that support it."""
+        return {}
+
 
 class ToastIntegration(BasePOSIntegration):
     """Toast POS Integration"""
@@ -318,7 +323,51 @@ class SquareIntegration(BasePOSIntegration):
         body = {'query': query} if query else {}
         response = self._request("POST", "/orders/search", json=body)
         return (response.json() or {}).get('orders', [])
-    
+
+    def get_item_sales_for_date_range(self, start_date, end_date) -> Dict:
+        """Fetch item-level sales from Square for prep list forecasting.
+        Returns {date: {item_name: quantity}}."""
+        from django.utils.dateparse import parse_datetime
+        location_id = self.location_id or self.merchant_id
+        if not location_id:
+            return {}
+        query = {
+            'filter': {
+                'date_time_filter': {
+                    'created_at': {
+                        'start_at': start_date.isoformat() + 'T00:00:00Z',
+                        'end_at': end_date.isoformat() + 'T23:59:59Z',
+                    }
+                }
+            },
+            'sort': {'sort_field': 'CREATED_AT', 'sort_order': 'DESC'},
+        }
+        body = {'location_ids': [location_id], 'query': query, 'limit': 500}
+        result = {}
+        try:
+            resp = self._request("POST", "/orders/search", json=body)
+            data = resp.json() if hasattr(resp, 'json') else {}
+        except Exception:
+            return {}
+        for order in (data.get('orders') or []):
+            created_at = order.get('created_at')
+            order_date = timezone.now().date()
+            if created_at:
+                dt = parse_datetime(str(created_at))
+                if dt:
+                    order_date = dt.date() if hasattr(dt, 'date') else timezone.now().date()
+            if order_date < start_date or order_date > end_date:
+                continue
+            if order_date not in result:
+                result[order_date] = {}
+            for li in (order.get('line_items') or []):
+                name = (li.get('name') or '').strip()
+                if not name:
+                    continue
+                qty = float(li.get('quantity', 1) or 1)
+                result[order_date][name] = result[order_date].get(name, 0) + qty
+        return result
+
     def create_order(self, order: Order) -> Dict:
         """Push order to Square"""
         location_id = self.location_id or self.merchant_id
@@ -565,6 +614,40 @@ class CustomAPIIntegration(BasePOSIntegration):
             dt = timezone.make_aware(dt)
         return dt
 
+    def get_item_sales_for_date_range(self, start_date, end_date) -> Dict:
+        """Fetch item-level sales from Custom API for prep list forecasting.
+        Returns {date: {item_name: quantity}}."""
+        params = {
+            'start_date': start_date.isoformat(),
+            'end_date': end_date.isoformat(),
+        }
+        try:
+            resp = self._request('GET', '/orders', params=params)
+            data = resp.json() if resp.content else {}
+        except Exception:
+            return {}
+        raw_orders = data.get('orders') or data.get('data') or data.get('results') or []
+        if not isinstance(raw_orders, list):
+            raw_orders = []
+        result = {}
+        for raw in raw_orders:
+            raw_status = str(self._pick(raw, 'status', default='COMPLETED')).lower()
+            if raw_status in ('cancelled', 'void'):
+                continue
+            order_time = self._parse_order_time(self._pick(raw, 'created_at', 'order_time', 'date', 'timestamp'))
+            order_date = order_time.date() if order_time else timezone.now().date()
+            if order_date < start_date or order_date > end_date:
+                continue
+            if order_date not in result:
+                result[order_date] = {}
+            for li in (self._pick(raw, 'items', 'line_items', 'order_items', default=[]) or []):
+                name = str(self._pick(li, 'name', 'menu_item', 'item_name', 'product', default='')).strip()
+                if not name:
+                    continue
+                qty = float(self._pick(li, 'quantity', 'qty', default=1))
+                result[order_date][name] = result[order_date].get(name, 0) + qty
+        return result
+
     def sync_orders(self, start_date=None, end_date=None) -> List[Dict]:
         """Fetch orders from the external Custom API and persist them into Mizan's Order model."""
         import logging
@@ -674,6 +757,89 @@ class CustomAPIIntegration(BasePOSIntegration):
         return {'success': False, 'error': 'Payment processing not supported for custom API'}
 
 
+class LightSpeedIntegration(BasePOSIntegration):
+    """Lightspeed Restaurant K-Series API integration (api.trial.lsk.lightspeed.app)."""
+
+    def _base_url(self) -> str:
+        return getattr(settings, 'LIGHTSPEED_API_BASE', '').rstrip('/') or 'https://api.trial.lsk.lightspeed.app'
+
+    def _business_location_id(self) -> str:
+        return (self.restaurant.pos_merchant_id or '').strip()
+
+    def _headers(self) -> Dict[str, str]:
+        api_key = (self.restaurant.pos_api_key or '').strip()
+        return {
+            'Authorization': f'Bearer {api_key}',
+            'Accept': 'application/json',
+        }
+
+    def _request(self, method: str, path: str, *, params=None, timeout=20):
+        url = f"{self._base_url()}{path}"
+        resp = requests.request(method, url, headers=self._headers(), params=params, timeout=timeout)
+        if resp.status_code == 401:
+            try:
+                self.restaurant.pos_is_connected = False
+                self.restaurant.save(update_fields=['pos_is_connected'])
+            except Exception:
+                pass
+        resp.raise_for_status()
+        return resp.json() if resp.content else {}
+
+    def sync_menu_items(self) -> Dict:
+        return {'success': False, 'error': 'Lightspeed menu sync not implemented yet'}
+
+    def sync_orders(self, start_date=None, end_date=None) -> List[Dict]:
+        bl_id = self._business_location_id()
+        if not bl_id:
+            return []
+        from_str = (start_date or timezone.now().date()).isoformat() + 'T00:00:00Z'
+        to_str = (end_date or timezone.now().date()).isoformat() + 'T23:59:59Z'
+        data = self._request('GET', f'/f/v2/business-location/{bl_id}/sales', params={'from': from_str, 'to': to_str, 'include': 'payments'})
+        return data.get('sales', [])
+
+    def get_item_sales_for_date_range(self, start_date, end_date) -> Dict:
+        """Fetch item-level sales from Lightspeed for prep list forecasting.
+        Returns {date: {item_name: quantity}}."""
+        from django.utils.dateparse import parse_datetime
+        bl_id = self._business_location_id()
+        if not bl_id:
+            return {}
+        from_str = start_date.isoformat() + 'T00:00:00Z'
+        to_str = end_date.isoformat() + 'T23:59:59Z'
+        try:
+            data = self._request('GET', f'/f/v2/business-location/{bl_id}/sales', params={'from': from_str, 'to': to_str, 'include': 'payments'})
+        except Exception:
+            return {}
+        sales = data.get('sales', [])
+        result = {}
+        for sale in sales:
+            if sale.get('cancelled'):
+                continue
+            time_closed = sale.get('timeClosed') or sale.get('timeOfOpening')
+            sale_date = None
+            if time_closed:
+                dt = parse_datetime(str(time_closed))
+                if dt:
+                    sale_date = dt.date() if hasattr(dt, 'date') else timezone.now().date()
+            if not sale_date or sale_date < start_date or sale_date > end_date:
+                sale_date = timezone.now().date()
+            if sale_date not in result:
+                result[sale_date] = {}
+            for line in sale.get('salesLines', []):
+                name = (line.get('nameOverride') or line.get('name') or '').strip()
+                if not name:
+                    continue
+                qty = float(line.get('quantity', 1) or 1)
+                result[sale_date][name] = result[sale_date].get(name, 0) + qty
+        return result
+
+    def create_order(self, order: Order) -> Dict:
+        return {'success': False, 'error': 'Lightspeed create order not implemented'}
+
+    def process_payment(self, payment: Payment) -> Dict:
+        return {'success': False, 'error': 'Lightspeed process payment not implemented'}
+
+
 class IntegrationManager:
     """Main manager for handling POS integrations"""
     
@@ -682,6 +848,7 @@ class IntegrationManager:
         'SQUARE': SquareIntegration,
         'CLOVER': CloverIntegration,
         'CUSTOM': CustomAPIIntegration,
+        'LIGHTSPEED': LightSpeedIntegration,
     }
     
     @classmethod
@@ -748,14 +915,20 @@ class IntegrationManager:
 
     @classmethod
     def get_daily_sales_summary(cls, restaurant, date=None) -> Dict:
-        """Aggregate daily sales from Mizan POS orders (tenant-isolated by restaurant FK)."""
+        """Aggregate daily sales from Mizan POS orders (tenant-isolated by restaurant FK).
+        For LightSpeed, fetches directly from the K-Series API."""
         from django.db.models import Sum, Count, Avg
-        from decimal import Decimal
 
-        if not restaurant.pos_is_connected and restaurant.pos_provider != 'NONE':
+        provider = (restaurant.pos_provider or '').strip().upper()
+        if provider in ('NONE', '') or not restaurant.pos_is_connected:
             return {'success': True, 'connected': False, 'error': 'POS not connected. Connect your POS in Settings.'}
 
         target_date = date or timezone.now().date()
+
+        # LightSpeed: fetch directly from K-Series API
+        if provider == 'LIGHTSPEED':
+            return cls._get_lightspeed_daily_sales(restaurant, target_date)
+
         day_start = timezone.make_aware(timezone.datetime.combine(target_date, timezone.datetime.min.time()))
         day_end = timezone.make_aware(timezone.datetime.combine(target_date, timezone.datetime.max.time()))
 
@@ -805,10 +978,97 @@ class IntegrationManager:
         }
 
     @classmethod
-    def get_top_selling_items(cls, restaurant, days=7, limit=10) -> Dict:
-        """Top-selling menu items over a period (tenant-isolated)."""
-        from django.db.models import Sum, Count
+    def _get_lightspeed_daily_sales(cls, restaurant, target_date) -> Dict:
+        """Fetch daily sales from Lightspeed K-Series API."""
+        api_base = getattr(settings, 'LIGHTSPEED_API_BASE', '').rstrip('/') or 'https://api.trial.lsk.lightspeed.app'
+        bl_id = (restaurant.pos_merchant_id or '').strip()
+        api_key = (restaurant.pos_api_key or '').strip()
+        if not bl_id or not api_key:
+            return {'success': True, 'connected': False, 'error': 'Lightspeed Business Location ID and API key required. Configure in Settings.'}
+        from_str = target_date.isoformat() + 'T00:00:00Z'
+        to_str = target_date.isoformat() + 'T23:59:59Z'
+        try:
+            headers = {'Authorization': f'Bearer {api_key}', 'Accept': 'application/json'}
+            url = f'{api_base}/f/v2/business-location/{bl_id}/sales'
+            resp = requests.get(url, headers=headers, params={'from': from_str, 'to': to_str, 'include': 'payments'}, timeout=20)
+            if resp.status_code == 401:
+                try:
+                    restaurant.pos_is_connected = False
+                    restaurant.save(update_fields=['pos_is_connected'])
+                except Exception:
+                    pass
+                return {'success': True, 'connected': False, 'error': 'Lightspeed API token invalid or expired. Reconnect in Settings.'}
+            resp.raise_for_status()
+            data = resp.json() if resp.content else {}
+        except requests.RequestException as e:
+            return {'success': True, 'connected': True, 'error': f'Lightspeed API error: {e}', 'total_sales': 0, 'order_count': 0, 'avg_ticket': 0, 'currency': restaurant.currency or 'USD'}
+        sales = data.get('sales', [])
+        total_sales = 0.0
+        total_tax = 0.0
+        total_discount = 0.0
+        cash_total = 0.0
+        card_total = 0.0
+        tips_total = 0.0
+        for sale in sales:
+            if sale.get('cancelled'):
+                continue
+            for line in sale.get('salesLines', []):
+                total_sales += float(line.get('totalNetAmountWithTax', 0) or line.get('totalNetAmountWithoutTax', 0) or 0)
+                total_tax += float(line.get('taxAmount', 0) or 0)
+                total_discount += float(line.get('totalDiscountAmount', 0) or line.get('discountAmount', 0) or 0)
+            for pmt in sale.get('payments', []):
+                amt = float(pmt.get('netAmountWithTax', 0) or 0)
+                code = (pmt.get('code') or '').upper()
+                if 'CASH' in code:
+                    cash_total += amt
+                else:
+                    card_total += amt
+                tips_total += float(pmt.get('tip', 0) or 0)
+        order_count = len([s for s in sales if not s.get('cancelled')])
+        avg_ticket = total_sales / order_count if order_count else 0
+        return {
+            'success': True,
+            'connected': True,
+            'date': target_date.isoformat(),
+            'total_sales': round(total_sales, 2),
+            'order_count': order_count,
+            'avg_ticket': round(avg_ticket, 2),
+            'total_tax': round(total_tax, 2),
+            'total_discount': round(total_discount, 2),
+            'tips': round(tips_total, 2),
+            'cash_total': round(cash_total, 2),
+            'card_total': round(card_total, 2),
+            'by_order_type': {},
+            'currency': restaurant.currency or 'USD',
+        }
 
+    @classmethod
+    def get_top_selling_items(cls, restaurant, days=7, limit=10) -> Dict:
+        """Top-selling items over a period. Uses POS sales data when connected; no DB orders required."""
+        provider = (restaurant.pos_provider or '').strip().upper()
+        if provider not in ('NONE', '') and restaurant.pos_is_connected:
+            integration = cls.get_integration(restaurant)
+            if integration:
+                end_date = timezone.now().date()
+                start_date = end_date - timedelta(days=days)
+                pos_sales = integration.get_item_sales_for_date_range(start_date, end_date)
+                item_totals = {}
+                for day_data in pos_sales.values():
+                    for name, qty in day_data.items():
+                        if not name:
+                            continue
+                        item_totals[name] = item_totals.get(name, 0) + qty
+                sorted_items = sorted(item_totals.items(), key=lambda x: -x[1])[:limit]
+                return {
+                    'success': True,
+                    'days': days,
+                    'items': [
+                        {'item_id': name, 'name': name, 'quantity': int(qty), 'revenue': 0, 'order_count': 0}
+                        for name, qty in sorted_items
+                    ],
+                }
+
+        from django.db.models import Sum, Count
         cutoff = timezone.now() - timedelta(days=days)
         items = (
             OrderLineItem.objects.filter(
@@ -824,7 +1084,6 @@ class IntegrationManager:
             )
             .order_by('-quantity')[:limit]
         )
-
         return {
             'success': True,
             'days': days,
@@ -841,59 +1100,100 @@ class IntegrationManager:
         }
 
     @classmethod
+    def _get_pos_period_stats(cls, restaurant, start_date, end_date) -> Dict:
+        """Aggregate sales for a date range from POS. Returns {total, count, avg_ticket}."""
+        provider = (restaurant.pos_provider or '').strip().upper()
+        if provider in ('NONE', '') or not restaurant.pos_is_connected:
+            return None
+        total_sales = 0.0
+        order_count = 0
+        for d in range((end_date - start_date).days + 1):
+            day = start_date + timedelta(days=d)
+            summary = cls.get_daily_sales_summary(restaurant, day)
+            if summary.get('connected'):
+                total_sales += float(summary.get('total_sales', 0) or 0)
+                order_count += int(summary.get('order_count', 0) or 0)
+        return {
+            'total': total_sales,
+            'count': order_count,
+            'avg_ticket': total_sales / order_count if order_count else 0,
+        }
+
+    @classmethod
     def get_sales_analysis(cls, restaurant, days=7) -> Dict:
-        """Sales analysis with trends, comparisons, and actionable recommendations."""
+        """Sales analysis with trends, comparisons, and actionable recommendations.
+        Uses POS data when connected; no DB orders required."""
         from django.db.models import Sum, Count, Avg
 
         now = timezone.now()
         period_start = now - timedelta(days=days)
         prev_start = period_start - timedelta(days=days)
+        today = now.date()
 
-        def _period_stats(start, end):
-            orders = Order.objects.filter(
-                restaurant=restaurant,
-                order_time__range=(start, end),
-                status__in=['COMPLETED', 'SERVED'],
-            )
-            agg = orders.aggregate(
-                total=Sum('total_amount'), count=Count('id'), avg=Avg('total_amount'),
-            )
-            return {
-                'total': float(agg['total'] or 0),
-                'count': agg['count'] or 0,
-                'avg_ticket': float(agg['avg'] or 0),
-            }
+        pos_current = cls._get_pos_period_stats(restaurant, period_start.date(), today)
+        pos_previous = cls._get_pos_period_stats(restaurant, prev_start.date(), period_start.date() - timedelta(days=1))
 
-        current = _period_stats(period_start, now)
-        previous = _period_stats(prev_start, period_start)
+        if pos_current is not None and pos_previous is not None:
+            current = {'total': pos_current['total'], 'count': pos_current['count'], 'avg_ticket': round(pos_current['avg_ticket'], 2)}
+            previous = {'total': pos_previous['total'], 'count': pos_previous['count'], 'avg_ticket': round(pos_previous['avg_ticket'], 2)}
+        else:
+            def _period_stats(start, end):
+                orders = Order.objects.filter(
+                    restaurant=restaurant,
+                    order_time__range=(start, end),
+                    status__in=['COMPLETED', 'SERVED'],
+                )
+                agg = orders.aggregate(
+                    total=Sum('total_amount'), count=Count('id'), avg=Avg('total_amount'),
+                )
+                return {
+                    'total': float(agg['total'] or 0),
+                    'count': agg['count'] or 0,
+                    'avg_ticket': float(agg['avg'] or 0),
+                }
+            current = _period_stats(period_start, now)
+            previous = _period_stats(prev_start, period_start)
 
         revenue_change = 0
         if previous['total'] > 0:
             revenue_change = round(((current['total'] - previous['total']) / previous['total']) * 100, 1)
 
         top = cls.get_top_selling_items(restaurant, days, 5)
-        slow = (
-            OrderLineItem.objects.filter(
-                order__restaurant=restaurant,
-                order__order_time__gte=period_start,
-                order__status__in=['COMPLETED', 'SERVED'],
+        slow_items = []
+        if pos_current is not None:
+            integration = cls.get_integration(restaurant)
+            if integration:
+                pos_sales = integration.get_item_sales_for_date_range(period_start.date(), today)
+                item_totals = {}
+                for day_data in pos_sales.values():
+                    for name, qty in day_data.items():
+                        if not name:
+                            continue
+                        item_totals[name] = item_totals.get(name, 0) + qty
+                slow_items = [{'name': n, 'quantity': int(q)} for n, q in sorted(item_totals.items(), key=lambda x: x[1])[:5]]
+        if not slow_items:
+            slow = (
+                OrderLineItem.objects.filter(
+                    order__restaurant=restaurant,
+                    order__order_time__gte=period_start,
+                    order__status__in=['COMPLETED', 'SERVED'],
+                )
+                .values('menu_item__name')
+                .annotate(qty=Sum('quantity'))
+                .order_by('qty')[:5]
             )
-            .values('menu_item__name')
-            .annotate(qty=Sum('quantity'))
-            .order_by('qty')[:5]
-        )
+            slow_items = [{'name': s['menu_item__name'], 'quantity': s['qty']} for s in slow]
 
         recommendations = []
         if revenue_change < -10:
             recommendations.append(f"Revenue dropped {abs(revenue_change)}% vs previous {days} days. Consider running a promotion or daily special.")
-        if current['avg_ticket'] > 0 and current['avg_ticket'] < previous['avg_ticket'] * 0.9:
+        if current['avg_ticket'] > 0 and previous['avg_ticket'] > 0 and current['avg_ticket'] < previous['avg_ticket'] * 0.9:
             recommendations.append("Average ticket size is declining. Train servers on upselling (appetizers, desserts, drinks).")
         if top.get('items'):
             best = top['items'][0]
             recommendations.append(f"Your top seller is {best['name']} ({best['quantity']} sold). Ensure you're always stocked and consider a combo deal around it.")
-        slow_items = list(slow)
         if slow_items:
-            names = ', '.join([s['menu_item__name'] for s in slow_items[:3]])
+            names = ', '.join([s['name'] for s in slow_items[:3]])
             recommendations.append(f"Slowest items: {names}. Consider refreshing, repricing, or rotating them off the menu.")
         if not recommendations:
             recommendations.append("Sales are healthy. Keep up the good work!")
@@ -905,47 +1205,143 @@ class IntegrationManager:
             'previous': previous,
             'revenue_change_pct': revenue_change,
             'top_items': top.get('items', []),
-            'slow_items': [{'name': s['menu_item__name'], 'quantity': s['qty']} for s in slow_items],
+            'slow_items': slow_items,
             'recommendations': recommendations,
             'currency': restaurant.currency or 'MAD',
         }
 
     @classmethod
-    def generate_prep_list(cls, restaurant, target_date=None) -> Dict:
-        """Generate a daily prep list based on recent sales averages, recipes, and inventory.
-        Uses same-day-of-week sales from last 4 weeks as the forecast base."""
-        from django.db.models import Sum, Avg
+    def generate_prep_list(cls, restaurant, target_date=None, target_start_date=None, target_end_date=None) -> Dict:
+        """Generate a prep list based on POS sales history, recipes, and inventory.
+        Uses same-day-of-week sales from last 4 weeks (fetched from POS) as the forecast base.
+        Supports single date (target_date) or date range (target_start_date, target_end_date).
+        Does NOT use OrderLineItem — all sales data comes from the connected POS."""
         from menu.models import RecipeIngredient
         from inventory.models import InventoryItem
 
-        target = target_date or (timezone.now().date() + timedelta(days=1))
+        if target_start_date and target_end_date:
+            target_dates = []
+            d = target_start_date
+            while d <= target_end_date:
+                target_dates.append(d)
+                d = d + timedelta(days=1)
+            target = target_dates[0]
+        else:
+            target = target_date or (timezone.now().date() + timedelta(days=1))
+            target_dates = [target]
         dow = target.weekday()
 
-        lookback_dates = [target - timedelta(weeks=w) for w in range(1, 5)]
+        provider = (restaurant.pos_provider or '').strip().upper()
+        if provider in ('NONE', '') or not restaurant.pos_is_connected:
+            day_of_week = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][dow]
+            if len(target_dates) > 1:
+                day_of_week = f"{day_of_week} – {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][target_dates[-1].weekday()]}"
+            return {
+                'success': True,
+                'target_date': target.isoformat(),
+                'target_end_date': target_dates[-1].isoformat() if len(target_dates) > 1 else None,
+                'day_of_week': day_of_week,
+                'forecast_portions': [],
+                'ingredient_prep_list': [],
+                'shortages': [],
+                'message_for_user': 'Connect your POS in Settings to generate a data-driven prep list.',
+                'miya_recommendation': cls._build_prep_list_miya_recommendation(target, [], [], [], {}, target_dates),
+            }
 
-        item_avg = (
-            OrderLineItem.objects.filter(
-                order__restaurant=restaurant,
-                order__order_time__date__in=lookback_dates,
-                order__status__in=['COMPLETED', 'SERVED'],
-            )
-            .values('menu_item__id', 'menu_item__name')
-            .annotate(avg_qty=Avg('quantity'), total_qty=Sum('quantity'))
-            .order_by('-avg_qty')
-        )
+        all_lookback = []
+        for t in target_dates:
+            all_lookback.extend([t - timedelta(weeks=w) for w in range(1, 5)])
+        start_date = min(all_lookback)
+        end_date = max(all_lookback)
+
+        integration = cls.get_integration(restaurant)
+        if not integration:
+            day_of_week = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][dow]
+            if len(target_dates) > 1:
+                day_of_week = f"{day_of_week} – {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][target_dates[-1].weekday()]}"
+            return {
+                'success': True,
+                'target_date': target.isoformat(),
+                'target_end_date': target_dates[-1].isoformat() if len(target_dates) > 1 else None,
+                'day_of_week': day_of_week,
+                'forecast_portions': [],
+                'ingredient_prep_list': [],
+                'shortages': [],
+                'message_for_user': 'No POS integration configured. Connect your POS in Settings.',
+                'miya_recommendation': cls._build_prep_list_miya_recommendation(target, [], [], [], {}, target_dates),
+            }
+
+        pos_sales_by_date = integration.get_item_sales_for_date_range(start_date, end_date)
+        if not pos_sales_by_date:
+            day_of_week = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][dow]
+            if len(target_dates) > 1:
+                day_of_week = f"{day_of_week} – {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][target_dates[-1].weekday()]}"
+            return {
+                'success': True,
+                'target_date': target.isoformat(),
+                'target_end_date': target_dates[-1].isoformat() if len(target_dates) > 1 else None,
+                'day_of_week': day_of_week,
+                'forecast_portions': [],
+                'ingredient_prep_list': [],
+                'shortages': [],
+                'message_for_user': 'No sales history found for this day of week from your POS. Ensure your POS has sales data for the last 4 weeks.',
+                'miya_recommendation': cls._build_prep_list_miya_recommendation(target, [], [], [], {}, target_dates),
+            }
+
+        item_totals_by_name = {}
+        for t in target_dates:
+            lookback_dates = [t - timedelta(weeks=w) for w in range(1, 5)]
+            for lb_date in lookback_dates:
+                day_data = pos_sales_by_date.get(lb_date, {})
+                for item_name, qty in day_data.items():
+                    if not item_name:
+                        continue
+                    item_totals_by_name[item_name] = item_totals_by_name.get(item_name, 0) + qty
+
+        n_dates = len([d for d in all_lookback if d in pos_sales_by_date]) or 1
+        item_avg = [(name, total / n_dates) for name, total in item_totals_by_name.items() if total > 0]
+        item_avg.sort(key=lambda x: -x[1])
 
         prep_items = []
         ingredient_totals = {}
 
-        for row in item_avg:
-            forecast_qty = round(float(row['avg_qty'] or 0) * 1.1, 1)
+        for item_name, avg_qty in item_avg:
+            forecast_qty = round(float(avg_qty) * 1.1, 1)
             prep_items.append({
-                'menu_item': row['menu_item__name'],
+                'menu_item': item_name,
                 'forecast_portions': forecast_qty,
             })
 
+            menu_item = MenuItem.objects.filter(
+                restaurant=restaurant,
+                name__iexact=item_name,
+                is_active=True,
+            ).first()
+            if not menu_item:
+                menu_item = MenuItem.objects.filter(
+                    restaurant=restaurant,
+                    name__icontains=item_name,
+                    is_active=True,
+                ).first()
+            if not menu_item:
+                try:
+                    menu_item = MenuItem.objects.create(
+                        restaurant=restaurant,
+                        name=item_name,
+                        price=0,
+                        external_provider=provider or 'POS',
+                        external_id=f'pos-{uuid.uuid4().hex[:8]}',
+                    )
+                except Exception:
+                    menu_item = MenuItem.objects.filter(
+                        restaurant=restaurant,
+                        name__iexact=item_name,
+                    ).first()
+            if not menu_item:
+                continue
+
             recipe_ings = RecipeIngredient.objects.filter(
-                recipe__menu_item__id=row['menu_item__id'],
+                recipe__menu_item__id=menu_item.id,
             ).select_related('ingredient')
 
             for ri in recipe_ings:
@@ -959,7 +1355,7 @@ class IntegrationManager:
                     ).first()
                     ingredient_totals[ing_name] = {
                         'needed': qty_needed,
-                        'unit': ri.ingredient.unit if hasattr(ri.ingredient, 'unit') else (inv_item.unit if inv_item else ''),
+                        'unit': getattr(ri, 'unit', None) or getattr(ri.ingredient, 'unit', None) or (inv_item.unit if inv_item else ''),
                         'in_stock': float(inv_item.current_stock) if inv_item else None,
                     }
 
@@ -978,22 +1374,76 @@ class IntegrationManager:
                     shortages.append(f"{name}: need {entry['needed']}{info['unit']}, have {info['in_stock']}{info['unit']} (short {entry['gap']}{info['unit']})")
             prep_list.append(entry)
 
-        return {
+        miya_recommendation = cls._build_prep_list_miya_recommendation(
+            target, prep_items, prep_list, shortages, pos_sales_by_date, target_dates
+        )
+
+        day_of_week = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][dow]
+        if len(target_dates) > 1:
+            day_of_week = f"{day_of_week} – {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][target_dates[-1].weekday()]}"
+
+        out = {
             'success': True,
             'target_date': target.isoformat(),
-            'day_of_week': ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][dow],
+            'target_end_date': target_dates[-1].isoformat() if len(target_dates) > 1 else None,
+            'day_of_week': day_of_week,
             'forecast_portions': prep_items[:20],
             'ingredient_prep_list': prep_list[:30],
             'shortages': shortages,
-            'message_for_user': cls._build_prep_message(target, dow, prep_items, prep_list, shortages),
+            'message_for_user': cls._build_prep_message(target, dow, prep_items, prep_list, shortages, target_dates),
+            'miya_recommendation': miya_recommendation,
+        }
+        return out
+
+    @classmethod
+    def _build_prep_list_miya_recommendation(cls, target, prep_items, prep_list, shortages, pos_sales_by_date, target_dates=None) -> Dict:
+        """Build a data-driven Miya recommendation for the prep list based on sales history and forecast."""
+        if not prep_items:
+            return {
+                'title': 'Connect POS for prep list',
+                'body': 'Miya needs your POS sales history to generate a data-driven prep list. Connect your POS in Settings and ensure you have sales data for the last 4 weeks.',
+                'action_label': 'Connect POS in Settings',
+            }
+        top_item = prep_items[0] if prep_items else None
+        n_shortages = len(shortages)
+        n_ingredients = len(prep_list)
+        n_days_with_data = len(pos_sales_by_date) if pos_sales_by_date else 0
+
+        if n_shortages > 0:
+            return {
+                'title': 'Reorder these ingredients',
+                'body': f"Based on your POS sales history, **{n_shortages} ingredient(s)** may need reordering before {target.isoformat()}. Miya analysed same-day-of-week sales from the last 4 weeks and applied a 10% buffer. Check the prep list for details.",
+                'action_label': 'View full prep list',
+            }
+        if top_item and n_ingredients > 0:
+            return {
+                'title': 'Prep list ready',
+                'body': f"Based on your POS sales data, **{top_item['menu_item']}** is your top forecast (~{top_item['forecast_portions']} portions). Miya analysed {n_days_with_data} days of sales and mapped {n_ingredients} ingredients. All items appear in stock.",
+                'action_label': 'View or export prep list',
+            }
+        if prep_items:
+            return {
+                'title': 'Forecast from your sales',
+                'body': f"Miya analysed your POS sales from the last 4 weeks (same day of week) and forecasts **{len(prep_items)} items** for {target.isoformat()}. Add recipes to menu items to get ingredient-level prep lists.",
+                'action_label': 'Add recipes for ingredient breakdown',
+            }
+        return {
+            'title': 'Optimise your prep',
+            'body': 'Connect your POS and add recipes to menu items for Miya to generate accurate, data-driven prep recommendations.',
+            'action_label': 'Chat with Miya',
         }
 
     @staticmethod
-    def _build_prep_message(target, dow, prep_items, prep_list, shortages) -> str:
-        day_name = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][dow]
+    def _build_prep_message(target, dow, prep_items, prep_list, shortages, target_dates=None) -> str:
+        target_dates = target_dates or [target]
+        day_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        day_name = day_names[dow]
+        if len(target_dates) > 1:
+            day_name = f"{day_name} – {day_names[target_dates[-1].weekday()]}"
         if not prep_items:
             return "No sales history found for this day of week. Prep list couldn't be generated."
-        header = f"📋 Prep list for {target.isoformat()} ({day_name}), based on last 4 weeks' sales:\n"
+        date_range = f"{target.isoformat()} – {target_dates[-1].isoformat()}" if len(target_dates) > 1 else target.isoformat()
+        header = f"📋 Prep list for {date_range} ({day_name}), based on last 4 weeks' sales:\n"
         if prep_list:
             lines = [f"• {p['ingredient']}: {p['needed']} {p['unit']}" + (f" (⚠️ short {p['gap']}{p['unit']})" if p.get('gap', 0) > 0 else " ✓") for p in prep_list[:15]]
             footer = f"\n\n⚠️ {len(shortages)} ingredient(s) may need reordering." if shortages else "\n\n✅ All ingredients in stock."

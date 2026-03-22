@@ -79,3 +79,67 @@ class Task(models.Model):
 
     def __str__(self):
         return f"Task: {self.title} ({self.status}) for {self.restaurant.name}"
+
+
+class StaffCapturedOrder(models.Model):
+    """
+    Staff-captured customer orders (voice/text via Miya or manual entry).
+    Audit trail for front-of-house; complements POS Order records.
+    """
+
+    CHANNEL_CHOICES = (
+        ("VOICE", "Voice (Miya)"),
+        ("TEXT", "Text (Miya)"),
+        ("MANUAL", "Manual form"),
+    )
+    ORDER_TYPE_CHOICES = (
+        ("DINE_IN", "Dine in"),
+        ("TAKEOUT", "Takeout"),
+        ("DELIVERY", "Delivery"),
+        ("OTHER", "Other"),
+    )
+    FULFILLMENT_STATUS_CHOICES = (
+        ("NEW", "New"),
+        ("IN_PROGRESS", "In progress"),
+        ("FULFILLED", "Fulfilled"),
+        ("CANCELLED", "Cancelled"),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        "accounts.Restaurant",
+        on_delete=models.CASCADE,
+        related_name="staff_captured_orders",
+    )
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="staff_captured_orders",
+    )
+    customer_name = models.CharField(max_length=255, blank=True)
+    customer_phone = models.CharField(max_length=40, blank=True)
+    order_type = models.CharField(max_length=20, choices=ORDER_TYPE_CHOICES, default="DINE_IN")
+    table_or_location = models.CharField(max_length=120, blank=True)
+    items_summary = models.TextField()
+    dietary_notes = models.TextField(blank=True)
+    special_instructions = models.TextField(blank=True)
+    channel = models.CharField(max_length=20, choices=CHANNEL_CHOICES, default="MANUAL")
+    fulfillment_status = models.CharField(
+        max_length=20,
+        choices=FULFILLMENT_STATUS_CHOICES,
+        default="NEW",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        db_table = "dashboard_staff_captured_orders"
+        indexes = [
+            models.Index(fields=["restaurant", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"Capture {self.id} @ {self.restaurant_id}"

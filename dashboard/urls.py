@@ -2,6 +2,8 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
     DailyKPIListAPIView,
+    StaffCapturedOrderListCreateAPIView,
+    StaffCapturedOrderRetrieveUpdateDestroyAPIView,
     AlertListCreateAPIView,
     AlertRetrieveUpdateDestroyAPIView,
     TaskListCreateAPIView,
@@ -29,6 +31,12 @@ urlpatterns = [
     path('action-center/', ActionCenterView.as_view(), name='dashboard-action-center'),
     path('attendance/mark-no-show/', mark_shift_no_show, name='dashboard-mark-no-show'),
     path('kpis/', DailyKPIListAPIView.as_view(), name='daily-kpi-list'),
+    path('captured-orders/', StaffCapturedOrderListCreateAPIView.as_view(), name='staff-captured-orders'),
+    path(
+        'captured-orders/<uuid:pk>/',
+        StaffCapturedOrderRetrieveUpdateDestroyAPIView.as_view(),
+        name='staff-captured-order-detail',
+    ),
     path('alerts-old/', AlertListCreateAPIView.as_view(), name='alert-list-create'),
     path('alerts-old/<uuid:pk>/', AlertRetrieveUpdateDestroyAPIView.as_view(), name='alert-detail'),
     path('tasks-old/', TaskListCreateAPIView.as_view(), name='task-list-create'),

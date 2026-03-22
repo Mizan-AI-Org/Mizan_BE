@@ -1,8 +1,18 @@
 from rest_framework import generics, permissions, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from .models import DailyKPI, Alert, Task
-from .serializers import DailyKPISerializer, AlertSerializer, TaskSerializer
+from django.db.models import Q
+from django.utils import timezone
+from django.utils.dateparse import parse_date
+from .models import DailyKPI, Alert, Task, StaffCapturedOrder
+from .serializers import (
+    DailyKPISerializer,
+    AlertSerializer,
+    TaskSerializer,
+    StaffCapturedOrderSerializer,
+    StaffCapturedOrderPartialUpdateSerializer,
+)
 from accounts.permissions import IsAdminOrSuperAdmin, IsAdminOrManager
 from scheduling.models import AssignedShift
 
@@ -12,6 +22,85 @@ class DailyKPIListAPIView(generics.ListAPIView):
 
     def get_queryset(self):
         return DailyKPI.objects.filter(restaurant=self.request.user.restaurant).order_by('-date')
+
+
+class StaffCapturedOrderListCreateAPIView(generics.ListCreateAPIView):
+    """List and create staff-captured orders (Miya or manual) for the current restaurant."""
+
+    serializer_class = StaffCapturedOrderSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        user = self.request.user
+        restaurant = getattr(user, "restaurant", None)
+        if not restaurant:
+            return StaffCapturedOrder.objects.none()
+        qs = StaffCapturedOrder.objects.filter(restaurant=restaurant).select_related("recorded_by")
+
+        date_from_str = self.request.query_params.get("date_from")
+        date_to_str = self.request.query_params.get("date_to")
+        if date_from_str and date_to_str:
+            d0 = parse_date(date_from_str.strip())
+            d1 = parse_date(date_to_str.strip())
+            if not d0 or not d1:
+                raise ValidationError(
+                    {"date_from": "Invalid date. Use YYYY-MM-DD.", "date_to": "Invalid date. Use YYYY-MM-DD."}
+                )
+            if d0 > d1:
+                raise ValidationError({"date_to": "End date must be on or after start date."})
+            return qs.filter(created_at__date__gte=d0, created_at__date__lte=d1).order_by("-created_at")
+
+        date_str = self.request.query_params.get("date")
+        if date_str:
+            d = parse_date(date_str.strip())
+            if not d:
+                raise ValidationError({"date": "Invalid date. Use YYYY-MM-DD."})
+            return qs.filter(created_at__date=d).order_by("-created_at")
+
+        today = timezone.localdate()
+        if self.request.query_params.get("active") in ("1", "true", "yes"):
+            # Today’s orders (any status) plus older rows still open (not fulfilled / cancelled).
+            qs = qs.filter(
+                Q(created_at__date=today)
+                | Q(fulfillment_status__in=["NEW", "IN_PROGRESS"])
+            )
+        elif self.request.query_params.get("today") in ("1", "true", "yes"):
+            qs = qs.filter(created_at__date=today)
+        return qs.order_by("-created_at")
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        restaurant = getattr(user, "restaurant", None)
+        if not restaurant:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({"detail": "No restaurant context for this user."})
+        serializer.save(restaurant=restaurant, recorded_by=user)
+
+
+class StaffCapturedOrderRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
+    """GET one order; PATCH fields and/or status; DELETE (managers only)."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    lookup_field = "pk"
+
+    def get_queryset(self):
+        user = self.request.user
+        restaurant = getattr(user, "restaurant", None)
+        if not restaurant:
+            return StaffCapturedOrder.objects.none()
+        return StaffCapturedOrder.objects.filter(restaurant=restaurant).select_related("recorded_by")
+
+    def get_permissions(self):
+        if self.request.method == "DELETE":
+            return [permissions.IsAuthenticated(), IsAdminOrManager()]
+        return [permissions.IsAuthenticated()]
+
+    def get_serializer_class(self):
+        if self.request.method in ("PATCH", "PUT"):
+            return StaffCapturedOrderPartialUpdateSerializer
+        return StaffCapturedOrderSerializer
+
 
 class AlertListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = AlertSerializer

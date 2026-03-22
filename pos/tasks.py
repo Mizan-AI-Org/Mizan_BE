@@ -156,3 +156,43 @@ def sync_square_orders_for_restaurant(restaurant_id: str) -> Dict[str, Any]:
     result = IntegrationManager.sync_orders(restaurant)
     return result
 
+
+@shared_task
+def sync_orders_for_connected_pos_restaurants() -> Dict[str, Any]:
+    """
+    Periodic task: sync orders for all restaurants with connected POS.
+    Ensures sales reports and prep lists always have fresh data.
+    """
+    from datetime import timedelta
+
+    restaurants = Restaurant.objects.filter(
+        pos_is_connected=True
+    ).exclude(pos_provider__in=["NONE", ""])
+
+    synced = 0
+    errors = []
+    today = timezone.now().date()
+    start_date = today - timedelta(days=7)
+    end_date = today
+
+    for restaurant in restaurants:
+        try:
+            result = IntegrationManager.sync_orders(
+                restaurant,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if result.get("success"):
+                synced += 1
+            else:
+                errors.append({"restaurant_id": str(restaurant.id), "error": result.get("error", "unknown")})
+        except Exception as e:
+            errors.append({"restaurant_id": str(restaurant.id), "error": str(e)})
+
+    return {
+        "success": True,
+        "restaurants_synced": synced,
+        "total_connected": restaurants.count(),
+        "errors": errors[:10],
+    }
+

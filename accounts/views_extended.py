@@ -118,6 +118,8 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                 root['custom'] = custom_cfg
                 restaurant.set_pos_oauth(root)
                 restaurant.pos_is_connected = False
+            elif new_provider == 'LIGHTSPEED':
+                restaurant.pos_is_connected = False
 
         # Update AI settings if provided
         ai_enabled = payload.get('ai_enabled')
@@ -408,6 +410,9 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
             )
         
         restaurant = request.user.restaurant
+        data = request.data or {}
+        pos_api_key = data.get('pos_api_key')
+        pos_merchant_id = data.get('pos_merchant_id')
         
         if restaurant.pos_provider == 'NONE':
             return Response({
@@ -458,12 +463,58 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                 test_resp = requests.get(api_url, headers=headers, timeout=10)
                 connected = test_resp.status_code == 200
 
-            elif restaurant.pos_provider in ('TOAST', 'LIGHTSPEED', 'CLOVER'):
+            elif restaurant.pos_provider in ('TOAST', 'CLOVER'):
                 return Response({
                     'connected': False,
                     'provider': restaurant.pos_provider,
                     'message': 'Coming soon'
                 })
+            elif restaurant.pos_provider == 'LIGHTSPEED':
+                api_base = getattr(settings, 'LIGHTSPEED_API_BASE', '').rstrip('/') or 'https://api.trial.lsk.lightspeed.app'
+                api_key = (pos_api_key or restaurant.pos_api_key or '').strip()
+                bl_id = (pos_merchant_id or restaurant.pos_merchant_id or '').strip()
+                if not api_key:
+                    return Response({
+                        'connected': False,
+                        'provider': 'LIGHTSPEED',
+                        'message': 'Lightspeed API key is not configured. Save your access token in Settings.',
+                    })
+                if not bl_id:
+                    return Response({
+                        'connected': False,
+                        'provider': 'LIGHTSPEED',
+                        'message': 'Business Location ID is required. Enter it in Settings (Merchant/Location ID field).',
+                    })
+                try:
+                    headers = {'Authorization': f'Bearer {api_key}', 'Accept': 'application/json'}
+                    from datetime import datetime, timedelta
+                    from django.utils import timezone as dj_tz
+                    today = (dj_tz.now().date() - timedelta(days=1)).isoformat()
+                    from_str = f'{today}T00:00:00Z'
+                    to_str = f'{today}T23:59:59Z'
+                    url = f'{api_base}/f/v2/business-location/{bl_id}/sales'
+                    resp = requests.get(url, headers=headers, params={'from': from_str, 'to': to_str, 'include': 'payments'}, timeout=15)
+                    connected = resp.status_code in (200, 204)
+                    if resp.status_code == 401:
+                        connected = False
+                    restaurant.pos_is_connected = connected
+                    if api_key and api_key != getattr(restaurant, 'pos_api_key', ''):
+                        restaurant.pos_api_key = api_key
+                    if bl_id:
+                        restaurant.pos_merchant_id = bl_id
+                    restaurant.save(update_fields=['pos_is_connected', 'pos_api_key', 'pos_merchant_id'])
+                    return Response({
+                        'connected': connected,
+                        'provider': 'LIGHTSPEED',
+                        'status_code': resp.status_code,
+                        'message': 'Lightspeed connected' if connected else (resp.json().get('error', 'API error') if resp.content else 'Lightspeed API not reachable'),
+                    })
+                except Exception as exc:
+                    return Response({
+                        'connected': False,
+                        'provider': 'LIGHTSPEED',
+                        'message': str(exc),
+                    }, status=status.HTTP_400_BAD_REQUEST)
             
             else:
                 connected = False

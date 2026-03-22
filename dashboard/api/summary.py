@@ -468,47 +468,7 @@ class DashboardSummaryView(APIView):
                 )
             )
 
-        # Resolved incidents: keep on dashboard for visibility (recent 7 days)
-        seven_days_ago = now - timedelta(days=7)
-        resolved_safety = SafetyConcernReport.objects.filter(
-            restaurant=restaurant,
-            status__in=['ADDRESSED', 'RESOLVED', 'DISMISSED'],
-            updated_at__gte=seven_days_ago,
-        ).order_by('-resolved_at', '-updated_at')[:3]
-        for r in resolved_safety:
-            sev = str(r.severity).upper()
-            insights.append(
-                _build_insight(
-                    insight_id=f"safety_resolved:{r.id}",
-                    level="RESOLVED",
-                    category="incidents_resolved",
-                    urgency=50,
-                    summary=f"Resolved: {r.title}",
-                    recommended_action="View details in Checklists & Incidents.",
-                    impacted={"incident_id": str(r.id), "location": r.location, "severity": sev},
-                    action_url="/dashboard/analytics",
-                )
-            )
-
-        resolved_incidents = Incident.objects.filter(
-            restaurant=restaurant,
-            status__in=['RESOLVED', 'CLOSED'],
-            updated_at__gte=seven_days_ago,
-        ).order_by('-resolved_at', '-updated_at')[:3]
-        for r in resolved_incidents:
-            sev = str(r.priority).upper()
-            insights.append(
-                _build_insight(
-                    insight_id=f"incident_resolved:{r.id}",
-                    level="RESOLVED",
-                    category="incidents_resolved",
-                    urgency=45,
-                    summary=f"Resolved: {r.title}",
-                    recommended_action="View details in Checklists & Incidents.",
-                    impacted={"incident_id": str(r.id), "category": r.category, "priority": sev},
-                    action_url="/dashboard/analytics",
-                )
-            )
+        # Resolved/closed incidents are excluded from dashboard insights
 
         # Compliance: clock-in missing geolocation
         bad_geo = []
@@ -676,6 +636,25 @@ class DashboardSummaryView(APIView):
             current_period = "evening"
             current_period_no_shows = evening_no_shows
 
+        # Aggregated analytics for dashboard widgets (same refresh cycle as summary)
+        safety_alerts_open = SafetyConcernReport.objects.filter(
+            restaurant=restaurant,
+            status__in=['REPORTED', 'UNDER_REVIEW'],
+            severity__in=['HIGH', 'CRITICAL'],
+        ).count()
+
+        incident_open_count = Incident.objects.filter(
+            restaurant=restaurant,
+            status__in=['OPEN', 'INVESTIGATING'],
+            priority__in=['HIGH', 'CRITICAL'],
+        ).count()
+
+        tasks_open_today = tasks_today.exclude(status='COMPLETED').count()
+        missing_geo_count = sum(
+            1 for ev in clockin_by_staff.values()
+            if getattr(ev, 'latitude', None) is None or getattr(ev, 'longitude', None) is None
+        )
+
         data = {
             "attendance": {
                 "present_count": attendance_count,
@@ -707,7 +686,16 @@ class DashboardSummaryView(APIView):
                 "counts": counts_by_level,
             },
             "tasks_due": tasks_list,
-            "date": today.isoformat()
+            "date": today.isoformat(),
+            "analytics": {
+                "safety_alerts_open": safety_alerts_open,
+                "incidents_open": incident_open_count,
+                "tasks_total_today": total_tasks_today,
+                "tasks_completed_today": completed_tasks_today,
+                "tasks_open_today": tasks_open_today,
+                "urgent_tasks_open": overdue_urgent,
+                "missing_geo_clock_ins": missing_geo_count,
+            },
         }
         
         return Response(data)
