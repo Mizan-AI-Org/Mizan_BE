@@ -11,7 +11,6 @@ from dashboard.models import Task as DashboardTask, Alert
 from accounts.models import CustomUser
 from inventory.models import PurchaseOrder
 from staff.models_task import SafetyConcernReport
-from reporting.models import Incident
 
 
 def _staff_name(u: CustomUser) -> str:
@@ -425,11 +424,14 @@ class DashboardSummaryView(APIView):
         except Exception:
             pass
 
-        # Critical/Operational: unresolved incidents (SafetyConcernReport + Incident)
+        # Critical/Operational: unresolved high/critical safety concerns only.
+        # Uses SafetyConcernReport — same records as "Reported Incidents" / staff/safety-concerns/.
+        # Do not use reporting.Incident here: those rows are not updated when managers resolve concerns in the app.
         open_safety = SafetyConcernReport.objects.filter(
             restaurant=restaurant,
-            status__in=['REPORTED', 'UNDER_REVIEW'],
-            severity__in=['HIGH', 'CRITICAL']
+            status__in=['OPEN'],
+            severity__in=['HIGH', 'CRITICAL'],
+            resolved_at__isnull=True,
         ).order_by('-created_at')[:3]
         for r in open_safety:
             sev = str(r.severity).upper()
@@ -443,27 +445,6 @@ class DashboardSummaryView(APIView):
                     summary=f"{sev.title()} safety incident: {r.title}",
                     recommended_action="Open the incident, assign an owner, and document resolution steps.",
                     impacted={"incident_id": str(r.id), "location": r.location, "severity": sev},
-                    action_url="/dashboard/analytics",
-                )
-            )
-
-        open_incidents = Incident.objects.filter(
-            restaurant=restaurant,
-            status__in=['OPEN', 'INVESTIGATING'],
-            priority__in=['HIGH', 'CRITICAL']
-        ).order_by('-created_at')[:3]
-        for r in open_incidents:
-            sev = str(r.priority).upper()
-            lvl = "CRITICAL" if sev == "CRITICAL" else "OPERATIONAL"
-            insights.append(
-                _build_insight(
-                    insight_id=f"incident:{r.id}",
-                    level=lvl,
-                    category="incidents",
-                    urgency=_priority_score(lvl) + (70 if sev == "CRITICAL" else 35),
-                    summary=f"{sev.title()} incident open: {r.title}",
-                    recommended_action="Review incident details and assign someone to resolve it.",
-                    impacted={"incident_id": str(r.id), "category": r.category, "priority": sev},
                     action_url="/dashboard/analytics",
                 )
             )
@@ -639,15 +620,13 @@ class DashboardSummaryView(APIView):
         # Aggregated analytics for dashboard widgets (same refresh cycle as summary)
         safety_alerts_open = SafetyConcernReport.objects.filter(
             restaurant=restaurant,
-            status__in=['REPORTED', 'UNDER_REVIEW'],
+            status__in=['OPEN'],
             severity__in=['HIGH', 'CRITICAL'],
+            resolved_at__isnull=True,
         ).count()
 
-        incident_open_count = Incident.objects.filter(
-            restaurant=restaurant,
-            status__in=['OPEN', 'INVESTIGATING'],
-            priority__in=['HIGH', 'CRITICAL'],
-        ).count()
+        # Same definition as safety_alerts_open (no separate reporting.Incident count)
+        incident_open_count = safety_alerts_open
 
         tasks_open_today = tasks_today.exclude(status='COMPLETED').count()
         missing_geo_count = sum(

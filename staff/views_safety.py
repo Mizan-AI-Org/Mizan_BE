@@ -120,19 +120,35 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
     def update_status(self, request, pk=None):
         """Update the status of a safety concern report"""
         report = self.get_object()
-        new_status = request.data.get('status')
+        raw = request.data.get('status')
         resolution_notes = request.data.get('resolution_notes', '')
-        
-        if not new_status:
+
+        if not raw:
             return Response({"detail": "New status is required"}, status=status.HTTP_400_BAD_REQUEST)
-        
+
+        new_status = str(raw).strip().upper()
+        legacy = {
+            'REPORTED': 'OPEN',
+            'UNDER_REVIEW': 'OPEN',
+            'ADDRESSED': 'RESOLVED',
+        }
+        new_status = legacy.get(new_status, new_status)
+        if new_status not in ('OPEN', 'RESOLVED', 'DISMISSED'):
+            return Response(
+                {"detail": "Invalid status. Use OPEN, RESOLVED, or DISMISSED."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         report.status = new_status
         report.resolution_notes = resolution_notes
-        
-        if new_status in ['ADDRESSED', 'RESOLVED']:
+
+        if new_status in ('RESOLVED', 'DISMISSED'):
             report.resolved_by = request.user
             report.resolved_at = timezone.now()
-        
+        elif new_status == 'OPEN':
+            report.resolved_by = None
+            report.resolved_at = None
+
         report.save()
         
         serializer = self.get_serializer(report)
@@ -156,9 +172,7 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Staff member not found."}, status=status.HTTP_404_NOT_FOUND)
 
         report.assigned_to = assignee
-        if report.status == 'REPORTED':
-            report.status = 'UNDER_REVIEW'
-        report.save(update_fields=['assigned_to', 'status', 'updated_at'])
+        report.save(update_fields=['assigned_to', 'updated_at'])
 
         serializer = self.get_serializer(report)
         return Response(serializer.data)

@@ -395,7 +395,7 @@ def agent_list_incidents(request):
     restaurant, err = _resolve_restaurant_for_staff_agent(request)
     if err:
         return Response({'success': False, 'error': err['error']}, status=err['status'])
-    status_filter = (request.query_params.get('status') or 'REPORTED,UNDER_REVIEW').strip().upper().split(',')
+    status_filter = (request.query_params.get('status') or 'OPEN').strip().upper().split(',')
     qs = SafetyConcernReport.objects.filter(
         restaurant=restaurant,
         status__in=[s.strip() for s in status_filter if s.strip()],
@@ -461,7 +461,7 @@ def agent_escalate_incident(request):
         inc = SafetyConcernReport.objects.get(id=iid, restaurant=restaurant)
     except SafetyConcernReport.DoesNotExist:
         return Response({'success': False, 'error': 'Incident not found'}, status=status.HTTP_404_NOT_FOUND)
-    inc.status = 'UNDER_REVIEW'
+    inc.status = 'OPEN'
     inc.save(update_fields=['status', 'updated_at'])
     return Response({'success': True, 'message': 'Incident escalated.', 'incident_id': str(inc.id)})
 

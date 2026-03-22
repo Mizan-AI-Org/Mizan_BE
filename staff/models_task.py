@@ -112,12 +112,10 @@ class SafetyConcernReport(models.Model):
     reporter = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='reported_concerns')
     assigned_to = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_concerns')
     status = models.CharField(max_length=20, choices=[
-        ('REPORTED', 'Reported'),
-        ('UNDER_REVIEW', 'Under Review'),
-        ('ADDRESSED', 'Addressed'),
+        ('OPEN', 'Open'),
         ('RESOLVED', 'Resolved'),
         ('DISMISSED', 'Dismissed'),
-    ], default='REPORTED')
+    ], default='OPEN')
     photo = models.ImageField(upload_to='safety_concerns/', null=True, blank=True)
     audio_evidence = models.JSONField(default=list, blank=True)  # URLs to uploaded audio files (e.g., WhatsApp media URL)
     created_at = models.DateTimeField(auto_now_add=True)

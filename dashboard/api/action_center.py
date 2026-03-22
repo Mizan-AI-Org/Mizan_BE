@@ -113,7 +113,7 @@ class ActionCenterView(APIView):
         # 5. Open incidents (safety concerns)
         open_incidents = SafetyConcernReport.objects.filter(
             restaurant=restaurant,
-            status__in=['REPORTED', 'UNDER_REVIEW'],
+            status__in=['OPEN'],
             severity__in=['HIGH', 'CRITICAL']
         ).order_by('-created_at')[:10].select_related('reporter')
         incidents_list = [

@@ -134,7 +134,7 @@ def agent_create_incident(request):
             title=title,
             description=description,
             severity=priority,
-            status='REPORTED',
+            status='OPEN',
             occurred_at=timezone.now(),
         )
         logger.info(f"[AgentIncident] Created SafetyConcernReport {concern.id} for restaurant {restaurant.name}")

@@ -1452,7 +1452,7 @@ def whatsapp_webhook(request):
                                             title=f"{incident_type or 'General'} incident",
                                             description=raw_body.strip(),
                                             severity=severity,
-                                            status='REPORTED',
+                                            status='OPEN',
                                             occurred_at=occurred_at,
                                             shift=shift_obj,
                                         )
@@ -1536,7 +1536,7 @@ def whatsapp_webhook(request):
                                         title=f"{incident_type} incident",
                                         description=combined_text.strip(),
                                         severity=severity,
-                                        status='REPORTED',
+                                        status='OPEN',
                                         occurred_at=occurred_at,
                                         shift=shift_obj,
                                         audio_evidence=[pending.get('audio_url')] if pending.get('audio_url') else [],
@@ -1596,7 +1596,7 @@ def whatsapp_webhook(request):
                                         title=f"{incident_type_fb} incident",
                                         description=caption_fb.strip(),
                                         severity=severity_fb,
-                                        status='REPORTED',
+                                        status='OPEN',
                                         occurred_at=occurred_at_fb,
                                         shift=shift_obj_fb,
                                     )
@@ -1633,7 +1633,7 @@ def whatsapp_webhook(request):
                                         title='General incident',
                                         description='Incident reported with photo (no caption).',
                                         severity='MEDIUM',
-                                        status='REPORTED',
+                                        status='OPEN',
                                         occurred_at=now,
                                     )
                                     _attach_whatsapp_photo_to_incident(
@@ -1797,7 +1797,7 @@ def whatsapp_webhook(request):
                             title=f"{incident_type} incident",
                             description=transcript.strip(),
                             severity=severity,
-                            status='REPORTED',
+                            status='OPEN',
                             occurred_at=occurred_at,
                             shift=shift_obj,
                             audio_evidence=[media_url] if media_url else [],
@@ -2277,7 +2277,7 @@ def whatsapp_webhook(request):
                             title=f"{incident_type} incident",
                             description=combined_text.strip(),
                             severity=severity,
-                            status='REPORTED',
+                            status='OPEN',
                             occurred_at=occurred_at,
                             shift=shift_obj,
                             audio_evidence=[pending.get('audio_url')] if pending.get('audio_url') else [],
@@ -2570,7 +2570,7 @@ def whatsapp_webhook(request):
                                 title=f"{incident_type or 'General'} incident",
                                 description=raw_body.strip(),
                                 severity=severity,
-                                status='REPORTED',
+                                status='OPEN',
                                 occurred_at=occurred_at,
                                 shift=shift_obj,
                             )
@@ -2636,7 +2636,7 @@ def whatsapp_webhook(request):
                                     title=f"{incident_type} incident",
                                     description=raw_body.strip(),
                                     severity=severity,
-                                    status='REPORTED',
+                                    status='OPEN',
                                     occurred_at=occurred_at,
                                     shift=shift_obj,
                                 )
