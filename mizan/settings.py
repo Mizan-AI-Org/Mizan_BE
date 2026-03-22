@@ -101,6 +101,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',       # REQUIRED before auth
     'django.middleware.common.CommonMiddleware',
+    'core.middleware.AgentPathCsrfExemptMiddleware',              # Before CSRF: exempt agent API paths
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',    # REQUIRED for admin
     'django.contrib.messages.middleware.MessageMiddleware',       # REQUIRED for admin
@@ -431,6 +432,10 @@ CELERY_BEAT_SCHEDULE = {
     "auto_clock_out_at_shift_end": {
         "task": "scheduling.tasks.auto_clock_out_after_shift_end",
         "schedule": crontab(minute='*'),  # Every minute so staff are clocked out immediately when shift ends
+    },
+    "sync_pos_orders_hourly": {
+        "task": "pos.tasks.sync_orders_for_connected_pos_restaurants",
+        "schedule": crontab(minute=0),  # Every hour: pull orders for all connected POS
     },
 }
 

@@ -35,6 +35,7 @@ from timeclock.models import ClockEvent
 from scheduling.models import ShiftTask, AssignedShift, ShiftChecklistProgress
 from django.conf import settings as dj_settings
 from core.i18n import whatsapp_language_code
+from dashboard.models import StaffCapturedOrder
 
 
 def _is_likely_shared_static_location(loc, rest, lat, lon):
@@ -904,7 +905,7 @@ def whatsapp_webhook(request):
                 
         RESP = {
             'en': {
-                'help': 'Welcome to Mizan. Reply with: "clock in", "clock out", "tasks", or "report".',
+                'help': 'Welcome to Mizan. Reply with: "clock in", "clock out", "tasks", "order" (guest order), or "report" (incident).',
                 'clockin_prompt': 'Please share your live location to clock in.',
                 'clockin_tap_location': 'Tap Share Location above to clock in.',
                 'clockin_ok': 'Clock-in successful at {time}.',
@@ -922,6 +923,24 @@ def whatsapp_webhook(request):
                 'incident_clarify_missing': 'Thanks — before I log this, please clarify: {missing}.',
                 'incident_recorded': '✅ Incident report received and logged.\n\nTicket: #{ticket_id}\nType: {incident_type}\nTime: {occurred_at}\n\nYour report has been received and shared with management.',
                 'incident_failed': 'Failed to record incident. Please try again.',
+                'order_voice_prompt': (
+                    '📋 *Guest order*\n\n'
+                    'Send a *voice note* with the full order: items and quantities, guest name, '
+                    'phone for takeout/delivery, table or pickup, allergens, and any special requests.\n\n'
+                    'Or type the order in one message. Reply *cancel* to abort.'
+                ),
+                'order_recorded': (
+                    '✅ *Order logged* for the team.\n\n'
+                    'ID: `{order_id}`\n'
+                    '{preview}\n\n'
+                    'View it in *Today’s Orders* on the dashboard.'
+                ),
+                'order_clarify_audio': (
+                    'I couldn’t catch that clearly. Please resend the voice note or type the full order '
+                    '(items, guest, table or phone).'
+                ),
+                'order_cancelled': 'Order entry cancelled. Send *order* when you want to log a guest order.',
+                'order_failed': 'Could not save the order. Please try again or use the app.',
                 'unrecognized': 'Unrecognized command. Reply with "help" to see available options.',
             },
             'ar': {
@@ -943,6 +962,23 @@ def whatsapp_webhook(request):
                 'incident_clarify_missing': 'شكراً — قبل التسجيل، يرجى توضيح: {missing}.',
                 'incident_recorded': 'تم تسجيل الحادث. التذكرة رقم {ticket_id}. سيتم إخطار المدير.',
                 'incident_failed': 'فشل تسجيل الحادث. يرجى المحاولة مرة أخرى.',
+                'order_voice_prompt': (
+                    '📋 *طلب زبون*\n\n'
+                    'أرسل *ملاحظة صوتية* فيها الطلب كاملاً: الأصناف والكميات، اسم الزبون، '
+                    'الهاتف للسفري/التوصيل، الطاولة أو الاستلام، الحساسيات، وأي ملاحظات.\n\n'
+                    'أو اكتب الطلب في رسالة واحدة. أرسل *إلغاء* للخروج.'
+                ),
+                'order_recorded': (
+                    '✅ *تم تسجيل الطلب* للفريق.\n\n'
+                    'المعرّف: `{order_id}`\n'
+                    '{preview}\n\n'
+                    'اطّلع عليه في *طلبات اليوم* من لوحة التحكم.'
+                ),
+                'order_clarify_audio': (
+                    'لم أسمع بوضوح. أعد الملاحظة الصوتية أو اكتب الطلب كاملاً (الأصناف، الزبون، الطاولة أو الهاتف).'
+                ),
+                'order_cancelled': 'تم إلغاء إدخال الطلب. أرسل *طلب* عندما تريد تسجيل طلب زبون.',
+                'order_failed': 'تعذّر حفظ الطلب. حاول مرة أخرى أو استخدم التطبيق.',
                 'unrecognized': 'أمر غير معروف. أجب بـ "مساعدة" لرؤية الخيارات المتاحة.',
             },
             'fr': {
@@ -964,6 +1000,23 @@ def whatsapp_webhook(request):
                 'incident_clarify_missing': 'Merci — avant d\'enregistrer, veuillez préciser : {missing}.',
                 'incident_recorded': 'Incident enregistré. Ticket #{ticket_id}.',
                 'incident_failed': 'Échec de l\'enregistrement. Veuillez réessayer.',
+                'order_voice_prompt': (
+                    '📋 *Commande invité*\n\n'
+                    'Envoyez une *note vocale* avec la commande complète : articles et quantités, '
+                    'nom du client, téléphone pour emporter/livraison, table ou retrait, allergènes, consignes.\n\n'
+                    'Ou saisissez la commande en un message. Répondez *annuler* pour quitter.'
+                ),
+                'order_recorded': (
+                    '✅ *Commande enregistrée* pour l’équipe.\n\n'
+                    'ID : `{order_id}`\n'
+                    '{preview}\n\n'
+                    'Voir dans *Commandes du jour* sur le tableau de bord.'
+                ),
+                'order_clarify_audio': (
+                    'Je n’ai pas bien entendu. Renvoyez la note vocale ou saisissez la commande complète.'
+                ),
+                'order_cancelled': 'Saisie annulée. Envoyez *commande* pour enregistrer une commande invité.',
+                'order_failed': 'Impossible d’enregistrer la commande. Réessayez ou utilisez l’app.',
                 'unrecognized': 'Commande non reconnue. Répondez "aide".',
             },
         }
@@ -1071,6 +1124,8 @@ def whatsapp_webhook(request):
                         'awaiting_clock_in_location',
                         'awaiting_task_photo', 'awaiting_feedback',
                         'awaiting_incident', 'awaiting_incident_details',
+                        'awaiting_order_voice',
+                        'awaiting_order_clarification',
                     }
                     # Image and location messages are always handled by Django (Lua
                     # cannot download WhatsApp media). Django processes incident photos,
@@ -1614,7 +1669,7 @@ def whatsapp_webhook(request):
                             continue
 
                     # ------------------------------------------------------------------
-                    # 3. HANDLE AUDIO (Incidents)
+                    # 3. HANDLE AUDIO — guest order (Today’s Orders) OR incidents
                     # ------------------------------------------------------------------
                     if msg_type == 'audio':
                         audio = msg.get('audio') or {}
@@ -1625,6 +1680,68 @@ def whatsapp_webhook(request):
 
                         if not user:
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            continue
+
+                        # --- Guest order (staff texted "order" / similar first, or clarification follow-up) ---
+                        if session.state in ('awaiting_order_voice', 'awaiting_order_clarification'):
+                            rest_o = getattr(user, 'restaurant', None)
+                            if not rest_o:
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    "Your account has no restaurant context. Contact your manager.",
+                                )
+                                continue
+
+                            tstrip = (transcript or '').strip()
+                            if session.state == 'awaiting_order_clarification':
+                                pending_o = session.context.get('pending_order') or {}
+                                prior_o = (pending_o.get('transcript') or '').strip()
+                                merged = (prior_o + "\n\n" + tstrip).strip() if prior_o else tstrip
+                                text_to_store = merged if merged else tstrip
+                            else:
+                                text_to_store = tstrip
+
+                            if not text_to_store or len(text_to_store) < 8:
+                                session.state = 'awaiting_order_clarification'
+                                session.context['pending_order'] = {
+                                    'source': 'voice',
+                                    'audio_url': media_url,
+                                    'media_id': media_id,
+                                    'transcript': tstrip or '',
+                                }
+                                session.save(update_fields=['state', 'context'])
+                                notification_service.send_whatsapp_text(phone_digits, R(user, 'order_clarify_audio'))
+                                continue
+
+                            try:
+                                order = StaffCapturedOrder.objects.create(
+                                    restaurant=rest_o,
+                                    recorded_by=user,
+                                    items_summary=text_to_store[:8000],
+                                    channel='VOICE',
+                                    customer_name='',
+                                    customer_phone='',
+                                    order_type='DINE_IN',
+                                    table_or_location='',
+                                    dietary_notes='',
+                                    special_instructions='',
+                                )
+                                preview = text_to_store[:400] + ('…' if len(text_to_store) > 400 else '')
+                                session.state = 'idle'
+                                session.context.pop('pending_order', None)
+                                session.save(update_fields=['state', 'context'])
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    R(
+                                        user,
+                                        'order_recorded',
+                                        order_id=str(order.id)[:8],
+                                        preview=f"Details:\n{preview}",
+                                    ),
+                                )
+                            except Exception as e:
+                                logger.exception("WhatsApp guest order (voice) failed: %s", e)
+                                notification_service.send_whatsapp_text(phone_digits, R(user, 'order_failed'))
                             continue
 
                         # If transcription failed / unclear, ask for clarification BEFORE creating a ticket
@@ -1925,6 +2042,122 @@ def whatsapp_webhook(request):
                     body = raw_body.lower() if raw_body else ''
                     
                     if not body:
+                        continue
+
+                    body_clean = body.strip()
+
+                    # ------------------------------------------------------------------
+                    # Guest order — clarification follow-up (typed after unclear voice)
+                    # ------------------------------------------------------------------
+                    if session.state == 'awaiting_order_clarification' and body_clean in (
+                        'cancel', 'annuler', 'exit', 'stop', 'quit', 'إلغاء', 'الغاء',
+                    ):
+                        session.state = 'idle'
+                        session.context.pop('pending_order', None)
+                        session.save(update_fields=['state', 'context'])
+                        notification_service.send_whatsapp_text(phone_digits, R(user, 'order_cancelled'))
+                        continue
+
+                    if session.state == 'awaiting_order_clarification':
+                        if not user:
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            continue
+                        rest_o = getattr(user, 'restaurant', None)
+                        if not rest_o:
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                "Your account has no restaurant context. Contact your manager.",
+                            )
+                            continue
+                        pending_o = session.context.get('pending_order') or {}
+                        prior_o = (pending_o.get('transcript') or '').strip()
+                        combined_o = (prior_o + "\n\n" + raw_body).strip() if prior_o else raw_body.strip()
+                        if len(combined_o) < 8:
+                            session.context['pending_order'] = {**pending_o, 'transcript': combined_o}
+                            session.save(update_fields=['context'])
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'order_clarify_audio'))
+                            continue
+                        try:
+                            order = StaffCapturedOrder.objects.create(
+                                restaurant=rest_o,
+                                recorded_by=user,
+                                items_summary=combined_o[:8000],
+                                channel='VOICE',
+                                customer_name='',
+                                customer_phone='',
+                                order_type='DINE_IN',
+                                table_or_location='',
+                                dietary_notes='',
+                                special_instructions='',
+                            )
+                            preview = combined_o[:400] + ('…' if len(combined_o) > 400 else '')
+                            session.state = 'idle'
+                            session.context.pop('pending_order', None)
+                            session.save(update_fields=['state', 'context'])
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                R(
+                                    user,
+                                    'order_recorded',
+                                    order_id=str(order.id)[:8],
+                                    preview=f"Details:\n{preview}",
+                                ),
+                            )
+                        except Exception as e:
+                            logger.exception("WhatsApp guest order (clarification text) failed: %s", e)
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'order_failed'))
+                        continue
+
+                    # Cancel guest order entry
+                    if session.state == 'awaiting_order_voice' and body_clean in (
+                        'cancel', 'annuler', 'exit', 'stop', 'quit', 'إلغاء', 'الغاء',
+                    ):
+                        session.state = 'idle'
+                        session.context.pop('pending_order', None)
+                        session.save(update_fields=['state', 'context'])
+                        notification_service.send_whatsapp_text(phone_digits, R(user, 'order_cancelled'))
+                        continue
+
+                    # Typed order instead of voice (after "order" prompt)
+                    if session.state == 'awaiting_order_voice' and len(raw_body.strip()) >= 8:
+                        if not user:
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            continue
+                        rest_o = getattr(user, 'restaurant', None)
+                        if not rest_o:
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                "Your account has no restaurant context. Contact your manager.",
+                            )
+                            continue
+                        try:
+                            order = StaffCapturedOrder.objects.create(
+                                restaurant=rest_o,
+                                recorded_by=user,
+                                items_summary=raw_body.strip()[:8000],
+                                channel='TEXT',
+                                customer_name='',
+                                customer_phone='',
+                                order_type='DINE_IN',
+                                table_or_location='',
+                                dietary_notes='',
+                                special_instructions='',
+                            )
+                            preview = raw_body.strip()[:400] + ('…' if len(raw_body.strip()) > 400 else '')
+                            session.state = 'idle'
+                            session.save(update_fields=['state'])
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                R(
+                                    user,
+                                    'order_recorded',
+                                    order_id=str(order.id)[:8],
+                                    preview=f"Details:\n{preview}",
+                                ),
+                            )
+                        except Exception as e:
+                            logger.exception("WhatsApp guest order (text) failed: %s", e)
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'order_failed'))
                         continue
 
                     # Checklist: accept typed yes/no/n/a as well as button replies
@@ -2262,6 +2495,32 @@ def whatsapp_webhook(request):
                         continue
 
                     body_clean = (body or '').strip()
+                    order_triggers = {
+                        'order',
+                        'guest order',
+                        'take order',
+                        'new order',
+                        'nouvelle commande',
+                        'commande',
+                        'commande client',
+                        'طلب',
+                        'طلبية',
+                    }
+                    if body_clean.lower() in order_triggers or body_clean in order_triggers:
+                        if not user:
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            continue
+                        if not getattr(user, 'restaurant', None):
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                "Your account has no restaurant context. Contact your manager.",
+                            )
+                            continue
+                        session.state = 'awaiting_order_voice'
+                        session.save(update_fields=['state'])
+                        notification_service.send_whatsapp_text(phone_digits, R(user, 'order_voice_prompt'))
+                        continue
+
                     incident_triggers = {'report', 'incident', 'issue', 'rapport', 'signalement', 'بلاغ'}
                     if body_clean.lower() in incident_triggers or body_clean in incident_triggers:
                         session.state = 'awaiting_incident_text'

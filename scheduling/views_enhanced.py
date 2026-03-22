@@ -338,11 +338,11 @@ class CalendarAPIViewSet(viewsets.ViewSet):
                 if isinstance(shift.start_time, datetime):
                     start_datetime = shift.start_time
                 else:
-                    start_datetime = timezone.datetime.combine(shift.shift_date, shift.start_time)
+                    start_datetime = datetime.combine(shift.shift_date, shift.start_time)
                 if isinstance(shift.end_time, datetime):
                     end_datetime = shift.end_time
                 else:
-                    end_datetime = timezone.datetime.combine(shift.shift_date, shift.end_time)
+                    end_datetime = datetime.combine(shift.shift_date, shift.end_time)
             except Exception:
                 start_datetime = datetime.combine(shift.shift_date, getattr(shift.start_time, 'time', shift.start_time))
                 end_datetime = datetime.combine(shift.shift_date, getattr(shift.end_time, 'time', shift.end_time))

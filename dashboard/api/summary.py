@@ -468,6 +468,8 @@ class DashboardSummaryView(APIView):
                 )
             )
 
+        # Resolved/closed incidents are excluded from dashboard insights
+
         # Compliance: clock-in missing geolocation
         bad_geo = []
         for sid, ev in clockin_by_staff.items():
@@ -555,7 +557,7 @@ class DashboardSummaryView(APIView):
 
         # Sort insights by urgency and return only top items to avoid overwhelming
         insights.sort(key=lambda x: int(x.get("urgency") or 0), reverse=True)
-        insights_top = insights[:5]
+        insights_top = insights[:8]
         counts_by_level = {}
         for it in insights:
             lvl = str(it.get("level") or "OTHER").upper()
@@ -634,6 +636,25 @@ class DashboardSummaryView(APIView):
             current_period = "evening"
             current_period_no_shows = evening_no_shows
 
+        # Aggregated analytics for dashboard widgets (same refresh cycle as summary)
+        safety_alerts_open = SafetyConcernReport.objects.filter(
+            restaurant=restaurant,
+            status__in=['REPORTED', 'UNDER_REVIEW'],
+            severity__in=['HIGH', 'CRITICAL'],
+        ).count()
+
+        incident_open_count = Incident.objects.filter(
+            restaurant=restaurant,
+            status__in=['OPEN', 'INVESTIGATING'],
+            priority__in=['HIGH', 'CRITICAL'],
+        ).count()
+
+        tasks_open_today = tasks_today.exclude(status='COMPLETED').count()
+        missing_geo_count = sum(
+            1 for ev in clockin_by_staff.values()
+            if getattr(ev, 'latitude', None) is None or getattr(ev, 'longitude', None) is None
+        )
+
         data = {
             "attendance": {
                 "present_count": attendance_count,
@@ -665,7 +686,16 @@ class DashboardSummaryView(APIView):
                 "counts": counts_by_level,
             },
             "tasks_due": tasks_list,
-            "date": today.isoformat()
+            "date": today.isoformat(),
+            "analytics": {
+                "safety_alerts_open": safety_alerts_open,
+                "incidents_open": incident_open_count,
+                "tasks_total_today": total_tasks_today,
+                "tasks_completed_today": completed_tasks_today,
+                "tasks_open_today": tasks_open_today,
+                "urgent_tasks_open": overdue_urgent,
+                "missing_geo_clock_ins": missing_geo_count,
+            },
         }
         
         return Response(data)

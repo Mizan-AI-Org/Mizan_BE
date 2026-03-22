@@ -1,5 +1,6 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
+from datetime import datetime
 from scheduling.recurrence_service import RecurrenceService
 
 
@@ -19,7 +20,7 @@ class Command(BaseCommand):
         date = None
         if date_str:
             try:
-                date = timezone.datetime.strptime(date_str, '%Y-%m-%d').date()
+                date = datetime.strptime(date_str, '%Y-%m-%d').date()
             except Exception as e:
                 raise CommandError(f"Invalid --date format: {e}")
 

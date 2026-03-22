@@ -20,21 +20,28 @@ from .schedule_document_service import parse_schedule_document as parse_schedule
 logger = logging.getLogger(__name__)
 
 
-def _get_restaurant_staff(restaurant):
-    """Staff in this restaurant (has role, not necessarily is_staff)."""
-    return CustomUser.objects.filter(restaurant=restaurant).exclude(role__isnull=True).exclude(role="")
+def _get_restaurant_staff(restaurant, include_unassigned_role=False):
+    """Staff in this restaurant. When include_unassigned_role=True, includes staff with no role (matches agent_list_staff)."""
+    qs = CustomUser.objects.filter(restaurant=restaurant)
+    if not include_unassigned_role:
+        qs = qs.exclude(role__isnull=True).exclude(role="")
+    return qs
 
 
-def _match_employee_name_to_staff(name: str, restaurant) -> CustomUser | None:
-    """Fuzzy match employee name to a CustomUser in the restaurant."""
+def _match_employee_name_to_staff(name: str, restaurant, for_agent=False) -> CustomUser | None:
+    """Fuzzy match employee name to a CustomUser in the restaurant.
+    When for_agent=True, uses same pool as agent_list_staff (is_active, exclude SUPER_ADMIN, include staff with no role).
+    """
     if not name or not restaurant:
         return None
     name = (name or "").strip()
     if not name:
         return None
-    staff = _get_restaurant_staff(restaurant)
+    if for_agent:
+        staff = CustomUser.objects.filter(restaurant=restaurant, is_active=True)
+    else:
+        staff = _get_restaurant_staff(restaurant)
     name_lower = name.lower()
-    # "John Doe" or "Doe, John"
     parts = [p.strip() for p in re.split(r"[\s,]+", name) if p.strip()]
     for u in staff:
         first = (u.first_name or "").lower()
@@ -47,11 +54,19 @@ def _match_employee_name_to_staff(name: str, restaurant) -> CustomUser | None:
             return u
         if last and name_lower == last:
             return u
+        if name_lower in full.split() or name_lower in rev.split():
+            return u
         if parts and first and last:
             if (parts[0] == first and (len(parts) == 1 or parts[-1] == last)):
                 return u
             if (parts[0] == last and len(parts) > 1 and parts[1] == first):
                 return u
+        # Prefix match for First Name (e.g. "Adam" matches "Adama")
+        if first and len(name_lower) >= 3 and first.startswith(name_lower):
+            return u
+        # Or vice-versa (e.g. user says "Adama" but DB has "Adam")
+        if first and len(first) >= 3 and name_lower.startswith(first):
+            return u
     return None
 
 
@@ -216,10 +231,10 @@ def apply_parsed_schedule(request):
             end_time_str = (s.get("end_time") or "17:00")[:5]
             try:
                 start_dt = timezone.make_aware(
-                    timezone.datetime.combine(shift_date, datetime.strptime(start_time_str, "%H:%M").time())
+                    datetime.combine(shift_date, datetime.strptime(start_time_str, "%H:%M").time())
                 )
                 end_dt = timezone.make_aware(
-                    timezone.datetime.combine(shift_date, datetime.strptime(end_time_str, "%H:%M").time())
+                    datetime.combine(shift_date, datetime.strptime(end_time_str, "%H:%M").time())
                 )
             except (ValueError, TypeError):
                 continue

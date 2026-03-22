@@ -8,6 +8,7 @@ from .views import (
 from . import webhooks
 from . import views_agent
 from . import views_oauth
+from . import views_analytics
 
 router = DefaultRouter()
 router.register(r'tables', TableViewSet, basename='pos-table')
@@ -24,6 +25,10 @@ urlpatterns = [
     # Integration Management
     path('sync/menu/', webhooks.sync_menu_view, name='pos-sync-menu'),
     path('sync/orders/', webhooks.sync_orders_view, name='pos-sync-orders'),
+
+    # Manager analytics (sales today, prep list for tomorrow)
+    path('sales/today/', views_analytics.sales_today, name='pos-sales-today'),
+    path('prep-list/', views_analytics.prep_list, name='pos-prep-list'),
     
     # Webhooks
     path('webhooks/toast/', webhooks.TOASTWebhookView.as_view(), name='toast-webhook'),

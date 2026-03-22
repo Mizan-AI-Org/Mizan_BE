@@ -475,7 +475,7 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
         if severity:
             queryset = queryset.filter(severity=severity)
             
-        return queryset
+        return queryset.select_related('assigned_to', 'reporter')
     
     def perform_create(self, serializer):
         """Create a new safety concern report"""

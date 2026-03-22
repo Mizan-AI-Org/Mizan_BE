@@ -129,11 +129,11 @@ class AssignedShift(models.Model):
         if isinstance(self.start_time, _dt):
             shift_start_datetime = self.start_time
         else:
-            shift_start_datetime = timezone.datetime.combine(self.shift_date, self.start_time)
+            shift_start_datetime = _dt.combine(self.shift_date, self.start_time)
         if isinstance(self.end_time, _dt):
             shift_end_datetime = self.end_time
         else:
-            shift_end_datetime = timezone.datetime.combine(self.shift_date, self.end_time)
+            shift_end_datetime = _dt.combine(self.shift_date, self.end_time)
         if shift_end_datetime < shift_start_datetime:
             shift_end_datetime += timezone.timedelta(days=1)
         duration = shift_end_datetime - shift_start_datetime
@@ -165,11 +165,11 @@ class AssignedShift(models.Model):
         if isinstance(self.start_time, _dt):
             shift_start = self.start_time
         else:
-            shift_start = timezone.datetime.combine(self.shift_date, self.start_time)
+            shift_start = _dt.combine(self.shift_date, self.start_time)
         if isinstance(self.end_time, _dt):
             shift_end = self.end_time
         else:
-            shift_end = timezone.datetime.combine(self.shift_date, self.end_time)
+            shift_end = _dt.combine(self.shift_date, self.end_time)
 
         for staff_member in staff_list:
             overlapping = AssignedShift.objects.filter(
@@ -189,11 +189,11 @@ class AssignedShift(models.Model):
                 if isinstance(existing_shift.start_time, _dt):
                     existing_start = existing_shift.start_time
                 else:
-                    existing_start = timezone.datetime.combine(existing_shift.shift_date, existing_shift.start_time)
+                    existing_start = _dt.combine(existing_shift.shift_date, existing_shift.start_time)
                 if isinstance(existing_shift.end_time, _dt):
                     existing_end = existing_shift.end_time
                 else:
-                    existing_end = timezone.datetime.combine(existing_shift.shift_date, existing_shift.end_time)
+                    existing_end = _dt.combine(existing_shift.shift_date, existing_shift.end_time)
                 if shift_start < existing_end and shift_end > existing_start:
                     staff_name = f"{staff_member.first_name} {staff_member.last_name}" or str(staff_member)
                     ex_start_str = existing_start.strftime('%H:%M') if hasattr(existing_start, 'strftime') else str(existing_shift.start_time)
@@ -205,9 +205,9 @@ class AssignedShift(models.Model):
     def save(self, *args, **kwargs):
         # Convert time to datetime if needed
         if self.start_time and isinstance(self.start_time, _time) and not isinstance(self.start_time, _dt):
-            self.start_time = timezone.datetime.combine(self.shift_date, self.start_time)
+            self.start_time = _dt.combine(self.shift_date, self.start_time)
         if self.end_time and isinstance(self.end_time, _time) and not isinstance(self.end_time, _dt):
-            self.end_time = timezone.datetime.combine(self.shift_date, self.end_time)
+            self.end_time = _dt.combine(self.shift_date, self.end_time)
             
         self.clean()
         super().save(*args, **kwargs)
@@ -217,11 +217,11 @@ class AssignedShift(models.Model):
         if isinstance(self.start_time, _dt):
             shift_start_datetime = self.start_time
         else:
-            shift_start_datetime = timezone.datetime.combine(self.shift_date, self.start_time)
+            shift_start_datetime = _dt.combine(self.shift_date, self.start_time)
         if isinstance(self.end_time, _dt):
             shift_end_datetime = self.end_time
         else:
-            shift_end_datetime = timezone.datetime.combine(self.shift_date, self.end_time)
+            shift_end_datetime = _dt.combine(self.shift_date, self.end_time)
         if shift_end_datetime < shift_start_datetime:
             shift_end_datetime += timezone.timedelta(days=1)
         duration = shift_end_datetime - shift_start_datetime
