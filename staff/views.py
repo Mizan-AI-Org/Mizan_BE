@@ -496,36 +496,53 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
         if sev == 'INVESTIGATING':
             sev = 'MEDIUM'
 
-        stat = (serializer.validated_data.get('status') or 'REPORTED').upper()
-        if stat == 'INVESTIGATING':
-            stat = 'UNDER_REVIEW'
+        stat = (serializer.validated_data.get('status') or 'OPEN').upper()
+        legacy = {'REPORTED': 'OPEN', 'UNDER_REVIEW': 'OPEN', 'ADDRESSED': 'RESOLVED', 'INVESTIGATING': 'OPEN'}
+        stat = legacy.get(stat, stat)
+        if stat not in ('OPEN', 'RESOLVED', 'DISMISSED'):
+            stat = 'OPEN'
 
         serializer.save(restaurant=restaurant, severity=sev, status=stat)
     
     @action(detail=True, methods=['post'])
     def update_status(self, request, pk=None):
-        """Update the status of a safety concern report"""
+        """Update the status of a safety concern report (OPEN, RESOLVED, DISMISSED)."""
         report = self.get_object()
-        new_status = request.data.get('status')
-        
-        # Only admins can update status
         user = request.user
         if user.role not in ['SUPER_ADMIN', 'ADMIN']:
             return Response(
                 {"error": "Only administrators can update report status"},
                 status=status.HTTP_403_FORBIDDEN
             )
-            
-        if not new_status:
+
+        raw = request.data.get('status')
+        if not raw:
             return Response(
                 {"error": "New status is required"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-            
+
+        new_status = str(raw).strip().upper()
+        legacy = {'REPORTED': 'OPEN', 'UNDER_REVIEW': 'OPEN', 'ADDRESSED': 'RESOLVED'}
+        new_status = legacy.get(new_status, new_status)
+        if new_status not in ('OPEN', 'RESOLVED', 'DISMISSED'):
+            return Response(
+                {"error": "Invalid status. Use OPEN, RESOLVED, or DISMISSED."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
         report.status = new_status
         report.resolution_notes = request.data.get('resolution_notes', report.resolution_notes)
+
+        if new_status in ('RESOLVED', 'DISMISSED'):
+            report.resolved_by = user
+            report.resolved_at = timezone.now()
+        elif new_status == 'OPEN':
+            report.resolved_by = None
+            report.resolved_at = None
+
         report.save()
-        
+
         return Response({
             "message": "Report status updated successfully",
             "report_id": report.id,
@@ -562,9 +579,7 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
             )
 
         report.assigned_to = assignee
-        if report.status == 'REPORTED':
-            report.status = 'UNDER_REVIEW'
-        report.save(update_fields=['assigned_to', 'status', 'updated_at'])
+        report.save(update_fields=['assigned_to', 'updated_at'])
 
         serializer = self.get_serializer(report)
         return Response(serializer.data)
