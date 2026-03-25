@@ -3,16 +3,18 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.utils import timezone
+from datetime import timedelta
 import requests
 import secrets
 from django.conf import settings
 from django.utils.http import urlencode
-from django.utils.dateparse import parse_datetime
+from django.utils.dateparse import parse_datetime, parse_date
 from django.shortcuts import redirect
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 import base64
 import json
-from .models import POSIntegration, AIAssistantConfig, Restaurant, StaffProfile
+from .models import EatNowReservation, POSIntegration, AIAssistantConfig, Restaurant, StaffProfile
+from .eatnow_client import discover as eatnow_discover, test_connection as eatnow_test
 from .serializers_extended import (
     POSIntegrationSerializer,
     AIAssistantConfigSerializer,
@@ -67,6 +69,25 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                 data['pos_custom_api_url'] = custom_cfg.get('api_url', '')
                 data['pos_custom_api_key_set'] = bool(custom_cfg.get('api_key'))
 
+            if restaurant.pos_provider == 'LIGHTSPEED':
+                root = restaurant.get_pos_oauth() or {}
+                ls = root.get('lightspeed') or {}
+                data['lightspeed_line'] = ls.get('line') or 'RESTAURANT_K'
+                data['lightspeed_domain_prefix'] = ls.get('domain_prefix') or ''
+
+            gs = restaurant.general_settings or {}
+            rsv = gs.get('reservation') or {}
+            data['reservation_provider'] = rsv.get('provider') or 'NONE'
+            data['reservation_widget_url'] = rsv.get('widget_url') or ''
+            data['reservation_display_name'] = rsv.get('display_name') or ''
+            data['eatnow_group_id'] = rsv.get('eatnow_group_id') or ''
+            data['eatnow_restaurant_id'] = rsv.get('eatnow_restaurant_id') or ''
+            data['eatnow_api_base'] = rsv.get('eatnow_api_base') or ''
+            sec = restaurant.get_reservation_oauth() or {}
+            data['eatnow_api_key_set'] = bool((sec.get('eatnow') or {}).get('api_key'))
+            data['eatnow_webhook_secret_set'] = bool((sec.get('eatnow') or {}).get('webhook_secret'))
+            data['eatnow_webhook_url'] = request.build_absolute_uri('/api/webhooks/eatnow/')
+
             return Response(data)
 
         # PUT
@@ -100,11 +121,25 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
         old_name = restaurant.name
 
         # Update POS settings if provided
-        if 'pos_provider' in payload or 'pos_merchant_id' in payload or 'pos_api_key' in payload or 'pos_custom_api_url' in payload:
+        if any(
+            k in payload
+            for k in (
+                'pos_provider',
+                'pos_merchant_id',
+                'pos_api_key',
+                'pos_custom_api_url',
+                'pos_location_id',
+                'lightspeed_line',
+                'lightspeed_domain_prefix',
+            )
+        ):
             new_provider = payload.get('pos_provider', restaurant.pos_provider)
             restaurant.pos_provider = new_provider
             restaurant.pos_merchant_id = payload.get('pos_merchant_id', restaurant.pos_merchant_id)
             restaurant.pos_api_key = payload.get('pos_api_key', restaurant.pos_api_key)
+            if 'pos_location_id' in payload:
+                pl = payload.get('pos_location_id')
+                restaurant.pos_location_id = (pl or '').strip() or None
 
             if new_provider == 'CUSTOM':
                 custom_url = payload.get('pos_custom_api_url', '').strip()
@@ -119,6 +154,15 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                 restaurant.set_pos_oauth(root)
                 restaurant.pos_is_connected = False
             elif new_provider == 'LIGHTSPEED':
+                root = restaurant.get_pos_oauth() or {}
+                ls = dict(root.get('lightspeed') or {})
+                if 'lightspeed_line' in payload:
+                    v = (payload.get('lightspeed_line') or 'RESTAURANT_K').strip().upper()
+                    ls['line'] = v if v in ('RESTAURANT_K', 'RETAIL_X') else 'RESTAURANT_K'
+                if 'lightspeed_domain_prefix' in payload:
+                    ls['domain_prefix'] = (payload.get('lightspeed_domain_prefix') or '').strip()
+                root['lightspeed'] = ls
+                restaurant.set_pos_oauth(root)
                 restaurant.pos_is_connected = False
 
         # Update AI settings if provided
@@ -143,6 +187,53 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         serializer.save()
+
+        # Reservation (Eat Now / Eat App) — stored in general_settings + encrypted reservation_oauth_data
+        res_keys = (
+            'reservation_provider',
+            'reservation_widget_url',
+            'reservation_display_name',
+            'eatnow_group_id',
+            'eatnow_restaurant_id',
+            'eatnow_api_base',
+            'eatnow_api_key',
+            'eatnow_webhook_secret',
+        )
+        if any(k in payload for k in res_keys):
+            inst = serializer.instance
+            gs = dict(inst.general_settings or {})
+            res_cfg = dict(gs.get('reservation') or {})
+            if 'reservation_provider' in payload:
+                res_cfg['provider'] = (payload.get('reservation_provider') or 'NONE').strip().upper()
+            if 'reservation_widget_url' in payload:
+                res_cfg['widget_url'] = (payload.get('reservation_widget_url') or '').strip()
+            if 'reservation_display_name' in payload:
+                res_cfg['display_name'] = (payload.get('reservation_display_name') or '').strip()
+            if 'eatnow_group_id' in payload:
+                res_cfg['eatnow_group_id'] = (payload.get('eatnow_group_id') or '').strip()
+            if 'eatnow_restaurant_id' in payload:
+                res_cfg['eatnow_restaurant_id'] = (payload.get('eatnow_restaurant_id') or '').strip()
+            if 'eatnow_api_base' in payload:
+                res_cfg['eatnow_api_base'] = (payload.get('eatnow_api_base') or '').strip()
+            gs['reservation'] = res_cfg
+            inst.general_settings = gs
+            update_fields = ['general_settings']
+            if 'eatnow_api_key' in payload and (payload.get('eatnow_api_key') or '').strip():
+                sec = dict(inst.get_reservation_oauth() or {})
+                en = dict(sec.get('eatnow') or {})
+                en['api_key'] = payload['eatnow_api_key'].strip()
+                sec['eatnow'] = en
+                inst.set_reservation_oauth(sec)
+                update_fields.append('reservation_oauth_data')
+            if 'eatnow_webhook_secret' in payload and (payload.get('eatnow_webhook_secret') or '').strip():
+                sec = dict(inst.get_reservation_oauth() or {})
+                en = dict(sec.get('eatnow') or {})
+                en['webhook_secret'] = str(payload['eatnow_webhook_secret']).strip()
+                sec['eatnow'] = en
+                inst.set_reservation_oauth(sec)
+                if 'reservation_oauth_data' not in update_fields:
+                    update_fields.append('reservation_oauth_data')
+            inst.save(update_fields=update_fields)
 
         # If name changed, log audit and broadcast like update_my_restaurant
         new_name = serializer.instance.name
@@ -197,7 +288,152 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
         out['settings_schema_version'] = version
         out['settingsVersion'] = version
         out['phone_restaurant'] = out.get('phone')
+
+        inst = serializer.instance
+        gs = inst.general_settings or {}
+        rsv = gs.get('reservation') or {}
+        out['reservation_provider'] = rsv.get('provider') or 'NONE'
+        out['reservation_widget_url'] = rsv.get('widget_url') or ''
+        out['reservation_display_name'] = rsv.get('display_name') or ''
+        out['eatnow_group_id'] = rsv.get('eatnow_group_id') or ''
+        out['eatnow_restaurant_id'] = rsv.get('eatnow_restaurant_id') or ''
+        out['eatnow_api_base'] = rsv.get('eatnow_api_base') or ''
+        sec = inst.get_reservation_oauth() or {}
+        out['eatnow_api_key_set'] = bool((sec.get('eatnow') or {}).get('api_key'))
+        out['eatnow_webhook_secret_set'] = bool((sec.get('eatnow') or {}).get('webhook_secret'))
+        out['eatnow_webhook_url'] = request.build_absolute_uri('/api/webhooks/eatnow/')
+
+        if inst.pos_provider == 'CUSTOM':
+            root = inst.get_pos_oauth() or {}
+            custom_cfg = root.get('custom') or {}
+            out['pos_custom_api_url'] = custom_cfg.get('api_url', '')
+            out['pos_custom_api_key_set'] = bool(custom_cfg.get('api_key'))
+        if inst.pos_provider == 'LIGHTSPEED':
+            root = inst.get_pos_oauth() or {}
+            ls = root.get('lightspeed') or {}
+            out['lightspeed_line'] = ls.get('line') or 'RESTAURANT_K'
+            out['lightspeed_domain_prefix'] = ls.get('domain_prefix') or ''
+
         return Response(out)
+
+    def _eatnow_credentials(self, restaurant):
+        gs = restaurant.general_settings or {}
+        rsv = gs.get('reservation') or {}
+        sec = restaurant.get_reservation_oauth() or {}
+        en = sec.get('eatnow') or {}
+        return {
+            'api_key': (en.get('api_key') or '').strip(),
+            'restaurant_id': (rsv.get('eatnow_restaurant_id') or '').strip(),
+            'api_base': (rsv.get('eatnow_api_base') or '').strip() or None,
+        }
+
+    @staticmethod
+    def _serialize_eatnow_reservation_row(r: EatNowReservation) -> dict:
+        start_time = None
+        if r.reservation_date:
+            start_time = r.reservation_date.isoformat()
+            if r.reservation_time:
+                start_time = f"{start_time}T{r.reservation_time}"
+        return {
+            'id': r.external_id,
+            'start_time': start_time,
+            'covers': r.group_size,
+            'status': r.status,
+            'guest_name': r.guest_name or None,
+            'phone': r.phone or None,
+            'email': r.email or None,
+            'notes': r.notes or None,
+        }
+
+    @action(detail=False, methods=['get'], url_path='reservations/eatnow')
+    def reservations_eatnow(self, request):
+        """List reservations synced from Eat Now webhooks for a date range (local DB)."""
+        if not request.user.restaurant:
+            return Response({'error': 'No restaurant associated'}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.is_admin_role():
+            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        restaurant = request.user.restaurant
+        gs = restaurant.general_settings or {}
+        rsv = gs.get('reservation') or {}
+        if (rsv.get('provider') or '').upper() != 'EATAPP':
+            return Response(
+                {'success': False, 'error': 'Reservation provider is not Eat Now (EATAPP). Configure it in Settings.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        cred = self._eatnow_credentials(restaurant)
+        if not cred['restaurant_id']:
+            return Response(
+                {
+                    'success': False,
+                    'error': 'Eat Now restaurant ID is required. Paste it from Eat Now (same value as in webhook payload restaurant_id).',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        start_s = request.query_params.get('start_date')
+        end_s = request.query_params.get('end_date')
+        today = timezone.now().date()
+        start_d = parse_date(start_s) if start_s else today
+        end_d = parse_date(end_s) if end_s else today + timedelta(days=14)
+        if not start_d:
+            start_d = today
+        if not end_d:
+            end_d = start_d
+        qs = (
+            EatNowReservation.objects.filter(
+                restaurant=restaurant,
+                is_deleted=False,
+                reservation_date__gte=start_d,
+                reservation_date__lte=end_d,
+            )
+            .order_by('reservation_date', 'reservation_time', 'guest_name')
+        )
+        rows = [self._serialize_eatnow_reservation_row(r) for r in qs]
+        return Response({'success': True, 'reservations': rows, 'count': len(rows)})
+
+    @action(detail=False, methods=['post'], url_path='reservations/eatnow/discover')
+    def reservations_eatnow_discover(self, request):
+        """Return groups and restaurants for the Concierge API (bootstrap IDs)."""
+        if not request.user.restaurant:
+            return Response({'error': 'No restaurant associated'}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.is_admin_role():
+            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        body = request.data or {}
+        api_key = (body.get('api_key') or '').strip()
+        if not api_key:
+            cred = self._eatnow_credentials(request.user.restaurant)
+            api_key = cred['api_key']
+        if not api_key:
+            return Response({'success': False, 'error': 'Provide api_key in the body or save it in Settings first.'}, status=status.HTTP_400_BAD_REQUEST)
+        api_base = (body.get('eatnow_api_base') or '').strip() or None
+        if not api_base:
+            api_base = self._eatnow_credentials(request.user.restaurant).get('api_base')
+        out = eatnow_discover(api_key, api_base=api_base)
+        return Response(out, status=status.HTTP_200_OK if out.get('success') else status.HTTP_502_BAD_GATEWAY)
+
+    @action(detail=False, methods=['post'], url_path='reservations/eatnow/test')
+    def reservations_eatnow_test(self, request):
+        """Verify Eat Now API key + restaurant ID (fetches today's reservations)."""
+        if not request.user.restaurant:
+            return Response({'error': 'No restaurant associated'}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.is_admin_role():
+            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        restaurant = request.user.restaurant
+        body = request.data or {}
+        cred = self._eatnow_credentials(restaurant)
+        api_key = (body.get('api_key') or '').strip() or cred['api_key']
+        restaurant_id = (body.get('eatnow_restaurant_id') or '').strip() or cred['restaurant_id']
+        api_base = (body.get('eatnow_api_base') or '').strip() or cred['api_base']
+        if not api_key or not restaurant_id:
+            return Response(
+                {'success': False, 'connected': False, 'error': 'API key and Restaurant ID required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        result = eatnow_test(api_key, restaurant_id, api_base=api_base)
+        ok = bool(result.get('success'))
+        return Response(
+            {'success': ok, 'connected': ok, 'message': result.get('error') or 'OK', 'sample_count': result.get('count', 0)},
+            status=status.HTTP_200_OK if ok else status.HTTP_502_BAD_GATEWAY,
+        )
     
     @action(detail=False, methods=['get'])
     def my_restaurant(self, request):
@@ -470,24 +706,85 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                     'message': 'Coming soon'
                 })
             elif restaurant.pos_provider == 'LIGHTSPEED':
-                api_base = getattr(settings, 'LIGHTSPEED_API_BASE', '').rstrip('/') or 'https://api.trial.lsk.lightspeed.app'
                 api_key = (pos_api_key or restaurant.pos_api_key or '').strip()
                 bl_id = (pos_merchant_id or restaurant.pos_merchant_id or '').strip()
+                root = restaurant.get_pos_oauth() or {}
+                ls = root.get('lightspeed') or {}
+                line = (ls.get('line') or 'RESTAURANT_K').strip().upper()
+                if line not in ('RESTAURANT_K', 'RETAIL_X'):
+                    line = 'RESTAURANT_K'
+                domain = (ls.get('domain_prefix') or '').strip()
                 if not api_key:
                     return Response({
                         'connected': False,
                         'provider': 'LIGHTSPEED',
                         'message': 'Lightspeed API key is not configured. Save your access token in Settings.',
                     })
+                if line == 'RETAIL_X':
+                    if not domain:
+                        return Response({
+                            'connected': False,
+                            'provider': 'LIGHTSPEED',
+                            'message': 'Retail X-Series: enter your domain prefix (the part before .retail.lightspeed.app).',
+                        })
+                    try:
+                        from datetime import timedelta
+                        from django.utils import timezone as dj_tz
+
+                        version = getattr(settings, 'LIGHTSPEED_RETAIL_API_VERSION', '2026-01')
+                        url = f'https://{domain}.retail.lightspeed.app/api/{version}/search'
+                        headers = {'Authorization': f'Bearer {api_key}', 'Accept': 'application/json'}
+                        day = (dj_tz.now().date() - timedelta(days=1)).isoformat()
+                        params = {
+                            'type': 'sales',
+                            'date_from': day,
+                            'date_to': day,
+                            'page_size': 1,
+                            'offset': 0,
+                        }
+                        outlet = (restaurant.pos_location_id or '').strip()
+                        if outlet:
+                            params['outlet_id'] = outlet
+                        resp = requests.get(url, headers=headers, params=params, timeout=15)
+                        connected = resp.status_code in (200, 204)
+                        if resp.status_code == 401:
+                            connected = False
+                        restaurant.pos_is_connected = connected
+                        if api_key:
+                            restaurant.pos_api_key = api_key
+                        restaurant.save(update_fields=['pos_is_connected', 'pos_api_key'])
+                        msg = 'Lightspeed Retail (X-Series) connected'
+                        if not connected:
+                            try:
+                                body = resp.json() if resp.content else {}
+                                msg = body.get('error') or body.get('message') or f'API HTTP {resp.status_code}'
+                            except Exception:
+                                msg = f'API HTTP {resp.status_code}'
+                        return Response({
+                            'connected': connected,
+                            'provider': 'LIGHTSPEED',
+                            'lightspeed_line': 'RETAIL_X',
+                            'status_code': resp.status_code,
+                            'message': msg,
+                        })
+                    except Exception as exc:
+                        return Response({
+                            'connected': False,
+                            'provider': 'LIGHTSPEED',
+                            'message': str(exc),
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                # Restaurant K-Series (default)
+                api_base = getattr(settings, 'LIGHTSPEED_API_BASE', '').rstrip('/') or 'https://api.trial.lsk.lightspeed.app'
                 if not bl_id:
                     return Response({
                         'connected': False,
                         'provider': 'LIGHTSPEED',
-                        'message': 'Business Location ID is required. Enter it in Settings (Merchant/Location ID field).',
+                        'message': 'Business Location ID is required for Restaurant (K-Series). Enter it in Settings.',
                     })
                 try:
                     headers = {'Authorization': f'Bearer {api_key}', 'Accept': 'application/json'}
-                    from datetime import datetime, timedelta
+                    from datetime import timedelta
                     from django.utils import timezone as dj_tz
                     today = (dj_tz.now().date() - timedelta(days=1)).isoformat()
                     from_str = f'{today}T00:00:00Z'
@@ -506,6 +803,7 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                     return Response({
                         'connected': connected,
                         'provider': 'LIGHTSPEED',
+                        'lightspeed_line': 'RESTAURANT_K',
                         'status_code': resp.status_code,
                         'message': 'Lightspeed connected' if connected else (resp.json().get('error', 'API error') if resp.content else 'Lightspeed API not reachable'),
                     })

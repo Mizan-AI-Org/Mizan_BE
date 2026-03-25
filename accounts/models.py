@@ -120,7 +120,9 @@ class Restaurant(models.Model):
     pos_location_id = models.CharField(max_length=255, blank=True, null=True)
     # Access token expiry for OAuth providers (best-effort; source of truth is provider)
     pos_token_expires_at = models.DateTimeField(blank=True, null=True)
-    
+    # Reservation integrations (Eat Now / Eat App Concierge API key, etc.) — encrypted JSON
+    reservation_oauth_data = models.TextField(blank=True, null=True)
+
     class Meta:
         db_table = 'restaurants'
     
@@ -158,6 +160,18 @@ class Restaurant(models.Model):
     def get_square_refresh_token(self) -> str:
         sq = self.get_square_oauth()
         return sq.get("refresh_token") or ""
+
+    def get_reservation_oauth(self) -> dict:
+        """Decrypted secrets for reservation providers (Eat Now API key, etc.)."""
+        if not self.reservation_oauth_data:
+            return {}
+        try:
+            return decrypt_json(self.reservation_oauth_data)
+        except Exception:
+            return {}
+
+    def set_reservation_oauth(self, payload: dict) -> None:
+        self.reservation_oauth_data = encrypt_json(payload or {})
 
 class CustomUser(AbstractUser):
     ROLE_CHOICES = settings.STAFF_ROLES_CHOICES
@@ -727,6 +741,70 @@ class StaffActivationRecord(models.Model):
 
     def __str__(self):
         return f"{self.phone} ({self.restaurant.name}) - {self.status}"
+
+
+class EatNowReservation(models.Model):
+    """
+    Reservation row synced from Eat Now (eat-now.io) webhooks — source of truth for the dashboard list
+    when not using the legacy Concierge API pull.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        Restaurant, on_delete=models.CASCADE, related_name="eatnow_reservations"
+    )
+    external_id = models.CharField(max_length=128, db_index=True)
+    status = models.CharField(max_length=128, blank=True, default="")
+    group_size = models.IntegerField(null=True, blank=True)
+    reservation_date = models.DateField(null=True, blank=True, db_index=True)
+    reservation_time = models.CharField(max_length=32, blank=True, default="")
+    guest_name = models.CharField(max_length=255, blank=True, default="")
+    phone = models.CharField(max_length=64, blank=True, default="")
+    email = models.CharField(max_length=254, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    tags = models.JSONField(default=list, blank=True)
+    source = models.CharField(max_length=64, blank=True, default="")
+    raw_reservation = models.JSONField(default=dict, blank=True)
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "eatnow_reservations"
+        ordering = ["reservation_date", "reservation_time", "guest_name"]
+        constraints = [
+            models.UniqueConstraint(fields=["restaurant", "external_id"], name="uniq_eatnow_res_restaurant_external"),
+        ]
+        indexes = [
+            models.Index(fields=["restaurant", "is_deleted", "reservation_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.guest_name or self.external_id} {self.reservation_date or ''}"
+
+
+class EatNowWebhookDelivery(models.Model):
+    """
+    Ingested EatNow (eat-now.io) webhook deliveries for idempotency and audit.
+    Event types: RESERVATION_CREATED, RESERVATION_UPDATED, RESERVATION_DELETED.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        Restaurant, on_delete=models.CASCADE, related_name="eatnow_webhook_deliveries"
+    )
+    delivery_id = models.CharField(max_length=255, unique=True, db_index=True)
+    event_type = models.CharField(max_length=64, blank=True, default="")
+    payload = models.JSONField(default=dict)
+    received_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "eatnow_webhook_deliveries"
+        ordering = ["-received_at"]
+        indexes = [
+            models.Index(fields=["restaurant", "-received_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.event_type} {self.delivery_id[:24]}…"
 
 
 class StaffRestaurantLink(models.Model):

@@ -413,6 +413,9 @@ SQUARE_WEBHOOK_NOTIFICATION_URL = config('SQUARE_WEBHOOK_NOTIFICATION_URL', defa
 # https://api.heymizan.ai/api/pos/webhooks/square/{restaurant_id}/
 SQUARE_WEBHOOK_NOTIFICATION_URL_TEMPLATE = config('SQUARE_WEBHOOK_NOTIFICATION_URL_TEMPLATE', default='')
 
+# Eat Now / Eat App Concierge API (default production; sandbox: https://api.eat-sandbox.co)
+EATNOW_CONCIERGE_API_BASE = config('EATNOW_CONCIERGE_API_BASE', default='https://api.eatapp.co')
+
 
 from celery.schedules import crontab
 

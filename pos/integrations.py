@@ -15,6 +15,145 @@ from datetime import timedelta
 import time
 import random
 import uuid
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def _lightspeed_product_line(restaurant) -> str:
+    root = restaurant.get_pos_oauth() or {}
+    ls = root.get('lightspeed') or {}
+    line = (ls.get('line') or 'RESTAURANT_K').strip().upper()
+    if line not in ('RESTAURANT_K', 'RETAIL_X'):
+        return 'RESTAURANT_K'
+    return line
+
+
+def _lightspeed_domain_prefix(restaurant) -> str:
+    root = restaurant.get_pos_oauth() or {}
+    ls = root.get('lightspeed') or {}
+    return (ls.get('domain_prefix') or '').strip()
+
+
+def _retail_x_api_version() -> str:
+    return getattr(settings, 'LIGHTSPEED_RETAIL_API_VERSION', '2026-01').strip() or '2026-01'
+
+
+def _retail_x_parse_search_batch(payload) -> List[dict]:
+    """Normalize X-Series /search JSON into a list of sale objects."""
+    if not payload or not isinstance(payload, dict):
+        return []
+    data = payload.get('data')
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        for key in ('sales', 'results', 'items', 'records'):
+            inner = data.get(key)
+            if isinstance(inner, list):
+                return inner
+    if isinstance(payload.get('results'), list):
+        return payload['results']
+    return []
+
+
+def _retail_x_sale_line_label(line: dict) -> str:
+    prod = line.get('product') if isinstance(line.get('product'), dict) else {}
+    name = (prod.get('name') or prod.get('sku') or '').strip()
+    if name:
+        return name
+    pid = prod.get('id')
+    if pid:
+        return str(pid)
+    return 'Item'
+
+
+def _retail_x_sale_total(sale: dict) -> float:
+    """Best-effort revenue from payments, else from line_items + tax."""
+    total = 0.0
+    for pmt in sale.get('payments') or []:
+        amt = pmt.get('amount')
+        if amt is not None and amt != '':
+            try:
+                total += float(amt)
+            except (TypeError, ValueError):
+                pass
+    if total > 0:
+        return total
+    for li in sale.get('line_items') or []:
+        qty = float(li.get('quantity') or 0)
+        pr = li.get('pricing') or {}
+        tx = li.get('tax') or {}
+        try:
+            unit = float(pr.get('price') or 0) + float(tx.get('amount') or 0)
+        except (TypeError, ValueError):
+            unit = 0.0
+        total += qty * unit
+    return total
+
+
+def _retail_x_sale_tips(sale: dict) -> float:
+    t = 0.0
+    for pmt in sale.get('payments') or []:
+        for key in ('tip', 'tip_amount', 'gratuity'):
+            v = pmt.get(key)
+            if v is not None and v != '':
+                try:
+                    t += float(v)
+                except (TypeError, ValueError):
+                    pass
+    return t
+
+
+def _retail_x_fetch_sales_search(restaurant, date_from, date_to) -> List[dict]:
+    """Paginated X-Series search for sales in [date_from, date_to] (date objects)."""
+    domain = _lightspeed_domain_prefix(restaurant)
+    if not domain:
+        return []
+    token = (restaurant.pos_api_key or '').strip()
+    if not token:
+        return []
+    version = _retail_x_api_version()
+    url = f'https://{domain}.retail.lightspeed.app/api/{version}/search'
+    headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/json'}
+    df = date_from.isoformat() if hasattr(date_from, 'isoformat') else str(date_from)
+    dt = date_to.isoformat() if hasattr(date_to, 'isoformat') else str(date_to)
+    all_rows: List[dict] = []
+    offset = 0
+    page_size = min(int(getattr(settings, 'LIGHTSPEED_RETAIL_PAGE_SIZE', 250) or 250), 500)
+    while True:
+        params = {
+            'type': 'sales',
+            'date_from': df,
+            'date_to': dt,
+            'page_size': page_size,
+            'offset': offset,
+        }
+        outlet = (restaurant.pos_location_id or '').strip()
+        if outlet:
+            params['outlet_id'] = outlet
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=30)
+            if resp.status_code == 401:
+                try:
+                    restaurant.pos_is_connected = False
+                    restaurant.save(update_fields=['pos_is_connected'])
+                except Exception:
+                    pass
+                break
+            resp.raise_for_status()
+            payload = resp.json() if resp.content else {}
+        except requests.RequestException as exc:
+            logger.warning('Lightspeed Retail X search failed: %s', exc)
+            break
+        batch = _retail_x_parse_search_batch(payload)
+        if not batch:
+            break
+        all_rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    return all_rows
 
 
 class BasePOSIntegration(ABC):
@@ -758,7 +897,10 @@ class CustomAPIIntegration(BasePOSIntegration):
 
 
 class LightSpeedIntegration(BasePOSIntegration):
-    """Lightspeed Restaurant K-Series API integration (api.trial.lsk.lightspeed.app)."""
+    """Lightspeed: Restaurant (K-Series) and Retail (X-Series) — see pos_oauth['lightspeed']['line']."""
+
+    def _line(self) -> str:
+        return _lightspeed_product_line(self.restaurant)
 
     def _base_url(self) -> str:
         return getattr(settings, 'LIGHTSPEED_API_BASE', '').rstrip('/') or 'https://api.trial.lsk.lightspeed.app'
@@ -789,6 +931,10 @@ class LightSpeedIntegration(BasePOSIntegration):
         return {'success': False, 'error': 'Lightspeed menu sync not implemented yet'}
 
     def sync_orders(self, start_date=None, end_date=None) -> List[Dict]:
+        if self._line() == 'RETAIL_X':
+            sd = start_date or timezone.now().date()
+            ed = end_date or timezone.now().date()
+            return _retail_x_fetch_sales_search(self.restaurant, sd, ed)
         bl_id = self._business_location_id()
         if not bl_id:
             return []
@@ -798,8 +944,9 @@ class LightSpeedIntegration(BasePOSIntegration):
         return data.get('sales', [])
 
     def get_item_sales_for_date_range(self, start_date, end_date) -> Dict:
-        """Fetch item-level sales from Lightspeed for prep list forecasting.
-        Returns {date: {item_name: quantity}}."""
+        """Returns {date: {item_name: quantity}} for prep list forecasting."""
+        if self._line() == 'RETAIL_X':
+            return self._retail_x_item_sales_for_date_range(start_date, end_date)
         from django.utils.dateparse import parse_datetime
         bl_id = self._business_location_id()
         if not bl_id:
@@ -830,6 +977,34 @@ class LightSpeedIntegration(BasePOSIntegration):
                 if not name:
                     continue
                 qty = float(line.get('quantity', 1) or 1)
+                result[sale_date][name] = result[sale_date].get(name, 0) + qty
+        return result
+
+    def _retail_x_item_sales_for_date_range(self, start_date, end_date) -> Dict:
+        from django.utils.dateparse import parse_datetime
+        if not _lightspeed_domain_prefix(self.restaurant):
+            return {}
+        sales = _retail_x_fetch_sales_search(self.restaurant, start_date, end_date)
+        result: Dict = {}
+        for sale in sales:
+            st = (sale.get('state') or '').lower()
+            if st == 'voided' or (st and st != 'closed'):
+                continue
+            raw_date = sale.get('date') or sale.get('created_at') or sale.get('closed_at')
+            sale_date = None
+            if raw_date:
+                dt = parse_datetime(str(raw_date).replace('Z', '+00:00'))
+                if dt:
+                    sale_date = dt.date()
+            if not sale_date or sale_date < start_date or sale_date > end_date:
+                continue
+            if sale_date not in result:
+                result[sale_date] = {}
+            for line in sale.get('line_items') or []:
+                name = _retail_x_sale_line_label(line)
+                qty = float(line.get('quantity') or 0)
+                if qty <= 0:
+                    continue
                 result[sale_date][name] = result[sale_date].get(name, 0) + qty
         return result
 
@@ -925,9 +1100,12 @@ class IntegrationManager:
 
         target_date = date or timezone.now().date()
 
-        # LightSpeed: fetch directly from K-Series API
+        # Lightspeed: K-Series Restaurant API or Retail X-Series Search API
         if provider == 'LIGHTSPEED':
-            return cls._get_lightspeed_daily_sales(restaurant, target_date)
+            line = _lightspeed_product_line(restaurant)
+            if line == 'RETAIL_X':
+                return cls._get_lightspeed_retail_x_daily_sales(restaurant, target_date)
+            return cls._get_lightspeed_k_daily_sales(restaurant, target_date)
 
         day_start = timezone.make_aware(timezone.datetime.combine(target_date, timezone.datetime.min.time()))
         day_end = timezone.make_aware(timezone.datetime.combine(target_date, timezone.datetime.max.time()))
@@ -978,8 +1156,84 @@ class IntegrationManager:
         }
 
     @classmethod
-    def _get_lightspeed_daily_sales(cls, restaurant, target_date) -> Dict:
-        """Fetch daily sales from Lightspeed K-Series API."""
+    def _get_lightspeed_retail_x_daily_sales(cls, restaurant, target_date) -> Dict:
+        """Fetch daily sales from Lightspeed Retail (X-Series) Search API."""
+        domain = _lightspeed_domain_prefix(restaurant)
+        api_key = (restaurant.pos_api_key or '').strip()
+        if not domain or not api_key:
+            return {
+                'success': True,
+                'connected': False,
+                'error': 'Lightspeed Retail: domain prefix and access token required. Configure in Settings.',
+            }
+        try:
+            sales = _retail_x_fetch_sales_search(restaurant, target_date, target_date)
+        except Exception as e:
+            return {
+                'success': True,
+                'connected': True,
+                'error': f'Lightspeed Retail API error: {e}',
+                'total_sales': 0,
+                'order_count': 0,
+                'avg_ticket': 0,
+                'currency': restaurant.currency or 'USD',
+            }
+        total_sales = 0.0
+        total_tax = 0.0
+        total_discount = 0.0
+        cash_total = 0.0
+        card_total = 0.0
+        tips_total = 0.0
+        for sale in sales:
+            st = (sale.get('state') or '').lower()
+            if st == 'voided' or (st and st != 'closed'):
+                continue
+            total_sales += _retail_x_sale_total(sale)
+            tips_total += _retail_x_sale_tips(sale)
+            for li in sale.get('line_items') or []:
+                pr = li.get('pricing') or {}
+                try:
+                    total_discount += float(pr.get('discount') or 0) * float(li.get('quantity') or 0)
+                except (TypeError, ValueError):
+                    pass
+                tx = li.get('tax') or {}
+                try:
+                    total_tax += float(tx.get('amount') or 0) * float(li.get('quantity') or 0)
+                except (TypeError, ValueError):
+                    pass
+            for pmt in sale.get('payments') or []:
+                amt = float(pmt.get('amount') or 0)
+                if amt <= 0:
+                    continue
+                try:
+                    blob = json.dumps(pmt.get('type'), default=str).lower()
+                except Exception:
+                    blob = repr(pmt.get('type')).lower()
+                if 'cash' in blob:
+                    cash_total += amt
+                else:
+                    card_total += amt
+        order_count = len([s for s in sales if (s.get('state') or '').lower() == 'closed'])
+        avg_ticket = total_sales / order_count if order_count else 0
+        return {
+            'success': True,
+            'connected': True,
+            'date': target_date.isoformat(),
+            'total_sales': round(total_sales, 2),
+            'order_count': order_count,
+            'avg_ticket': round(avg_ticket, 2),
+            'total_tax': round(total_tax, 2),
+            'total_discount': round(total_discount, 2),
+            'tips': round(tips_total, 2),
+            'cash_total': round(cash_total, 2),
+            'card_total': round(card_total, 2),
+            'by_order_type': {},
+            'currency': restaurant.currency or 'USD',
+        }
+
+    @classmethod
+    def _get_lightspeed_k_daily_sales(cls, restaurant, target_date) -> Dict:
+        """Fetch daily sales from Lightspeed Restaurant K-Series API."""
         api_base = getattr(settings, 'LIGHTSPEED_API_BASE', '').rstrip('/') or 'https://api.trial.lsk.lightspeed.app'
         bl_id = (restaurant.pos_merchant_id or '').strip()
         api_key = (restaurant.pos_api_key or '').strip()
