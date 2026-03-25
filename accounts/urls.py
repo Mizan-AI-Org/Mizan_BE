@@ -11,6 +11,7 @@ from .views import (
     redirect_to_wa_activation,
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
+from .views_eatnow_webhook import eatnow_webhook
 from .views_invitations import InvitationViewSet, UserManagementViewSet
 from .views_agent import (
     AgentContextView,
@@ -30,6 +31,7 @@ router.register(r'invitations', InvitationViewSet, basename='invitations')
 router.register(r'users', UserManagementViewSet, basename='users')
 
 urlpatterns = [
+    path('webhooks/eatnow/', eatnow_webhook, name='eatnow_webhook'),
     path('', include(router.urls)),
     path('token/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('token/refresh/', CustomTokenRefreshView.as_view(), name='token_refresh'),

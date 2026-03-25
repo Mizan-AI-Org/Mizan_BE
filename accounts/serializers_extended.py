@@ -99,6 +99,7 @@ class RestaurantSettingsSerializer(serializers.ModelSerializer):
             'push_notifications',
             'pos_provider',
             'pos_merchant_id',
+            'pos_location_id',
             'pos_is_connected',
             'pos_integration',
             'ai_config'
