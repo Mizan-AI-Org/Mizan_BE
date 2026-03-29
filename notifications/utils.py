@@ -43,6 +43,102 @@ LOW_KEYWORDS = [
 TIME_YESTERDAY = ['yesterday', 'أمس', 'hier']
 TIME_TODAY = ['today', 'اليوم', "aujourd'hui"]
 
+# Phrases that indicate staff are logging a guest order / pickup, not a safety incident.
+_ORDER_INTENT_MARKERS_EN = [
+    'pick up', 'pickup', 'pick-up', 'takeout', 'take out', 'take-out',
+    'wants to pick up', 'wants to order', 'want to order', 'place an order',
+    'guest order', 'new order', 'order for', 'order at ', 'order by ',
+    'coming to pick', 'pick it up', 'takeaway', 'take away',
+]
+_ORDER_INTENT_MARKERS_FR = [
+    'commande', 'emporter', 'à emporter', 'retrait', 'sur place',
+]
+_ORDER_INTENT_MARKERS_AR = ['طلب', 'استلام', 'سفري']
+# If present, treat as incident/complaint even if "order" or "customer" appears.
+_ORDER_NEGATIVE_INCIDENT_MARKERS = [
+    'complaint', 'complain', 'refund', 'rude', 'angry', 'furious',
+    'unsafe', 'injury', 'hurt', 'broken', 'fight', 'harassment',
+    'شكوى', 'مكسور',  # Arabic complaint / broken
+    'plainte', 'remboursement',  # French
+]
+
+
+def looks_like_guest_order_intent(text):
+    """
+    True when transcript reads like taking or scheduling a guest order / pickup,
+    not reporting a safety or service incident.
+    Used so voice notes are not misclassified as incidents (e.g. 'customer' → Service).
+    """
+    if not text or not str(text).strip():
+        return False
+    t = (text or '').lower()
+    if any(m in t for m in _ORDER_NEGATIVE_INCIDENT_MARKERS):
+        return False
+    markers = _ORDER_INTENT_MARKERS_EN + _ORDER_INTENT_MARKERS_FR + _ORDER_INTENT_MARKERS_AR
+    if any(m in t for m in markers):
+        return True
+    # "An order for ..." / "order: two burgers" without pick-up verbs
+    if 'order' in t and any(x in t for x in ('for ', 'for:', 'items', 'burger', 'pizza', 'table ')):
+        return True
+    return False
+
+
+# Phrases that clearly indicate a safety/maintenance/HR report (not a guest order).
+_STRONG_INCIDENT_VOICE_MARKERS_EN = [
+    'incident report', 'report an incident', 'report a safety', 'report an accident',
+    'there was an accident', 'there was a fire', 'someone fell', 'slip and fall', 'slipped on',
+    'i need to report', 'safety issue', 'maintenance issue', 'gas leak', 'water leak',
+    'water damage', 'equipment failure', 'someone hurt', 'someone is hurt', 'bleeding',
+    'call 911', 'call police', 'ambulance', 'emergency at',
+]
+_STRONG_INCIDENT_VOICE_MARKERS_FR = [
+    'signalement', 'incendie', 'blessure', 'plainte grave', 'fuite de gaz',
+]
+_STRONG_INCIDENT_VOICE_MARKERS_AR = [
+    'بلاغ', 'حادث', 'إصابة خطيرة', 'حريق',
+]
+
+
+def should_route_whatsapp_voice_to_incident(text):
+    """
+    If True, transcribed WhatsApp voice should create SafetyConcernReport.
+    If False, prefer StaffCapturedOrder (Today's Orders) — including when the only
+    signal would have been generic words like "customer" / "guest" (order-taking).
+
+    Conservative: default is NOT incident unless we see clear incident language.
+    """
+    if not text or not str(text).strip():
+        return False
+    t = (text or '').lower()
+    # Complaint / abuse / unsafe — always incident path
+    if any(m in t for m in _ORDER_NEGATIVE_INCIDENT_MARKERS):
+        return True
+    strong = (
+        _STRONG_INCIDENT_VOICE_MARKERS_EN
+        + _STRONG_INCIDENT_VOICE_MARKERS_FR
+        + _STRONG_INCIDENT_VOICE_MARKERS_AR
+    )
+    if any(m in t for m in strong):
+        return True
+    # Safety / HR keywords (full lists)
+    if any(k in t for k in SAFETY_KEYWORDS):
+        return True
+    if any(k in t for k in HR_KEYWORDS):
+        return True
+    # Maintenance: avoid bare "water" / "gas" (common in food orders)
+    for kw in MAINTENANCE_KEYWORDS:
+        if kw in ('water', 'gas'):
+            continue
+        if kw in t:
+            return True
+    if 'gas leak' in t or 'water leak' in t or 'water damage' in t:
+        return True
+    # Service incident: complaint language + guest/service context
+    if any(x in t for x in ('complaint', 'complain', 'refund', 'rude', 'angry', 'furious')):
+        if any(k in t for k in SERVICE_KEYWORDS):
+            return True
+    return False
+
 
 def infer_incident_type(text):
     """Infer incident type from text (English, Arabic, or French)."""

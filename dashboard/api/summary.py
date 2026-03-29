@@ -618,15 +618,17 @@ class DashboardSummaryView(APIView):
             current_period_no_shows = evening_no_shows
 
         # Aggregated analytics for dashboard widgets (same refresh cycle as summary)
-        safety_alerts_open = SafetyConcernReport.objects.filter(
+        open_concerns_qs = SafetyConcernReport.objects.filter(
             restaurant=restaurant,
             status__in=['OPEN'],
-            severity__in=['HIGH', 'CRITICAL'],
             resolved_at__isnull=True,
+        )
+        # High/critical: urgent safety alerts (subset of all open incidents)
+        safety_alerts_open = open_concerns_qs.filter(
+            severity__in=['HIGH', 'CRITICAL'],
         ).count()
-
-        # Same definition as safety_alerts_open (no separate reporting.Incident count)
-        incident_open_count = safety_alerts_open
+        # All open incidents (any severity) — matches Reported Incidents / analytics list
+        incident_open_count = open_concerns_qs.count()
 
         tasks_open_today = tasks_today.exclude(status='COMPLETED').count()
         missing_geo_count = sum(
