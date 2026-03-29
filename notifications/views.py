@@ -24,7 +24,12 @@ from .serializers import (
     AnnouncementCreateSerializer
 )
 from .services import notification_service
-from .utils import infer_incident_type, infer_severity, extract_occurred_at
+from .utils import (
+    infer_incident_type,
+    infer_severity,
+    extract_occurred_at,
+    looks_like_guest_order_intent,
+)
 from scheduling.audit import AuditTrailService, AuditActionType, AuditSeverity
 from core.utils import build_tenant_context
 from .models import WhatsAppSession
@@ -862,7 +867,9 @@ def whatsapp_webhook(request):
         # but NOT if it contains image/location messages (Lua cannot
         # download WhatsApp media — Django handles those directly).
         lua_url = getattr(dj_settings, 'LUA_WHATSAPP_WEBHOOK_URL', '')
-        _lua_skip_types = {'image', 'location'}
+        # Audio is transcribed in Django; forwarding voice to Lua as well caused duplicate
+        # handling (e.g. incident API) instead of guest-order routing.
+        _lua_skip_types = {'image', 'location', 'audio'}
         _has_media_msg = False
         if lua_url:
             for entry in payload.get('entry', []):
@@ -1113,7 +1120,7 @@ def whatsapp_webhook(request):
                     # Image and location messages are always handled by Django (Lua
                     # cannot download WhatsApp media). Django processes incident photos,
                     # verification photos, and clock-in locations directly.
-                    _django_only_msg_types = {'image', 'location'}
+                    _django_only_msg_types = {'image', 'location', 'audio'}
                     if lua_url and session and session.state not in _active_django_states and msg_type not in _django_only_msg_types:
                         logger.info("Session state '%s' for %s — deferring to Lua/Miya.", session.state, phone_digits)
                         continue
@@ -1724,6 +1731,59 @@ def whatsapp_webhook(request):
                                 )
                             except Exception as e:
                                 logger.exception("WhatsApp guest order (voice) failed: %s", e)
+                                notification_service.send_whatsapp_text(phone_digits, R(user, 'order_failed'))
+                            continue
+
+                        # Voice that sounds like a guest order / pickup (not an incident). Avoids
+                        # misclassification: e.g. "customer" + time → Service incident via infer_incident_type.
+                        if looks_like_guest_order_intent(transcript or ''):
+                            rest_o = getattr(user, 'restaurant', None)
+                            if not rest_o:
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    "Your account has no restaurant context. Contact your manager.",
+                                )
+                                continue
+                            tstrip = (transcript or '').strip()
+                            if not tstrip or len(tstrip) < 8:
+                                session.state = 'awaiting_order_clarification'
+                                session.context['pending_order'] = {
+                                    'source': 'voice',
+                                    'audio_url': media_url,
+                                    'media_id': media_id,
+                                    'transcript': tstrip or '',
+                                }
+                                session.save(update_fields=['state', 'context'])
+                                notification_service.send_whatsapp_text(phone_digits, R(user, 'order_clarify_audio'))
+                                continue
+                            try:
+                                order = StaffCapturedOrder.objects.create(
+                                    restaurant=rest_o,
+                                    recorded_by=user,
+                                    items_summary=tstrip[:8000],
+                                    channel='VOICE',
+                                    customer_name='',
+                                    customer_phone='',
+                                    order_type='DINE_IN',
+                                    table_or_location='',
+                                    dietary_notes='',
+                                    special_instructions='',
+                                )
+                                preview = tstrip[:400] + ('…' if len(tstrip) > 400 else '')
+                                session.state = 'idle'
+                                session.context.pop('pending_order', None)
+                                session.save(update_fields=['state', 'context'])
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    R(
+                                        user,
+                                        'order_recorded',
+                                        order_id=str(order.id)[:8],
+                                        preview=f"Details:\n{preview}",
+                                    ),
+                                )
+                            except Exception as e:
+                                logger.exception("WhatsApp guest order (voice, order-intent) failed: %s", e)
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'order_failed'))
                             continue
 

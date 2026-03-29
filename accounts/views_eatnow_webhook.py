@@ -11,8 +11,8 @@ from django.http import HttpResponse, HttpResponseNotAllowed
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
-from .eatnow_webhook import parse_webhook_json, verify_eatnow_signature
-from .eatnow_webhook_processor import apply_eatnow_webhook_payload
+from .eatnow_webhook import extract_restaurant_id_candidates, parse_webhook_json, verify_eatnow_signature
+from .eatnow_webhook_processor import apply_eatnow_webhook_payload, normalize_eatnow_event_type
 from .models import EatNowWebhookDelivery, Restaurant
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,13 @@ def find_restaurant_by_eatnow_restaurant_id(eatnow_restaurant_id: str) -> Restau
             continue
         if (rsv.get("eatnow_restaurant_id") or "").strip() == rid:
             return r
+    # Fallback: nested JSONField lookups can miss on some DB/backends — scan reservation config.
+    for r in Restaurant.objects.only("id", "general_settings").iterator():
+        rsv = (r.general_settings or {}).get("reservation") or {}
+        if (rsv.get("provider") or "").upper() != "EATAPP":
+            continue
+        if (rsv.get("eatnow_restaurant_id") or "").strip() == rid:
+            return r
     return None
 
 
@@ -50,20 +57,18 @@ def eatnow_webhook(request):
     if err:
         return HttpResponse(status=400, content=err)
 
-    eatnow_rid = ""
-    if isinstance(payload.get("restaurant_id"), str):
-        eatnow_rid = payload["restaurant_id"].strip()
-    event_type = ""
-    if isinstance(payload.get("event"), str):
-        event_type = payload["event"].strip()
-    if event_header and not event_type:
-        event_type = event_header
+    candidates = extract_restaurant_id_candidates(payload)
+    event_type = normalize_eatnow_event_type(event_header, payload)
 
-    restaurant = find_restaurant_by_eatnow_restaurant_id(eatnow_rid) if eatnow_rid else None
+    restaurant = None
+    for rid in candidates:
+        restaurant = find_restaurant_by_eatnow_restaurant_id(rid)
+        if restaurant:
+            break
     if not restaurant:
         logger.warning(
-            "eatnow_webhook: no restaurant for eatnow_restaurant_id=%s delivery=%s",
-            eatnow_rid,
+            "eatnow_webhook: no restaurant for candidates=%s delivery=%s (set Mizan Eat Now Restaurant ID to one of these values)",
+            candidates,
             delivery_header or "?",
         )
         # Acknowledge to avoid endless retries; operator must align IDs in Settings.

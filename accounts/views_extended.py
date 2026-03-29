@@ -14,7 +14,8 @@ from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 import base64
 import json
 from .models import EatNowReservation, POSIntegration, AIAssistantConfig, Restaurant, StaffProfile
-from .eatnow_client import discover as eatnow_discover, test_connection as eatnow_test
+from .eatnow_client import discover as eatnow_discover, list_reservations as eatnow_list_reservations, test_connection as eatnow_test
+from .eatnow_reservation_import import upsert_from_concierge_flat
 from .serializers_extended import (
     POSIntegrationSerializer,
     AIAssistantConfigSerializer,
@@ -199,7 +200,21 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
             'eatnow_api_key',
             'eatnow_webhook_secret',
         )
-        if any(k in payload for k in res_keys):
+        if payload.get('reservation_disconnect') is True:
+            inst = serializer.instance
+            gs = dict(inst.general_settings or {})
+            res_cfg = dict(gs.get('reservation') or {})
+            res_cfg['provider'] = 'NONE'
+            res_cfg['eatnow_group_id'] = ''
+            res_cfg['eatnow_restaurant_id'] = ''
+            res_cfg['eatnow_api_base'] = ''
+            gs['reservation'] = res_cfg
+            inst.general_settings = gs
+            sec = dict(inst.get_reservation_oauth() or {})
+            sec.pop('eatnow', None)
+            inst.set_reservation_oauth(sec)
+            inst.save(update_fields=['general_settings', 'reservation_oauth_data'])
+        elif any(k in payload for k in res_keys):
             inst = serializer.instance
             gs = dict(inst.general_settings or {})
             res_cfg = dict(gs.get('reservation') or {})
@@ -234,6 +249,43 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                 if 'reservation_oauth_data' not in update_fields:
                     update_fields.append('reservation_oauth_data')
             inst.save(update_fields=update_fields)
+
+        if payload.get('pos_disconnect') is True:
+            inst = serializer.instance
+            if inst.pos_provider == 'SQUARE':
+                sq = inst.get_square_oauth() or {}
+                token = sq.get('access_token') or inst.pos_api_key or ''
+                base = (
+                    'https://connect.squareup.com'
+                    if settings.SQUARE_ENV == 'production'
+                    else 'https://connect.squareupsandbox.com'
+                )
+                try:
+                    if token and getattr(settings, 'SQUARE_APPLICATION_ID', None):
+                        requests.post(
+                            f'{base}/oauth2/revoke',
+                            json={
+                                'client_id': settings.SQUARE_APPLICATION_ID,
+                                'access_token': token,
+                            },
+                            timeout=10,
+                        )
+                except Exception:
+                    pass
+            inst.pos_provider = 'NONE'
+            inst.pos_merchant_id = ''
+            inst.pos_api_key = ''
+            inst.pos_location_id = None
+            inst.pos_is_connected = False
+            inst.pos_token_expires_at = None
+            inst.set_pos_oauth({})
+            inst.save()
+            try:
+                pos_integration, _ = POSIntegration.objects.get_or_create(restaurant=inst)
+                pos_integration.sync_status = 'DISCONNECTED'
+                pos_integration.save(update_fields=['sync_status'])
+            except Exception:
+                pass
 
         # If name changed, log audit and broadcast like update_my_restaurant
         new_name = serializer.instance.name
@@ -389,6 +441,84 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
         )
         rows = [self._serialize_eatnow_reservation_row(r) for r in qs]
         return Response({'success': True, 'reservations': rows, 'count': len(rows)})
+
+    @action(detail=False, methods=['post'], url_path='reservations/eatnow/sync')
+    def reservations_eatnow_sync(self, request):
+        """
+        Backfill / merge from Eat App Concierge API into EatNowReservation.
+        Webhooks do not send historical data; this uses the partner API when an API key is saved.
+        """
+        if not request.user.restaurant:
+            return Response({'error': 'No restaurant associated'}, status=status.HTTP_400_BAD_REQUEST)
+        if not request.user.is_admin_role():
+            return Response({'detail': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+        restaurant = request.user.restaurant
+        gs = restaurant.general_settings or {}
+        rsv = gs.get('reservation') or {}
+        if (rsv.get('provider') or '').upper() != 'EATAPP':
+            return Response(
+                {'success': False, 'error': 'Reservation provider is not Eat Now (EATAPP).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        cred = self._eatnow_credentials(restaurant)
+        if not cred['restaurant_id']:
+            return Response(
+                {'success': False, 'error': 'Eat Now restaurant ID is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not cred['api_key']:
+            return Response(
+                {
+                    'success': False,
+                    'error': (
+                        'Save an Eat App Concierge API key in Settings → Integrations (optional legacy section) '
+                        'to import past reservations. New bookings still arrive via webhooks.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        body = request.data or {}
+        start_s = body.get('start_date') or request.query_params.get('start_date')
+        end_s = body.get('end_date') or request.query_params.get('end_date')
+        today = timezone.now().date()
+        start_d = parse_date(start_s) if start_s else today - timedelta(days=365)
+        end_d = parse_date(end_s) if end_s else today + timedelta(days=120)
+        if not start_d:
+            start_d = today - timedelta(days=365)
+        if not end_d:
+            end_d = start_d
+        if end_d < start_d:
+            start_d, end_d = end_d, start_d
+        span = (end_d - start_d).days
+        if span > 400:
+            return Response(
+                {'success': False, 'error': 'Date range too large (max 400 days). Narrow start_date and end_date.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = eatnow_list_reservations(
+            cred['api_key'],
+            cred['restaurant_id'],
+            start_d,
+            end_d,
+            api_base=cred['api_base'],
+        )
+        if not result.get('success'):
+            return Response(result, status=status.HTTP_502_BAD_GATEWAY)
+
+        imported = 0
+        for flat in result.get('reservations') or []:
+            if upsert_from_concierge_flat(restaurant, flat):
+                imported += 1
+        return Response(
+            {
+                'success': True,
+                'imported': imported,
+                'api_count': result.get('count', imported),
+                'start_date': start_d.isoformat(),
+                'end_date': end_d.isoformat(),
+            }
+        )
 
     @action(detail=False, methods=['post'], url_path='reservations/eatnow/discover')
     def reservations_eatnow_discover(self, request):
