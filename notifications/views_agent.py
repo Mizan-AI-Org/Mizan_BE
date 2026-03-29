@@ -192,6 +192,104 @@ def send_whatsapp_from_agent(request):
         return Response({'success': False, 'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def agent_create_staff_captured_order(request):
+    """
+    Miya/Lua: create a staff-captured order for Today's Orders when the agent has the transcript
+    (e.g. parallel WhatsApp routing). Auth: Bearer LUA_WEBHOOK_API_KEY.
+
+    Body (JSON):
+      - restaurant_id (required): UUID
+      - items_summary or transcript (required): order text
+      - user_id (optional): staff user UUID at that restaurant
+      - phone / staff_phone (optional): if user_id omitted, resolve staff by phone digits
+      - channel (optional): VOICE | TEXT | MANUAL (default VOICE)
+      - customer_name, customer_phone, order_type, table_or_location (optional)
+    """
+    ok, err_response = _validate_agent_key(request)
+    if not ok:
+        return err_response
+
+    from dashboard.models import StaffCapturedOrder
+    from accounts.models import Restaurant
+
+    data = request.data or {}
+    restaurant_id = data.get("restaurant_id")
+    items_summary = (data.get("items_summary") or data.get("transcript") or "").strip()
+    if not restaurant_id or not items_summary:
+        return Response(
+            {"success": False, "error": "restaurant_id and items_summary (or transcript) are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        restaurant = Restaurant.objects.get(id=restaurant_id)
+    except Restaurant.DoesNotExist:
+        return Response({"success": False, "error": "restaurant not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    user = None
+    uid = data.get("user_id") or data.get("staff_id")
+    if uid:
+        try:
+            user = User.objects.get(id=uid, restaurant_id=restaurant.id)
+        except User.DoesNotExist:
+            return Response(
+                {"success": False, "error": "user not found for this restaurant"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+    else:
+        phone = (data.get("phone") or data.get("staff_phone") or "").strip()
+        digits = "".join(filter(str.isdigit, str(phone)))
+        if len(digits) >= 9:
+            user = User.objects.filter(
+                restaurant_id=restaurant.id,
+                phone__isnull=False,
+            ).filter(phone__icontains=digits[-9:]).first()
+        if not user:
+            return Response(
+                {
+                    "success": False,
+                    "error": "Provide user_id or staff_phone to attribute the order capture",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    ch = (data.get("channel") or "VOICE").upper()
+    if ch not in ("VOICE", "TEXT", "MANUAL"):
+        ch = "VOICE"
+
+    ot = (data.get("order_type") or "DINE_IN").upper()
+    if ot not in ("DINE_IN", "TAKEOUT", "DELIVERY", "OTHER"):
+        ot = "DINE_IN"
+
+    try:
+        order = StaffCapturedOrder.objects.create(
+            restaurant=restaurant,
+            recorded_by=user,
+            items_summary=items_summary[:8000],
+            channel=ch,
+            customer_name=(data.get("customer_name") or "")[:255],
+            customer_phone=(data.get("customer_phone") or "")[:40],
+            order_type=ot,
+            table_or_location=(data.get("table_or_location") or "")[:120],
+            dietary_notes=(data.get("dietary_notes") or "")[:2000],
+            special_instructions=(data.get("special_instructions") or "")[:2000],
+        )
+    except Exception as e:
+        logger.exception("agent_create_staff_captured_order: %s", e)
+        return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    return Response(
+        {
+            "success": True,
+            "order_id": str(order.id),
+            "short_id": str(order.id)[:8],
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
 def _resolve_staff_and_shift(request_data):
     """
     Shared helper: resolve staff user and today's active shift from phone.

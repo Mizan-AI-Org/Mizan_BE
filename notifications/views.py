@@ -29,6 +29,7 @@ from .utils import (
     infer_severity,
     extract_occurred_at,
     looks_like_guest_order_intent,
+    should_route_whatsapp_voice_to_incident,
 )
 from scheduling.audit import AuditTrailService, AuditActionType, AuditSeverity
 from core.utils import build_tenant_context
@@ -1784,6 +1785,59 @@ def whatsapp_webhook(request):
                                 )
                             except Exception as e:
                                 logger.exception("WhatsApp guest order (voice, order-intent) failed: %s", e)
+                                notification_service.send_whatsapp_text(phone_digits, R(user, 'order_failed'))
+                            continue
+
+                        # Default: staff voice that is NOT clearly an incident → Today's Orders (guest capture).
+                        # This avoids infer_incident_type("customer") → Service ticket when staff are taking orders.
+                        if not should_route_whatsapp_voice_to_incident(transcript or ''):
+                            rest_o = getattr(user, 'restaurant', None)
+                            if not rest_o:
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    "Your account has no restaurant context. Contact your manager.",
+                                )
+                                continue
+                            tstrip = (transcript or '').strip()
+                            if not tstrip or len(tstrip) < 8:
+                                session.state = 'awaiting_order_clarification'
+                                session.context['pending_order'] = {
+                                    'source': 'voice',
+                                    'audio_url': media_url,
+                                    'media_id': media_id,
+                                    'transcript': tstrip or '',
+                                }
+                                session.save(update_fields=['state', 'context'])
+                                notification_service.send_whatsapp_text(phone_digits, R(user, 'order_clarify_audio'))
+                                continue
+                            try:
+                                order = StaffCapturedOrder.objects.create(
+                                    restaurant=rest_o,
+                                    recorded_by=user,
+                                    items_summary=tstrip[:8000],
+                                    channel='VOICE',
+                                    customer_name='',
+                                    customer_phone='',
+                                    order_type='DINE_IN',
+                                    table_or_location='',
+                                    dietary_notes='',
+                                    special_instructions='',
+                                )
+                                preview = tstrip[:400] + ('…' if len(tstrip) > 400 else '')
+                                session.state = 'idle'
+                                session.context.pop('pending_order', None)
+                                session.save(update_fields=['state', 'context'])
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    R(
+                                        user,
+                                        'order_recorded',
+                                        order_id=str(order.id)[:8],
+                                        preview=f"Details:\n{preview}",
+                                    ),
+                                )
+                            except Exception as e:
+                                logger.exception("WhatsApp guest order (voice, default order path) failed: %s", e)
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'order_failed'))
                             continue
 

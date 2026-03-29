@@ -83,6 +83,63 @@ def looks_like_guest_order_intent(text):
     return False
 
 
+# Phrases that clearly indicate a safety/maintenance/HR report (not a guest order).
+_STRONG_INCIDENT_VOICE_MARKERS_EN = [
+    'incident report', 'report an incident', 'report a safety', 'report an accident',
+    'there was an accident', 'there was a fire', 'someone fell', 'slip and fall', 'slipped on',
+    'i need to report', 'safety issue', 'maintenance issue', 'gas leak', 'water leak',
+    'water damage', 'equipment failure', 'someone hurt', 'someone is hurt', 'bleeding',
+    'call 911', 'call police', 'ambulance', 'emergency at',
+]
+_STRONG_INCIDENT_VOICE_MARKERS_FR = [
+    'signalement', 'incendie', 'blessure', 'plainte grave', 'fuite de gaz',
+]
+_STRONG_INCIDENT_VOICE_MARKERS_AR = [
+    'بلاغ', 'حادث', 'إصابة خطيرة', 'حريق',
+]
+
+
+def should_route_whatsapp_voice_to_incident(text):
+    """
+    If True, transcribed WhatsApp voice should create SafetyConcernReport.
+    If False, prefer StaffCapturedOrder (Today's Orders) — including when the only
+    signal would have been generic words like "customer" / "guest" (order-taking).
+
+    Conservative: default is NOT incident unless we see clear incident language.
+    """
+    if not text or not str(text).strip():
+        return False
+    t = (text or '').lower()
+    # Complaint / abuse / unsafe — always incident path
+    if any(m in t for m in _ORDER_NEGATIVE_INCIDENT_MARKERS):
+        return True
+    strong = (
+        _STRONG_INCIDENT_VOICE_MARKERS_EN
+        + _STRONG_INCIDENT_VOICE_MARKERS_FR
+        + _STRONG_INCIDENT_VOICE_MARKERS_AR
+    )
+    if any(m in t for m in strong):
+        return True
+    # Safety / HR keywords (full lists)
+    if any(k in t for k in SAFETY_KEYWORDS):
+        return True
+    if any(k in t for k in HR_KEYWORDS):
+        return True
+    # Maintenance: avoid bare "water" / "gas" (common in food orders)
+    for kw in MAINTENANCE_KEYWORDS:
+        if kw in ('water', 'gas'):
+            continue
+        if kw in t:
+            return True
+    if 'gas leak' in t or 'water leak' in t or 'water damage' in t:
+        return True
+    # Service incident: complaint language + guest/service context
+    if any(x in t for x in ('complaint', 'complain', 'refund', 'rude', 'angry', 'furious')):
+        if any(k in t for k in SERVICE_KEYWORDS):
+            return True
+    return False
+
+
 def infer_incident_type(text):
     """Infer incident type from text (English, Arabic, or French)."""
     if not text:
