@@ -26,11 +26,20 @@ class CustomUserSerializer(serializers.ModelSerializer):
     restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
     profile = StaffProfileSerializer(required=False)
     email = serializers.EmailField(required=False)
-    
+    role_display = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = CustomUser
-        fields = ['id', 'email', 'first_name', 'last_name', 'role', 'phone', 'restaurant', 'restaurant_name', 'is_verified', 'created_at', 'updated_at', 'profile']
-        read_only_fields = ['id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name']
+        fields = [
+            'id', 'email', 'first_name', 'last_name', 'role', 'role_display', 'custom_role_label',
+            'phone', 'restaurant', 'restaurant_name', 'is_verified', 'created_at', 'updated_at', 'profile',
+        ]
+        read_only_fields = ['id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name', 'role_display']
+
+    def get_role_display(self, obj):
+        if obj.role == 'CUSTOM' and (getattr(obj, 'custom_role_label', '') or '').strip():
+            return obj.custom_role_label.strip()
+        return obj.get_role_display()
         extra_kwargs = {
             'first_name': {'required': False},
             'last_name': {'required': False},
@@ -127,9 +136,12 @@ class PinLoginSerializer(serializers.Serializer):
         else:
             # Authenticate by PIN only (for staff login)
             users_with_pin = CustomUser.objects.filter(
-                pin_code__isnull=False, 
+                pin_code__isnull=False,
                 is_active=True,
-                role__in=['CHEF', 'WAITER', 'CLEANER', 'CASHIER', 'KITCHEN_HELP', 'BARTENDER', 'RECEPTIONIST', 'SECURITY']
+                role__in=[
+                    'CHEF', 'WAITER', 'CLEANER', 'CASHIER', 'KITCHEN_HELP', 'BARTENDER',
+                    'RECEPTIONIST', 'SECURITY', 'CUSTOM',
+                ],
             )
             
             authenticated_user = None
@@ -153,18 +165,25 @@ class PinLoginSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     """Enhanced user serializer with profile data"""
     restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
-    role_display = serializers.CharField(source='get_role_display', read_only=True)
+    role_display = serializers.SerializerMethodField(read_only=True)
     restaurant_data = RestaurantSerializer(source='restaurant', read_only=True)
     profile = StaffProfileSerializer(read_only=True)
-    
+
     class Meta:
         model = CustomUser
         fields = [
-            'id', 'email', 'first_name', 'last_name', 'role', 'role_display',
+            'id', 'email', 'first_name', 'last_name', 'role', 'role_display', 'custom_role_label',
             'phone', 'restaurant', 'restaurant_name', 'restaurant_data', 'is_verified', 'is_active',
-            'created_at', 'updated_at', 'profile', 'preferred_language'
+            'created_at', 'updated_at', 'profile', 'preferred_language',
         ]
-        read_only_fields = ['id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name', 'role_display', 'restaurant_data']
+        read_only_fields = [
+            'id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name', 'role_display', 'restaurant_data',
+        ]
+
+    def get_role_display(self, obj):
+        if obj.role == 'CUSTOM' and (getattr(obj, 'custom_role_label', '') or '').strip():
+            return obj.custom_role_label.strip()
+        return obj.get_role_display()
 
 
 class BulkInviteSerializer(serializers.Serializer):
@@ -210,8 +229,17 @@ class UpdateUserRoleSerializer(serializers.Serializer):
 
 class StaffSerializer(serializers.ModelSerializer):
     profile = StaffProfileSerializer(read_only=True)
+    role_display = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = CustomUser
-        fields = ['id', 'email', 'first_name', 'last_name', 'role', 'phone', 'is_active', 'created_at', 'updated_at', 'profile']
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        fields = [
+            'id', 'email', 'first_name', 'last_name', 'role', 'role_display', 'custom_role_label',
+            'phone', 'is_active', 'created_at', 'updated_at', 'profile',
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'role_display']
+
+    def get_role_display(self, obj):
+        if obj.role == 'CUSTOM' and (getattr(obj, 'custom_role_label', '') or '').strip():
+            return obj.custom_role_label.strip()
+        return obj.get_role_display()

@@ -13,7 +13,8 @@ from django.shortcuts import redirect
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 import base64
 import json
-from .models import EatNowReservation, POSIntegration, AIAssistantConfig, Restaurant, StaffProfile
+from .models import EatNowReservation, POSIntegration, AIAssistantConfig, Restaurant, StaffProfile, CustomUser
+from .custom_staff_roles import normalize_custom_staff_roles_payload
 from .eatnow_client import discover as eatnow_discover, list_reservations as eatnow_list_reservations, test_connection as eatnow_test
 from .eatnow_reservation_import import upsert_from_concierge_flat
 from .serializers_extended import (
@@ -88,6 +89,9 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
             data['eatnow_api_key_set'] = bool((sec.get('eatnow') or {}).get('api_key'))
             data['eatnow_webhook_secret_set'] = bool((sec.get('eatnow') or {}).get('webhook_secret'))
             data['eatnow_webhook_url'] = request.build_absolute_uri('/api/webhooks/eatnow/')
+            data['incident_category_assignees'] = (gs.get('incident_category_assignees') or {})
+            data['business_vertical'] = (gs.get('business_vertical') or 'RESTAURANT')
+            data['custom_staff_roles'] = gs.get('custom_staff_roles') or []
 
             return Response(data)
 
@@ -188,6 +192,73 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         serializer.save()
+
+        # Incident routing: category -> user id (CustomUser in this restaurant), in general_settings JSON
+        if 'incident_category_assignees' in payload:
+            raw = payload.get('incident_category_assignees')
+            if raw is not None and not isinstance(raw, dict):
+                return Response(
+                    {'detail': 'incident_category_assignees must be an object'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            inst = serializer.instance
+            gs = dict(inst.general_settings or {})
+            if raw is None:
+                gs.pop('incident_category_assignees', None)
+            else:
+                cleaned = {}
+                for cat, uid in raw.items():
+                    if not isinstance(cat, str) or len(cat) > 100:
+                        continue
+                    if uid is None or uid == '':
+                        continue
+                    try:
+                        u = CustomUser.objects.get(id=uid, restaurant=restaurant)
+                    except (CustomUser.DoesNotExist, ValueError, TypeError):
+                        return Response(
+                            {'detail': f'Invalid assignee for category "{cat}"'},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+                    cleaned[cat] = str(u.id)
+                gs['incident_category_assignees'] = cleaned
+            inst.general_settings = gs
+            inst.save(update_fields=['general_settings'])
+
+        # Business vertical (restaurant vs retail, etc.) — drives staff invite role groupings on the frontend
+        if 'business_vertical' in payload:
+            bv_raw = payload.get('business_vertical')
+            inst = serializer.instance
+            gs = dict(inst.general_settings or {})
+            if bv_raw is None or bv_raw == '':
+                gs.pop('business_vertical', None)
+            else:
+                bv = str(bv_raw).strip().upper()
+                from .business_vertical import ALLOWED_BUSINESS_VERTICALS
+
+                if bv not in ALLOWED_BUSINESS_VERTICALS:
+                    allowed = ', '.join(sorted(ALLOWED_BUSINESS_VERTICALS))
+                    return Response(
+                        {'detail': f'business_vertical must be one of: {allowed}'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                gs['business_vertical'] = bv
+            inst.general_settings = gs
+            inst.save(update_fields=['general_settings'])
+
+        # Custom staff role titles (any vertical) — list of { id, name }
+        if 'custom_staff_roles' in payload:
+            raw = payload.get('custom_staff_roles')
+            inst = serializer.instance
+            gs = dict(inst.general_settings or {})
+            if raw is None:
+                gs.pop('custom_staff_roles', None)
+            else:
+                try:
+                    gs['custom_staff_roles'] = normalize_custom_staff_roles_payload(raw)
+                except ValueError as e:
+                    return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            inst.general_settings = gs
+            inst.save(update_fields=['general_settings'])
 
         # Reservation (Eat Now / Eat App) — stored in general_settings + encrypted reservation_oauth_data
         res_keys = (
@@ -354,6 +425,8 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
         out['eatnow_api_key_set'] = bool((sec.get('eatnow') or {}).get('api_key'))
         out['eatnow_webhook_secret_set'] = bool((sec.get('eatnow') or {}).get('webhook_secret'))
         out['eatnow_webhook_url'] = request.build_absolute_uri('/api/webhooks/eatnow/')
+        out['incident_category_assignees'] = (gs.get('incident_category_assignees') or {})
+        out['business_vertical'] = (gs.get('business_vertical') or 'RESTAURANT')
 
         if inst.pos_provider == 'CUSTOM':
             root = inst.get_pos_oauth() or {}

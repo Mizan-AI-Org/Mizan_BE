@@ -662,6 +662,62 @@ class NotificationService:
             logger.error(f"[LuaIncident] Unexpected error: {str(e)}")
             return False, {"error": str(e)}
 
+    def send_lua_staff_captured_order(self, user, order, transcript_preview=None, metadata=None):
+        """
+        Notify Lua/Miya that a guest order was captured (voice/text parity with incidents).
+        Best-effort; does not block order persistence.
+        """
+        try:
+            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
+            import os
+
+            lua_api_key = getattr(settings, "LUA_API_KEY", None) or os.environ.get("LUA_API_KEY", "")
+            if not lua_api_key:
+                return False, {"skipped": "no_lua_api_key"}
+            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"
+            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
+
+            user_role = getattr(user, "role", "server") or "server"
+            user_role = str(user_role).lower()
+            phone_set = bool((getattr(order, "customer_phone", None) or "").strip())
+
+            payload = {
+                "eventType": "guest_order_recorded",
+                "staffId": str(user.id),
+                "staffName": user.get_full_name(),
+                "role": user_role,
+                "details": {
+                    "orderId": str(order.id),
+                    "itemsSummary": getattr(order, "items_summary", "") or "",
+                    "customerName": getattr(order, "customer_name", "") or "",
+                    "customerPhone": getattr(order, "customer_phone", "") or "",
+                    "orderType": getattr(order, "order_type", "") or "",
+                    "tableOrLocation": getattr(order, "table_or_location", "") or "",
+                    "channel": getattr(order, "channel", "") or "",
+                    "transcriptPreview": (transcript_preview or "")[:2000],
+                    # Lets Miya know the order is valid without a phone; staff can complete in app.
+                    "guestPhoneMissing": not phone_set,
+                    **(metadata or {}),
+                },
+                "timestamp": timezone.now().isoformat(),
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {lua_api_key}",
+                "Api-Key": lua_api_key,
+                "x-api-key": LUA_WEBHOOK_API_KEY,
+                "x-role": user_role,
+            }
+            logger.info("[LuaGuestOrder] Sending guest_order_recorded for order %s", order.id)
+            resp = requests.post(url, json=payload, headers=headers, timeout=LUA_WEBHOOK_TIMEOUT)
+            if resp.status_code in (200, 201):
+                return True, resp.json() if resp.text else {}
+            logger.warning("[LuaGuestOrder] Failed: %s - %s", resp.status_code, resp.text[:300])
+            return False, {"error": resp.text, "status_code": resp.status_code}
+        except Exception as e:
+            logger.error("[LuaGuestOrder] Unexpected error: %s", e)
+            return False, {"error": str(e)}
+
     # ====================================================================================
     # INTERNAL METHODS (UNCHANGED EXCEPT NEVER CREATE A NOTIFICATION TWICE)
     # ====================================================================================

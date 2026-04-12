@@ -2,6 +2,47 @@ from django.db import models
 import uuid
 from django.conf import settings
 
+
+class DashboardCustomWidget(models.Model):
+    """
+    User-scoped dashboard tiles created by Miya (agent) or future UI.
+    Referenced from CustomUser.dashboard_widget_order as custom:<uuid>.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="dashboard_custom_widgets",
+    )
+    restaurant = models.ForeignKey(
+        "accounts.Restaurant",
+        on_delete=models.CASCADE,
+        related_name="dashboard_custom_widgets",
+    )
+    title = models.CharField(max_length=255)
+    subtitle = models.TextField(blank=True)
+    link_url = models.CharField(max_length=2048, blank=True)
+    icon = models.CharField(max_length=64, default="sparkles")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "dashboard_custom_widgets"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["restaurant", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.title} ({self.user_id})"
+
+    def slot_id(self) -> str:
+        from .widget_ids import CUSTOM_WIDGET_PREFIX
+
+        return f"{CUSTOM_WIDGET_PREFIX}{self.id}"
+
 class DailyKPI(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='daily_kpis')

@@ -66,6 +66,14 @@ class DashboardSummaryView(APIView):
             return Response({"error": "No restaurant associated"}, status=400)
 
         today = timezone.now().date()
+        from core.dashboard_cache_keys import dashboard_summary_cache_key
+        from core.read_through_cache import safe_cache_get, safe_cache_set
+
+        _summary_cache_key = dashboard_summary_cache_key(restaurant.id, today)
+        _cached_summary = safe_cache_get(_summary_cache_key)
+        if _cached_summary is not None:
+            return Response(_cached_summary)
+
         now = timezone.now()
         last_24h = now - timedelta(hours=24)
         last_7d = today - timedelta(days=7)
@@ -74,14 +82,26 @@ class DashboardSummaryView(APIView):
         week_start = today - timedelta(days=today.weekday())
         week_end = week_start + timedelta(days=6)
 
-        # 1. Staffing & Coverage
-        # Count unique staff who clocked in today
-        attendance_count = ClockEvent.objects.filter(
-            staff__restaurant=restaurant,
-            event_type__in=['in', 'CLOCK_IN'],
-            timestamp__date=today
-        ).values('staff').distinct().count()
+        # Today's clock-ins: one query, first event per staff (chronological) — reused below to avoid N+1.
+        _clock_events_today = list(
+            ClockEvent.objects.filter(
+                staff__restaurant=restaurant,
+                event_type__in=["in", "CLOCK_IN"],
+                timestamp__date=today,
+            ).select_related("staff").order_by("timestamp")
+        )
+        first_clockin_by_staff_id: dict[int, ClockEvent] = {}
+        for ev in _clock_events_today:
+            sid = ev.staff_id
+            if sid is not None and sid not in first_clockin_by_staff_id:
+                first_clockin_by_staff_id[sid] = ev
+        staff_clocked_today_ids = set(first_clockin_by_staff_id.keys())
+        attendance_count = len(staff_clocked_today_ids)
+        clockin_by_staff: dict[str, ClockEvent] = {
+            str(sid): ev for sid, ev in first_clockin_by_staff_id.items()
+        }
 
+        # 1. Staffing & Coverage
         active_shifts_count = AssignedShift.objects.filter(
             schedule__restaurant=restaurant,
             shift_date=today,
@@ -104,12 +124,7 @@ class DashboardSummaryView(APIView):
             staff__isnull=False
         ).select_related('staff'):
             if s.start_time and s.start_time <= now - timedelta(minutes=grace_min):
-                ev = ClockEvent.objects.filter(
-                    staff_id=s.staff_id,
-                    event_type__in=['in', 'CLOCK_IN'],
-                    timestamp__date=today
-                ).exists()
-                if not ev:
+                if s.staff_id not in staff_clocked_today_ids:
                     potential_no_shows += 1
         total_no_shows = no_shows_count + potential_no_shows
 
@@ -154,10 +169,24 @@ class DashboardSummaryView(APIView):
                     except Exception:
                         continue
                 ot_risk_count = sum(1 for _sid, hrs in hours_by_staff.items() if hrs >= max_week)
+                over_ids = [sid for sid, hrs in hours_by_staff.items() if hrs >= max_week]
+                users_by_id = {
+                    str(u.id): u
+                    for u in CustomUser.objects.filter(
+                        restaurant=restaurant, id__in=over_ids
+                    ).only("id", "first_name", "last_name", "email")
+                }
                 for sid, hrs in hours_by_staff.items():
                     if hrs >= max_week and len(ot_risk_staff) < 5:
-                        u = CustomUser.objects.filter(id=sid, restaurant=restaurant).first()
-                        ot_risk_staff.append({'staff_id': sid, 'staff_name': _staff_name(u) if u else sid, 'hours': round(hrs, 2), 'threshold': max_week})
+                        u = users_by_id.get(str(sid))
+                        ot_risk_staff.append(
+                            {
+                                "staff_id": sid,
+                                "staff_name": _staff_name(u) if u else sid,
+                                "hours": round(hrs, 2),
+                                "threshold": max_week,
+                            }
+                        )
             except Exception:
                 pass
 
@@ -181,11 +210,7 @@ class DashboardSummaryView(APIView):
                     shift_start = timezone.make_aware(shift_start)
                 if shift_start > now:
                     continue  # Future shift, not yet late
-                ev = ClockEvent.objects.filter(
-                    staff_id=s.staff_id,
-                    event_type__in=['in', 'CLOCK_IN'],
-                    timestamp__date=today
-                ).order_by('timestamp').first()
+                ev = first_clockin_by_staff_id.get(s.staff_id)
                 if not ev:
                     late_staff_today.append({'id': str(s.staff_id), 'name': _staff_name(s.staff), 'reason': 'missed_clock_in'})
                 elif ev.timestamp > shift_start + timedelta(minutes=late_min):
@@ -264,19 +289,6 @@ class DashboardSummaryView(APIView):
             .select_related('staff')
             .order_by('start_time')
         )
-
-        # Clock events today (for attendance + geolocation compliance)
-        clock_ins_today = ClockEvent.objects.filter(
-            staff__restaurant=restaurant,
-            event_type__in=['in', 'CLOCK_IN'],
-            timestamp__date=today
-        ).select_related('staff')
-
-        clockin_by_staff: dict[str, ClockEvent] = {}
-        for ev in clock_ins_today.order_by('timestamp'):
-            sid = str(ev.staff_id)
-            if sid not in clockin_by_staff:
-                clockin_by_staff[sid] = ev
 
         # Critical: staff late today
         for lm in late_staff_today[:3]:
@@ -474,21 +486,33 @@ class DashboardSummaryView(APIView):
         # Performance: repeated late arrivals (last 7 days)
         late_counts = {}
         try:
-            recent_shifts = AssignedShift.objects.filter(
-                schedule__restaurant=restaurant,
-                shift_date__gte=last_7d,
-                shift_date__lte=today,
-                status__in=['COMPLETED', 'IN_PROGRESS', 'CONFIRMED', 'SCHEDULED']
-            ).select_related('staff')
-            # For each shift date, get first clock-in for that staff on that date
+            recent_shifts = list(
+                AssignedShift.objects.filter(
+                    schedule__restaurant=restaurant,
+                    shift_date__gte=last_7d,
+                    shift_date__lte=today,
+                    status__in=['COMPLETED', 'IN_PROGRESS', 'CONFIRMED', 'SCHEDULED']
+                ).select_related('staff')
+            )
+            # One query: first clock-in per (staff, calendar day) in range
+            first_clockin_by_staff_date: dict[tuple, ClockEvent] = {}
+            for ev in (
+                ClockEvent.objects.filter(
+                    staff__restaurant=restaurant,
+                    event_type__in=['in', 'CLOCK_IN'],
+                    timestamp__date__gte=last_7d,
+                    timestamp__date__lte=today,
+                )
+                .order_by('staff_id', 'timestamp')
+                .iterator(chunk_size=500)
+            ):
+                key = (ev.staff_id, ev.timestamp.date())
+                if key not in first_clockin_by_staff_date:
+                    first_clockin_by_staff_date[key] = ev
             for s in recent_shifts:
                 if not s.staff_id or not s.start_time:
                     continue
-                ev = ClockEvent.objects.filter(
-                    staff_id=s.staff_id,
-                    event_type__in=['in', 'CLOCK_IN'],
-                    timestamp__date=s.shift_date
-                ).order_by('timestamp').first()
+                ev = first_clockin_by_staff_date.get((s.staff_id, s.shift_date))
                 if not ev:
                     continue
                 if ev.timestamp > s.start_time + timedelta(minutes=5):
@@ -591,7 +615,7 @@ class DashboardSummaryView(APIView):
             cnt = AssignedShift.objects.filter(qs_base, status='NO_SHOW').count()
             for s in AssignedShift.objects.filter(qs_base, status__in=['SCHEDULED', 'CONFIRMED'], staff__isnull=False).select_related('staff'):
                 if s.start_time and s.start_time <= now - timedelta(minutes=grace_min):
-                    if not ClockEvent.objects.filter(staff_id=s.staff_id, event_type__in=['in', 'CLOCK_IN'], timestamp__date=today).exists():
+                    if s.staff_id not in staff_clocked_today_ids:
                         cnt += 1
             return cnt
 
@@ -678,5 +702,6 @@ class DashboardSummaryView(APIView):
                 "missing_geo_clock_ins": missing_geo_count,
             },
         }
-        
+
+        safe_cache_set(_summary_cache_key, data, 55)
         return Response(data)

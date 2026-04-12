@@ -24,7 +24,9 @@ from .models import (
     Role, Permission, RolePermission, UserInvitation,
     UserRole, AuditLog, StaffActivationRecord,
 )
+from .custom_staff_roles import validate_custom_invite
 from .tasks import send_whatsapp_invitation_task
+from .business_vertical import ALLOWED_BUSINESS_VERTICALS
 import requests
 
 logger = logging.getLogger(__name__)
@@ -65,12 +67,19 @@ def sync_user_to_lua_agent(user, access_token):
 
         session_id = f"tenant-{str(user.restaurant.id) if user.restaurant else ''}-user-{str(user.id)}"
         effective_lang = get_effective_language(user=user, restaurant=getattr(user, 'restaurant', None))
+        business_vertical = "RESTAURANT"
+        if user.restaurant:
+            gs = user.restaurant.general_settings or {}
+            bv_raw = str(gs.get("business_vertical") or "RESTAURANT").strip().upper()
+            if bv_raw in ALLOWED_BUSINESS_VERTICALS:
+                business_vertical = bv_raw
         payload = {
             "emailAddress": user.email,
             "mobileNumber": mobile_number,
             "fullName": f"{user.first_name} {user.last_name}".strip(),
             "restaurantId": str(user.restaurant.id) if user.restaurant else None,
             "restaurantName": user.restaurant.name if user.restaurant else None,
+            "businessVertical": business_vertical,
             "role": user.role.lower() if user.role else "staff",
             "language": effective_lang,
             "rtl": True if effective_lang == "ar" else False,
@@ -79,6 +88,7 @@ def sync_user_to_lua_agent(user, access_token):
                 "userId": str(user.id),
                 "sessionId": session_id,
                 "language": effective_lang,
+                "businessVertical": business_vertical,
             }
         }
 
@@ -161,11 +171,13 @@ def _normalize_staff_upload_row(row):
     first_name = get_first("first name", "first_name", "firstname", "prenom")
     last_name = get_first("last name", "last_name", "lastname", "nom")
     role = get_first("role", "position", "title", "job")
+    custom_role_id = get_first("custom_role_id", "custom role id", "custom_role")
     return {
         "phone": str(phone).strip() if phone else "",
         "first_name": str(first_name).strip() if first_name else "",
         "last_name": str(last_name).strip() if last_name else "",
         "role": str(role).strip() if role else "",
+        "custom_role_id": str(custom_role_id).strip() if custom_role_id else "",
     }
 
 
@@ -329,6 +341,9 @@ def try_activate_staff_on_inbound_message(phone_digits):
                 first_name=record.first_name or "Staff",
                 last_name=record.last_name or "",
                 role=record.role,
+                custom_role_label=(record.custom_role_label or "").strip()[:128]
+                if record.role == "CUSTOM"
+                else "",
                 restaurant=record.restaurant,
                 phone=full_phone,
                 is_verified=True,
@@ -343,6 +358,9 @@ def try_activate_staff_on_inbound_message(phone_digits):
                 first_name=record.first_name or "Staff",
                 last_name=record.last_name or "",
                 role=record.role,
+                custom_role_label=(record.custom_role_label or "").strip()[:128]
+                if record.role == "CUSTOM"
+                else "",
                 restaurant=record.restaurant,
                 phone=full_phone,
                 is_verified=True,
@@ -511,7 +529,13 @@ class UserManagementService:
         for idx, item in enumerate(invitations, start=1):
             try:
                 email = (item.get('email') or '').strip()
-                role_value = (item.get('role') or '').strip()
+                raw_role = (item.get('role') or '').strip()
+                custom_role_id = (item.get('custom_role_id') or '').strip()
+                if ":" in raw_role and raw_role.split(":", 1)[0].strip().upper() == "CUSTOM":
+                    custom_role_id = custom_role_id or raw_role.split(":", 1)[1].strip()
+                    role_value = "CUSTOM"
+                else:
+                    role_value = raw_role.upper().replace(" ", "_")
                 if not email or '@' not in email:
                     results['failed'] += 1
                     results['errors'].append(f"Item {idx}: Invalid email '{email}'")
@@ -519,6 +543,10 @@ class UserManagementService:
                 if not role_value:
                     results['failed'] += 1
                     results['errors'].append(f"Item {idx}: Missing role for {email}")
+                    continue
+                if role_value not in dict(CustomUser.ROLE_CHOICES):
+                    results['failed'] += 1
+                    results['errors'].append(f"Item {idx}: Invalid role for {email}")
                     continue
 
                 first_name = (item.get('first_name') or item.get('firstname') or '').strip()
@@ -546,6 +574,14 @@ class UserManagementService:
                     'department': department,
                     'phone': phone
                 }
+                if role_value == "CUSTOM":
+                    ok, err, cr_label = validate_custom_invite(restaurant, "CUSTOM", custom_role_id or None)
+                    if not ok:
+                        results['failed'] += 1
+                        results['errors'].append(f"Item {idx}: {err}")
+                        continue
+                    extra_data['custom_role_id'] = custom_role_id
+                    extra_data['custom_role_name'] = cr_label
 
                 invitation = UserInvitation.objects.create(
                     email=email,
@@ -643,7 +679,12 @@ class UserManagementService:
                 seen_phones.add(phone)
                 first_name = (n.get("first_name") or "").strip()
                 last_name = (n.get("last_name") or "").strip()
-                role_value = (n.get("role") or "WAITER").strip().upper().replace(" ", "_").replace("É", "E").replace("È", "E")[:50]
+                raw_role = (n.get("role") or "WAITER").strip()
+                custom_role_id = (n.get("custom_role_id") or "").strip()
+                if ":" in raw_role and raw_role.split(":", 1)[0].strip().upper() == "CUSTOM":
+                    custom_role_id = custom_role_id or raw_role.split(":", 1)[1].strip()
+                    raw_role = "CUSTOM"
+                role_value = raw_role.upper().replace(" ", "_").replace("É", "E").replace("È", "E")[:50]
                 # Map common French/other role labels to STAFF_ROLES_CHOICES
                 role_aliases = {
                     "SERVEUR": "WAITER", "SERVER": "WAITER", "CHEF_DE_SALLE": "MANAGER",
@@ -654,7 +695,14 @@ class UserManagementService:
                     "BARTENDER": "BARTENDER", "CASHIER": "CASHIER",
                 }
                 role_value = role_aliases.get(role_value, role_value)
-                if role_value not in dict(CustomUser.ROLE_CHOICES):
+                cr_label = ""
+                if role_value == "CUSTOM":
+                    ok, err, cr_label = validate_custom_invite(restaurant, "CUSTOM", custom_role_id or None)
+                    if not ok:
+                        results["failed"] += 1
+                        results["errors"].append(f"Row {idx}: {err}")
+                        continue
+                elif role_value not in dict(CustomUser.ROLE_CHOICES):
                     role_value = "WAITER"
                 try:
                     record = StaffActivationRecord.objects.create(
@@ -663,6 +711,7 @@ class UserManagementService:
                         first_name=first_name,
                         last_name=last_name,
                         role=role_value,
+                        custom_role_label=cr_label if role_value == "CUSTOM" else "",
                         status=StaffActivationRecord.STATUS_NOT_ACTIVATED,
                         batch_id=batch_id,
                         invited_by=invited_by,
@@ -684,7 +733,9 @@ class UserManagementService:
         return results
 
     @staticmethod
-    def create_single_staff_activation_record(restaurant, phone_raw, first_name, last_name, role_raw, invited_by=None):
+    def create_single_staff_activation_record(
+        restaurant, phone_raw, first_name, last_name, role_raw, invited_by=None, custom_role_label=""
+    ):
         """
         ONE-TAP: Create one StaffActivationRecord for individual WhatsApp invite.
         Same flow as bulk: manager gets invite_link and shares it; when staff click and send message, account activates.
@@ -709,6 +760,9 @@ class UserManagementService:
         role_value = role_aliases.get(role_value, role_value)
         if role_value not in dict(CustomUser.ROLE_CHOICES):
             role_value = "WAITER"
+        cr_label = (custom_role_label or "").strip()[:128]
+        if role_value == "CUSTOM" and not cr_label:
+            return None, "Invalid or missing custom role for CUSTOM."
         first_name = (first_name or "").strip()
         last_name = (last_name or "").strip()
         batch_id = secrets.token_hex(8)
@@ -719,6 +773,7 @@ class UserManagementService:
                 first_name=first_name,
                 last_name=last_name,
                 role=role_value,
+                custom_role_label=cr_label if role_value == "CUSTOM" else "",
                 status=StaffActivationRecord.STATUS_NOT_ACTIVATED,
                 batch_id=batch_id,
                 invited_by=invited_by,
@@ -996,7 +1051,10 @@ class UserManagementService:
                     'role': invitation.role,
                     'restaurant': invitation.restaurant,
                 }
-                
+                extra_inv = invitation.extra_data or {}
+                if invitation.role == 'CUSTOM' and (extra_inv.get('custom_role_name') or '').strip():
+                    user_kwargs['custom_role_label'] = str(extra_inv.get('custom_role_name')).strip()[:128]
+
                 # Check if this is a staff role and if password is a 4-digit PIN
                 is_staff = invitation.role not in ['SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER']
                 if is_staff and password and len(password) == 4 and password.isdigit():

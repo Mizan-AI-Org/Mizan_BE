@@ -14,6 +14,7 @@ import logging
 import json
 import threading
 import requests as http_requests
+import re
 
 logger = logging.getLogger(__name__)
 from .models import Notification, NotificationPreference, DeviceToken, NotificationAttachment, NotificationIssue, WhatsAppMessageProcessed
@@ -42,6 +43,75 @@ from scheduling.models import ShiftTask, AssignedShift, ShiftChecklistProgress
 from django.conf import settings as dj_settings
 from core.i18n import whatsapp_language_code
 from dashboard.models import StaffCapturedOrder
+from staff.incident_routing import resolve_default_assignee_for_incident_type
+from .order_parsing import merge_parsed_order_fields
+
+
+def _looks_like_voice_ui_placeholder(body: str) -> bool:
+    """
+    WhatsApp/Lua sometimes surfaces a voice note as text with no transcript (e.g. 'Voice message (0:13)').
+    Forwarding that to Miya as plain text caused refusals ('use the POS'). Django handles this path instead.
+    """
+    if not body or not isinstance(body, str):
+        return False
+    s = body.strip()
+    if len(s) > 120:
+        return False
+    if re.search(
+        r'voice\s*message|message\s+vocal|note\s+vocale|رسالة\s*صوتية|audio\s*message|message\s+audio',
+        s,
+        re.I,
+    ):
+        return True
+    if '🎤' in s and re.search(r'\(\s*\d+\s*:\s*\d+\s*\)', s):
+        return True
+    return False
+
+
+def _payload_should_skip_lua_forward(payload: dict, lua_skip_types: set) -> bool:
+    """
+    Forward WhatsApp webhooks to Lua only when at least one message needs Miya.
+    Skip when every message is handled in Django (image/location/audio/voice media, or voice UI placeholder text).
+    """
+    try:
+        msgs = []
+        for entry in payload.get('entry', []) or []:
+            for change in entry.get('changes', []) or []:
+                for msg in (change.get('value') or {}).get('messages', []) or []:
+                    msgs.append(msg)
+        if not msgs:
+            return False
+        for msg in msgs:
+            t = msg.get('type')
+            if t in lua_skip_types:
+                continue
+            if t == 'text':
+                body = ((msg.get('text') or {}).get('body') or '').strip()
+                if _looks_like_voice_ui_placeholder(body):
+                    continue
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _create_staff_captured_order_parsed(restaurant, user, text, channel):
+    """
+    Persist Today's Orders row with heuristic parsing (customer, phone, table, dietary, etc.)
+    and notify Lua/Miya (best-effort), matching incident voice parity.
+    """
+    fields = merge_parsed_order_fields(text, {})
+    fields["channel"] = channel
+    order = StaffCapturedOrder.objects.create(
+        restaurant=restaurant,
+        recorded_by=user,
+        **fields,
+    )
+    try:
+        notification_service.send_lua_staff_captured_order(user, order, (text or "")[:2000])
+    except Exception:
+        logger.exception("send_lua_staff_captured_order failed (non-fatal)")
+    return order
 
 
 def _is_likely_shared_static_location(loc, rest, lat, lon):
@@ -870,16 +940,10 @@ def whatsapp_webhook(request):
         lua_url = getattr(dj_settings, 'LUA_WHATSAPP_WEBHOOK_URL', '')
         # Audio is transcribed in Django; forwarding voice to Lua as well caused duplicate
         # handling (e.g. incident API) instead of guest-order routing.
-        _lua_skip_types = {'image', 'location', 'audio'}
-        _has_media_msg = False
+        # Include 'voice' — some BSPs use type=voice for voice notes; treat like audio (Django transcribes, no Lua duplicate).
+        _lua_skip_types = {'image', 'location', 'audio', 'voice'}
         if lua_url:
-            for entry in payload.get('entry', []):
-                for change in entry.get('changes', []):
-                    for msg in change.get('value', {}).get('messages', []):
-                        if msg.get('type') in _lua_skip_types:
-                            _has_media_msg = True
-                            break
-            if not _has_media_msg:
+            if not _payload_should_skip_lua_forward(payload, _lua_skip_types):
                 threading.Thread(
                     target=_forward_to_lua_whatsapp,
                     args=(payload,),
@@ -912,23 +976,38 @@ def whatsapp_webhook(request):
                 'incident_prompt': 'Please describe the incident. Include: type (Safety/Maintenance/HR/Service/Other), what happened, and when it occurred. You can send text, a voice note, or a photo (with optional caption showing the damage).',
                 'incident_clarify_audio': 'Thanks — I couldn’t clearly understand that voice note. Please resend it, or reply with: incident type, a brief description, and the time it occurred.',
                 'incident_clarify_missing': 'Thanks — before I log this, please clarify: {missing}.',
-                'incident_recorded': '✅ Incident report received and logged.\n\nTicket: #{ticket_id}\nType: {incident_type}\nTime: {occurred_at}\n\nYour report has been received and shared with management.',
+                'incident_recorded': (
+                    'Thank you for taking the time to tell us what happened — we’ve recorded what you shared.\n\n'
+                    'Your safety and dignity matter here. The right people on your team will see this and can follow up '
+                    'as needed. If you remember anything else, or the situation changes, you can reach out again anytime.\n\n'
+                    'If you ever feel unsafe in the moment, use your local emergency number or ask a manager on the floor '
+                    'for immediate help.'
+                ),
                 'incident_failed': 'Failed to record incident. Please try again.',
                 'order_voice_prompt': (
                     '📋 *Guest order*\n\n'
-                    'Send a *voice note* with the full order: items and quantities, guest name, '
-                    'phone for takeout/delivery, table or pickup, allergens, and any special requests.\n\n'
-                    'Or type the order in one message. Reply *cancel* to abort.'
+                    'Send a *voice note* or type the order: items and quantities, guest name if you have it, '
+                    'phone (helpful for takeout/delivery — optional for dine-in), table or pickup, allergens, '
+                    'and special requests.\n\n'
+                    'You can send a short note — we’ll save it and you can add details in the app. Reply *cancel* to abort.'
                 ),
                 'order_recorded': (
-                    '✅ *Order logged* for the team.\n\n'
-                    'ID: `{order_id}`\n'
-                    '{preview}\n\n'
-                    'View it in *Today’s Orders* on the dashboard.'
+                    '✅ *Order saved* — we’ve got it for the team.\n\n'
+                    '{preview}\n'
+                    '{followup}'
+                    'Open *Today’s Orders* on the dashboard anytime to review or add details.'
+                ),
+                'order_followup_no_phone': (
+                    '📌 *Heads up:* No guest phone was detected — the order is still saved. '
+                    'Add a number or anything else in *Today’s Orders* whenever you like.\n\n'
+                ),
+                'order_followup_delivery_no_phone': (
+                    '📌 *Delivery:* No phone was mentioned — the order is saved. '
+                    'Please add the guest phone in *Today’s Orders* so the team can reach them.\n\n'
                 ),
                 'order_clarify_audio': (
-                    'I couldn’t catch that clearly. Please resend the voice note or type the full order '
-                    '(items, guest, table or phone).'
+                    'I couldn’t catch that clearly. Please resend the voice note or type the order '
+                    '(items and quantities; add guest name, table, or phone if you have them).'
                 ),
                 'order_cancelled': 'Order entry cancelled. Send *order* when you want to log a guest order.',
                 'order_failed': 'Could not save the order. Please try again or use the app.',
@@ -951,22 +1030,35 @@ def whatsapp_webhook(request):
                 'incident_prompt': 'يرجى وصف الحادث أو المشكلة. يمكنك إرسال نص أو ملاحظة صوتية.',
                 'incident_clarify_audio': 'شكراً — لم أفهم الملاحظة الصوتية بوضوح. يرجى إعادة إرسالها أو الرد بالنص: نوع الحادث، وصف موجز، ووقت الحدوث.',
                 'incident_clarify_missing': 'شكراً — قبل التسجيل، يرجى توضيح: {missing}.',
-                'incident_recorded': 'تم تسجيل الحادث. التذكرة رقم {ticket_id}. سيتم إخطار المدير.',
+                'incident_recorded': (
+                    'شكراً لثقتك ولمشاركة ما حدث — تم حفظ ما أبلغت به.\n\n'
+                    'سلامتك واحترامك يهمّنا. سيطلع الفريق المعني على هذا وسيمكن المتابعة عند الحاجة. '
+                    'إذا تذكرت تفاصيل إضافية أو تغيّر الوضع، يمكنك التواصل مرة أخرى في أي وقت.\n\n'
+                    'إذا شعرت بخطر مباشر، اتصل بخدمات الطوارئ في منطقتك أو أبلغ مديراً في المكان فوراً.'
+                ),
                 'incident_failed': 'فشل تسجيل الحادث. يرجى المحاولة مرة أخرى.',
                 'order_voice_prompt': (
                     '📋 *طلب زبون*\n\n'
-                    'أرسل *ملاحظة صوتية* فيها الطلب كاملاً: الأصناف والكميات، اسم الزبون، '
-                    'الهاتف للسفري/التوصيل، الطاولة أو الاستلام، الحساسيات، وأي ملاحظات.\n\n'
-                    'أو اكتب الطلب في رسالة واحدة. أرسل *إلغاء* للخروج.'
+                    'أرسل *ملاحظة صوتية* أو اكتب الطلب: الأصناف والكميات، اسم الزبون إن وجد، '
+                    'الهاتف (مفيد للسفري/التوصيل — اختياري للجلوس)، الطاولة أو الاستلام، الحساسيات، والملاحظات.\n\n'
+                    'يمكنك إرسال ملخص قصير — سنحفظه ويمكنك إكمال التفاصيل من التطبيق. أرسل *إلغاء* للخروج.'
                 ),
                 'order_recorded': (
-                    '✅ *تم تسجيل الطلب* للفريق.\n\n'
-                    'المعرّف: `{order_id}`\n'
-                    '{preview}\n\n'
-                    'اطّلع عليه في *طلبات اليوم* من لوحة التحكم.'
+                    '✅ *تم حفظ الطلب* — الفريق سيراه.\n\n'
+                    '{preview}\n'
+                    '{followup}'
+                    'يمكنك فتح *طلبات اليوم* من لوحة التحكم في أي وقت للمراجعة أو إضافة تفاصيل.'
+                ),
+                'order_followup_no_phone': (
+                    '📌 *تنبيه:* لم يُكتشف رقم هاتف الزبون — الطلب محفوظ. '
+                    'يمكنك إضافة الرقم أو أي تفاصيل في *طلبات اليوم* لاحقاً.\n\n'
+                ),
+                'order_followup_delivery_no_phone': (
+                    '📌 *توصيل:* لم يُذكر رقم — الطلب محفوظ. '
+                    'يرجى إضافة هاتف الزبون في *طلبات اليوم* ليتمكن الفريق من التواصل.\n\n'
                 ),
                 'order_clarify_audio': (
-                    'لم أسمع بوضوح. أعد الملاحظة الصوتية أو اكتب الطلب كاملاً (الأصناف، الزبون، الطاولة أو الهاتف).'
+                    'لم أسمع بوضوح. أعد الملاحظة الصوتية أو اكتب الطلب (الأصناف؛ وأضف الاسم أو الطاولة أو الهاتف إن وجدت).'
                 ),
                 'order_cancelled': 'تم إلغاء إدخال الطلب. أرسل *طلب* عندما تريد تسجيل طلب زبون.',
                 'order_failed': 'تعذّر حفظ الطلب. حاول مرة أخرى أو استخدم التطبيق.',
@@ -989,22 +1081,37 @@ def whatsapp_webhook(request):
                 'incident_prompt': 'Décrivez l\'incident (texte ou voix).',
                 'incident_clarify_audio': 'Merci — je n\'ai pas bien compris le message vocal. Veuillez le renvoyer ou répondre par texte : type d\'incident, description brève, et heure.',
                 'incident_clarify_missing': 'Merci — avant d\'enregistrer, veuillez préciser : {missing}.',
-                'incident_recorded': 'Incident enregistré. Ticket #{ticket_id}.',
+                'incident_recorded': (
+                    'Merci d’avoir pris le temps de nous dire ce qui s’est passé — nous avons bien enregistré ce que vous avez partagé.\n\n'
+                    'Votre sécurité et votre dignité comptent. Les bonnes personnes dans votre équipe verront cela et pourront '
+                    'faire le suivi si nécessaire. Si vous vous souvenez d’autres détails ou si la situation évolue, vous pouvez '
+                    'nous écrire à tout moment.\n\n'
+                    'En cas de danger immédiat, contactez les secours locaux ou parlez immédiatement à un responsable sur place.'
+                ),
                 'incident_failed': 'Échec de l\'enregistrement. Veuillez réessayer.',
                 'order_voice_prompt': (
                     '📋 *Commande invité*\n\n'
-                    'Envoyez une *note vocale* avec la commande complète : articles et quantités, '
-                    'nom du client, téléphone pour emporter/livraison, table ou retrait, allergènes, consignes.\n\n'
-                    'Ou saisissez la commande en un message. Répondez *annuler* pour quitter.'
+                    'Envoyez une *note vocale* ou saisissez la commande : articles et quantités, nom du client si vous l’avez, '
+                    'téléphone (utile pour emporter/livraison — optionnel sur place), table ou retrait, allergènes, consignes.\n\n'
+                    'Un court message suffit — vous pourrez compléter dans l’app. Répondez *annuler* pour quitter.'
                 ),
                 'order_recorded': (
-                    '✅ *Commande enregistrée* pour l’équipe.\n\n'
-                    'ID : `{order_id}`\n'
-                    '{preview}\n\n'
-                    'Voir dans *Commandes du jour* sur le tableau de bord.'
+                    '✅ *Commande enregistrée* — c’est noté pour l’équipe.\n\n'
+                    '{preview}\n'
+                    '{followup}'
+                    'Ouvrez *Commandes du jour* sur le tableau de bord quand vous voulez vérifier ou compléter.'
+                ),
+                'order_followup_no_phone': (
+                    '📌 *Info :* aucun téléphone invité détecté — la commande est bien enregistrée. '
+                    'Ajoutez le numéro ou d’autres détails dans *Commandes du jour* quand vous voulez.\n\n'
+                ),
+                'order_followup_delivery_no_phone': (
+                    '📌 *Livraison :* aucun téléphone mentionné — la commande est enregistrée. '
+                    'Ajoutez le téléphone de l’invité dans *Commandes du jour* pour que l’équipe puisse le joindre.\n\n'
                 ),
                 'order_clarify_audio': (
-                    'Je n’ai pas bien entendu. Renvoyez la note vocale ou saisissez la commande complète.'
+                    'Je n’ai pas bien entendu. Renvoyez la note vocale ou saisissez la commande '
+                    '(articles ; nom, table ou téléphone si vous les avez).'
                 ),
                 'order_cancelled': 'Saisie annulée. Envoyez *commande* pour enregistrer une commande invité.',
                 'order_failed': 'Impossible d’enregistrer la commande. Réessayez ou utilisez l’app.',
@@ -1016,7 +1123,24 @@ def whatsapp_webhook(request):
             lang = lang_for(user)
             # fallback to English if key missing in lang
             tmpl = RESP.get(lang, RESP['en']).get(key, RESP['en'].get(key, ''))
-            return tmpl.format(**kwargs)
+            if not tmpl:
+                return ''
+            # Only substitute placeholders present in the template (human copy may omit ticket IDs, etc.)
+            names = set(re.findall(r"\{(\w+)\}", tmpl))
+            if not names:
+                return tmpl
+            safe = {k: v for k, v in kwargs.items() if k in names}
+            return tmpl.format(**safe)
+
+        def order_recorded_followup(uid_user, order_obj):
+            """Confirm with staff when guest phone was not parsed — order is still saved."""
+            phone = (getattr(order_obj, "customer_phone", None) or "").strip()
+            ot = (getattr(order_obj, "order_type", "") or "").upper()
+            if phone:
+                return ""
+            if ot == "DELIVERY":
+                return R(uid_user, "order_followup_delivery_no_phone")
+            return R(uid_user, "order_followup_no_phone")
 
         for entry in entries:
             changes = entry.get('changes', [])
@@ -1121,8 +1245,19 @@ def whatsapp_webhook(request):
                     # Image and location messages are always handled by Django (Lua
                     # cannot download WhatsApp media). Django processes incident photos,
                     # verification photos, and clock-in locations directly.
-                    _django_only_msg_types = {'image', 'location', 'audio'}
-                    if lua_url and session and session.state not in _active_django_states and msg_type not in _django_only_msg_types:
+                    _django_only_msg_types = {'image', 'location', 'audio', 'voice'}
+                    _text_is_voice_placeholder = (
+                        msg_type == 'text'
+                        and text_body
+                        and _looks_like_voice_ui_placeholder(text_body)
+                    )
+                    if (
+                        lua_url
+                        and session
+                        and session.state not in _active_django_states
+                        and msg_type not in _django_only_msg_types
+                        and not _text_is_voice_placeholder
+                    ):
                         logger.info("Session state '%s' for %s — deferring to Lua/Miya.", session.state, phone_digits)
                         continue
                     
@@ -1452,6 +1587,9 @@ def whatsapp_webhook(request):
                                     shift_obj = _infer_shift_img(user, occurred_at) if occurred_at else None
                                     severity = infer_severity(raw_body)
                                     try:
+                                        _assign = resolve_default_assignee_for_incident_type(
+                                            user.restaurant, incident_type or 'General'
+                                        )
                                         ticket = SafetyConcernReport.objects.create(
                                             restaurant=user.restaurant,
                                             reporter=user,
@@ -1463,6 +1601,7 @@ def whatsapp_webhook(request):
                                             status='OPEN',
                                             occurred_at=occurred_at,
                                             shift=shift_obj,
+                                            assigned_to=_assign,
                                         )
                                         occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
                                         notification_service.send_whatsapp_text(
@@ -1536,6 +1675,7 @@ def whatsapp_webhook(request):
                                 shift_obj = _infer_shift_cl(user, occurred_at) if occurred_at else None
                                 severity = infer_severity(combined_text)
                                 try:
+                                    _assign = resolve_default_assignee_for_incident_type(user.restaurant, incident_type)
                                     ticket = SafetyConcernReport.objects.create(
                                         restaurant=user.restaurant,
                                         reporter=user,
@@ -1548,6 +1688,7 @@ def whatsapp_webhook(request):
                                         occurred_at=occurred_at,
                                         shift=shift_obj,
                                         audio_evidence=[pending.get('audio_url')] if pending.get('audio_url') else [],
+                                        assigned_to=_assign,
                                     )
                                     if session.context.get('incident_photo_media_id'):
                                         _attach_whatsapp_photo_to_incident(
@@ -1596,6 +1737,9 @@ def whatsapp_webhook(request):
                                 shift_obj_fb = _infer_shift_fb(user, occurred_at_fb)
                                 severity_fb = infer_severity(caption_fb)
                                 try:
+                                    _assign_fb = resolve_default_assignee_for_incident_type(
+                                        user.restaurant, incident_type_fb
+                                    )
                                     ticket_fb = SafetyConcernReport.objects.create(
                                         restaurant=user.restaurant,
                                         reporter=user,
@@ -1607,6 +1751,7 @@ def whatsapp_webhook(request):
                                         status='OPEN',
                                         occurred_at=occurred_at_fb,
                                         shift=shift_obj_fb,
+                                        assigned_to=_assign_fb,
                                     )
                                     occurred_str_fb = occurred_at_fb.strftime('%Y-%m-%d %H:%M')
                                     notification_service.send_whatsapp_text(
@@ -1633,6 +1778,9 @@ def whatsapp_webhook(request):
                                 from staff.models_task import SafetyConcernReport
                                 now = timezone.now()
                                 try:
+                                    _assign_nc = resolve_default_assignee_for_incident_type(
+                                        user.restaurant, 'General'
+                                    )
                                     ticket_nc = SafetyConcernReport.objects.create(
                                         restaurant=user.restaurant,
                                         reporter=user,
@@ -1643,6 +1791,7 @@ def whatsapp_webhook(request):
                                         severity='MEDIUM',
                                         status='OPEN',
                                         occurred_at=now,
+                                        assigned_to=_assign_nc,
                                     )
                                     _attach_whatsapp_photo_to_incident(
                                         notification_service, ticket_nc,
@@ -1662,8 +1811,8 @@ def whatsapp_webhook(request):
                     # ------------------------------------------------------------------
                     # 3. HANDLE AUDIO — guest order (Today’s Orders) OR incidents
                     # ------------------------------------------------------------------
-                    if msg_type == 'audio':
-                        audio = msg.get('audio') or {}
+                    if msg_type in ('audio', 'voice'):
+                        audio = msg.get('audio') or msg.get('voice') or {}
                         media_id = audio.get('id')
                         media_url, mime_type = notification_service.fetch_whatsapp_media_url(media_id) if media_id else (None, None)
                         audio_bytes = notification_service.download_media_bytes(media_url) if media_url else None
@@ -1705,18 +1854,7 @@ def whatsapp_webhook(request):
                                 continue
 
                             try:
-                                order = StaffCapturedOrder.objects.create(
-                                    restaurant=rest_o,
-                                    recorded_by=user,
-                                    items_summary=text_to_store[:8000],
-                                    channel='VOICE',
-                                    customer_name='',
-                                    customer_phone='',
-                                    order_type='DINE_IN',
-                                    table_or_location='',
-                                    dietary_notes='',
-                                    special_instructions='',
-                                )
+                                order = _create_staff_captured_order_parsed(rest_o, user, text_to_store, "VOICE")
                                 preview = text_to_store[:400] + ('…' if len(text_to_store) > 400 else '')
                                 session.state = 'idle'
                                 session.context.pop('pending_order', None)
@@ -1728,6 +1866,7 @@ def whatsapp_webhook(request):
                                         'order_recorded',
                                         order_id=str(order.id)[:8],
                                         preview=f"Details:\n{preview}",
+                                        followup=order_recorded_followup(user, order),
                                     ),
                                 )
                             except Exception as e:
@@ -1758,18 +1897,7 @@ def whatsapp_webhook(request):
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'order_clarify_audio'))
                                 continue
                             try:
-                                order = StaffCapturedOrder.objects.create(
-                                    restaurant=rest_o,
-                                    recorded_by=user,
-                                    items_summary=tstrip[:8000],
-                                    channel='VOICE',
-                                    customer_name='',
-                                    customer_phone='',
-                                    order_type='DINE_IN',
-                                    table_or_location='',
-                                    dietary_notes='',
-                                    special_instructions='',
-                                )
+                                order = _create_staff_captured_order_parsed(rest_o, user, tstrip, "VOICE")
                                 preview = tstrip[:400] + ('…' if len(tstrip) > 400 else '')
                                 session.state = 'idle'
                                 session.context.pop('pending_order', None)
@@ -1781,6 +1909,7 @@ def whatsapp_webhook(request):
                                         'order_recorded',
                                         order_id=str(order.id)[:8],
                                         preview=f"Details:\n{preview}",
+                                        followup=order_recorded_followup(user, order),
                                     ),
                                 )
                             except Exception as e:
@@ -1811,18 +1940,7 @@ def whatsapp_webhook(request):
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'order_clarify_audio'))
                                 continue
                             try:
-                                order = StaffCapturedOrder.objects.create(
-                                    restaurant=rest_o,
-                                    recorded_by=user,
-                                    items_summary=tstrip[:8000],
-                                    channel='VOICE',
-                                    customer_name='',
-                                    customer_phone='',
-                                    order_type='DINE_IN',
-                                    table_or_location='',
-                                    dietary_notes='',
-                                    special_instructions='',
-                                )
+                                order = _create_staff_captured_order_parsed(rest_o, user, tstrip, "VOICE")
                                 preview = tstrip[:400] + ('…' if len(tstrip) > 400 else '')
                                 session.state = 'idle'
                                 session.context.pop('pending_order', None)
@@ -1834,6 +1952,7 @@ def whatsapp_webhook(request):
                                         'order_recorded',
                                         order_id=str(order.id)[:8],
                                         preview=f"Details:\n{preview}",
+                                        followup=order_recorded_followup(user, order),
                                     ),
                                 )
                             except Exception as e:
@@ -1903,6 +2022,7 @@ def whatsapp_webhook(request):
                         shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
                         severity = infer_severity(transcript)
 
+                        _assign_voice = resolve_default_assignee_for_incident_type(user.restaurant, incident_type)
                         ticket = SafetyConcernReport.objects.create(
                             restaurant=user.restaurant,
                             reporter=user,
@@ -1915,6 +2035,7 @@ def whatsapp_webhook(request):
                             occurred_at=occurred_at,
                             shift=shift_obj,
                             audio_evidence=[media_url] if media_url else [],
+                            assigned_to=_assign_voice,
                         )
 
                         # Send to Lua Agent for analysis/context if needed
@@ -1941,11 +2062,10 @@ def whatsapp_webhook(request):
                             manager = CustomUser.objects.filter(restaurant=user.restaurant, role__in=['MANAGER', 'ADMIN']).order_by('id').first()
                             if manager and getattr(manager, 'phone', None):
                                 notif_msg = (
-                                    f"New Incident reported by {user.get_full_name()}.\n"
-                                    f"Ticket #{str(ticket.id)[:8]}\n"
-                                    f"Type: {incident_type}\n"
-                                    f"Time: {occurred_str}\n"
-                                    f"Details: {transcript[:150]}..."
+                                    f"Heads up — {user.get_full_name()} just submitted an incident report "
+                                    f"({incident_type}, {occurred_str}).\n\n"
+                                    f"First details: {transcript[:200]}{'…' if len(transcript or '') > 200 else ''}\n\n"
+                                    f"Please review in the dashboard when you can."
                                 )
                                 notification_service.send_whatsapp_text(manager.phone, notif_msg)
                         except Exception:
@@ -2141,6 +2261,20 @@ def whatsapp_webhook(request):
                     if not body:
                         continue
 
+                    # Voice surfaced as placeholder text (no transcript): do not fall through to Lua or incident heuristics.
+                    if _looks_like_voice_ui_placeholder(raw_body):
+                        if not user:
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            continue
+                        if not getattr(user, 'restaurant', None):
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                "Your account has no restaurant context. Contact your manager.",
+                            )
+                            continue
+                        notification_service.send_whatsapp_text(phone_digits, R(user, 'order_clarify_audio'))
+                        continue
+
                     body_clean = body.strip()
 
                     # ------------------------------------------------------------------
@@ -2175,18 +2309,7 @@ def whatsapp_webhook(request):
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'order_clarify_audio'))
                             continue
                         try:
-                            order = StaffCapturedOrder.objects.create(
-                                restaurant=rest_o,
-                                recorded_by=user,
-                                items_summary=combined_o[:8000],
-                                channel='VOICE',
-                                customer_name='',
-                                customer_phone='',
-                                order_type='DINE_IN',
-                                table_or_location='',
-                                dietary_notes='',
-                                special_instructions='',
-                            )
+                            order = _create_staff_captured_order_parsed(rest_o, user, combined_o, "VOICE")
                             preview = combined_o[:400] + ('…' if len(combined_o) > 400 else '')
                             session.state = 'idle'
                             session.context.pop('pending_order', None)
@@ -2198,6 +2321,7 @@ def whatsapp_webhook(request):
                                     'order_recorded',
                                     order_id=str(order.id)[:8],
                                     preview=f"Details:\n{preview}",
+                                    followup=order_recorded_followup(user, order),
                                 ),
                             )
                         except Exception as e:
@@ -2228,18 +2352,7 @@ def whatsapp_webhook(request):
                             )
                             continue
                         try:
-                            order = StaffCapturedOrder.objects.create(
-                                restaurant=rest_o,
-                                recorded_by=user,
-                                items_summary=raw_body.strip()[:8000],
-                                channel='TEXT',
-                                customer_name='',
-                                customer_phone='',
-                                order_type='DINE_IN',
-                                table_or_location='',
-                                dietary_notes='',
-                                special_instructions='',
-                            )
+                            order = _create_staff_captured_order_parsed(rest_o, user, raw_body.strip(), "TEXT")
                             preview = raw_body.strip()[:400] + ('…' if len(raw_body.strip()) > 400 else '')
                             session.state = 'idle'
                             session.save(update_fields=['state'])
@@ -2250,6 +2363,7 @@ def whatsapp_webhook(request):
                                     'order_recorded',
                                     order_id=str(order.id)[:8],
                                     preview=f"Details:\n{preview}",
+                                    followup=order_recorded_followup(user, order),
                                 ),
                             )
                         except Exception as e:
@@ -2383,6 +2497,7 @@ def whatsapp_webhook(request):
                         shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
                         severity = infer_severity(combined_text)
 
+                        _assign_clar = resolve_default_assignee_for_incident_type(user.restaurant, incident_type)
                         ticket = SafetyConcernReport.objects.create(
                             restaurant=user.restaurant,
                             reporter=user,
@@ -2395,6 +2510,7 @@ def whatsapp_webhook(request):
                             occurred_at=occurred_at,
                             shift=shift_obj,
                             audio_evidence=[pending.get('audio_url')] if pending.get('audio_url') else [],
+                            assigned_to=_assign_clar,
                         )
                         if session.context.get('incident_photo_media_id'):
                             _attach_whatsapp_photo_to_incident(
@@ -2676,6 +2792,9 @@ def whatsapp_webhook(request):
                         severity = infer_severity(raw_body)
 
                         try:
+                            _assign_txt = resolve_default_assignee_for_incident_type(
+                                user.restaurant, incident_type or 'General'
+                            )
                             ticket = SafetyConcernReport.objects.create(
                                 restaurant=user.restaurant,
                                 reporter=user,
@@ -2687,6 +2806,7 @@ def whatsapp_webhook(request):
                                 status='OPEN',
                                 occurred_at=occurred_at,
                                 shift=shift_obj,
+                                assigned_to=_assign_txt,
                             )
                             if session.context.get('incident_photo_media_id'):
                                 _attach_whatsapp_photo_to_incident(
@@ -2742,6 +2862,9 @@ def whatsapp_webhook(request):
                             severity = infer_severity(raw_body)
 
                             try:
+                                _assign_fb2 = resolve_default_assignee_for_incident_type(
+                                    user.restaurant, incident_type
+                                )
                                 ticket = SafetyConcernReport.objects.create(
                                     restaurant=user.restaurant,
                                     reporter=user,
@@ -2753,6 +2876,7 @@ def whatsapp_webhook(request):
                                     status='OPEN',
                                     occurred_at=occurred_at,
                                     shift=shift_obj,
+                                    assigned_to=_assign_fb2,
                                 )
                                 if session.context.get('incident_photo_media_id'):
                                     _attach_whatsapp_photo_to_incident(

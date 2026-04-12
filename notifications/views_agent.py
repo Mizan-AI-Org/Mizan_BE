@@ -6,6 +6,7 @@ from django.conf import settings as dj_settings
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from .services import notification_service
+from .order_parsing import merge_parsed_order_fields
 import logging
 
 logger = logging.getLogger(__name__)
@@ -259,23 +260,33 @@ def agent_create_staff_captured_order(request):
     if ch not in ("VOICE", "TEXT", "MANUAL"):
         ch = "VOICE"
 
-    ot = (data.get("order_type") or "DINE_IN").upper()
-    if ot not in ("DINE_IN", "TAKEOUT", "DELIVERY", "OTHER"):
-        ot = "DINE_IN"
+    overrides = {}
+    for key in (
+        "customer_name",
+        "customer_phone",
+        "order_type",
+        "table_or_location",
+        "dietary_notes",
+        "special_instructions",
+    ):
+        val = data.get(key)
+        if val is not None and str(val).strip():
+            overrides[key] = val
+    if data.get("items_summary") and str(data.get("items_summary")).strip():
+        overrides["items_summary"] = str(data.get("items_summary")).strip()
 
     try:
+        merged = merge_parsed_order_fields(items_summary, overrides)
+        merged["channel"] = ch
         order = StaffCapturedOrder.objects.create(
             restaurant=restaurant,
             recorded_by=user,
-            items_summary=items_summary[:8000],
-            channel=ch,
-            customer_name=(data.get("customer_name") or "")[:255],
-            customer_phone=(data.get("customer_phone") or "")[:40],
-            order_type=ot,
-            table_or_location=(data.get("table_or_location") or "")[:120],
-            dietary_notes=(data.get("dietary_notes") or "")[:2000],
-            special_instructions=(data.get("special_instructions") or "")[:2000],
+            **merged,
         )
+        try:
+            notification_service.send_lua_staff_captured_order(user, order, items_summary[:2000])
+        except Exception:
+            logger.exception("agent_create_staff_captured_order: Lua notify failed (non-fatal)")
     except Exception as e:
         logger.exception("agent_create_staff_captured_order: %s", e)
         return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

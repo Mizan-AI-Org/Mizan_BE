@@ -1,37 +1,42 @@
 """
-Signal handlers for staff app
+Notify incident assignees via WhatsApp when assignment is set or changes.
 """
-import logging
-from django.db.models.signals import post_save, pre_delete
+from django.db import transaction
+from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
-from .models import Schedule, ScheduleChange
-from .backup_service import ScheduleBackupService
 
-logger = logging.getLogger(__name__)
+from staff.models_task import SafetyConcernReport
 
-@receiver(post_save, sender=Schedule)
-def backup_schedule_on_save(sender, instance, created, **kwargs):
-    """Create a backup when a schedule is saved"""
-    if not created:  # Only backup on updates, not on creation
-        try:
-            backup_service = ScheduleBackupService()
-            backup_path = backup_service.create_backup(instance)
-            if backup_path:
-                logger.info(f"Auto-backup created for schedule {instance.id}")
-            else:
-                logger.warning(f"Failed to create auto-backup for schedule {instance.id}")
-        except Exception as e:
-            logger.error(f"Error in backup_schedule_on_save: {str(e)}")
 
-@receiver(pre_delete, sender=Schedule)
-def backup_schedule_before_delete(sender, instance, **kwargs):
-    """Create a backup before a schedule is deleted"""
+@receiver(pre_save, sender=SafetyConcernReport)
+def safety_report_cache_prev_assigned(sender, instance, **kwargs):
+    if not instance.pk:
+        instance._prev_assigned_to_id = None
+        return
     try:
-        backup_service = ScheduleBackupService()
-        backup_path = backup_service.create_backup(instance)
-        if backup_path:
-            logger.info(f"Auto-backup created before deletion of schedule {instance.id}")
-        else:
-            logger.warning(f"Failed to create auto-backup before deletion of schedule {instance.id}")
-    except Exception as e:
-        logger.error(f"Error in backup_schedule_before_delete: {str(e)}")
+        instance._prev_assigned_to_id = (
+            SafetyConcernReport.objects.only("assigned_to_id")
+            .get(pk=instance.pk)
+            .assigned_to_id
+        )
+    except SafetyConcernReport.DoesNotExist:
+        instance._prev_assigned_to_id = None
+
+
+@receiver(post_save, sender=SafetyConcernReport)
+def safety_report_notify_assignee_whatsapp(sender, instance, created, **kwargs):
+    from staff.incident_assignee_notify import (
+        schedule_notify_assignee_whatsapp_for_incident,
+    )
+
+    prev = getattr(instance, "_prev_assigned_to_id", None)
+    cur = instance.assigned_to_id
+    if not cur:
+        return
+    if prev == cur:
+        return
+
+    pk = instance.pk
+    transaction.on_commit(
+        lambda: schedule_notify_assignee_whatsapp_for_incident(pk)
+    )

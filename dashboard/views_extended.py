@@ -634,24 +634,42 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['get'])
     def attendance_dashboard(self, request):
-        """Get summarized and detailed attendance data for the dashboard"""
+        """Get summarized and detailed attendance data for the dashboard.
+        Optional query: ?date=YYYY-MM-DD (default: today in local timezone).
+        """
         from scheduling.models import AssignedShift
         from timeclock.models import ClockEvent
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, time as dt_time
         import math
 
         user = request.user
         if not user.restaurant:
             return Response({'error': 'No restaurant associated'}, status=status.HTTP_400_BAD_REQUEST)
+
+        date_str = request.query_params.get('date')
+        if date_str:
+            try:
+                report_date = datetime.strptime(str(date_str).strip()[:10], '%Y-%m-%d').date()
+            except ValueError:
+                return Response({'error': 'Invalid date. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            report_date = timezone.localdate()
+
+        local_today = timezone.localdate()
+        is_today = report_date == local_today
+        # For past days, evaluate as end-of-day so late/absent logic matches a completed day.
+        if not is_today:
+            now_dt = timezone.make_aware(datetime.combine(report_date, dt_time(23, 59, 59)))
+        else:
+            now_dt = timezone.localtime(timezone.now())
+
+        today_start = timezone.make_aware(datetime.combine(report_date, datetime.min.time()))
+        today_end = timezone.make_aware(datetime.combine(report_date, datetime.max.time()))
         
-        today = timezone.now().date()
-        today_start = timezone.make_aware(datetime.combine(today, datetime.min.time()))
-        today_end = timezone.make_aware(datetime.combine(today, datetime.max.time()))
-        
-        # 1. Fetch Today's Shifts
+        # 1. Fetch shifts for report_date
         shifts = AssignedShift.objects.filter(
             schedule__restaurant=user.restaurant,
-            shift_date=today,
+            shift_date=report_date,
             status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS', 'COMPLETED', 'NO_SHOW']
         ).select_related('staff').prefetch_related('staff_members')
         
@@ -808,9 +826,7 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                     if 'Shift Over' not in data['signals']:
                         data['signals'].append('Shift Over')
 
-        # Analyze Absences & Final Summaries
-        now_dt = timezone.localtime(timezone.now())
-        
+        # Analyze Absences & Final Summaries (now_dt set above from report_date)
         NO_SHOW_LATE_MINUTES = 180
         for entry_key, data in staff_map.items():
             if data['shift']['start'] and not data['clock_in']:
@@ -822,8 +838,8 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                     s_start = datetime.strptime(data['shift']['start'], '%H:%M').time()
                     s_end = datetime.strptime(data['shift']['end'], '%H:%M').time()
                     
-                    shift_start_dt = timezone.make_aware(datetime.combine(today, s_start))
-                    shift_end_dt = timezone.make_aware(datetime.combine(today, s_end))
+                    shift_start_dt = timezone.make_aware(datetime.combine(report_date, s_start))
+                    shift_end_dt = timezone.make_aware(datetime.combine(report_date, s_end))
                     
                     if shift_end_dt < shift_start_dt:
                         shift_end_dt += timedelta(days=1)
@@ -877,8 +893,17 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             return 5
 
         sorted_list = sorted(staff_map.values(), key=sort_key)
-        
+
+        recent_events = list(
+            ClockEvent.objects.filter(
+                staff__restaurant=user.restaurant,
+                timestamp__range=(today_start, today_end),
+            ).select_related('staff').order_by('-timestamp')[:10]
+        )
+
         return Response({
+            'report_date': report_date.isoformat(),
+            'is_today': is_today,
             'summary': summary,
             'attendance_list': sorted_list,
             'recent_activity': [
@@ -887,9 +912,10 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                     'staff_name': f"{e.staff.first_name} {e.staff.last_name}",
                     'event': e.get_event_type_display(),
                     'time': timezone.localtime(e.timestamp).strftime('%H:%M'),
-                    'location': 'Front Desk' # Placeholder or e.location_name
-                } for e in events.reverse()[:10]
-            ]
+                    'location': 'Front Desk',
+                }
+                for e in recent_events
+            ],
         })
 
     @action(detail=False, methods=['get'])

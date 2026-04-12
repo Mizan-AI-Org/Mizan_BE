@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from .models import ChecklistExecution, ChecklistAction
 from accounts.models import Restaurant
+from core.read_through_cache import get_or_set
 import logging
 
 logger = logging.getLogger(__name__)
@@ -66,22 +67,27 @@ def agent_list_checklists_for_review(request):
     restaurant, err = _resolve_restaurant(request)
     if err:
         return Response({'success': False, 'error': err['error']}, status=err['status'])
-    qs = ChecklistExecution.objects.filter(
-        template__restaurant=restaurant,
-        status='COMPLETED',
-        supervisor_approved=False,
-    ).order_by('-completed_at').select_related('assigned_to', 'template')[:30]
-    items = [
-        {
-            'id': str(e.id),
-            'template_name': e.template.name if e.template else '—',
-            'staff_name': f"{e.assigned_to.first_name} {e.assigned_to.last_name}".strip() if e.assigned_to else '—',
-            'staff_id': str(e.assigned_to.id) if e.assigned_to else None,
-            'completed_at': e.completed_at.isoformat() if e.completed_at else None,
-        }
-        for e in qs
-    ]
-    return Response({'success': True, 'executions': items, 'restaurant_id': str(restaurant.id)})
+    ck = f"agent:checklists:pending_review:{restaurant.id}"
+
+    def _checklist_review_payload():
+        qs = ChecklistExecution.objects.filter(
+            template__restaurant=restaurant,
+            status='COMPLETED',
+            supervisor_approved=False,
+        ).order_by('-completed_at').select_related('assigned_to', 'template')[:30]
+        items = [
+            {
+                'id': str(e.id),
+                'template_name': e.template.name if e.template else '—',
+                'staff_name': f"{e.assigned_to.first_name} {e.assigned_to.last_name}".strip() if e.assigned_to else '—',
+                'staff_id': str(e.assigned_to.id) if e.assigned_to else None,
+                'completed_at': e.completed_at.isoformat() if e.completed_at else None,
+            }
+            for e in qs
+        ]
+        return {'success': True, 'executions': items, 'restaurant_id': str(restaurant.id)}
+
+    return Response(get_or_set(ck, 30, _checklist_review_payload))
 
 
 @api_view(['POST'])

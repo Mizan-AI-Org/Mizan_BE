@@ -11,6 +11,8 @@ from django.utils import timezone
 from datetime import datetime, time, timedelta
 from django.db.models import Q, Value
 from django.db.models.functions import Concat
+import hashlib
+import json
 import re
 import uuid
 import unicodedata
@@ -23,6 +25,7 @@ from .serializers import AssignedShiftSerializer
 from .services import SchedulingService
 import logging
 from core.utils import resolve_agent_restaurant_and_user
+from core.read_through_cache import get_or_set
 from .shift_auto_templates import (
     AutoAttachResult,
     auto_attach_templates_and_tasks,
@@ -174,17 +177,27 @@ def agent_list_staff(request):
         _co = payload.get('count_only') or payload.get('countOnly')
         count_only_val = _co[0] if isinstance(_co, (list, tuple)) and _co else _co
         if count_only_val in (True, 'true', '1', 1):
-            from django.db.models import Count
-            count = queryset.count()
-            by_role = dict(queryset.values('role').annotate(n=Count('id')).values_list('role', 'n'))
-            return Response({
-                'count': count,
-                'active': count,
-                'by_role': by_role,
-                'restaurant_id': str(restaurant.id),
-                'restaurant_name': restaurant.name,
-                'message': f"There are {count} staff member{'s' if count != 1 else ''} in {restaurant.name}." if count else f"There are no staff members currently registered in {restaurant.name}.",
-            })
+            role_key = str((payload.get('role') or payload.get('roleName') or '')).strip().upper()[:40] or 'all'
+            ck = f"agent:sched:staff_count_only:{restaurant.id}:{role_key}"
+
+            def _count_payload():
+                from django.db.models import Count
+
+                q = queryset
+                count = q.count()
+                by_role = dict(q.values('role').annotate(n=Count('id')).values_list('role', 'n'))
+                return {
+                    'count': count,
+                    'active': count,
+                    'by_role': by_role,
+                    'restaurant_id': str(restaurant.id),
+                    'restaurant_name': restaurant.name,
+                    'message': f"There are {count} staff member{'s' if count != 1 else ''} in {restaurant.name}."
+                    if count
+                    else f"There are no staff members currently registered in {restaurant.name}.",
+                }
+
+            return Response(get_or_set(ck, 90, _count_payload))
         
         def _norm(s: str) -> str:
             # Normalize for fuzzy matching: lowercase, strip diacritics, collapse spaces.
@@ -311,7 +324,11 @@ def agent_list_staff(request):
                 'phone': staff.phone or '',
                 'match_mode': 'fuzzy' if fuzzy_mode else 'exact',
             })
-        
+
+        if not name_filter and not fuzzy_mode:
+            role_key = str((payload.get('role') or payload.get('roleName') or '')).strip().upper()[:40] or 'all'
+            ck = f"agent:sched:staff_list:{restaurant.id}:{role_key}"
+            return Response(get_or_set(ck, 60, lambda: list(staff_list)))
         return Response(staff_list)
         
     except Exception as e:
@@ -342,23 +359,29 @@ def agent_staff_count(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        queryset = CustomUser.objects.filter(
-            restaurant=restaurant,
-            is_active=True
-        ).exclude(role='SUPER_ADMIN')
+        ck = f"agent:sched:staff_count_breakdown:{restaurant.id}"
 
-        count = queryset.count()
-        from django.db.models import Count
-        by_role = dict(queryset.values('role').annotate(n=Count('id')).values_list('role', 'n'))
+        def _staff_count_payload():
+            queryset = CustomUser.objects.filter(
+                restaurant=restaurant,
+                is_active=True
+            ).exclude(role='SUPER_ADMIN')
+            count = queryset.count()
+            from django.db.models import Count
 
-        return Response({
-            'count': count,
-            'active': count,
-            'by_role': by_role,
-            'restaurant_id': str(restaurant.id),
-            'restaurant_name': restaurant.name,
-            'message': f"There are {count} staff member{'s' if count != 1 else ''} in {restaurant.name}." if count else f"There are no staff members currently registered in {restaurant.name}.",
-        })
+            by_role = dict(queryset.values('role').annotate(n=Count('id')).values_list('role', 'n'))
+            return {
+                'count': count,
+                'active': count,
+                'by_role': by_role,
+                'restaurant_id': str(restaurant.id),
+                'restaurant_name': restaurant.name,
+                'message': f"There are {count} staff member{'s' if count != 1 else ''} in {restaurant.name}."
+                if count
+                else f"There are no staff members currently registered in {restaurant.name}.",
+            }
+
+        return Response(get_or_set(ck, 90, _staff_count_payload))
     except Exception as e:
         logger.exception("Agent staff count error")
         err = str(e).strip() if e else "Unable to get staff count"
@@ -426,14 +449,19 @@ def agent_list_task_templates(request):
         restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
-        templates = TaskTemplate.objects.filter(
-            restaurant=restaurant,
-            is_active=True
-        ).order_by('name').values('id', 'name', 'template_type', 'description')
-        return Response({
-            'task_templates': list(templates),
-            'restaurant_id': str(restaurant.id),
-        })
+        ck = f"agent:sched:task_templates:{restaurant.id}"
+
+        def _tpl_payload():
+            templates = TaskTemplate.objects.filter(
+                restaurant=restaurant,
+                is_active=True
+            ).order_by('name').values('id', 'name', 'template_type', 'description')
+            return {
+                'task_templates': list(templates),
+                'restaurant_id': str(restaurant.id),
+            }
+
+        return Response(get_or_set(ck, 120, _tpl_payload))
     except Exception as e:
         logger.exception("Agent list task templates error")
         err = str(e).strip() if e else "Unable to list task templates"
@@ -1918,9 +1946,16 @@ def agent_restaurant_search(request):
         if not name:
             return Response({'error': 'Missing query parameter: name'}, status=status.HTTP_400_BAD_REQUEST)
         from django.db.models import Q
-        qs = Restaurant.objects.filter(Q(name__icontains=name) | Q(email__icontains=name))[:20]
-        results = [{'id': str(r.id), 'name': r.name} for r in qs]
-        return Response({'results': results, 'count': len(results)})
+
+        nk = name.strip().lower()[:80]
+        cache_key = f"agent:sched:rest_search:{nk}"
+
+        def _compute():
+            qs = Restaurant.objects.filter(Q(name__icontains=name) | Q(email__icontains=name))[:20]
+            results = [{'id': str(r.id), 'name': r.name} for r in qs]
+            return {'results': results, 'count': len(results)}
+
+        return Response(get_or_set(cache_key, 90, _compute))
     except Exception as e:
         logger.exception("Agent restaurant search error")
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1955,33 +1990,35 @@ def agent_get_restaurant_details(request):
         }
         
 
-        labor_policy = SchedulingService._get_labor_policy(restaurant)
+        cache_key = f"agent:sched:restaurant_details:{restaurant.id}"
 
-        data = {
-            'id': str(restaurant.id),
-            'name': restaurant.name,
-            'timezone': str(restaurant.timezone) if hasattr(restaurant, 'timezone') else 'Africa/Casablanca',
-            'operating_hours': getattr(restaurant, 'operating_hours', {}),
-            'restaurant_type': getattr(restaurant, 'restaurant_type', 'CASUAL_DINING'),
-            'max_weekly_hours': float(labor_policy['max_hours_per_week']),
-            'min_rest_hours': float(labor_policy['min_rest_hours_between_shifts']),
-            'general_settings': {
-                'peak_periods': getattr(restaurant, 'general_settings', {}).get('peak_periods', peak_definitions) if isinstance(getattr(restaurant, 'general_settings', None), dict) else peak_definitions
-            },
-            'break_duration': getattr(restaurant, 'break_duration', 30),
-            'labor_policy': {
-                'max_hours_per_day': float(labor_policy['max_hours_per_day']),
-                'max_hours_per_week': float(labor_policy['max_hours_per_week']),
-                'min_rest_between_shifts': float(labor_policy['min_rest_hours_between_shifts']),
-                'break_required_after_hours': float(labor_policy['break_required_after_hours']),
-                'overtime_threshold_weekly': float(labor_policy['overtime_after_hours_per_week']),
-                'overtime_rate': float(labor_policy['overtime_rate_multiplier']),
-                'mandatory_rest_day_per_week': labor_policy['mandatory_rest_day_per_week'],
-            },
-            'labor_target_percent': float(restaurant.labor_target_percent) if getattr(restaurant, 'labor_target_percent', None) else None,
-        }
-        
-        return Response(data)
+        def _compute_details():
+            labor_policy = SchedulingService._get_labor_policy(restaurant)
+            return {
+                'id': str(restaurant.id),
+                'name': restaurant.name,
+                'timezone': str(restaurant.timezone) if hasattr(restaurant, 'timezone') else 'Africa/Casablanca',
+                'operating_hours': getattr(restaurant, 'operating_hours', {}),
+                'restaurant_type': getattr(restaurant, 'restaurant_type', 'CASUAL_DINING'),
+                'max_weekly_hours': float(labor_policy['max_hours_per_week']),
+                'min_rest_hours': float(labor_policy['min_rest_hours_between_shifts']),
+                'general_settings': {
+                    'peak_periods': getattr(restaurant, 'general_settings', {}).get('peak_periods', peak_definitions) if isinstance(getattr(restaurant, 'general_settings', None), dict) else peak_definitions
+                },
+                'break_duration': getattr(restaurant, 'break_duration', 30),
+                'labor_policy': {
+                    'max_hours_per_day': float(labor_policy['max_hours_per_day']),
+                    'max_hours_per_week': float(labor_policy['max_hours_per_week']),
+                    'min_rest_between_shifts': float(labor_policy['min_rest_hours_between_shifts']),
+                    'break_required_after_hours': float(labor_policy['break_required_after_hours']),
+                    'overtime_threshold_weekly': float(labor_policy['overtime_after_hours_per_week']),
+                    'overtime_rate': float(labor_policy['overtime_rate_multiplier']),
+                    'mandatory_rest_day_per_week': labor_policy['mandatory_rest_day_per_week'],
+                },
+                'labor_target_percent': float(restaurant.labor_target_percent) if getattr(restaurant, 'labor_target_percent', None) else None,
+            }
+
+        return Response(get_or_set(cache_key, 120, _compute_details))
         
     except Exception as e:
         logger.error(f"Agent restaurant details error: {e}")
@@ -2008,63 +2045,58 @@ def agent_get_operational_advice(request):
         date_str = request.query_params.get('date')
         if not date_str:
             date_str = timezone.now().date().isoformat()
-        
-        from .ai_scheduler import AIScheduler
-        scheduler = AIScheduler(restaurant)
-        
-        # Get demand forecast for the day
-        day_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-        demand_forecast = scheduler._get_demand_forecast(day_date)
-        day_name = day_date.strftime('%A')
-        current_demand = demand_forecast.get(day_name, 'MEDIUM')
-        
-        # Calculate required roles based on demand
-        historical_patterns = scheduler._get_historical_patterns(day_date)
-        required_roles = scheduler._calculate_required_roles(current_demand, historical_patterns)
-        
-        # Advice on shift splits
-        shift_splits = []
-        if current_demand == 'HIGH':
-            shift_splits = [
-                {'type': 'LUNCH_PEAK', 'time': '11:00-15:00', 'reason': 'High volume expected during lunch.'},
-                {'type': 'DINNER_PEAK', 'time': '18:00-22:00', 'reason': 'High volume expected during dinner.'}
+
+        cache_key = f"agent:sched:op_advice:{restaurant.id}:{date_str}"
+
+        def _compute_advice():
+            from .ai_scheduler import AIScheduler
+            scheduler = AIScheduler(restaurant)
+            day_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+            demand_forecast = scheduler._get_demand_forecast(day_date)
+            day_name = day_date.strftime('%A')
+            current_demand = demand_forecast.get(day_name, 'MEDIUM')
+            historical_patterns = scheduler._get_historical_patterns(day_date)
+            required_roles = scheduler._calculate_required_roles(current_demand, historical_patterns)
+            shift_splits = []
+            if current_demand == 'HIGH':
+                shift_splits = [
+                    {'type': 'LUNCH_PEAK', 'time': '11:00-15:00', 'reason': 'High volume expected during lunch.'},
+                    {'type': 'DINNER_PEAK', 'time': '18:00-22:00', 'reason': 'High volume expected during dinner.'}
+                ]
+            labor_policy = SchedulingService._get_labor_policy(restaurant)
+            min_rest = labor_policy['min_rest_hours_between_shifts']
+            max_daily = labor_policy['max_hours_per_day']
+            max_weekly = labor_policy['max_hours_per_week']
+            best_practices = [
+                "Schedule your strongest team for peak hours.",
+                f"Ensure at least {min_rest}h rest between shifts (clopening prevention).",
+                f"Max {max_daily}h per day, {max_weekly}h per week per staff member.",
+                f"A break is required after {labor_policy['break_required_after_hours']}h of continuous work.",
             ]
-        
+            if labor_policy['mandatory_rest_day_per_week']:
+                best_practices.append("Every staff member must have at least 1 rest day per 7-day period.")
+            r_type = getattr(restaurant, 'restaurant_type', 'CASUAL_DINING')
+            best_practices.append(
+                f"For {r_type.lower().replace('_', ' ')} style, focus on {'service consistency' if r_type == 'FINE_DINING' else 'speed of service'}."
+            )
+            return {
+                'status': 'success',
+                'date': date_str,
+                'demand_level': current_demand,
+                'optimal_staffing': required_roles,
+                'shift_split_suggestions': shift_splits,
+                'restaurant_type': r_type,
+                'labor_policy': {
+                    'max_hours_per_day': float(max_daily),
+                    'max_hours_per_week': float(max_weekly),
+                    'min_rest_between_shifts': float(min_rest),
+                    'overtime_threshold': float(labor_policy['overtime_after_hours_per_week']),
+                    'overtime_rate': float(labor_policy['overtime_rate_multiplier']),
+                },
+                'best_practices': best_practices,
+            }
 
-        labor_policy = SchedulingService._get_labor_policy(restaurant)
-        min_rest = labor_policy['min_rest_hours_between_shifts']
-        max_daily = labor_policy['max_hours_per_day']
-        max_weekly = labor_policy['max_hours_per_week']
-
-        best_practices = [
-            "Schedule your strongest team for peak hours.",
-            f"Ensure at least {min_rest}h rest between shifts (clopening prevention).",
-            f"Max {max_daily}h per day, {max_weekly}h per week per staff member.",
-            f"A break is required after {labor_policy['break_required_after_hours']}h of continuous work.",
-        ]
-        if labor_policy['mandatory_rest_day_per_week']:
-            best_practices.append("Every staff member must have at least 1 rest day per 7-day period.")
-        r_type = getattr(restaurant, 'restaurant_type', 'CASUAL_DINING')
-        best_practices.append(
-            f"For {r_type.lower().replace('_', ' ')} style, focus on {'service consistency' if r_type == 'FINE_DINING' else 'speed of service'}."
-        )
-
-        return Response({
-            'status': 'success',
-            'date': date_str,
-            'demand_level': current_demand,
-            'optimal_staffing': required_roles,
-            'shift_split_suggestions': shift_splits,
-            'restaurant_type': r_type,
-            'labor_policy': {
-                'max_hours_per_day': float(max_daily),
-                'max_hours_per_week': float(max_weekly),
-                'min_rest_between_shifts': float(min_rest),
-                'overtime_threshold': float(labor_policy['overtime_after_hours_per_week']),
-                'overtime_rate': float(labor_policy['overtime_rate_multiplier']),
-            },
-            'best_practices': best_practices,
-        })
+        return Response(get_or_set(cache_key, 90, _compute_advice))
 
     except Exception as e:
         logger.error(f"Agent operational advice error: {e}")
@@ -2145,21 +2177,26 @@ def agent_staff_by_phone(request):
                 'found': False,
                 'error': 'No staff member found with this phone number'
             }, status=status.HTTP_404_NOT_FOUND)
-        
-        return Response({
-            'success': True,
-            'found': True,
-            'staff': {
-                'id': str(staff.id),
-                'first_name': staff.first_name,
-                'last_name': staff.last_name,
-                'email': staff.email,
-                'phone': staff.phone,
-                'role': staff.role,
-                'restaurant_id': str(staff.restaurant_id) if staff.restaurant_id else None,
-                'restaurant_name': staff.restaurant.name if staff.restaurant else None
+
+        cache_key = f"agent:sched:staff_phone:v1:{staff.id}"
+
+        def _staff_payload():
+            return {
+                'success': True,
+                'found': True,
+                'staff': {
+                    'id': str(staff.id),
+                    'first_name': staff.first_name,
+                    'last_name': staff.last_name,
+                    'email': staff.email,
+                    'phone': staff.phone,
+                    'role': staff.role,
+                    'restaurant_id': str(staff.restaurant_id) if staff.restaurant_id else None,
+                    'restaurant_name': staff.restaurant.name if staff.restaurant else None
+                }
             }
-        })
+
+        return Response(get_or_set(cache_key, 45, _staff_payload))
         
     except Exception as e:
         logger.error(f"Agent staff by phone error: {e}")
@@ -2301,53 +2338,57 @@ def agent_get_my_shifts(request):
             except Exception:
                 pass
 
-        shifts_qs = AssignedShift.objects.filter(
-            schedule__restaurant=restaurant,
-            shift_date__gte=range_start,
-            shift_date__lte=range_end,
-        ).filter(Q(staff=staff) | Q(staff_members=staff)).select_related('schedule__restaurant').order_by('shift_date', 'start_time')
+        cache_key = f"agent:sched:my_shifts:v1:{staff.id}:{range_start.isoformat()}:{range_end.isoformat()}"
 
-        shifts = []
-        for s in shifts_qs:
-            try:
-                start_dt = timezone.localtime(s.start_time) if s.start_time else None
-                end_dt = timezone.localtime(s.end_time) if s.end_time else None
-            except Exception:
-                start_dt = s.start_time
-                end_dt = s.end_time
-            shifts.append({
-                'id': str(s.id),
-                'restaurant_id': str(restaurant.id) if restaurant else None,
-                'restaurant_name': restaurant.name if restaurant else None,
-                'shift_date': s.shift_date.isoformat() if s.shift_date else None,
-                'start_time': start_dt.strftime('%H:%M') if hasattr(start_dt, 'strftime') else (str(start_dt)[:5] if start_dt else None),
-                'end_time': end_dt.strftime('%H:%M') if hasattr(end_dt, 'strftime') else (str(end_dt)[:5] if end_dt else None),
-                'role': (s.role or '').upper(),
-                'title': (getattr(s, 'notes', '') or '').strip(),
-                'department': (getattr(s, 'department', '') or '').strip(),
-                'workspace_location': (getattr(s, 'workspace_location', '') or '').strip(),
-                'instructions': (getattr(s, 'preparation_instructions', '') or '').strip(),
-                'status': s.status,
-            })
+        def _compute_shifts_payload():
+            shifts_qs = AssignedShift.objects.filter(
+                schedule__restaurant=restaurant,
+                shift_date__gte=range_start,
+                shift_date__lte=range_end,
+            ).filter(Q(staff=staff) | Q(staff_members=staff)).select_related('schedule__restaurant').order_by('shift_date', 'start_time')
 
-        return Response({
-            'success': True,
-            'staff': {
-                'id': str(staff.id),
-                'first_name': staff.first_name,
-                'last_name': staff.last_name,
-                'phone': staff.phone,
-                'restaurant_id': str(getattr(staff, 'restaurant_id', '') or ''),
-                'restaurant_name': getattr(getattr(staff, 'restaurant', None), 'name', None),
-            },
-            'range': {
-                'start_date': range_start.isoformat(),
-                'end_date': range_end.isoformat(),
-                'weeks': weeks,
-            },
-            'count': len(shifts),
-            'shifts': shifts,
-        })
+            shifts = []
+            for s in shifts_qs:
+                try:
+                    start_dt = timezone.localtime(s.start_time) if s.start_time else None
+                    end_dt = timezone.localtime(s.end_time) if s.end_time else None
+                except Exception:
+                    start_dt = s.start_time
+                    end_dt = s.end_time
+                shifts.append({
+                    'id': str(s.id),
+                    'restaurant_id': str(restaurant.id) if restaurant else None,
+                    'restaurant_name': restaurant.name if restaurant else None,
+                    'shift_date': s.shift_date.isoformat() if s.shift_date else None,
+                    'start_time': start_dt.strftime('%H:%M') if hasattr(start_dt, 'strftime') else (str(start_dt)[:5] if start_dt else None),
+                    'end_time': end_dt.strftime('%H:%M') if hasattr(end_dt, 'strftime') else (str(end_dt)[:5] if end_dt else None),
+                    'role': (s.role or '').upper(),
+                    'title': (getattr(s, 'notes', '') or '').strip(),
+                    'department': (getattr(s, 'department', '') or '').strip(),
+                    'workspace_location': (getattr(s, 'workspace_location', '') or '').strip(),
+                    'instructions': (getattr(s, 'preparation_instructions', '') or '').strip(),
+                    'status': s.status,
+                })
+            return {
+                'success': True,
+                'staff': {
+                    'id': str(staff.id),
+                    'first_name': staff.first_name,
+                    'last_name': staff.last_name,
+                    'phone': staff.phone,
+                    'restaurant_id': str(getattr(staff, 'restaurant_id', '') or ''),
+                    'restaurant_name': getattr(getattr(staff, 'restaurant', None), 'name', None),
+                },
+                'range': {
+                    'start_date': range_start.isoformat(),
+                    'end_date': range_end.isoformat(),
+                    'weeks': weeks,
+                },
+                'count': len(shifts),
+                'shifts': shifts,
+            }
+
+        return Response(get_or_set(cache_key, 30, _compute_shifts_payload))
 
     except Exception as e:
         logger.error(f"Agent get my shifts error: {e}")
@@ -2392,14 +2433,24 @@ def agent_detect_conflicts(request):
         except ValueError:
             return Response({'error': 'Invalid date/time format'}, status=status.HTTP_400_BAD_REQUEST)
 
-        conflicts = SchedulingService.detect_scheduling_conflicts(
-            staff_id, shift_date, start_time, end_time, workspace_location=workspace_location
+        sig = json.dumps(
+            [staff_id, shift_date_str, start_time_str, end_time_str, workspace_location or ''],
+            default=str,
+            sort_keys=True,
         )
-        
-        return Response({
-            'has_conflicts': len(conflicts) > 0,
-            'conflicts': conflicts
-        })
+        qh = hashlib.sha256(sig.encode()).hexdigest()[:32]
+        ck = f"agent:sched:conflicts:{qh}"
+
+        def _conflicts_payload():
+            conflicts = SchedulingService.detect_scheduling_conflicts(
+                staff_id, shift_date, start_time, end_time, workspace_location=workspace_location
+            )
+            return {
+                'has_conflicts': len(conflicts) > 0,
+                'conflicts': conflicts,
+            }
+
+        return Response(get_or_set(ck, 25, _conflicts_payload))
 
     except Exception as e:
         logger.error(f"Agent detect conflicts error: {e}")
@@ -2480,8 +2531,18 @@ def agent_list_shifts(request):
 
         queryset = queryset.select_related('staff').prefetch_related('staff_members').order_by('shift_date', 'start_time')
 
-        serializer = AssignedShiftSerializer(queryset, many=True)
-        return Response(serializer.data)
+        qp_sig = json.dumps(
+            sorted((k, request.query_params.getlist(k)) for k in sorted(request.query_params.keys())),
+            default=str,
+        )
+        qh = hashlib.sha256(qp_sig.encode()).hexdigest()[:32]
+        ck = f"agent:sched:list_shifts:{restaurant.id}:{qh}"
+
+        def _shifts_payload():
+            serializer = AssignedShiftSerializer(queryset, many=True)
+            return serializer.data
+
+        return Response(get_or_set(ck, 30, _shifts_payload))
 
     except Exception as e:
         logger.exception("Agent list shifts error")
@@ -2500,31 +2561,37 @@ def agent_memory_list_or_save(request):
     Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
     """
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, _, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
 
         if request.method == 'GET':
-            qs = AgentMemory.objects.filter(restaurant=restaurant)
-            memory_type = request.query_params.get('memory_type')
-            key = request.query_params.get('key')
-            if memory_type:
-                qs = qs.filter(memory_type=memory_type)
-            if key:
-                qs = qs.filter(key__icontains=key)
-            qs = qs.order_by('-created_at')[:100]
-            items = [
-                {
-                    'id': str(m.id),
-                    'memory_type': m.memory_type,
-                    'key': m.key,
-                    'value': m.value,
-                    'scope': m.scope or '',
-                    'created_at': m.created_at.isoformat() if m.created_at else None,
-                }
-                for m in qs
-            ]
-            return Response({'memories': items, 'restaurant_id': str(restaurant.id)})
+            memory_type = request.query_params.get('memory_type') or ''
+            key_filter = request.query_params.get('key') or ''
+            kh = hashlib.sha256(key_filter.encode()).hexdigest()[:16] if key_filter else ''
+            ck = f"agent:sched:memory_list:{restaurant.id}:{memory_type}:{kh}"
+
+            def _memory_list_payload():
+                qs = AgentMemory.objects.filter(restaurant=restaurant)
+                if memory_type:
+                    qs = qs.filter(memory_type=memory_type)
+                if key_filter:
+                    qs = qs.filter(key__icontains=key_filter)
+                qs = qs.order_by('-created_at')[:100]
+                items = [
+                    {
+                        'id': str(m.id),
+                        'memory_type': m.memory_type,
+                        'key': m.key,
+                        'value': m.value,
+                        'scope': m.scope or '',
+                        'created_at': m.created_at.isoformat() if m.created_at else None,
+                    }
+                    for m in qs
+                ]
+                return {'memories': items, 'restaurant_id': str(restaurant.id)}
+
+            return Response(get_or_set(ck, 60, _memory_list_payload))
 
         # POST
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
@@ -2576,7 +2643,7 @@ def agent_memory_delete(request):
     POST/DELETE body: memory_id (uuid) or key (string). Auth: agent key or JWT.
     """
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, _, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
@@ -2599,6 +2666,137 @@ def agent_memory_delete(request):
         return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+def _compute_proactive_insights_payload(restaurant, target_date):
+    """Build proactive insights dict for the agent (expensive DB work; view caches result)."""
+    insights = []
+    no_shows = []
+    understaffed = []
+    late_patterns = []
+    suggestions = []
+
+    # No-shows: shifts with status NO_SHOW or SCHEDULED/CONFIRMED where clock-in never happened
+    from timeclock.models import ClockEvent
+    today_start = datetime.combine(target_date, time(0, 0))
+    if timezone.is_naive(today_start):
+        today_start = timezone.make_aware(today_start)
+    today_end = today_start + timedelta(days=1)
+    shifts_today = AssignedShift.objects.filter(
+        schedule__restaurant=restaurant,
+        shift_date=target_date,
+        status__in=['SCHEDULED', 'CONFIRMED', 'NO_SHOW']
+    ).select_related('staff')
+    staff_clock_ins = {}
+    if shifts_today.exists():
+        clock_ins = ClockEvent.objects.filter(
+            staff__restaurant=restaurant,
+            event_type='in',
+            timestamp__gte=today_start,
+            timestamp__lt=today_end
+        ).values_list('staff_id', 'timestamp')
+        staff_clock_ins = {str(sid): ts for sid, ts in clock_ins}
+    for shift in shifts_today:
+        staff = shift.staff
+        if not staff:
+            continue
+        clocked = str(staff.id) in staff_clock_ins
+        if not clocked and shift.status == 'NO_SHOW':
+            no_shows.append({
+                'shift_id': str(shift.id),
+                'staff_name': f"{staff.first_name} {staff.last_name}",
+                'role': shift.role or '',
+            })
+        elif not clocked and shift.status in ('SCHEDULED', 'CONFIRMED'):
+            start_dt = shift.start_time
+            if start_dt and timezone.now() > start_dt:
+                no_shows.append({
+                    'shift_id': str(shift.id),
+                    'staff_name': f"{staff.first_name} {staff.last_name}",
+                    'role': shift.role or '',
+                    'expected_start': start_dt.strftime('%H:%M') if hasattr(start_dt, 'strftime') else str(start_dt)[:5],
+                })
+
+    if no_shows:
+        insights.append({
+            'type': 'no_shows',
+            'priority': 'high',
+            'title': 'No-shows or missing clock-ins',
+            'items': no_shows,
+            'summary': f"{len(no_shows)} staff expected today have not clocked in.",
+        })
+
+    # Understaffed: compare today's shifts to a simple baseline (e.g. roles count)
+    role_counts = {}
+    for shift in shifts_today:
+        r = (shift.role or 'STAFF').upper()
+        role_counts[r] = role_counts.get(r, 0) + 1
+    if role_counts:
+        # Simple heuristic: if only 1 server for dinner, flag
+        if role_counts.get('SERVER', 0) < 2 and target_date == timezone.now().date():
+            understaffed.append({
+                'reason': 'Few servers scheduled today',
+                'role': 'SERVER',
+                'current': role_counts.get('SERVER', 0),
+            })
+        if understaffed:
+            insights.append({
+                'type': 'understaffed',
+                'priority': 'medium',
+                'title': 'Understaffing risk',
+                'items': understaffed,
+                'summary': 'Consider adding coverage for peak hours.',
+            })
+
+    # Late patterns: staff who clocked in after shift start
+    for shift in shifts_today:
+        staff = shift.staff
+        if not staff or not shift.start_time:
+            continue
+        cin = staff_clock_ins.get(str(staff.id))
+        if cin and shift.start_time and cin > shift.start_time:
+            delta = cin - (shift.start_time if timezone.is_aware(shift.start_time) else timezone.make_aware(shift.start_time))
+            mins = int(delta.total_seconds() / 60)
+            if mins > 5:
+                late_patterns.append({
+                    'staff_name': f"{staff.first_name} {staff.last_name}",
+                    'lateness_minutes': mins,
+                })
+    if late_patterns:
+        insights.append({
+            'type': 'late_patterns',
+            'priority': 'low',
+            'title': 'Late clock-ins today',
+            'items': late_patterns[:5],
+            'summary': f"{len(late_patterns)} staff clocked in late.",
+        })
+
+    # Staffing suggestions from operational advice
+    try:
+        from .ai_scheduler import AIScheduler
+        scheduler = AIScheduler(restaurant)
+        demand = scheduler._get_demand_forecast(target_date)
+        day_name = target_date.strftime('%A')
+        current_demand = demand.get(day_name, 'MEDIUM')
+        if current_demand == 'HIGH':
+            suggestions.append('High demand expected today; ensure peak-hour coverage (lunch 12–15, dinner 19–23).')
+        if suggestions:
+            insights.append({
+                'type': 'suggestions',
+                'priority': 'low',
+                'title': 'Staffing suggestions',
+                'items': suggestions,
+                'summary': '; '.join(suggestions),
+            })
+    except Exception:
+        pass
+
+    return {
+        'restaurant_id': str(restaurant.id),
+        'date': target_date.isoformat(),
+        'insights': insights,
+        'has_alerts': any(i.get('priority') == 'high' for i in insights),
+    }
+
+
 @api_view(['GET'])
 @authentication_classes([])
 @permission_classes([permissions.AllowAny])
@@ -2610,7 +2808,7 @@ def agent_proactive_insights(request):
     Query: restaurant_id (or X-Restaurant-Id), date (optional, default today).
     """
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, _, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
 
@@ -2620,133 +2818,10 @@ def agent_proactive_insights(request):
         except ValueError:
             target_date = timezone.now().date()
 
-        insights = []
-        no_shows = []
-        understaffed = []
-        late_patterns = []
-        suggestions = []
-
-        # No-shows: shifts with status NO_SHOW or SCHEDULED/CONFIRMED where clock-in never happened
-        from timeclock.models import ClockEvent
-        today_start = datetime.combine(target_date, time(0, 0))
-        if timezone.is_naive(today_start):
-            today_start = timezone.make_aware(today_start)
-        today_end = today_start + timedelta(days=1)
-        shifts_today = AssignedShift.objects.filter(
-            schedule__restaurant=restaurant,
-            shift_date=target_date,
-            status__in=['SCHEDULED', 'CONFIRMED', 'NO_SHOW']
-        ).select_related('staff')
-        staff_clock_ins = {}
-        if shifts_today.exists():
-            clock_ins = ClockEvent.objects.filter(
-                staff__restaurant=restaurant,
-                event_type='in',
-                timestamp__gte=today_start,
-                timestamp__lt=today_end
-            ).values_list('staff_id', 'timestamp')
-            staff_clock_ins = {str(sid): ts for sid, ts in clock_ins}
-        for shift in shifts_today:
-            staff = shift.staff
-            if not staff:
-                continue
-            clocked = str(staff.id) in staff_clock_ins
-            if not clocked and shift.status == 'NO_SHOW':
-                no_shows.append({
-                    'shift_id': str(shift.id),
-                    'staff_name': f"{staff.first_name} {staff.last_name}",
-                    'role': shift.role or '',
-                })
-            elif not clocked and shift.status in ('SCHEDULED', 'CONFIRMED'):
-                start_dt = shift.start_time
-                if start_dt and timezone.now() > start_dt:
-                    no_shows.append({
-                        'shift_id': str(shift.id),
-                        'staff_name': f"{staff.first_name} {staff.last_name}",
-                        'role': shift.role or '',
-                        'expected_start': start_dt.strftime('%H:%M') if hasattr(start_dt, 'strftime') else str(start_dt)[:5],
-                    })
-
-        if no_shows:
-            insights.append({
-                'type': 'no_shows',
-                'priority': 'high',
-                'title': 'No-shows or missing clock-ins',
-                'items': no_shows,
-                'summary': f"{len(no_shows)} staff expected today have not clocked in.",
-            })
-
-        # Understaffed: compare today's shifts to a simple baseline (e.g. roles count)
-        role_counts = {}
-        for shift in shifts_today:
-            r = (shift.role or 'STAFF').upper()
-            role_counts[r] = role_counts.get(r, 0) + 1
-        if role_counts:
-            # Simple heuristic: if only 1 server for dinner, flag
-            if role_counts.get('SERVER', 0) < 2 and target_date == timezone.now().date():
-                understaffed.append({
-                    'reason': 'Few servers scheduled today',
-                    'role': 'SERVER',
-                    'current': role_counts.get('SERVER', 0),
-                })
-            if understaffed:
-                insights.append({
-                    'type': 'understaffed',
-                    'priority': 'medium',
-                    'title': 'Understaffing risk',
-                    'items': understaffed,
-                    'summary': 'Consider adding coverage for peak hours.',
-                })
-
-        # Late patterns: staff who clocked in after shift start
-        for shift in shifts_today:
-            staff = shift.staff
-            if not staff or not shift.start_time:
-                continue
-            cin = staff_clock_ins.get(str(staff.id))
-            if cin and shift.start_time and cin > shift.start_time:
-                delta = cin - (shift.start_time if timezone.is_aware(shift.start_time) else timezone.make_aware(shift.start_time))
-                mins = int(delta.total_seconds() / 60)
-                if mins > 5:
-                    late_patterns.append({
-                        'staff_name': f"{staff.first_name} {staff.last_name}",
-                        'lateness_minutes': mins,
-                    })
-        if late_patterns:
-            insights.append({
-                'type': 'late_patterns',
-                'priority': 'low',
-                'title': 'Late clock-ins today',
-                'items': late_patterns[:5],
-                'summary': f"{len(late_patterns)} staff clocked in late.",
-            })
-
-        # Staffing suggestions from operational advice
-        try:
-            from .ai_scheduler import AIScheduler
-            scheduler = AIScheduler(restaurant)
-            demand = scheduler._get_demand_forecast(target_date)
-            day_name = target_date.strftime('%A')
-            current_demand = demand.get(day_name, 'MEDIUM')
-            if current_demand == 'HIGH':
-                suggestions.append('High demand expected today; ensure peak-hour coverage (lunch 12–15, dinner 19–23).')
-            if suggestions:
-                insights.append({
-                    'type': 'suggestions',
-                    'priority': 'low',
-                    'title': 'Staffing suggestions',
-                    'items': suggestions,
-                    'summary': '; '.join(suggestions),
-                })
-        except Exception:
-            pass
-
-        return Response({
-            'restaurant_id': str(restaurant.id),
-            'date': target_date.isoformat(),
-            'insights': insights,
-            'has_alerts': any(i.get('priority') == 'high' for i in insights),
-        })
+        ck = f"agent:sched:proactive:{restaurant.id}:{target_date.isoformat()}"
+        return Response(
+            get_or_set(ck, 45, lambda: _compute_proactive_insights_payload(restaurant, target_date))
+        )
     except Exception as e:
         logger.exception("Agent proactive insights error")
         return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -2761,7 +2836,7 @@ def agent_mark_no_show(request):
     Auth: Bearer LUA_WEBHOOK_API_KEY or JWT. Body: shift_id, restaurant_id (or X-Restaurant-Id).
     """
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, _, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
@@ -2798,7 +2873,7 @@ def agent_assign_coverage(request):
     Auth: Bearer LUA_WEBHOOK_API_KEY or JWT. Body: shift_id, staff_id, restaurant_id (or X-Restaurant-Id).
     """
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, _, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
@@ -2842,7 +2917,7 @@ def agent_request_time_off(request):
     Create a time-off request (staff by phone). Body: phone, start_date, end_date, request_type, reason (optional), restaurant_id.
     """
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, _, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
@@ -2890,28 +2965,33 @@ def agent_request_time_off(request):
 def agent_list_time_off_requests(request):
     """List time-off requests (default: PENDING). Query: status, restaurant_id."""
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, _, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         status_filter = request.query_params.get('status', 'PENDING').upper()
-        qs = TimeOffRequest.objects.filter(staff__restaurant=restaurant).order_by('-start_date').select_related('staff')
-        if status_filter != 'ALL':
-            qs = qs.filter(status=status_filter)
-        qs = qs[:50]
-        items = [
-            {
-                'id': str(t.id),
-                'staff_name': f"{t.staff.first_name} {t.staff.last_name}".strip(),
-                'staff_id': str(t.staff.id),
-                'start_date': t.start_date.isoformat(),
-                'end_date': t.end_date.isoformat(),
-                'request_type': t.request_type,
-                'reason': (t.reason or '')[:200],
-                'status': t.status,
-            }
-            for t in qs
-        ]
-        return Response({'success': True, 'requests': items})
+        ck = f"agent:sched:time_off_list:{restaurant.id}:{status_filter}"
+
+        def _time_off_list_payload():
+            qs = TimeOffRequest.objects.filter(staff__restaurant=restaurant).order_by('-start_date').select_related('staff')
+            if status_filter != 'ALL':
+                qs = qs.filter(status=status_filter)
+            qs = qs[:50]
+            items = [
+                {
+                    'id': str(t.id),
+                    'staff_name': f"{t.staff.first_name} {t.staff.last_name}".strip(),
+                    'staff_id': str(t.staff.id),
+                    'start_date': t.start_date.isoformat(),
+                    'end_date': t.end_date.isoformat(),
+                    'request_type': t.request_type,
+                    'reason': (t.reason or '')[:200],
+                    'status': t.status,
+                }
+                for t in qs
+            ]
+            return {'success': True, 'requests': items}
+
+        return Response(get_or_set(ck, 30, _time_off_list_payload))
     except Exception as e:
         logger.exception("Agent list time off error")
         return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -2923,7 +3003,7 @@ def agent_list_time_off_requests(request):
 def agent_approve_time_off(request):
     """Approve a time-off request. Body: request_id, restaurant_id."""
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, _, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         data = request.data or {}
@@ -2959,7 +3039,7 @@ def agent_approve_time_off(request):
 def agent_reject_time_off(request):
     """Reject a time-off request. Body: request_id, reason (optional), restaurant_id."""
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, _, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         data = request.data or {}
@@ -2995,28 +3075,33 @@ def agent_reject_time_off(request):
 def agent_list_shift_swaps(request):
     """List pending shift swap requests. Query: restaurant_id."""
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, _, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
-        qs = ShiftSwapRequest.objects.filter(
-            shift_to_swap__schedule__restaurant=restaurant,
-            status='PENDING',
-        ).order_by('-created_at').select_related('requester', 'receiver', 'shift_to_swap')[:30]
-        items = []
-        for s in qs:
-            shift = s.shift_to_swap
-            items.append({
-                'id': str(s.id),
-                'requester_name': f"{s.requester.first_name} {s.requester.last_name}".strip(),
-                'requester_id': str(s.requester.id),
-                'receiver_name': f"{s.receiver.first_name} {s.receiver.last_name}".strip() if s.receiver else 'Open',
-                'receiver_id': str(s.receiver.id) if s.receiver else None,
-                'shift_id': str(shift.id),
-                'shift_date': shift.shift_date.isoformat() if shift.shift_date else '',
-                'shift_role': shift.role or '',
-                'request_message': (s.request_message or '')[:200],
-            })
-        return Response({'success': True, 'swap_requests': items})
+        ck = f"agent:sched:shift_swaps:{restaurant.id}"
+
+        def _shift_swaps_payload():
+            qs = ShiftSwapRequest.objects.filter(
+                shift_to_swap__schedule__restaurant=restaurant,
+                status='PENDING',
+            ).order_by('-created_at').select_related('requester', 'receiver', 'shift_to_swap')[:30]
+            items = []
+            for s in qs:
+                shift = s.shift_to_swap
+                items.append({
+                    'id': str(s.id),
+                    'requester_name': f"{s.requester.first_name} {s.requester.last_name}".strip(),
+                    'requester_id': str(s.requester.id),
+                    'receiver_name': f"{s.receiver.first_name} {s.receiver.last_name}".strip() if s.receiver else 'Open',
+                    'receiver_id': str(s.receiver.id) if s.receiver else None,
+                    'shift_id': str(shift.id),
+                    'shift_date': shift.shift_date.isoformat() if shift.shift_date else '',
+                    'shift_role': shift.role or '',
+                    'request_message': (s.request_message or '')[:200],
+                })
+            return {'success': True, 'swap_requests': items}
+
+        return Response(get_or_set(ck, 25, _shift_swaps_payload))
     except Exception as e:
         logger.exception("Agent list shift swaps error")
         return Response({'error': str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -3028,7 +3113,7 @@ def agent_list_shift_swaps(request):
 def agent_approve_shift_swap(request):
     """Approve a shift swap: reassign shift to receiver and notify. Body: swap_request_id, restaurant_id."""
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, _, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         data = request.data or {}
@@ -3074,7 +3159,7 @@ def agent_approve_shift_swap(request):
 def agent_reject_shift_swap(request):
     """Reject a shift swap. Body: swap_request_id, reason (optional), restaurant_id."""
     try:
-        restaurant, err = _resolve_restaurant_for_agent(request)
+        restaurant, _, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'error': err['error']}, status=err['status'])
         data = request.data or {}

@@ -21,6 +21,8 @@ STAFF_ROLES_CHOICES = [
     ('CLEANER', 'Cleaner'),
     ('SECURITY', 'Security'),
     ('CASHIER', 'Cashier'),
+    # User-defined title via general_settings.custom_staff_roles (any business_vertical)
+    ('CUSTOM', 'Custom'),
 ]
 # ---------------------------
 # Base
@@ -61,7 +63,7 @@ INSTALLED_APPS = [
     'scheduling',
     'timeclock',
     'reporting',
-    'staff',
+    'staff.apps.StaffConfig',
     'chat',
     # 'ai_assistant',  # AI Assistant app (removed)
     'firebase_admin', #  firebase_admin
@@ -357,6 +359,30 @@ WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME = config('WHATSAPP_TEMPLATE_STAFF_ACTI
 WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME_HAS_HEADER = config('WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME_HAS_HEADER', default=False, cast=str_to_bool)
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+
+# Cache: Redis DB 2 (broker/result typically use 0). LocMem fallback if disabled or local dev.
+_USE_REDIS_CACHE = str_to_bool(os.getenv('USE_REDIS_CACHE', 'true'))
+if _USE_REDIS_CACHE:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': f'redis://{REDIS_HOST}:6379/2',
+            'KEY_PREFIX': 'mizan',
+            'TIMEOUT': 120,
+            'OPTIONS': {
+                'socket_connect_timeout': 2,
+                'socket_timeout': 2,
+            },
+        }
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'mizan-default',
+        }
+    }
+
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', f'redis://{REDIS_HOST}:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', f'redis://{REDIS_HOST}:6379/0')
 CELERY_TASK_ALWAYS_EAGER = config('CELERY_TASK_ALWAYS_EAGER', default=False, cast=str_to_bool)

@@ -21,6 +21,7 @@ from .models_task import (
     StandardOperatingProcedure, SafetyChecklist, ScheduleTask,
     SafetyConcernReport, SafetyRecognition
 )
+from .incident_routing import resolve_default_assignee_for_incident_type
 from .serializers import (
     ScheduleSerializer, StaffProfileSerializer, StaffDocumentSerializer, ScheduleChangeSerializer,
     ScheduleNotificationSerializer, StaffAvailabilitySerializer, PerformanceMetricSerializer,
@@ -211,22 +212,78 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
         if not _is_manager(request.user):
             return Response({'success': False, 'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
         note = str(request.data.get('note') or '').strip()
+        assignee_id = request.data.get('assignee_id') or request.data.get('assignee')
+
+        assignee = None
+        assignee_display = None
+        md = dict(req.metadata or {})
+
+        if assignee_id:
+            try:
+                assignee = CustomUser.objects.get(id=assignee_id, is_active=True)
+            except (CustomUser.DoesNotExist, ValueError, TypeError):
+                return Response(
+                    {'success': False, 'error': 'Assignee not found'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if assignee.restaurant_id != req.restaurant_id:
+                return Response(
+                    {'success': False, 'error': 'Assignee must belong to this restaurant'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            assignee_display = assignee.get_full_name() or assignee.email or str(assignee.id)
+            md['escalated_assignee_id'] = str(assignee.id)
+            md['escalated_assignee_name'] = assignee_display
+        else:
+            md.pop('escalated_assignee_id', None)
+            md.pop('escalated_assignee_name', None)
+
         old = req.status
         req.status = 'ESCALATED'
         req.reviewed_by = request.user
         req.reviewed_at = timezone.now()
-        req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
+        req.metadata = md
+        req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at', 'metadata'])
+
+        comment_lines = [f"Escalated by {request.user.get_full_name() or request.user.email}"]
+        if note:
+            comment_lines.append(note)
+        if assignee_display:
+            comment_lines.append(f"Assigned to: {assignee_display}")
+        comment_body = "\n".join(comment_lines)
+
         self._add_comment(
             req,
             request.user,
-            f"Escalated by {request.user.get_full_name()}" + (f": {note}" if note else ""),
+            comment_body,
             kind='status_change',
-            metadata={'from': old, 'to': 'ESCALATED', 'note': note},
+            metadata={
+                'from': old,
+                'to': 'ESCALATED',
+                'note': note,
+                'assignee_id': str(assignee.id) if assignee else None,
+            },
         )
         msg = f"📋 Your request \"{req.subject or 'Request'}\" has been *escalated* for further review."
         if note:
             msg += f"\nNote: {note}"
         self._notify_staff_via_whatsapp(req, msg)
+
+        if assignee and getattr(assignee, 'phone', None):
+            try:
+                from notifications.services import notification_service, normalize_whatsapp_phone
+
+                digits, phone_err = normalize_whatsapp_phone(assignee.phone)
+                if not phone_err:
+                    subj = req.subject or 'Staff request'
+                    rname = req.restaurant.name if req.restaurant else 'Restaurant'
+                    notification_service.send_whatsapp_text(
+                        digits,
+                        f"📋 *Escalated to you:* \"{subj}\"\nFrom: {rname}\nCheck Staff Requests in the dashboard.",
+                    )
+            except Exception:
+                logger.exception('WhatsApp notify escalate assignee failed')
+
         return Response({'success': True, 'request': self.get_serializer(req).data})
 
     @action(detail=True, methods=['post'])
@@ -502,7 +559,14 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
         if stat not in ('OPEN', 'RESOLVED', 'DISMISSED'):
             stat = 'OPEN'
 
-        serializer.save(restaurant=restaurant, severity=sev, status=stat)
+        incident_type = (serializer.validated_data.get('incident_type') or 'General').strip()
+        assign_kwargs = {}
+        if not serializer.validated_data.get('assigned_to'):
+            assignee = resolve_default_assignee_for_incident_type(restaurant, incident_type)
+            if assignee:
+                assign_kwargs['assigned_to'] = assignee
+
+        serializer.save(restaurant=restaurant, severity=sev, status=stat, **assign_kwargs)
     
     @action(detail=True, methods=['post'])
     def update_status(self, request, pk=None):

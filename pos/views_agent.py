@@ -9,6 +9,7 @@ from rest_framework import status, permissions
 from django.conf import settings
 
 from core.utils import resolve_agent_restaurant_and_user
+from core.read_through_cache import get_or_set
 from pos.integrations import IntegrationManager
 from pos.models import POSExternalObject
 from pos.tasks import sync_square_menu_for_restaurant, sync_square_orders_for_restaurant
@@ -101,16 +102,18 @@ def agent_get_external_objects(request):
         limit = 50
     limit = max(1, min(limit, 200))
 
-    qs = POSExternalObject.objects.filter(restaurant=restaurant, provider=provider)
-    if object_type:
-        qs = qs.filter(object_type=object_type)
-    qs = qs.order_by("-updated_at")[:limit]
+    ot = (object_type or "").strip() or "all"
+    cache_key = f"agent:pos:ext:{restaurant.id}:{provider}:{ot}:{limit}"
 
-    return Response(
-        {
+    def _compute():
+        qs = POSExternalObject.objects.filter(restaurant=restaurant, provider=provider)
+        if object_type:
+            qs = qs.filter(object_type=object_type)
+        rows = list(qs.order_by("-updated_at")[:limit])
+        return {
             "success": True,
             "provider": provider,
-            "count": qs.count(),
+            "count": len(rows),
             "objects": [
                 {
                     "object_type": o.object_type,
@@ -118,10 +121,11 @@ def agent_get_external_objects(request):
                     "updated_at": o.updated_at.isoformat() if o.updated_at else None,
                     "payload": o.payload,
                 }
-                for o in qs
+                for o in rows
             ],
         }
-    )
+
+    return Response(get_or_set(cache_key, 25, _compute))
 
 
 @api_view(["GET"])
@@ -139,10 +143,15 @@ def agent_get_pos_sales_summary(request):
 
     date_str = request.query_params.get("date")
     from django.utils.dateparse import parse_date
-    date = parse_date(date_str) if date_str else None
 
-    result = IntegrationManager.get_daily_sales_summary(restaurant, date)
-    return Response(result)
+    date = parse_date(date_str) if date_str else None
+    dk = date.isoformat() if date else "today"
+    cache_key = f"agent:pos:sales_sum:{restaurant.id}:{dk}"
+
+    def _compute():
+        return IntegrationManager.get_daily_sales_summary(restaurant, date)
+
+    return Response(get_or_set(cache_key, 60, _compute))
 
 
 @api_view(["GET"])
@@ -164,8 +173,12 @@ def agent_get_top_items(request):
     except Exception:
         days, limit = 7, 10
 
-    result = IntegrationManager.get_top_selling_items(restaurant, days, limit)
-    return Response(result)
+    cache_key = f"agent:pos:top_items:{restaurant.id}:{days}:{limit}"
+
+    def _compute():
+        return IntegrationManager.get_top_selling_items(restaurant, days, limit)
+
+    return Response(get_or_set(cache_key, 120, _compute))
 
 
 @api_view(["GET"])
@@ -181,14 +194,19 @@ def agent_get_pos_status(request):
     if not restaurant:
         return Response({"error": "Unable to resolve restaurant context."}, status=status.HTTP_400_BAD_REQUEST)
 
-    return Response({
-        "success": True,
-        "provider": restaurant.pos_provider,
-        "is_connected": restaurant.pos_is_connected,
-        "last_sync": restaurant.pos_token_expires_at.isoformat() if restaurant.pos_token_expires_at else None,
-        "merchant_id": restaurant.pos_merchant_id,
-        "location_id": restaurant.pos_location_id,
-    })
+    cache_key = f"agent:pos:status:{restaurant.id}"
+
+    def _compute():
+        return {
+            "success": True,
+            "provider": restaurant.pos_provider,
+            "is_connected": restaurant.pos_is_connected,
+            "last_sync": restaurant.pos_token_expires_at.isoformat() if restaurant.pos_token_expires_at else None,
+            "merchant_id": restaurant.pos_merchant_id,
+            "location_id": restaurant.pos_location_id,
+        }
+
+    return Response(get_or_set(cache_key, 30, _compute))
 
 
 @api_view(["GET"])
@@ -209,8 +227,12 @@ def agent_get_sales_analysis(request):
     except Exception:
         days = 7
 
-    result = IntegrationManager.get_sales_analysis(restaurant, days)
-    return Response(result)
+    cache_key = f"agent:pos:sales_analysis:{restaurant.id}:{days}"
+
+    def _compute():
+        return IntegrationManager.get_sales_analysis(restaurant, days)
+
+    return Response(get_or_set(cache_key, 120, _compute))
 
 
 @api_view(["GET"])
@@ -229,7 +251,11 @@ def agent_get_prep_list(request):
     date_str = request.query_params.get("date")
     from django.utils.dateparse import parse_date
     target_date = parse_date(date_str) if date_str else None
+    dk = target_date.isoformat() if target_date else "today"
+    cache_key = f"agent:pos:prep:{restaurant.id}:{dk}"
 
-    result = IntegrationManager.generate_prep_list(restaurant, target_date)
-    return Response(result)
+    def _compute():
+        return IntegrationManager.generate_prep_list(restaurant, target_date)
+
+    return Response(get_or_set(cache_key, 90, _compute))
 

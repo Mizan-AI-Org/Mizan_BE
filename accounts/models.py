@@ -179,6 +179,8 @@ class CustomUser(AbstractUser):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     pin_code = models.CharField(max_length=255, unique=True, blank=True, null=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    # When role == CUSTOM, display name from restaurant-defined custom_staff_roles
+    custom_role_label = models.CharField(max_length=128, blank=True, default='')
     phone = models.CharField(max_length=20, blank=True, null=True)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='staff', null=True, blank=True)
     is_verified = models.BooleanField(default=False)
@@ -206,6 +208,9 @@ class CustomUser(AbstractUser):
         blank=True,
         null=True,
     )
+
+    # Dashboard widget order (manager customization); null = client uses local default until saved
+    dashboard_widget_order = models.JSONField(null=True, blank=True)
 
     
     # Remove username and use email instead
@@ -710,6 +715,7 @@ class StaffActivationRecord(models.Model):
     first_name = models.CharField(max_length=100, blank=True, default='')
     last_name = models.CharField(max_length=100, blank=True, default='')
     role = models.CharField(max_length=20, choices=CustomUser.ROLE_CHOICES, default='WAITER')
+    custom_role_label = models.CharField(max_length=128, blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_NOT_ACTIVATED, db_index=True)
     user = models.ForeignKey(
         CustomUser, on_delete=models.SET_NULL, null=True, blank=True,
