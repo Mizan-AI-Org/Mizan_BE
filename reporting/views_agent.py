@@ -43,7 +43,7 @@ def agent_create_incident(request):
         "restaurant_id": "uuid",
         "title": "Short summary",
         "description": "Full description from staff",
-        "category": "Safety|Maintenance|HR|Service|General",
+        "category": "Safety|Maintenance|HR|Food Safety|Customer Issue|General (legacy: Service → Customer Issue)",
         "priority": "LOW|MEDIUM|HIGH|CRITICAL",
         "reporter_phone": "optional phone number of reporter"
     }
@@ -57,15 +57,19 @@ def agent_create_incident(request):
         data = request.data
         restaurant_id = data.get('restaurant_id') or data.get('restaurantId')
         description = (data.get('description') or '').strip()
-        category = data.get('category', 'General')
+        raw_category = data.get('category', 'General')
         priority = data.get('priority', 'MEDIUM')
         reporter_phone = data.get('reporter_phone')
 
-        # Canonical incident types (Miya determines type; title is constant per type)
-        VALID_CATEGORIES = ('Safety', 'Maintenance', 'HR', 'Service', 'General')
-        category = (category or 'General').strip()
-        if category not in VALID_CATEGORIES:
-            category = 'General'
+        # Same labels as Settings → Incident routing (plus legacy "Service" → Customer Issue)
+        from staff.incident_routing import (
+            normalize_incident_category_for_storage,
+            resolve_default_assignee_for_incident_type,
+        )
+
+        category = normalize_incident_category_for_storage(
+            raw_category if raw_category is not None else 'General'
+        )
         title = f"{category} incident"
 
         if not description:
@@ -126,6 +130,8 @@ def agent_create_incident(request):
         
         # Create both: SafetyConcernReport (shown on dashboard) and Incident (for reporting)
         from staff.models_task import SafetyConcernReport
+
+        assignee = resolve_default_assignee_for_incident_type(restaurant, category)
         concern = SafetyConcernReport.objects.create(
             restaurant=restaurant,
             reporter=reporter,
@@ -136,6 +142,7 @@ def agent_create_incident(request):
             severity=priority,
             status='OPEN',
             occurred_at=timezone.now(),
+            assigned_to=assignee,
         )
         logger.info(f"[AgentIncident] Created SafetyConcernReport {concern.id} for restaurant {restaurant.name}")
 
@@ -148,6 +155,7 @@ def agent_create_incident(request):
                 category=category,
                 priority=priority,
                 status='OPEN',
+                assigned_to=assignee,
             )
         except Exception:
             pass

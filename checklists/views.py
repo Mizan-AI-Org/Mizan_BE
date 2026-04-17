@@ -63,9 +63,14 @@ class ChecklistTemplateViewSet(viewsets.ModelViewSet):
     ordering = ['-created_at']
     
     def get_queryset(self):
-        return ChecklistTemplate.objects.filter(
-            restaurant=self.request.user.restaurant
-        ).prefetch_related('steps')
+        return (
+            ChecklistTemplate.objects
+            .filter(restaurant=self.request.user.restaurant)
+            .select_related(
+                'created_by', 'created_by__restaurant', 'created_by__profile',
+            )
+            .prefetch_related('steps')
+        )
     
     def get_serializer_class(self):
         if self.action == 'create':

@@ -162,6 +162,49 @@ class StaffRequestCommentSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'author', 'author_details']
 
 
+class StaffRequestListSerializer(serializers.ModelSerializer):
+    """
+    Lightweight serializer used for the inbox list view.
+
+    The detail serializer below pulls the full CustomUserSerializer (with nested
+    restaurant + profile) for the staff AND for every comment author, which
+    caused N+1 storms on the inbox endpoint and was the reason the page hung on
+    "Loading…". The list view only needs compact info per row; the full payload
+    (comments + full staff object) is fetched on row click via retrieve().
+    """
+    staff_display_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StaffRequest
+        fields = [
+            'id',
+            'staff',
+            'staff_name',
+            'staff_display_name',
+            'staff_phone',
+            'category',
+            'priority',
+            'status',
+            'subject',
+            'description',
+            'source',
+            'external_id',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = fields
+
+    def get_staff_display_name(self, obj):
+        # Avoid triggering extra queries — rely on the prefetched staff columns.
+        if obj.staff_id and getattr(obj, 'staff', None):
+            first = getattr(obj.staff, 'first_name', '') or ''
+            last = getattr(obj.staff, 'last_name', '') or ''
+            full = f"{first} {last}".strip()
+            if full:
+                return full
+        return obj.staff_name or 'Staff'
+
+
 class StaffRequestSerializer(serializers.ModelSerializer):
     staff_details = CustomUserSerializer(source='staff', read_only=True)
     staff_display_name = serializers.SerializerMethodField()

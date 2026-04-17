@@ -214,9 +214,14 @@ def auto_clock_out_after_shift_end():
     Runs as soon as shift end time has passed (no grace period). Scheduled every 1 min for immediate effect.
     """
     now = timezone.now()
+    # Only scan shifts whose tenant actually opted into auto clock-out. This
+    # turns a full table scan into a no-op for most restaurants and is the
+    # single biggest win for this every-2-min beat on small EC2.
     ended_shifts = AssignedShift.objects.filter(
         end_time__lte=now,
+        end_time__gte=now - timedelta(hours=6),  # don't re-scan ancient shifts forever
         status__in=['IN_PROGRESS', 'SCHEDULED', 'CONFIRMED'],
+        schedule__restaurant__automatic_clock_out=True,
     ).select_related('schedule__restaurant').prefetch_related('staff_members')
 
     count = 0

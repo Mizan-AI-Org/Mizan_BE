@@ -2,6 +2,99 @@ from django.db import models
 import uuid
 from django.conf import settings
 
+
+class DashboardCategory(models.Model):
+    """
+    Tenant-wide category managers create to group custom dashboard widgets.
+    Built-in widgets keep their hardcoded category (see frontend).
+    Visibility: shared across the whole workspace (restaurant/tenant).
+    Write permission: manager/owner/admin only.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        "accounts.Restaurant",
+        on_delete=models.CASCADE,
+        related_name="dashboard_categories",
+    )
+    name = models.CharField(max_length=80)
+    order_index = models.IntegerField(default=0)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_dashboard_categories",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "dashboard_categories"
+        ordering = ["order_index", "name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["restaurant", "name"],
+                name="uniq_dashboard_category_per_restaurant",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["restaurant", "order_index"]),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.restaurant_id})"
+
+
+class DashboardCustomWidget(models.Model):
+    """
+    User-scoped dashboard tiles created by Miya (agent) or UI.
+    Referenced from CustomUser.dashboard_widget_order as custom:<uuid>.
+    Optional category (tenant-wide) to group tiles inside the Add-widget dialog.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="dashboard_custom_widgets",
+    )
+    restaurant = models.ForeignKey(
+        "accounts.Restaurant",
+        on_delete=models.CASCADE,
+        related_name="dashboard_custom_widgets",
+    )
+    category = models.ForeignKey(
+        "dashboard.DashboardCategory",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="widgets",
+    )
+    title = models.CharField(max_length=255)
+    subtitle = models.TextField(blank=True)
+    link_url = models.CharField(max_length=2048, blank=True)
+    icon = models.CharField(max_length=64, default="sparkles")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "dashboard_custom_widgets"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["restaurant", "created_at"]),
+            models.Index(fields=["category"]),
+        ]
+
+    def __str__(self):
+        return f"{self.title} ({self.user_id})"
+
+    def slot_id(self) -> str:
+        from .widget_ids import CUSTOM_WIDGET_PREFIX
+
+        return f"{CUSTOM_WIDGET_PREFIX}{self.id}"
+
 class DailyKPI(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='daily_kpis')

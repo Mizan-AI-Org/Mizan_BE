@@ -125,7 +125,17 @@ class TaskListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated, IsAdminOrSuperAdmin]
 
     def get_queryset(self):
-        return Task.objects.filter(restaurant=self.request.user.restaurant).order_by('due_date', 'priority')
+        # TaskSerializer.assigned_to_info nests CustomUserSerializer which
+        # pulls restaurant_name and StaffProfile. Eager-load so the dashboard
+        # task list doesn't fire 3-4 queries per row.
+        return (
+            Task.objects
+            .filter(restaurant=self.request.user.restaurant)
+            .select_related(
+                'assigned_to', 'assigned_to__restaurant', 'assigned_to__profile',
+            )
+            .order_by('due_date', 'priority')
+        )
 
     def perform_create(self, serializer):
         serializer.save(restaurant=self.request.user.restaurant)
@@ -136,7 +146,13 @@ class TaskRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     lookup_field = 'pk'
 
     def get_queryset(self):
-        return Task.objects.filter(restaurant=self.request.user.restaurant)
+        return (
+            Task.objects
+            .filter(restaurant=self.request.user.restaurant)
+            .select_related(
+                'assigned_to', 'assigned_to__restaurant', 'assigned_to__profile',
+            )
+        )
 
 
 @api_view(["POST"])

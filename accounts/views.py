@@ -16,8 +16,11 @@ from django.utils import timezone
 from django.core.files.base import ContentFile
 import base64, logging, os
 from django.conf import settings
+from .custom_staff_roles import validate_custom_invite
 
 logger = logging.getLogger(__name__)
+
+VALID_STAFF_ROLES = {c[0] for c in settings.STAFF_ROLES_CHOICES}
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.contrib.auth.models import UserManager
@@ -26,7 +29,6 @@ from django.utils.crypto import get_random_string
 from django.core.mail import send_mail
 from django.utils.html import strip_tags
 from django.template.loader import render_to_string
-from django.conf import settings
 from notifications.services import notification_service
 from .models import InvitationDeliveryLog
 from .services import sync_user_to_lua_agent, UserManagementService, _find_active_user_by_phone
@@ -208,6 +210,18 @@ class RestaurantOwnerSignupView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        from .business_vertical import validate_business_vertical
+
+        restaurant_payload = dict(restaurant_payload)
+        bv_raw = restaurant_payload.pop('business_vertical', None)
+        if bv_raw is not None and str(bv_raw).strip() != '':
+            ok_bv, bv_err = validate_business_vertical(bv_raw)
+            if not ok_bv:
+                return Response({'business_vertical': [bv_err]}, status=status.HTTP_400_BAD_REQUEST)
+            chosen_vertical = str(bv_raw).strip().upper()
+        else:
+            chosen_vertical = 'RESTAURANT'
+
         restaurant_serializer = RestaurantSerializer(data=restaurant_payload)
         if not restaurant_serializer.is_valid():
             return Response(restaurant_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -219,6 +233,11 @@ class RestaurantOwnerSignupView(APIView):
                 {'message': 'A restaurant with this email already exists. Use a different email or sign in.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        gs = dict(restaurant.general_settings or {})
+        gs['business_vertical'] = chosen_vertical
+        restaurant.general_settings = gs
+        restaurant.save(update_fields=['general_settings'])
 
         user_data = dict(user_data)
         user_data['restaurant'] = restaurant.id
@@ -410,7 +429,11 @@ class MeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        serializer = UserSerializer(request.user)
+        # Avoid per-relation round-trips — /auth/me/ is polled frequently,
+        # so fetch the user + restaurant + profile in a single query.
+        user_qs = CustomUser.objects.select_related('restaurant', 'profile')
+        user = user_qs.filter(pk=request.user.pk).first() or request.user
+        serializer = UserSerializer(user)
         return Response(serializer.data)
         
     def patch(self, request):
@@ -446,7 +469,8 @@ class InviteStaffView(APIView):
 
     def post(self, request):
         email = request.data.get('email')
-        role = request.data.get('role')
+        role = str(request.data.get('role') or '').strip().upper()
+        custom_role_id = (request.data.get('custom_role_id') or '').strip()
         phone_number = request.data.get('phone_number')
         send_whatsapp = bool(request.data.get('send_whatsapp', False))
         first_name = (request.data.get('first_name') or '').strip() or None
@@ -454,8 +478,18 @@ class InviteStaffView(APIView):
 
         if not role:
             return Response({'error': 'Role is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if role not in VALID_STAFF_ROLES:
+            return Response({'error': 'Invalid role.'}, status=status.HTTP_400_BAD_REQUEST)
         if not email and not (send_whatsapp and phone_number):
             return Response({'error': 'Email is required unless sending via WhatsApp with a phone number.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        custom_label = None
+        if role == 'CUSTOM':
+            ok, err, custom_label = validate_custom_invite(
+                request.user.restaurant, role, custom_role_id or None
+            )
+            if not ok:
+                return Response({'error': err}, status=status.HTTP_400_BAD_REQUEST)
 
         # Individual WhatsApp: same flow as bulk – create StaffActivationRecord, return wa.me link for manager to share
         if send_whatsapp and phone_number:
@@ -466,6 +500,7 @@ class InviteStaffView(APIView):
                 last_name=last_name,
                 role_raw=role,
                 invited_by=request.user,
+                custom_role_label=custom_label or '',
             )
             if err:
                 return Response({'error': err}, status=status.HTTP_400_BAD_REQUEST)
@@ -519,8 +554,11 @@ class InviteStaffView(APIView):
             'phone': phone_number,
             'first_name': first_name,
             'last_name': last_name,
-            'department': request.data.get('department')
+            'department': request.data.get('department'),
         }
+        if role == 'CUSTOM' and custom_label:
+            invitation.extra_data['custom_role_id'] = custom_role_id
+            invitation.extra_data['custom_role_name'] = custom_label
         invitation.save(update_fields=['first_name', 'last_name', 'extra_data'])
 
         invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
@@ -589,6 +627,7 @@ class InviteStaffBulkCsvView(APIView):
                 invitations.append({
                     'email': (row.get('email') or '').strip(),
                     'role': (row.get('role') or '').strip(),
+                    'custom_role_id': (row.get('custom_role_id') or '').strip(),
                     'first_name': (row.get('first_name') or row.get('firstname') or '').strip(),
                     'last_name': (row.get('last_name') or row.get('lastname') or '').strip(),
                     'phone': (row.get('phone') or row.get('whatsapp') or '').strip(),
@@ -1141,11 +1180,17 @@ class StaffListAPIView(generics.ListAPIView):
         This method is automatically called to get the list of objects.
         """
         user = self.request.user
-        
-        return CustomUser.objects.filter(
-            restaurant=user.restaurant,
-            is_active=True,
-            ).exclude(role='SUPER_ADMIN').order_by('first_name', 'last_name')
+
+        # StaffSerializer embeds `profile` via StaffProfileSerializer, which
+        # otherwise triggers +1 query per staff member on a restaurant with 30+
+        # staff. select_related keeps it to a single JOIN.
+        return (
+            CustomUser.objects
+            .filter(restaurant=user.restaurant, is_active=True)
+            .exclude(role='SUPER_ADMIN')
+            .select_related('profile')
+            .order_by('first_name', 'last_name')
+        )
 
 
 class StaffMemberDetailView(APIView):

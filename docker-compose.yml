@@ -1,21 +1,26 @@
-# version is obsolete in Compose V2 and is ignored - remove to avoid warnings
 services:
-  # Redis - Message broker for Celery and Channels
   redis:
     image: redis:7-alpine
     container_name: mizan-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
+    # Cap Redis memory and evict sensibly so a runaway cache can't swap the
+    # whole EC2. On a 2 GB box this alone has saved people from OOM reboots.
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+      --appendonly no
     volumes:
       - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 30s
       timeout: 5s
       retries: 3
 
-  # Django backend (Daphne ASGI) - service name "backend" for deploy scripts
   backend:
     build: .
     container_name: mizan-backend
@@ -34,24 +39,19 @@ services:
     volumes:
       - static_volume:/app/staticfiles
       - media_volume:/app/media
+    # collectstatic now runs at image build time (Dockerfile). Runtime only
+    # applies migrations and starts the ASGI server. Use multiple Daphne
+    # workers so a single slow request doesn't block the whole instance.
     command: >
-      sh -c "python manage.py collectstatic --noinput &&
-             python manage.py migrate --noinput &&
-             daphne -b 0.0.0.0 -p 8000 mizan.asgi:application"
+      sh -c "python manage.py migrate --noinput &&
+             daphne -b 0.0.0.0 -p 8000 -v 0 --proxy-headers mizan.asgi:application"
     healthcheck:
-      test:
-        [
-          "CMD",
-          "curl",
-          "-f",
-          "http://localhost:8000/api/notifications/whatsapp-webhook/?hub.mode=subscribe&hub.verify_token=mizan-whatsapp-token-20260105&hub.challenge=test",
-        ]
-      interval: 30s
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/notifications/whatsapp-webhook/?hub.mode=subscribe&hub.verify_token=mizan-whatsapp-token-20260105&hub.challenge=test"]
+      interval: 60s
       timeout: 10s
       retries: 3
       start_period: 30s
 
-  # Celery Worker - Background task processing
   celery_worker:
     build: .
     container_name: mizan-celery-worker
@@ -70,9 +70,15 @@ services:
     volumes:
       - static_volume:/app/staticfiles
       - media_volume:/app/media
-    command: celery -A mizan worker --loglevel=info --concurrency=2
+    # WARNING-level logs only (info was flooding CloudWatch). concurrency=2 is
+    # fine for a small EC2; raise via .env if you move to bigger metal.
+    command: >
+      celery -A mizan worker
+        --loglevel=warning
+        --concurrency=${CELERY_CONCURRENCY:-2}
+        --max-tasks-per-child=200
+        --without-gossip --without-mingle --without-heartbeat
 
-  # Celery Beat - Scheduled task runner
   celery_beat:
     build: .
     container_name: mizan-celery-beat
@@ -91,7 +97,7 @@ services:
     volumes:
       - static_volume:/app/staticfiles
       - media_volume:/app/media
-    command: celery -A mizan beat --loglevel=info
+    command: celery -A mizan beat --loglevel=warning
 
 volumes:
   redis_data:

@@ -120,7 +120,9 @@ class Restaurant(models.Model):
     pos_location_id = models.CharField(max_length=255, blank=True, null=True)
     # Access token expiry for OAuth providers (best-effort; source of truth is provider)
     pos_token_expires_at = models.DateTimeField(blank=True, null=True)
-    
+    # Reservation integrations (Eat Now / Eat App Concierge API key, etc.) — encrypted JSON
+    reservation_oauth_data = models.TextField(blank=True, null=True)
+
     class Meta:
         db_table = 'restaurants'
     
@@ -159,12 +161,26 @@ class Restaurant(models.Model):
         sq = self.get_square_oauth()
         return sq.get("refresh_token") or ""
 
+    def get_reservation_oauth(self) -> dict:
+        """Decrypted secrets for reservation providers (Eat Now API key, etc.)."""
+        if not self.reservation_oauth_data:
+            return {}
+        try:
+            return decrypt_json(self.reservation_oauth_data)
+        except Exception:
+            return {}
+
+    def set_reservation_oauth(self, payload: dict) -> None:
+        self.reservation_oauth_data = encrypt_json(payload or {})
+
 class CustomUser(AbstractUser):
     ROLE_CHOICES = settings.STAFF_ROLES_CHOICES
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     pin_code = models.CharField(max_length=255, unique=True, blank=True, null=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    # When role == CUSTOM, display name from restaurant-defined custom_staff_roles
+    custom_role_label = models.CharField(max_length=128, blank=True, default='')
     phone = models.CharField(max_length=20, blank=True, null=True)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='staff', null=True, blank=True)
     is_verified = models.BooleanField(default=False)
@@ -192,6 +208,9 @@ class CustomUser(AbstractUser):
         blank=True,
         null=True,
     )
+
+    # Dashboard widget order (manager customization); null = client uses local default until saved
+    dashboard_widget_order = models.JSONField(null=True, blank=True)
 
     
     # Remove username and use email instead
@@ -696,6 +715,7 @@ class StaffActivationRecord(models.Model):
     first_name = models.CharField(max_length=100, blank=True, default='')
     last_name = models.CharField(max_length=100, blank=True, default='')
     role = models.CharField(max_length=20, choices=CustomUser.ROLE_CHOICES, default='WAITER')
+    custom_role_label = models.CharField(max_length=128, blank=True, default='')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_NOT_ACTIVATED, db_index=True)
     user = models.ForeignKey(
         CustomUser, on_delete=models.SET_NULL, null=True, blank=True,
@@ -729,6 +749,70 @@ class StaffActivationRecord(models.Model):
         return f"{self.phone} ({self.restaurant.name}) - {self.status}"
 
 
+class EatNowReservation(models.Model):
+    """
+    Reservation row synced from Eat Now (eat-now.io) webhooks — source of truth for the dashboard list
+    when not using the legacy Concierge API pull.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        Restaurant, on_delete=models.CASCADE, related_name="eatnow_reservations"
+    )
+    external_id = models.CharField(max_length=128, db_index=True)
+    status = models.CharField(max_length=128, blank=True, default="")
+    group_size = models.IntegerField(null=True, blank=True)
+    reservation_date = models.DateField(null=True, blank=True, db_index=True)
+    reservation_time = models.CharField(max_length=32, blank=True, default="")
+    guest_name = models.CharField(max_length=255, blank=True, default="")
+    phone = models.CharField(max_length=64, blank=True, default="")
+    email = models.CharField(max_length=254, blank=True, default="")
+    notes = models.TextField(blank=True, default="")
+    tags = models.JSONField(default=list, blank=True)
+    source = models.CharField(max_length=64, blank=True, default="")
+    raw_reservation = models.JSONField(default=dict, blank=True)
+    is_deleted = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "eatnow_reservations"
+        ordering = ["reservation_date", "reservation_time", "guest_name"]
+        constraints = [
+            models.UniqueConstraint(fields=["restaurant", "external_id"], name="uniq_eatnow_res_restaurant_external"),
+        ]
+        indexes = [
+            models.Index(fields=["restaurant", "is_deleted", "reservation_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.guest_name or self.external_id} {self.reservation_date or ''}"
+
+
+class EatNowWebhookDelivery(models.Model):
+    """
+    Ingested EatNow (eat-now.io) webhook deliveries for idempotency and audit.
+    Event types: RESERVATION_CREATED, RESERVATION_UPDATED, RESERVATION_DELETED.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        Restaurant, on_delete=models.CASCADE, related_name="eatnow_webhook_deliveries"
+    )
+    delivery_id = models.CharField(max_length=255, unique=True, db_index=True)
+    event_type = models.CharField(max_length=64, blank=True, default="")
+    payload = models.JSONField(default=dict)
+    received_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "eatnow_webhook_deliveries"
+        ordering = ["-received_at"]
+        indexes = [
+            models.Index(fields=["restaurant", "-received_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.event_type} {self.delivery_id[:24]}…"
+
+
 class StaffRestaurantLink(models.Model):
     """
     Multi-restaurant staff identity: links a staff member to additional restaurants.
@@ -753,4 +837,45 @@ class StaffRestaurantLink(models.Model):
 
     def __str__(self):
         return f"{self.user.get_full_name()} @ {self.restaurant.name} ({self.role})"
+
+
+class RolePermissionSet(models.Model):
+    """
+    Tenant-scoped permission overrides for a given role.
+
+    Absence of a row means "use catalog defaults for this role".
+    SUPER_ADMIN / ADMIN / OWNER are never gated at the API boundary — they
+    always resolve to full permissions regardless of what is stored here.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        Restaurant, on_delete=models.CASCADE, related_name='role_permission_sets'
+    )
+    role = models.CharField(max_length=32)
+    permissions = models.JSONField(default=dict, blank=True)
+    updated_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='role_permission_edits',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'rbac_role_permission_sets'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['restaurant', 'role'],
+                name='uniq_role_permission_set_per_restaurant',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['restaurant', 'role']),
+        ]
+
+    def __str__(self):
+        return f"{self.restaurant_id} · {self.role}"
 

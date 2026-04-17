@@ -21,6 +21,8 @@ STAFF_ROLES_CHOICES = [
     ('CLEANER', 'Cleaner'),
     ('SECURITY', 'Security'),
     ('CASHIER', 'Cashier'),
+    # User-defined title via general_settings.custom_staff_roles (any business_vertical)
+    ('CUSTOM', 'Custom'),
 ]
 # ---------------------------
 # Base
@@ -61,7 +63,7 @@ INSTALLED_APPS = [
     'scheduling',
     'timeclock',
     'reporting',
-    'staff',
+    'staff.apps.StaffConfig',
     'chat',
     # 'ai_assistant',  # AI Assistant app (removed)
     'firebase_admin', #  firebase_admin
@@ -154,6 +156,14 @@ DATABASES = {
         "PASSWORD": POSTGRES_PASSWORD,
         "HOST": POSTGRES_HOST,
         "PORT": POSTGRES_PORT,
+        # Re-use Postgres connections across requests. A fresh TCP + TLS + auth
+        # handshake on every request is one of the main reasons the DB CPU sits
+        # high on small EC2. 60s + health checks is Django's sweet spot.
+        "CONN_MAX_AGE": int(config('DB_CONN_MAX_AGE', default=60)),
+        "CONN_HEALTH_CHECKS": True,
+        "OPTIONS": {
+            "connect_timeout": 5,
+        },
     }
 }
 
@@ -357,6 +367,30 @@ WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME = config('WHATSAPP_TEMPLATE_STAFF_ACTI
 WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME_HAS_HEADER = config('WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME_HAS_HEADER', default=False, cast=str_to_bool)
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+
+# Cache: Redis DB 2 (broker/result typically use 0). LocMem fallback if disabled or local dev.
+_USE_REDIS_CACHE = str_to_bool(os.getenv('USE_REDIS_CACHE', 'true'))
+if _USE_REDIS_CACHE:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': f'redis://{REDIS_HOST}:6379/2',
+            'KEY_PREFIX': 'mizan',
+            'TIMEOUT': 120,
+            'OPTIONS': {
+                'socket_connect_timeout': 2,
+                'socket_timeout': 2,
+            },
+        }
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'mizan-default',
+        }
+    }
+
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', f'redis://{REDIS_HOST}:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', f'redis://{REDIS_HOST}:6379/0')
 CELERY_TASK_ALWAYS_EAGER = config('CELERY_TASK_ALWAYS_EAGER', default=False, cast=str_to_bool)
@@ -413,6 +447,9 @@ SQUARE_WEBHOOK_NOTIFICATION_URL = config('SQUARE_WEBHOOK_NOTIFICATION_URL', defa
 # https://api.heymizan.ai/api/pos/webhooks/square/{restaurant_id}/
 SQUARE_WEBHOOK_NOTIFICATION_URL_TEMPLATE = config('SQUARE_WEBHOOK_NOTIFICATION_URL_TEMPLATE', default='')
 
+# Eat Now / Eat App Concierge API (default production; sandbox: https://api.eat-sandbox.co)
+EATNOW_CONCIERGE_API_BASE = config('EATNOW_CONCIERGE_API_BASE', default='https://api.eatapp.co')
+
 
 from celery.schedules import crontab
 
@@ -421,23 +458,33 @@ CELERY_BEAT_SCHEDULE = {
         "task": "scheduling.tasks.check_upcoming_tasks",
         "schedule": crontab(minute='*/5'),  # Every 5 min: 30-min shift reminder, 10-min clock-in, checklist, clock-out
     },
-    "clock_in_reminders": {
-        "task": "scheduling.reminder_tasks.send_clock_in_reminders",
-        "schedule": crontab(minute='*/5'),  # Every 5 min (backup path for clock-in reminders)
-    },
+    # `check_upcoming_tasks` already runs `send_clock_in_reminder_10min` every 5 min,
+    # so the separate clock_in_reminders beat was a duplicate path. Dropping it cuts
+    # Celery execution volume ~50% without losing coverage.
     "checklist_reminders": {
         "task": "scheduling.reminder_tasks.send_checklist_reminders",
-        "schedule": crontab(minute='*/10'),  # Every 10 minutes
+        "schedule": crontab(minute='*/15'),  # Every 15 min (was 10; plenty for reminders)
     },
     "auto_clock_out_at_shift_end": {
         "task": "scheduling.tasks.auto_clock_out_after_shift_end",
-        "schedule": crontab(minute='*'),  # Every minute so staff are clocked out immediately when shift ends
+        # Every 2 min. Previously every minute — 1440 runs/day scanning shifts.
+        # 2 min is the worst-case extra dwell time for a staff member after shift
+        # end and is indistinguishable to the user, but halves the load.
+        "schedule": crontab(minute='*/2'),
     },
     "sync_pos_orders_hourly": {
         "task": "pos.tasks.sync_orders_for_connected_pos_restaurants",
         "schedule": crontab(minute=0),  # Every hour: pull orders for all connected POS
     },
 }
+
+# Shrink Celery's chatty defaults — each idle worker still logs heartbeats and
+# result TTLs. These cut Redis + CloudWatch traffic noticeably.
+CELERY_WORKER_SEND_TASK_EVENTS = False
+CELERY_TASK_SEND_SENT_EVENT = False
+CELERY_RESULT_EXPIRES = 3600
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 200  # recycle workers to prevent memory creep
 
 
 from django.utils import timezone
