@@ -47,11 +47,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Only runtime libs live in the final image — no compilers, no -dev packages.
+# NOTE: do NOT hardcode versioned package names like libgdal32 / libproj25 —
+# they change every Debian release (Bookworm shipped libgdal32 / libproj25,
+# Trixie ships libgdal36 / libproj25+, and python:3.13-slim now rebased on
+# Trixie broke CI). `gdal-bin` already depends on the matching libgdalXX
+# (which in turn pulls libprojXX) so apt resolves the right runtime.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         gdal-bin \
-        libgdal32 \
-        libproj25 \
         libsndfile1 \
         netcat-openbsd \
         curl \
