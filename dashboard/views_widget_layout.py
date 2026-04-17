@@ -11,14 +11,17 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from django.db import IntegrityError
+
 from accounts.models import CustomUser
-from .models import DashboardCustomWidget
+from .models import DashboardCategory, DashboardCustomWidget
 from .widget_ids import (
     ALLOWED_CUSTOM_WIDGET_ICONS,
     CUSTOM_WIDGET_PREFIX,
     DASHBOARD_WIDGET_IDS,
     DEFAULT_DASHBOARD_WIDGET_ORDER,
 )
+from .widget_link_resolver import ensure_link
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +138,11 @@ class DashboardCustomWidgetListView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        qs = DashboardCustomWidget.objects.filter(user=request.user).order_by("-created_at")
+        qs = (
+            DashboardCustomWidget.objects.filter(user=request.user)
+            .select_related("category")
+            .order_by("-created_at")
+        )
         widgets = []
         for w in qs:
             widgets.append(
@@ -146,6 +153,7 @@ class DashboardCustomWidgetListView(APIView):
                     "subtitle": w.subtitle or "",
                     "link_url": w.link_url or "",
                     "icon": w.icon or "sparkles",
+                    "category_id": str(w.category_id) if w.category_id else None,
                     "created_at": w.created_at.isoformat() if w.created_at else None,
                 }
             )
@@ -257,7 +265,8 @@ class AgentDashboardWidgetCreateView(APIView):
             return Response({"success": False, "error": "title is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         subtitle = str(data.get("subtitle") or "")[:2000]
-        link_url = str(data.get("link_url") or data.get("link") or "")[:2048].strip()
+        link_raw = str(data.get("link_url") or data.get("link") or "")
+        link_url = ensure_link(title, link_raw)
 
         icon_raw = (data.get("icon") or "sparkles").strip().lower()[:64]
         if icon_raw not in ALLOWED_CUSTOM_WIDGET_ICONS:
@@ -283,9 +292,43 @@ class AgentDashboardWidgetCreateView(APIView):
         if not getattr(user, "restaurant_id", None):
             return Response({"success": False, "error": "User has no restaurant"}, status=status.HTTP_400_BAD_REQUEST)
 
+        category = None
+        raw_cat = data.get("category_id") or data.get("categoryId")
+        if raw_cat:
+            try:
+                raw_cat_uuid = uuid.UUID(str(raw_cat))
+            except (TypeError, ValueError):
+                raw_cat_uuid = None
+            if raw_cat_uuid is not None:
+                category = DashboardCategory.objects.filter(
+                    id=raw_cat_uuid, restaurant_id=user.restaurant_id
+                ).first()
+
+        # Miya convenience: if no category_id was given but a category_name
+        # was, find-or-create the category by name in this tenant.
+        if category is None:
+            cat_name = (data.get("category_name") or data.get("categoryName") or "").strip()[:100]
+            if cat_name:
+                category = DashboardCategory.objects.filter(
+                    restaurant_id=user.restaurant_id, name__iexact=cat_name
+                ).first()
+                if category is None:
+                    try:
+                        category = DashboardCategory.objects.create(
+                            restaurant_id=user.restaurant_id,
+                            name=cat_name,
+                            order_index=0,
+                            created_by=user,
+                        )
+                    except IntegrityError:
+                        category = DashboardCategory.objects.filter(
+                            restaurant_id=user.restaurant_id, name__iexact=cat_name
+                        ).first()
+
         w = DashboardCustomWidget.objects.create(
             user=user,
             restaurant_id=user.restaurant_id,
+            category=category,
             title=title,
             subtitle=subtitle,
             link_url=link_url,
@@ -314,6 +357,7 @@ class AgentDashboardWidgetCreateView(APIView):
                     "subtitle": w.subtitle,
                     "link_url": w.link_url,
                     "icon": w.icon,
+                    "category_id": str(w.category_id) if w.category_id else None,
                 },
                 "message_for_user": (
                     f'Added a new dashboard card "{w.title}". Open or refresh the dashboard to see it.'
@@ -322,4 +366,95 @@ class AgentDashboardWidgetCreateView(APIView):
                 ),
             },
             status=status.HTTP_201_CREATED,
+        )
+
+
+class AgentDashboardCategoryCreateView(APIView):
+    """
+    Miya/Lua: create a dashboard category (tenant-wide) for grouping custom
+    shortcuts. Idempotent — if a category with the same name already exists in
+    the tenant we return it instead of creating a duplicate.
+
+    Auth: Bearer LUA_WEBHOOK_API_KEY
+
+    Body:
+      - name: required string (max 100 chars)
+      - order_index: optional int (default 0)
+      - user_id | email | phone: target user (used to resolve tenant)
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        ok, err = _validate_agent_key(request)
+        if not ok:
+            return Response({"success": False, "error": err}, status=status.HTTP_401_UNAUTHORIZED)
+
+        data = request.data or {}
+        name = (data.get("name") or "").strip()[:100]
+        if not name:
+            return Response(
+                {"success": False, "error": "name is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            order_index = int(data.get("order_index") or 0)
+        except (TypeError, ValueError):
+            order_index = 0
+
+        user = _resolve_user_from_agent_payload(data)
+        if user is None:
+            return Response(
+                {"success": False, "error": "Could not resolve user; pass user_id, email, or phone"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not _can_customize_dashboard(user):
+            return Response(
+                {"success": False, "error": "User cannot customize dashboard (need manager role)"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if not getattr(user, "restaurant_id", None):
+            return Response(
+                {"success": False, "error": "User has no restaurant"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        existing = DashboardCategory.objects.filter(
+            restaurant_id=user.restaurant_id, name__iexact=name
+        ).first()
+        created = False
+        if existing is not None:
+            category = existing
+        else:
+            try:
+                category = DashboardCategory.objects.create(
+                    restaurant_id=user.restaurant_id,
+                    name=name,
+                    order_index=order_index,
+                    created_by=user,
+                )
+                created = True
+            except IntegrityError:
+                category = DashboardCategory.objects.filter(
+                    restaurant_id=user.restaurant_id, name__iexact=name
+                ).first()
+
+        return Response(
+            {
+                "success": True,
+                "created": created,
+                "category": {
+                    "id": str(category.id),
+                    "name": category.name,
+                    "order_index": category.order_index,
+                },
+                "message_for_user": (
+                    f'Created a new dashboard category "{category.name}".'
+                    if created
+                    else f'Dashboard category "{category.name}" already exists — using it.'
+                ),
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )

@@ -27,8 +27,9 @@ from .serializers import (
     ScheduleNotificationSerializer, StaffAvailabilitySerializer, PerformanceMetricSerializer,
     StandardOperatingProcedureSerializer, SafetyChecklistSerializer, ScheduleTaskSerializer,
     SafetyConcernReportSerializer, SafetyRecognitionSerializer,
-    StaffRequestSerializer, StaffRequestCommentSerializer
+    StaffRequestSerializer, StaffRequestListSerializer, StaffRequestCommentSerializer
 )
+from django.db.models import Prefetch
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,13 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'updated_at', 'priority', 'status']
     ordering = ['-created_at']
 
+    def get_serializer_class(self):
+        # Light payload for the inbox list (no comments, no nested restaurant
+        # or profile per row). Detail / write actions keep the full serializer.
+        if self.action == 'list':
+            return StaffRequestListSerializer
+        return StaffRequestSerializer
+
     def get_queryset(self):
         user = self.request.user
         qs = StaffRequest.objects.all()
@@ -61,6 +69,28 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
         if not _is_manager(user):
             # Staff view: only their own
             qs = qs.filter(Q(staff=user) | Q(staff_phone__icontains=''.join(filter(str.isdigit, str(getattr(user, 'phone', '') or '')))))
+
+        # Eager-load relations so the serializer never triggers per-row queries.
+        # - list: only needs `staff` (for display name fallback), nothing else.
+        # - retrieve/update: needs the staff's restaurant + profile (full
+        #   CustomUserSerializer) and the comments (with each author's profile).
+        if self.action == 'list':
+            # list payload only touches `staff.first_name` / `.last_name` —
+            # a single JOIN is enough, no need to pull restaurant/profile.
+            qs = qs.select_related('staff')
+        else:
+            qs = qs.select_related(
+                'staff',
+                'staff__restaurant',
+                'staff__profile',
+            ).prefetch_related(
+                Prefetch(
+                    'comments',
+                    queryset=StaffRequestComment.objects.select_related(
+                        'author', 'author__restaurant', 'author__profile'
+                    ).order_by('created_at'),
+                ),
+            )
         return qs
 
     def perform_create(self, serializer):
@@ -383,13 +413,17 @@ class ScheduleTaskViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filter tasks based on user permissions and query parameters"""
         user = self.request.user
-        queryset = ScheduleTask.objects.all()
-        
-        # Filter by restaurant
+        # Eager-load every relation the serializer expands (sop_details,
+        # checklist_details, assigned_to_details -> CustomUser + profile)
+        # so listing a week's worth of tasks stays 1-2 queries.
+        queryset = ScheduleTask.objects.select_related(
+            'schedule', 'sop', 'safety_checklist',
+            'assigned_to', 'assigned_to__restaurant', 'assigned_to__profile',
+        )
+
         if user.restaurant:
             queryset = queryset.filter(schedule__restaurant=user.restaurant)
-        
-        # Regular staff can only see their assigned tasks
+
         if user.role not in ['SUPER_ADMIN', 'ADMIN']:
             queryset = queryset.filter(assigned_to=user)
         
@@ -660,16 +694,21 @@ class SafetyRecognitionViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filter recognitions based on user permissions"""
         user = self.request.user
-        queryset = SafetyRecognition.objects.all()
-        
-        # Filter by restaurant
+        # NOTE: The model field is `awarded_by` (not `recognized_by`); the
+        # `recognized_by_details` in SafetyRecognitionSerializer is a
+        # pre-existing mismatch we don't fix here. Only select_related
+        # relations that definitely exist.
+        queryset = SafetyRecognition.objects.select_related(
+            'staff', 'staff__restaurant', 'staff__profile',
+            'restaurant',
+        )
+
         if user.restaurant:
             queryset = queryset.filter(restaurant=user.restaurant)
-        
-        # Regular staff can only see their own recognitions
+
         if user.role not in ['SUPER_ADMIN', 'ADMIN']:
             queryset = queryset.filter(staff=user)
-            
+
         return queryset
     
     def perform_create(self, serializer):
@@ -718,12 +757,12 @@ class StaffProfileViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filter profiles based on user permissions"""
         user = self.request.user
+        base = StaffProfile.objects.select_related(
+            'user', 'user__restaurant',
+        )
         if user.role in ['SUPER_ADMIN', 'ADMIN']:
-            # Admins can see all profiles in their restaurant
-            return StaffProfile.objects.filter(user__restaurant=user.restaurant)
-        else:
-            # Regular staff can only see their own profile
-            return StaffProfile.objects.filter(user=user)
+            return base.filter(user__restaurant=user.restaurant)
+        return base.filter(user=user)
     
     def perform_create(self, serializer):
         """Create a new staff profile"""
@@ -740,18 +779,17 @@ class StaffDocumentViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = StaffDocument.objects.all()
-        
-        # Filter by staff_id if provided (for admins viewing others)
+        queryset = StaffDocument.objects.select_related(
+            'staff', 'staff__restaurant', 'staff__profile',
+        )
+
         staff_id = self.request.query_params.get('staff_id')
         if staff_id:
             queryset = queryset.filter(staff_id=staff_id)
-        
-        # Permission check
+
         if user.role not in ['SUPER_ADMIN', 'ADMIN', 'MANAGER']:
-            # Regular staff can only see their own documents
             queryset = queryset.filter(staff=user)
-        
+
         return queryset
 
     def perform_create(self, serializer):
@@ -779,9 +817,14 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         Filter schedules based on query parameters and user permissions
         """
         user = self.request.user
-        queryset = Schedule.objects.all()
-        
-        # Base filter by restaurant
+        # ScheduleSerializer expands staff_details (CustomUser + profile) and
+        # restaurant_details on every row. Eager-load the joins so listing a
+        # week of schedules stays a single query regardless of row count.
+        queryset = Schedule.objects.select_related(
+            'staff', 'staff__restaurant', 'staff__profile',
+            'restaurant',
+        )
+
         if user.restaurant:
             queryset = queryset.filter(restaurant=user.restaurant)
         
@@ -1105,24 +1148,25 @@ class ScheduleViewSet(viewsets.ModelViewSet):
         """Get upcoming schedules for the next 7 days"""
         now = timezone.now()
         end_date = now + timedelta(days=7)
-        
-        # Filter by staff if not admin
+        base = Schedule.objects.select_related(
+            'staff', 'staff__restaurant', 'staff__profile', 'restaurant',
+        )
+
         if request.user.role not in ['SUPER_ADMIN', 'ADMIN']:
-            schedules = Schedule.objects.filter(
+            schedules = base.filter(
                 staff=request.user,
                 start_time__gte=now,
                 start_time__lte=end_date,
-                status__in=['SCHEDULED', 'CONFIRMED']
+                status__in=['SCHEDULED', 'CONFIRMED'],
             )
         else:
-            # For admins, show all upcoming schedules in their restaurant
-            schedules = Schedule.objects.filter(
+            schedules = base.filter(
                 restaurant=request.user.restaurant,
                 start_time__gte=now,
                 start_time__lte=end_date,
-                status__in=['SCHEDULED', 'CONFIRMED']
+                status__in=['SCHEDULED', 'CONFIRMED'],
             )
-            
+
         serializer = self.get_serializer(schedules, many=True)
         return Response(serializer.data)
 
@@ -1137,21 +1181,17 @@ class ScheduleChangeViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         """Filter change history based on user permissions"""
         user = self.request.user
-        
-        # Filter by schedule if provided
+        queryset = ScheduleChange.objects.select_related(
+            'schedule', 'schedule__staff', 'schedule__restaurant',
+            'changed_by', 'changed_by__restaurant', 'changed_by__profile',
+        )
         schedule_id = self.request.query_params.get('schedule_id')
         if schedule_id:
-            queryset = ScheduleChange.objects.filter(schedule_id=schedule_id)
-        else:
-            queryset = ScheduleChange.objects.all()
-        
-        # Filter by restaurant for security
+            queryset = queryset.filter(schedule_id=schedule_id)
+
         if user.role in ['SUPER_ADMIN', 'ADMIN']:
-            # Admins can see all changes in their restaurant
             return queryset.filter(schedule__restaurant=user.restaurant)
-        else:
-            # Regular staff can only see changes to their own schedules
-            return queryset.filter(schedule__staff=user)
+        return queryset.filter(schedule__staff=user)
 
 class ScheduleNotificationViewSet(viewsets.ModelViewSet):
     """
@@ -1266,10 +1306,9 @@ class PerformanceMetricViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filter metrics based on user permissions"""
         user = self.request.user
-        
+        base = PerformanceMetric.objects.select_related(
+            'staff', 'staff__restaurant', 'staff__profile',
+        )
         if user.role in ['SUPER_ADMIN', 'ADMIN']:
-            # Admins can see metrics for all staff in their restaurant
-            return PerformanceMetric.objects.filter(staff__restaurant=user.restaurant)
-        else:
-            # Regular staff can only see their own metrics
-            return PerformanceMetric.objects.filter(staff=user)
+            return base.filter(staff__restaurant=user.restaurant)
+        return base.filter(staff=user)

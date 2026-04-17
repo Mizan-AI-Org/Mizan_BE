@@ -2,7 +2,7 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from django.db import transaction
-from django.db.models import F
+from django.db.models import F, Prefetch
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -58,7 +58,25 @@ class PurchaseOrderListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def get_queryset(self):
-        return PurchaseOrder.objects.filter(restaurant=self.request.user.restaurant).order_by('-order_date')
+        # Serializer renders supplier_info, created_by_info (CustomUserSerializer
+        # with nested restaurant + profile), and every order line's
+        # inventory_item_info. Without eager loading this was a ~30-query fan-out
+        # per page.
+        return (
+            PurchaseOrder.objects
+            .filter(restaurant=self.request.user.restaurant)
+            .select_related(
+                'supplier',
+                'created_by', 'created_by__restaurant', 'created_by__profile',
+            )
+            .prefetch_related(
+                Prefetch(
+                    'items',
+                    queryset=PurchaseOrderItem.objects.select_related('inventory_item'),
+                ),
+            )
+            .order_by('-order_date')
+        )
 
     def perform_create(self, serializer):
         serializer.save(restaurant=self.request.user.restaurant, created_by=self.request.user)
@@ -69,7 +87,20 @@ class PurchaseOrderRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
     lookup_field = 'pk'
 
     def get_queryset(self):
-        return PurchaseOrder.objects.filter(restaurant=self.request.user.restaurant)
+        return (
+            PurchaseOrder.objects
+            .filter(restaurant=self.request.user.restaurant)
+            .select_related(
+                'supplier',
+                'created_by', 'created_by__restaurant', 'created_by__profile',
+            )
+            .prefetch_related(
+                Prefetch(
+                    'items',
+                    queryset=PurchaseOrderItem.objects.select_related('inventory_item'),
+                ),
+            )
+        )
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -101,7 +132,11 @@ class PurchaseOrderItemListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         po_id = self.kwargs.get('purchase_order_pk')
-        return PurchaseOrderItem.objects.filter(purchase_order__id=po_id, purchase_order__restaurant=self.request.user.restaurant)
+        return (
+            PurchaseOrderItem.objects
+            .filter(purchase_order__id=po_id, purchase_order__restaurant=self.request.user.restaurant)
+            .select_related('inventory_item', 'purchase_order')
+        )
 
     def perform_create(self, serializer):
         po_id = self.kwargs.get('purchase_order_pk')
@@ -138,7 +173,15 @@ class StockAdjustmentListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def get_queryset(self):
-        return StockAdjustment.objects.filter(restaurant=self.request.user.restaurant).order_by('-created_at')
+        return (
+            StockAdjustment.objects
+            .filter(restaurant=self.request.user.restaurant)
+            .select_related(
+                'inventory_item',
+                'adjusted_by', 'adjusted_by__restaurant', 'adjusted_by__profile',
+            )
+            .order_by('-created_at')
+        )
 
     def perform_create(self, serializer):
         adjustment_type = serializer.validated_data['adjustment_type']

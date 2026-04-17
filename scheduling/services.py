@@ -108,15 +108,18 @@ class SchedulingService:
 
         new_shift_hours = (shift_end - shift_start).total_seconds() / 3600
 
-        # 1. OVERLAPPING shifts
+        # 1. OVERLAPPING shifts — include both the legacy `staff` FK and the
+        # `staff_members` M2M so team shifts (staff=None, many members) are also
+        # detected. A staff member belongs to a shift when they're on either side.
+        from django.db.models import Q as _Q
         existing_shifts = AssignedShift.objects.filter(
-            staff=staff,
+            _Q(staff=staff) | _Q(staff_members=staff),
             shift_date=shift_date,
             status__in=['SCHEDULED', 'CONFIRMED']
-        )
+        ).distinct()
         if ignore_shift_id:
             existing_shifts = existing_shifts.exclude(id=ignore_shift_id)
-        
+
         for existing in existing_shifts:
             if shift_start < existing.end_time and shift_end > existing.start_time:
                 conflicts.append({

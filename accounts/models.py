@@ -838,3 +838,44 @@ class StaffRestaurantLink(models.Model):
     def __str__(self):
         return f"{self.user.get_full_name()} @ {self.restaurant.name} ({self.role})"
 
+
+class RolePermissionSet(models.Model):
+    """
+    Tenant-scoped permission overrides for a given role.
+
+    Absence of a row means "use catalog defaults for this role".
+    SUPER_ADMIN / ADMIN / OWNER are never gated at the API boundary — they
+    always resolve to full permissions regardless of what is stored here.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        Restaurant, on_delete=models.CASCADE, related_name='role_permission_sets'
+    )
+    role = models.CharField(max_length=32)
+    permissions = models.JSONField(default=dict, blank=True)
+    updated_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='role_permission_edits',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'rbac_role_permission_sets'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['restaurant', 'role'],
+                name='uniq_role_permission_set_per_restaurant',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['restaurant', 'role']),
+        ]
+
+    def __str__(self):
+        return f"{self.restaurant_id} · {self.role}"
+

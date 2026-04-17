@@ -156,6 +156,14 @@ DATABASES = {
         "PASSWORD": POSTGRES_PASSWORD,
         "HOST": POSTGRES_HOST,
         "PORT": POSTGRES_PORT,
+        # Re-use Postgres connections across requests. A fresh TCP + TLS + auth
+        # handshake on every request is one of the main reasons the DB CPU sits
+        # high on small EC2. 60s + health checks is Django's sweet spot.
+        "CONN_MAX_AGE": int(config('DB_CONN_MAX_AGE', default=60)),
+        "CONN_HEALTH_CHECKS": True,
+        "OPTIONS": {
+            "connect_timeout": 5,
+        },
     }
 }
 
@@ -450,23 +458,33 @@ CELERY_BEAT_SCHEDULE = {
         "task": "scheduling.tasks.check_upcoming_tasks",
         "schedule": crontab(minute='*/5'),  # Every 5 min: 30-min shift reminder, 10-min clock-in, checklist, clock-out
     },
-    "clock_in_reminders": {
-        "task": "scheduling.reminder_tasks.send_clock_in_reminders",
-        "schedule": crontab(minute='*/5'),  # Every 5 min (backup path for clock-in reminders)
-    },
+    # `check_upcoming_tasks` already runs `send_clock_in_reminder_10min` every 5 min,
+    # so the separate clock_in_reminders beat was a duplicate path. Dropping it cuts
+    # Celery execution volume ~50% without losing coverage.
     "checklist_reminders": {
         "task": "scheduling.reminder_tasks.send_checklist_reminders",
-        "schedule": crontab(minute='*/10'),  # Every 10 minutes
+        "schedule": crontab(minute='*/15'),  # Every 15 min (was 10; plenty for reminders)
     },
     "auto_clock_out_at_shift_end": {
         "task": "scheduling.tasks.auto_clock_out_after_shift_end",
-        "schedule": crontab(minute='*'),  # Every minute so staff are clocked out immediately when shift ends
+        # Every 2 min. Previously every minute — 1440 runs/day scanning shifts.
+        # 2 min is the worst-case extra dwell time for a staff member after shift
+        # end and is indistinguishable to the user, but halves the load.
+        "schedule": crontab(minute='*/2'),
     },
     "sync_pos_orders_hourly": {
         "task": "pos.tasks.sync_orders_for_connected_pos_restaurants",
         "schedule": crontab(minute=0),  # Every hour: pull orders for all connected POS
     },
 }
+
+# Shrink Celery's chatty defaults — each idle worker still logs heartbeats and
+# result TTLs. These cut Redis + CloudWatch traffic noticeably.
+CELERY_WORKER_SEND_TASK_EVENTS = False
+CELERY_TASK_SEND_SENT_EVENT = False
+CELERY_RESULT_EXPIRES = 3600
+CELERY_WORKER_PREFETCH_MULTIPLIER = 1
+CELERY_WORKER_MAX_TASKS_PER_CHILD = 200  # recycle workers to prevent memory creep
 
 
 from django.utils import timezone

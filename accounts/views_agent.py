@@ -150,8 +150,24 @@ When a manager asks to add **existing** dashboard widgets (e.g. "Add the retail 
 
 When a manager asks for a **new custom** dashboard card (e.g. "Create a widget for weekly safety walkthrough", "Add a tile that links to processes", "Put a shortcut to inventory on my dashboard"):
 * Call **POST /api/dashboard/agent/widgets/create/** with the same `Authorization: Bearer <LUA_WEBHOOK_API_KEY>` header.
-* Body JSON: `title` (required), optional `subtitle`, optional `link_url` or `link` (app path like `/dashboard/processes-tasks-app` or full `https://...`), optional `icon` (e.g. sparkles, clipboard-check, list-todo, calendar, users, package, shopping-cart, file-text, bar-chart-2, clipboard-list, hard-hat, store, inbox, activity, shield-alert, clock, heart, calendar-days, layout-grid), optional `add_to_dashboard` (default true), and **one** of `user_id`, `email`, or `phone`.
+* Body JSON: `title` (required), optional `subtitle`, optional `icon` (e.g. sparkles, clipboard-check, list-todo, calendar, users, package, shopping-cart, file-text, bar-chart-2, clipboard-list, hard-hat, store, inbox, activity, shield-alert, clock, heart, calendar-days, layout-grid), optional `add_to_dashboard` (default true), optional `category_id` **or** `category_name` (server find-or-creates a tenant category), and **one** of `user_id`, `email`, or `phone`.
+* **Do NOT ask the manager for a link/URL.** The server resolves the destination route automatically from the title (e.g. "Supplier contacts" → suppliers page). Only pass `link_url` if the manager explicitly provided a URL themselves or it's an external link.
 * Response includes `widget_id` (format `custom:<uuid>`) and `message_for_user`; relay that message. The card appears on the user's dashboard after refresh.
+
+---
+14. GUEST ORDERS FROM VOICE / TEXT (F&B STAFF — LUA / MIYA)
+When a staff member sends a **voice note** (or text) that is clearly a guest order (e.g. "table 7, two burgers, customer Sarah 07712345678, deliver to 14 Oxford Street"):
+* Django's WhatsApp webhook already transcribes audio (OpenAI Whisper) and auto-creates the **Today's Orders** row with heuristic parsing — you do **not** need to do anything. Confirm back to the staff with the short order id if asked.
+* If the agent/bridge (not the Django webhook) has the transcript in hand and needs to create the order itself, call **POST /api/notifications/agent/staff-captured-order/** with header `Authorization: Bearer <LUA_WEBHOOK_API_KEY>`.
+* Body JSON: `restaurant_id` (required UUID), `items_summary` **or** `transcript` (required — the raw voice/text), `user_id` or `phone`/`staff_phone` (to attribute the capture to the staff member), optional `channel` (`VOICE`/`TEXT`/`MANUAL`, default `VOICE`), and optional explicit overrides: `customer_name`, `customer_phone`, `order_type` (`DINE_IN`/`TAKEOUT`/`DELIVERY`/`OTHER`), `table_or_location`, `dietary_notes`, `special_instructions`.
+* The server auto-parses the transcript for customer name, phone, order type (dine-in/takeout/delivery), table/location, dietary/allergens, and special instructions — you can pass the raw transcript and trust the parser, or pass explicit fields to override.
+* Response includes `order_id` and `short_id`; relay the short id back to the staff in the confirmation.
+
+When a manager asks to **create a dashboard category / group of shortcuts** (e.g. "Create a Kitchen KPIs section", "Group these shortcuts under Supplier", "Add a Back-of-house category"):
+* Call **POST /api/dashboard/agent/categories/create/** with the same `Authorization: Bearer <LUA_WEBHOOK_API_KEY>` header.
+* Body JSON: `name` (required, max 100 chars), optional `order_index`, and **one** of `user_id`, `email`, or `phone`.
+* Categories are tenant-wide (shared across that workspace) and the endpoint is idempotent — if the category already exists you'll get it back with `created: false`.
+* After creating a category, if the manager also asked for widgets inside it, call the widgets/create endpoint above with the returned `category_id` (or just pass `category_name` to do it in one shot).
 
 ---
 FINAL DIRECTIVE
@@ -743,4 +759,707 @@ def agent_retry_invite(request):
         'message': 'Invite sent.' if ok else 'Retry failed.',
         'log_id': str(log.id),
         'status': log.status,
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reservations / Appointments (works for RESTAURANT + HOSPITALITY + SERVICES)
+# ─────────────────────────────────────────────────────────────────────────────
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_list_reservations(request):
+    """
+    List reservations/appointments for the workspace.
+    Auth: LUA_WEBHOOK_API_KEY.
+    Query: restaurant_id (required), date=today|tomorrow|YYYY-MM-DD (default today),
+           days_ahead=N (returns next N days starting from date), status (optional filter),
+           q (free-text search on guest_name/phone/email), limit (default 50, max 200).
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from .models import Restaurant, EatNowReservation
+    from datetime import date as _date, timedelta
+    import re as _re
+
+    rid = _resolve_restaurant_id_agent(request)
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=str(rid).strip())
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    qp = request.query_params
+    date_raw = (qp.get('date') or 'today').strip().lower()
+    try:
+        days_ahead = max(0, min(int(qp.get('days_ahead') or '0'), 30))
+    except (TypeError, ValueError):
+        days_ahead = 0
+    try:
+        limit = max(1, min(int(qp.get('limit') or '50'), 200))
+    except (TypeError, ValueError):
+        limit = 50
+    status_filter = (qp.get('status') or '').strip()
+    q = (qp.get('q') or '').strip()
+
+    today = timezone.localdate()
+    if date_raw in ('today', "aujourd'hui", "aujourdhui", "اليوم"):
+        start = today
+    elif date_raw in ('tomorrow', 'demain', 'غدا'):
+        start = today + timedelta(days=1)
+    elif date_raw in ('yesterday', 'hier', 'أمس'):
+        start = today - timedelta(days=1)
+    elif _re.match(r'^\d{4}-\d{2}-\d{2}$', date_raw):
+        try:
+            start = _date.fromisoformat(date_raw)
+        except ValueError:
+            start = today
+    else:
+        start = today
+    end = start + timedelta(days=days_ahead)
+
+    qs = EatNowReservation.objects.filter(
+        restaurant=restaurant,
+        is_deleted=False,
+        reservation_date__gte=start,
+        reservation_date__lte=end,
+    )
+    if status_filter:
+        qs = qs.filter(status__iexact=status_filter)
+    if q:
+        from django.db.models import Q as _Q
+        qs = qs.filter(_Q(guest_name__icontains=q) | _Q(phone__icontains=q) | _Q(email__icontains=q))
+    qs = qs.order_by('reservation_date', 'reservation_time', 'guest_name')[:limit]
+
+    items = [
+        {
+            'id': str(r.id),
+            'external_id': r.external_id,
+            'guest_name': r.guest_name,
+            'phone': r.phone,
+            'email': r.email,
+            'date': r.reservation_date.isoformat() if r.reservation_date else None,
+            'time': r.reservation_time,
+            'group_size': r.group_size,
+            'status': r.status,
+            'source': r.source,
+            'notes': r.notes,
+            'tags': r.tags or [],
+        }
+        for r in qs
+    ]
+    return Response({
+        'success': True,
+        'restaurant_id': str(restaurant.id),
+        'workspace_name': restaurant.name,
+        'range': {'start': start.isoformat(), 'end': end.isoformat()},
+        'count': len(items),
+        'reservations': items,
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shift Reviews (attendance.ShiftReview)
+# ─────────────────────────────────────────────────────────────────────────────
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_list_shift_reviews(request):
+    """
+    List recent shift reviews for the workspace.
+    Auth: LUA_WEBHOOK_API_KEY.
+    Query: restaurant_id (required), days (default 7), min_rating (optional 1-5),
+           staff_id (optional), limit (default 25, max 100).
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from .models import Restaurant
+    from attendance.models import ShiftReview
+    from datetime import timedelta
+
+    rid = _resolve_restaurant_id_agent(request)
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=str(rid).strip())
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    qp = request.query_params
+    try:
+        days = max(1, min(int(qp.get('days') or '7'), 90))
+    except (TypeError, ValueError):
+        days = 7
+    try:
+        limit = max(1, min(int(qp.get('limit') or '25'), 100))
+    except (TypeError, ValueError):
+        limit = 25
+    min_rating = qp.get('min_rating')
+    staff_id = qp.get('staff_id')
+
+    since = timezone.now() - timedelta(days=days)
+    qs = ShiftReview.objects.filter(restaurant=restaurant, completed_at__gte=since).select_related('staff')
+    if min_rating:
+        try:
+            qs = qs.filter(rating__gte=int(min_rating))
+        except (TypeError, ValueError):
+            pass
+    if staff_id:
+        qs = qs.filter(staff_id=staff_id)
+    qs = qs.order_by('-completed_at')[:limit]
+
+    items = []
+    total_rating = 0
+    count = 0
+    for r in qs:
+        total_rating += int(r.rating or 0)
+        count += 1
+        items.append({
+            'id': str(r.id),
+            'staff_id': str(r.staff_id),
+            'staff_name': (r.staff.get_full_name() if r.staff else '') or getattr(r.staff, 'email', ''),
+            'rating': r.rating,
+            'tags': r.tags or [],
+            'comments': r.comments or '',
+            'hours': float(r.hours_decimal) if r.hours_decimal is not None else None,
+            'completed_at': r.completed_at.isoformat() if r.completed_at else None,
+        })
+    avg = round(total_rating / count, 2) if count else None
+    return Response({
+        'success': True,
+        'restaurant_id': str(restaurant.id),
+        'days': days,
+        'count': count,
+        'average_rating': avg,
+        'reviews': items,
+    })
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_submit_shift_review(request):
+    """
+    Submit a shift review on behalf of a staff member (voice/text from WhatsApp).
+    Auth: LUA_WEBHOOK_API_KEY.
+    Body: restaurant_id, rating (1-5, required), staff_id OR phone, session_id (optional),
+          tags (optional list), comments (optional), completed_at (optional ISO).
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from .models import Restaurant
+    from attendance.models import ShiftReview
+    from uuid import uuid4
+
+    data = request.data or {}
+    rid = data.get('restaurant_id') or data.get('restaurantId') or _resolve_restaurant_id_agent(request)
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=str(rid).strip())
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    try:
+        rating = int(data.get('rating'))
+    except (TypeError, ValueError):
+        return Response({'success': False, 'error': 'rating must be an integer 1..5'}, status=status.HTTP_400_BAD_REQUEST)
+    if rating < 1 or rating > 5:
+        return Response({'success': False, 'error': 'rating must be 1..5'}, status=status.HTTP_400_BAD_REQUEST)
+
+    staff_id = data.get('staff_id') or data.get('user_id')
+    phone = data.get('phone') or data.get('staff_phone')
+    staff_user = None
+    if staff_id:
+        staff_user = CustomUser.objects.filter(id=staff_id, restaurant=restaurant).first()
+    if not staff_user and phone:
+        import re as _re
+        digits = _re.sub(r'\D', '', str(phone))
+        if digits:
+            staff_user = (
+                CustomUser.objects.filter(restaurant=restaurant, phone__contains=digits).first()
+                or CustomUser.objects.filter(phone__contains=digits, restaurant=restaurant).first()
+            )
+    if not staff_user:
+        return Response({'success': False, 'error': 'Could not resolve staff from staff_id or phone.'}, status=status.HTTP_404_NOT_FOUND)
+
+    tags = data.get('tags') or []
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(',') if t.strip()]
+    comments = (data.get('comments') or '').strip() or None
+    completed_raw = data.get('completed_at')
+    completed_at = None
+    if completed_raw:
+        try:
+            from django.utils.dateparse import parse_datetime
+            completed_at = parse_datetime(completed_raw)
+        except Exception:
+            completed_at = None
+    if not completed_at:
+        completed_at = timezone.now()
+
+    session_id = data.get('session_id') or uuid4()
+
+    review = ShiftReview.objects.create(
+        session_id=session_id,
+        staff=staff_user,
+        restaurant=restaurant,
+        rating=rating,
+        tags=list(tags) if tags else [],
+        comments=comments,
+        completed_at=completed_at,
+    )
+    return Response({
+        'success': True,
+        'review_id': str(review.id),
+        'staff_id': str(staff_user.id),
+        'staff_name': staff_user.get_full_name(),
+        'rating': review.rating,
+        'message': 'Shift review submitted.',
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Recognition / Kudos (staff.SafetyRecognition — used more broadly for kudos)
+# ─────────────────────────────────────────────────────────────────────────────
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_recognize_staff(request):
+    """
+    Give a recognition/kudos to a staff member. Also lists recent recognitions via GET.
+    Auth: LUA_WEBHOOK_API_KEY.
+    Body: restaurant_id, staff_id OR phone, title, description (optional),
+          recognition_type (default 'Kudos'), points (default 0),
+          awarded_by_phone OR awarded_by_user_id (optional — defaults to null).
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from .models import Restaurant
+    from staff.models_task import SafetyRecognition
+    import re as _re
+
+    data = request.data or {}
+    rid = data.get('restaurant_id') or data.get('restaurantId') or _resolve_restaurant_id_agent(request)
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=str(rid).strip())
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    title = (data.get('title') or '').strip()
+    if not title:
+        return Response({'success': False, 'error': 'title is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    staff_user = None
+    staff_id = data.get('staff_id') or data.get('user_id')
+    if staff_id:
+        staff_user = CustomUser.objects.filter(id=staff_id, restaurant=restaurant).first()
+    phone = data.get('phone') or data.get('staff_phone')
+    if not staff_user and phone:
+        digits = _re.sub(r'\D', '', str(phone))
+        if digits:
+            staff_user = CustomUser.objects.filter(restaurant=restaurant, phone__contains=digits).first()
+    if not staff_user:
+        name = (data.get('staff_name') or '').strip()
+        if name:
+            from django.db.models import Q as _Q
+            staff_user = CustomUser.objects.filter(restaurant=restaurant).filter(
+                _Q(first_name__iexact=name) | _Q(last_name__iexact=name) | _Q(email__iexact=name)
+            ).first()
+    if not staff_user:
+        return Response({'success': False, 'error': 'Could not resolve staff (pass staff_id, phone, or staff_name).'}, status=status.HTTP_404_NOT_FOUND)
+
+    awarded_by = None
+    awarded_phone = data.get('awarded_by_phone')
+    awarded_by_id = data.get('awarded_by_user_id')
+    if awarded_by_id:
+        awarded_by = CustomUser.objects.filter(id=awarded_by_id, restaurant=restaurant).first()
+    if not awarded_by and awarded_phone:
+        digits = _re.sub(r'\D', '', str(awarded_phone))
+        if digits:
+            awarded_by = CustomUser.objects.filter(restaurant=restaurant, phone__contains=digits).first()
+
+    try:
+        points = int(data.get('points') or 0)
+    except (TypeError, ValueError):
+        points = 0
+
+    rec = SafetyRecognition.objects.create(
+        staff=staff_user,
+        restaurant=restaurant,
+        title=title[:255],
+        description=(data.get('description') or title)[:2000],
+        recognition_type=(data.get('recognition_type') or 'Kudos')[:50],
+        points=points,
+        awarded_by=awarded_by,
+    )
+    return Response({
+        'success': True,
+        'recognition_id': str(rec.id),
+        'staff_id': str(staff_user.id),
+        'staff_name': staff_user.get_full_name(),
+        'title': rec.title,
+        'points': rec.points,
+        'message': f'{staff_user.get_full_name()} received recognition: {rec.title}.',
+    })
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_list_recognitions(request):
+    """
+    List recent recognitions.
+    Auth: LUA_WEBHOOK_API_KEY.
+    Query: restaurant_id (required), days (default 30), staff_id (optional), limit (default 25, max 100).
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from .models import Restaurant
+    from staff.models_task import SafetyRecognition
+    from datetime import timedelta
+
+    rid = _resolve_restaurant_id_agent(request)
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=str(rid).strip())
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    qp = request.query_params
+    try:
+        days = max(1, min(int(qp.get('days') or '30'), 365))
+    except (TypeError, ValueError):
+        days = 30
+    try:
+        limit = max(1, min(int(qp.get('limit') or '25'), 100))
+    except (TypeError, ValueError):
+        limit = 25
+    staff_id = qp.get('staff_id')
+
+    since = timezone.now() - timedelta(days=days)
+    qs = SafetyRecognition.objects.filter(restaurant=restaurant, awarded_at__gte=since).select_related('staff', 'awarded_by')
+    if staff_id:
+        qs = qs.filter(staff_id=staff_id)
+    qs = qs.order_by('-awarded_at')[:limit]
+
+    items = [
+        {
+            'id': str(r.id),
+            'staff_id': str(r.staff_id),
+            'staff_name': r.staff.get_full_name() if r.staff else '',
+            'title': r.title,
+            'description': r.description,
+            'recognition_type': r.recognition_type,
+            'points': r.points,
+            'awarded_by': (r.awarded_by.get_full_name() if r.awarded_by else None),
+            'awarded_at': r.awarded_at.isoformat() if r.awarded_at else None,
+        }
+        for r in qs
+    ]
+    return Response({
+        'success': True,
+        'restaurant_id': str(restaurant.id),
+        'days': days,
+        'count': len(items),
+        'recognitions': items,
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HR Lifecycle: list / offboard staff (invite/create goes through existing InviteStaff)
+# ─────────────────────────────────────────────────────────────────────────────
+@api_view(['GET', 'POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_hr_lifecycle(request):
+    """
+    Manager-facing HR lifecycle actions. Auth: LUA_WEBHOOK_API_KEY.
+
+    GET (list): ?restaurant_id=&status=active|inactive|all&role=&limit=50
+      → returns staff roster with role, status, start date, phone.
+
+    POST (offboard): { action: 'offboard', restaurant_id, staff_id OR phone, reason? }
+      → deactivates the user (is_active=False) so they can no longer log in.
+
+    POST (reactivate): { action: 'reactivate', restaurant_id, staff_id }
+      → re-enables a previously offboarded user.
+
+    POST (transfer): { action: 'transfer', restaurant_id, staff_id, new_role }
+      → updates the user's role on the same workspace.
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from .models import Restaurant
+    import re as _re
+
+    if request.method == 'GET':
+        rid = _resolve_restaurant_id_agent(request)
+        if not rid:
+            return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            restaurant = Restaurant.objects.get(id=str(rid).strip())
+        except (Restaurant.DoesNotExist, ValueError, TypeError):
+            return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
+        qp = request.query_params
+        status_filter = (qp.get('status') or 'active').lower()
+        role_filter = (qp.get('role') or '').strip()
+        try:
+            limit = max(1, min(int(qp.get('limit') or '50'), 200))
+        except (TypeError, ValueError):
+            limit = 50
+        qs = CustomUser.objects.filter(restaurant=restaurant)
+        if status_filter == 'active':
+            qs = qs.filter(is_active=True)
+        elif status_filter == 'inactive':
+            qs = qs.filter(is_active=False)
+        if role_filter:
+            qs = qs.filter(role__iexact=role_filter)
+        qs = qs.order_by('-is_active', 'last_name', 'first_name')[:limit]
+        items = [
+            {
+                'id': str(u.id),
+                'full_name': u.get_full_name(),
+                'email': u.email,
+                'phone': u.phone,
+                'role': u.role,
+                'is_active': u.is_active,
+                'date_joined': u.date_joined.isoformat() if u.date_joined else None,
+            }
+            for u in qs
+        ]
+        return Response({
+            'success': True,
+            'restaurant_id': str(restaurant.id),
+            'count': len(items),
+            'staff': items,
+        })
+
+    # POST
+    data = request.data or {}
+    action = (data.get('action') or '').strip().lower()
+    rid = data.get('restaurant_id') or data.get('restaurantId') or _resolve_restaurant_id_agent(request)
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=str(rid).strip())
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
+    if action not in ('offboard', 'reactivate', 'transfer'):
+        return Response({'success': False, 'error': "action must be 'offboard', 'reactivate', or 'transfer'"}, status=status.HTTP_400_BAD_REQUEST)
+
+    staff_user = None
+    staff_id = data.get('staff_id') or data.get('user_id')
+    phone = data.get('phone') or data.get('staff_phone')
+    if staff_id:
+        staff_user = CustomUser.objects.filter(id=staff_id, restaurant=restaurant).first()
+    if not staff_user and phone:
+        digits = _re.sub(r'\D', '', str(phone))
+        if digits:
+            staff_user = CustomUser.objects.filter(restaurant=restaurant, phone__contains=digits).first()
+    if not staff_user:
+        return Response({'success': False, 'error': 'Could not resolve staff (pass staff_id or phone).'}, status=status.HTTP_404_NOT_FOUND)
+
+    if action == 'offboard':
+        staff_user.is_active = False
+        staff_user.save(update_fields=['is_active'])
+        return Response({
+            'success': True,
+            'staff_id': str(staff_user.id),
+            'message': f'{staff_user.get_full_name()} has been offboarded (account disabled).',
+        })
+    if action == 'reactivate':
+        staff_user.is_active = True
+        staff_user.save(update_fields=['is_active'])
+        return Response({
+            'success': True,
+            'staff_id': str(staff_user.id),
+            'message': f'{staff_user.get_full_name()} has been reactivated.',
+        })
+    # transfer
+    new_role = (data.get('new_role') or data.get('role') or '').strip()
+    if not new_role:
+        return Response({'success': False, 'error': 'new_role is required for transfer'}, status=status.HTTP_400_BAD_REQUEST)
+    staff_user.role = new_role
+    staff_user.save(update_fields=['role'])
+    return Response({
+        'success': True,
+        'staff_id': str(staff_user.id),
+        'message': f"{staff_user.get_full_name()} is now {new_role}.",
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Role grants (thin wrapper on RBAC for Miya)
+# ─────────────────────────────────────────────────────────────────────────────
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_grant_role(request):
+    """
+    Grant (or change) a staff member's role within the workspace.
+    Auth: LUA_WEBHOOK_API_KEY.
+    Body: restaurant_id, staff_id OR phone, role (required).
+    Convenience wrapper — effective permissions for that role are controlled via the
+    RolePermissionSet managed in the dashboard (rbac/).
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from .models import Restaurant
+    import re as _re
+    data = request.data or {}
+    rid = data.get('restaurant_id') or data.get('restaurantId') or _resolve_restaurant_id_agent(request)
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=str(rid).strip())
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
+    role = (data.get('role') or '').strip()
+    if not role:
+        return Response({'success': False, 'error': 'role is required'}, status=status.HTTP_400_BAD_REQUEST)
+    staff_user = None
+    if data.get('staff_id'):
+        staff_user = CustomUser.objects.filter(id=data['staff_id'], restaurant=restaurant).first()
+    if not staff_user and data.get('phone'):
+        digits = _re.sub(r'\D', '', str(data['phone']))
+        if digits:
+            staff_user = CustomUser.objects.filter(restaurant=restaurant, phone__contains=digits).first()
+    if not staff_user:
+        return Response({'success': False, 'error': 'Could not resolve staff'}, status=status.HTTP_404_NOT_FOUND)
+    staff_user.role = role
+    staff_user.save(update_fields=['role'])
+    return Response({
+        'success': True,
+        'staff_id': str(staff_user.id),
+        'role': staff_user.role,
+        'message': f'{staff_user.get_full_name()} is now {role}.',
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Staff documents (staff.StaffDocument)
+# ─────────────────────────────────────────────────────────────────────────────
+@api_view(['GET', 'POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_staff_documents(request):
+    """
+    GET: list staff documents. Query: restaurant_id, staff_id (optional), expiring_within_days (optional).
+    POST: record a new document. Body: restaurant_id, staff_id OR phone, title, document_type,
+          file_url (if uploaded elsewhere) OR notes, expires_at (optional ISO).
+    Auth: LUA_WEBHOOK_API_KEY.
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from .models import Restaurant
+    from datetime import timedelta
+    import re as _re
+
+    # Lazy import — StaffDocument model may not be available yet in some deployments.
+    try:
+        from staff.models import StaffDocument  # type: ignore
+    except Exception as exc:
+        return Response({'success': False, 'error': f'StaffDocument not available: {exc}'}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+    if request.method == 'GET':
+        rid = _resolve_restaurant_id_agent(request)
+        if not rid:
+            return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            restaurant = Restaurant.objects.get(id=str(rid).strip())
+        except (Restaurant.DoesNotExist, ValueError, TypeError):
+            return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
+        qp = request.query_params
+        qs = StaffDocument.objects.filter(staff__restaurant=restaurant)
+        if qp.get('staff_id'):
+            qs = qs.filter(staff_id=qp['staff_id'])
+        if qp.get('expiring_within_days') and hasattr(StaffDocument, 'expires_at'):
+            try:
+                window_days = max(0, min(int(qp['expiring_within_days']), 365))
+                horizon = timezone.now() + timedelta(days=window_days)
+                qs = qs.filter(expires_at__isnull=False, expires_at__lte=horizon)
+            except (TypeError, ValueError):
+                pass
+        order_fields = []
+        if hasattr(StaffDocument, 'expires_at'):
+            order_fields.append('expires_at')
+        order_fields.append('-uploaded_at')
+        qs = qs.order_by(*order_fields)[:200]
+        items = []
+        for d in qs:
+            items.append({
+                'id': str(getattr(d, 'id', '')),
+                'staff_id': str(getattr(d, 'staff_id', '')),
+                'title': getattr(d, 'title', ''),
+                'document_type': getattr(d, 'document_type', ''),
+                'notes': getattr(d, 'notes', ''),
+                'expires_at': d.expires_at.isoformat() if getattr(d, 'expires_at', None) else None,
+                'uploaded_at': d.uploaded_at.isoformat() if getattr(d, 'uploaded_at', None) else None,
+            })
+        return Response({'success': True, 'count': len(items), 'documents': items})
+
+    # POST
+    data = request.data or {}
+    rid = data.get('restaurant_id') or data.get('restaurantId') or _resolve_restaurant_id_agent(request)
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=str(rid).strip())
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
+    staff_user = None
+    if data.get('staff_id'):
+        staff_user = CustomUser.objects.filter(id=data['staff_id'], restaurant=restaurant).first()
+    if not staff_user and data.get('phone'):
+        digits = _re.sub(r'\D', '', str(data['phone']))
+        if digits:
+            staff_user = CustomUser.objects.filter(restaurant=restaurant, phone__contains=digits).first()
+    if not staff_user:
+        return Response({'success': False, 'error': 'Could not resolve staff'}, status=status.HTTP_404_NOT_FOUND)
+
+    title = (data.get('title') or '').strip()
+    if not title:
+        return Response({'success': False, 'error': 'title is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # The current StaffDocument model stores title + file only. We accept optional
+    # document_type/notes/expires_at in the payload for forward-compatibility, and set
+    # them only if the model exposes those fields.
+    create_kwargs = {'staff': staff_user, 'title': title[:255]}
+    for field_name, raw in [
+        ('document_type', (data.get('document_type') or '').strip()[:50] or None),
+        ('notes', (data.get('notes') or '').strip()[:2000] or None),
+    ]:
+        if raw and hasattr(StaffDocument, field_name):
+            create_kwargs[field_name] = raw
+    if data.get('expires_at') and hasattr(StaffDocument, 'expires_at'):
+        try:
+            from django.utils.dateparse import parse_datetime
+            parsed = parse_datetime(str(data['expires_at']))
+            if parsed:
+                create_kwargs['expires_at'] = parsed
+        except Exception:
+            pass
+    try:
+        doc = StaffDocument.objects.create(**create_kwargs)
+    except Exception as exc:
+        return Response({'success': False, 'error': f'Could not create document: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+    return Response({
+        'success': True,
+        'document_id': str(getattr(doc, 'id', '')),
+        'staff_id': str(staff_user.id),
+        'title': title,
+        'message': f'Document {title!r} recorded for {staff_user.get_full_name()}.',
     })

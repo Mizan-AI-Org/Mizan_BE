@@ -3089,34 +3089,41 @@ class NotificationListView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        # Only show notifications from the last 12 hours (older ones are auto-cleared from the list)
+        # Only show notifications from the last 12 hours (older ones are auto-cleared from the list).
+        # IMPORTANT: this class is the effective NotificationListView because a
+        # previous class of the same name is declared earlier in this file and
+        # gets shadowed at import time. Keep the same eager-loading here so the
+        # notifications panel (which polls continuously) does not fan out into
+        # per-row sender + attachment queries.
         cutoff = timezone.now() - timedelta(hours=12)
-        queryset = Notification.objects.filter(recipient=user, created_at__gte=cutoff).order_by('-created_at')
-        
-        # Filter by read status
+        queryset = (
+            Notification.objects
+            .filter(recipient=user, created_at__gte=cutoff)
+            .select_related('recipient', 'sender')
+            .prefetch_related('attachments')
+            .order_by('-created_at')
+        )
+
         is_read = self.request.query_params.get('is_read')
         if is_read is not None:
             if is_read.lower() == 'true':
                 queryset = queryset.filter(read_at__isnull=False)
             else:
                 queryset = queryset.filter(read_at__isnull=True)
-        
-        # Filter by notification type
+
         notification_type = self.request.query_params.get('type')
         if notification_type:
             queryset = queryset.filter(notification_type=notification_type)
-        
-        # Filter by priority
+
         priority = self.request.query_params.get('priority')
         if priority:
             queryset = queryset.filter(priority=priority)
-        
-        # Filter by date range
+
         date_from = self.request.query_params.get('date_from')
         date_to = self.request.query_params.get('date_to')
         if date_from:
             queryset = queryset.filter(created_at__date__gte=date_from)
         if date_to:
             queryset = queryset.filter(created_at__date__lte=date_to)
-        
+
         return queryset

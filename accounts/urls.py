@@ -21,8 +21,22 @@ from .views_agent import (
     agent_list_failed_invites,
     agent_retry_invite,
     agent_miya_instructions,
+    agent_list_reservations,
+    agent_list_shift_reviews,
+    agent_submit_shift_review,
+    agent_recognize_staff,
+    agent_list_recognitions,
+    agent_hr_lifecycle,
+    agent_grant_role,
+    agent_staff_documents,
 )
 from .views_staff_report import staff_profile_report_pdf, agent_staff_report_pdf
+from .views_rbac import (
+    RBACCatalogView,
+    RolePermissionListView,
+    RolePermissionDetailView,
+    EffectivePermissionsView,
+)
 
 router = DefaultRouter()
 router.register(r'settings', RestaurantSettingsViewSet, basename='settings')
@@ -74,4 +88,18 @@ urlpatterns = [
     path('agent/retry-invite/', agent_retry_invite, name='agent_retry_invite'),
     path('agent/miya-instructions/', agent_miya_instructions, name='agent_miya_instructions'),
     path('agent/staff-report-pdf/', agent_staff_report_pdf, name='agent_staff_report_pdf'),
+    path('agent/reservations/', agent_list_reservations, name='agent_list_reservations'),
+    path('agent/shift-reviews/', agent_list_shift_reviews, name='agent_list_shift_reviews'),
+    path('agent/shift-reviews/submit/', agent_submit_shift_review, name='agent_submit_shift_review'),
+    path('agent/recognize-staff/', agent_recognize_staff, name='agent_recognize_staff'),
+    path('agent/recognitions/', agent_list_recognitions, name='agent_list_recognitions'),
+    path('agent/hr-lifecycle/', agent_hr_lifecycle, name='agent_hr_lifecycle'),
+    path('agent/grant-role/', agent_grant_role, name='agent_grant_role'),
+    path('agent/staff-documents/', agent_staff_documents, name='agent_staff_documents'),
+
+    # RBAC
+    path('rbac/catalog/', RBACCatalogView.as_view(), name='rbac_catalog'),
+    path('rbac/role-permissions/', RolePermissionListView.as_view(), name='rbac_role_permissions_list'),
+    path('rbac/role-permissions/<str:role>/', RolePermissionDetailView.as_view(), name='rbac_role_permissions_detail'),
+    path('rbac/me/', EffectivePermissionsView.as_view(), name='rbac_me'),
 ]

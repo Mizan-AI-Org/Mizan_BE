@@ -429,7 +429,11 @@ class MeView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        serializer = UserSerializer(request.user)
+        # Avoid per-relation round-trips — /auth/me/ is polled frequently,
+        # so fetch the user + restaurant + profile in a single query.
+        user_qs = CustomUser.objects.select_related('restaurant', 'profile')
+        user = user_qs.filter(pk=request.user.pk).first() or request.user
+        serializer = UserSerializer(user)
         return Response(serializer.data)
         
     def patch(self, request):
@@ -1176,11 +1180,17 @@ class StaffListAPIView(generics.ListAPIView):
         This method is automatically called to get the list of objects.
         """
         user = self.request.user
-        
-        return CustomUser.objects.filter(
-            restaurant=user.restaurant,
-            is_active=True,
-            ).exclude(role='SUPER_ADMIN').order_by('first_name', 'last_name')
+
+        # StaffSerializer embeds `profile` via StaffProfileSerializer, which
+        # otherwise triggers +1 query per staff member on a restaurant with 30+
+        # staff. select_related keeps it to a single JOIN.
+        return (
+            CustomUser.objects
+            .filter(restaurant=user.restaurant, is_active=True)
+            .exclude(role='SUPER_ADMIN')
+            .select_related('profile')
+            .order_by('first_name', 'last_name')
+        )
 
 
 class StaffMemberDetailView(APIView):

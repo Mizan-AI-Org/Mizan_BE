@@ -19,6 +19,7 @@ import unicodedata
 from difflib import SequenceMatcher
 
 from django.core import exceptions as django_exc
+from django.db import transaction
 from accounts.models import CustomUser, Restaurant
 from .models import AssignedShift, WeeklySchedule, AgentMemory, ShiftTask, TimeOffRequest, ShiftSwapRequest
 from .serializers import AssignedShiftSerializer
@@ -956,6 +957,36 @@ def agent_create_shift(request):
                 'error': f"Unable to resolve staff member. Provided staff_name='{staff_name}' or staff_id='{staff_id}' was not found in your restaurant list."
             }, status=status.HTTP_404_NOT_FOUND)
 
+        # Idempotency: if the exact same slot (same staff, date, start, end) was
+        # just created (e.g. Miya retried on a network blip), don't double-book —
+        # return the existing shift so the retry is a no-op for the user.
+        start_dt_check = datetime.combine(shift_date, start_time)
+        end_dt_check = datetime.combine(shift_date, end_time)
+        if timezone.is_naive(start_dt_check):
+            start_dt_check = timezone.make_aware(start_dt_check)
+        if timezone.is_naive(end_dt_check):
+            end_dt_check = timezone.make_aware(end_dt_check)
+        duplicate = AssignedShift.objects.filter(
+            staff=staff,
+            shift_date=shift_date,
+            start_time=start_dt_check,
+            end_time=end_dt_check,
+            status__in=['SCHEDULED', 'CONFIRMED'],
+        ).first()
+        if duplicate:
+            logger.info(
+                "agent_create_shift: idempotent match — returning existing shift %s", duplicate.id
+            )
+            return Response({
+                'success': True,
+                'idempotent': True,
+                'shift': AssignedShiftSerializer(duplicate).data,
+                'message': (
+                    f"{staff.first_name} is already scheduled for that exact slot — "
+                    "I didn't create a duplicate."
+                ),
+            }, status=status.HTTP_200_OK)
+
         conflicts = SchedulingService.detect_scheduling_conflicts(
             str(staff.id),
             shift_date,
@@ -1118,14 +1149,14 @@ def agent_create_shift(request):
             except Exception as e:
                 logger.warning(f"Agent create shift: failed to create custom task '{title[:50]}': {e}")
 
-        # Immediately notify the assigned staff (WhatsApp + in-app), with audit logging
+        # Immediately notify the assigned staff on WhatsApp (+ in-app).
+        # Wrapped in try/except: a notification send failure (Twilio down,
+        # template misconfigured, etc.) must NOT roll back the shift itself
+        # or fail Miya's tool call — the manager can always resend manually.
         try:
-
-            # This triggers the actual notification engine
-            # SchedulingService.notify_shift_created(shift, notify_user=staff)
-            pass
+            SchedulingService.notify_shift_assignment(shift, force_whatsapp=True)
         except Exception as e:
-            logger.warning(f"Agent create shift: notification trigger failed: {e}")
+            logger.warning(f"Agent create shift: WhatsApp notify failed for shift {shift.id}: {e}")
         
         return Response({
             'success': True,
@@ -1282,8 +1313,69 @@ def agent_create_shifts_by_role(request):
                 'error': 'Invalid start_time or end_time. Use HH:MM format.'
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        created = []
+        # Respect explicit confirmation from the manager (via Miya): force=true lets
+        # the bulk path proceed even when overlaps are detected. Without it, we
+        # pre-flight every (staff, date) and short-circuit with a 409 so Miya can
+        # surface the conflicts in natural language and ask for confirmation.
+        force_flag = str(
+            data.get('force') if data.get('force') is not None else payload.get('force')
+        ).lower() in ('true', '1', 'yes')
+
+        # Default: create ONE consolidated team shift per (date, time slot) with all
+        # role members attached via the staff_members M2M — exactly like the manager
+        # picking "all waiters" in the UI modal. This gives a single calendar card
+        # with every waiter as a chip, instead of N duplicate cards stacking.
+        # The manager can still opt out via `individual_shifts=true` for back-compat.
+        individual_flag = str(
+            data.get('individual_shifts') if data.get('individual_shifts') is not None
+            else payload.get('individual_shifts', '')
+        ).lower() in ('true', '1', 'yes')
+
+        # Pre-flight: check every (staff, date) for overlap / time-off / etc.
+        # before mutating anything. Works identically for team and individual modes
+        # because the constraint is per-person, not per-card.
+        conflict_entries = []
         for staff in staff_qs:
+            for shift_date in parsed_dates:
+                raw_conflicts = SchedulingService.detect_scheduling_conflicts(
+                    str(staff.id), shift_date, start_time, end_time
+                ) or []
+                # We only want to BLOCK on hard conflicts (overlap, time off, holiday,
+                # clopening, availability). Softer signals (overtime, weekly-hours)
+                # shouldn't prevent a bulk schedule — surface them but don't gate.
+                hard = [c for c in raw_conflicts if c.get('type') in (
+                    'OVERLAP', 'TIME_OFF', 'HOLIDAY', 'CLOPENING', 'AVAILABILITY',
+                )]
+                if hard:
+                    staff_name = f"{(staff.first_name or '').strip()} {(staff.last_name or '').strip()}".strip() or str(staff)
+                    conflict_entries.append({
+                        'staff_id': str(staff.id),
+                        'staff_name': staff_name,
+                        'shift_date': str(shift_date),
+                        'conflicts': hard,
+                    })
+
+        if conflict_entries and not force_flag:
+            return Response({
+                'success': False,
+                'error': (
+                    f"{len(conflict_entries)} of the {staff_qs.count() * len(parsed_dates)} "
+                    f"shift(s) would conflict with existing bookings. "
+                    "Ask the manager to confirm before proceeding, then retry with force=true."
+                ),
+                'conflicts': conflict_entries,
+                'total_planned': staff_qs.count() * len(parsed_dates),
+                'total_conflicts': len(conflict_entries),
+                'can_force': True,
+            }, status=status.HTTP_409_CONFLICT)
+
+        created = []
+        skipped = []
+        # Atomic: if any save inside the loop blows up (race against a shift created
+        # between the pre-check and the save), roll back the whole batch so we don't
+        # leave half a schedule behind.
+        with transaction.atomic():
+            staff_list = list(staff_qs)
             for shift_date in parsed_dates:
                 days_since_monday = shift_date.weekday()
                 week_start = shift_date - timedelta(days=days_since_monday)
@@ -1296,36 +1388,143 @@ def agent_create_shifts_by_role(request):
                 start_dt = timezone.make_aware(datetime.combine(shift_date, start_time))
                 end_dt = timezone.make_aware(datetime.combine(shift_date, end_time))
 
+                if individual_flag:
+                    # Back-compat path: one AssignedShift per staff per date.
+                    for staff in staff_list:
+                        shift = AssignedShift(
+                            schedule=schedule,
+                            staff=staff,
+                            shift_date=shift_date,
+                            start_time=start_dt,
+                            end_time=end_dt,
+                            role=role,
+                            notes=f"{role} shift",
+                            status='SCHEDULED',
+                            created_by=acting_user,
+                            last_modified_by=acting_user,
+                        )
+                        if force_flag:
+                            shift._skip_overlap_check = True
+                        try:
+                            shift.save()
+                        except django_exc.ValidationError as ve:
+                            msgs = ve.messages if hasattr(ve, 'messages') else [str(ve)]
+                            skipped.append({
+                                'staff_id': str(staff.id),
+                                'staff_name': f"{(staff.first_name or '').strip()} {(staff.last_name or '').strip()}",
+                                'shift_date': str(shift_date),
+                                'reason': '; '.join(msgs),
+                            })
+                            continue
+                        shift.staff_members.add(staff)
+                        try:
+                            SchedulingService.ensure_shift_color(shift)
+                        except Exception:
+                            pass
+                        created.append({
+                            'id': str(shift.id),
+                            'staff_id': str(staff.id),
+                            'staff_name': f"{(staff.first_name or '').strip()} {(staff.last_name or '').strip()}",
+                            'shift_date': str(shift_date),
+                            'mode': 'individual',
+                        })
+                    continue
+
+                # Team-shift path (default): one consolidated shift per (date, time).
+                # Leave legacy `staff` FK as NULL so Miya never signals "owned by one
+                # person" — this is a team card. All members go on `staff_members`.
                 shift = AssignedShift(
                     schedule=schedule,
-                    staff=staff,
+                    staff=None,
                     shift_date=shift_date,
                     start_time=start_dt,
                     end_time=end_dt,
                     role=role,
-                    notes=f"{role} shift",
+                    notes=f"{role} team shift",
                     status='SCHEDULED',
                     created_by=acting_user,
                     last_modified_by=acting_user,
                 )
-                shift.save()
-                shift.staff_members.add(staff)
+                # Clean() reads staff_members from DB via self.pk — on a fresh insert
+                # that set is empty, so the overlap check is a no-op here. We already
+                # did the real overlap check above. Skip defensively to be explicit.
+                shift._skip_overlap_check = True
+                try:
+                    shift.save()
+                except django_exc.ValidationError as ve:
+                    msgs = ve.messages if hasattr(ve, 'messages') else [str(ve)]
+                    for staff in staff_list:
+                        skipped.append({
+                            'staff_id': str(staff.id),
+                            'staff_name': f"{(staff.first_name or '').strip()} {(staff.last_name or '').strip()}",
+                            'shift_date': str(shift_date),
+                            'reason': '; '.join(msgs),
+                        })
+                    continue
+                # Attach every role member as a team participant.
+                shift.staff_members.add(*staff_list)
                 try:
                     SchedulingService.ensure_shift_color(shift)
                 except Exception:
                     pass
                 created.append({
                     'id': str(shift.id),
-                    'staff_id': str(staff.id),
-                    'staff_name': f"{(staff.first_name or '').strip()} {(staff.last_name or '').strip()}",
                     'shift_date': str(shift_date),
+                    'staff_count': len(staff_list),
+                    'staff_ids': [str(s.id) for s in staff_list],
+                    'staff_names': [f"{(s.first_name or '').strip()} {(s.last_name or '').strip()}".strip() for s in staff_list],
+                    'mode': 'team',
                 })
 
+        # Fan out WhatsApp notifications to every affected staff member AFTER
+        # the atomic block commits — if we fired notifications inside the
+        # transaction and then hit a late ValidationError, waiters would get
+        # messages about shifts that were rolled back. notify_shift_assignment
+        # handles both team (staff_members M2M) and individual (staff FK) shapes
+        # internally. Failures are logged per-shift but never raised, so a
+        # misconfigured template or transient Twilio outage can't undo a
+        # successful schedule.
+        notified_staff_ids = set()
+        notify_failures = 0
+        for entry in created:
+            shift_id = entry.get('id')
+            if not shift_id:
+                continue
+            try:
+                shift_obj = AssignedShift.objects.select_related('schedule', 'schedule__restaurant').prefetch_related('staff_members', 'task_templates', 'tasks').get(id=shift_id)
+                SchedulingService.notify_shift_assignment(shift_obj, force_whatsapp=True)
+                # Track which staff were actually pinged (for the response)
+                if shift_obj.staff_id:
+                    notified_staff_ids.add(str(shift_obj.staff_id))
+                for m in shift_obj.staff_members.all():
+                    notified_staff_ids.add(str(m.id))
+            except Exception as e:
+                notify_failures += 1
+                logger.warning(f"Agent create shifts by role: WhatsApp notify failed for shift {shift_id}: {e}")
+
+        mode_label = 'individual' if individual_flag else 'team'
+        if individual_flag:
+            msg_parts = [f"Scheduled {len(created)} shift(s) for {staff_qs.count()} {role}(s) on {len(parsed_dates)} date(s)."]
+        else:
+            msg_parts = [
+                f"Created {len(created)} team shift(s) — {staff_qs.count()} {role}(s) assigned per day "
+                f"across {len(parsed_dates)} date(s)."
+            ]
+        if skipped:
+            msg_parts.append(f"{len(skipped)} slot(s) skipped due to late conflicts.")
+        if notified_staff_ids:
+            msg_parts.append(f"{len(notified_staff_ids)} staff member(s) notified on WhatsApp.")
+        if notify_failures:
+            msg_parts.append(f"{notify_failures} notification(s) failed to send (staff can still check the app).")
         return Response({
             'success': True,
+            'mode': mode_label,
             'created': len(created),
             'shifts': created,
-            'message': f'Scheduled {len(created)} shift(s) for {staff_qs.count()} {role}(s) on {len(parsed_dates)} date(s).'
+            'skipped': skipped,
+            'notified_staff_count': len(notified_staff_ids),
+            'notify_failures': notify_failures,
+            'message': ' '.join(msg_parts)
         }, status=status.HTTP_201_CREATED)
 
     except django_exc.ValidationError as ve:

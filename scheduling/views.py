@@ -2,7 +2,7 @@ from rest_framework import generics, permissions, status, viewsets
 from rest_framework.response import Response
 from rest_framework.decorators import action, api_view, permission_classes
 from django.utils import timezone
-from django.db.models import Q
+from django.db.models import Q, Prefetch
 from django.db import IntegrityError
 from django.core.exceptions import ValidationError
 from rest_framework.exceptions import ValidationError as DRFValidationError
@@ -14,6 +14,30 @@ from .models import (
     ShiftSwapRequest, TaskCategory, ShiftTask, Timesheet, TimesheetEntry,
     ShiftChecklistProgress, TaskVerificationRecord,
 )
+
+
+def _assigned_shift_eager():
+    """
+    Canonical eager-load for AssignedShift — the heaviest object in the
+    schedule graph. Every endpoint that returns shifts (weekly schedules,
+    timesheets, swaps, task lists) should pipe its shift queryset through
+    this so the serializer never triggers per-row queries for staff, schedule,
+    task templates, staff members, or tasks.
+    """
+    return (
+        AssignedShift.objects
+        .select_related('staff', 'staff__profile', 'schedule', 'schedule__restaurant')
+        .prefetch_related(
+            'task_templates',
+            'staff_members',
+            Prefetch(
+                'tasks',
+                queryset=ShiftTask.objects
+                .select_related('category', 'assigned_to', 'assigned_to__profile', 'created_by')
+                .order_by('-priority', 'created_at'),
+            ),
+        )
+    )
 from .serializers import (
     ScheduleTemplateSerializer,
     TemplateShiftSerializer,
@@ -83,7 +107,16 @@ class WeeklyScheduleListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def get_queryset(self):
-        return WeeklySchedule.objects.filter(restaurant=self.request.user.restaurant).order_by('-week_start')
+        # WeeklyScheduleSerializer expands every AssignedShift inline (with
+        # tasks, task templates, and staff members). Without eager loading,
+        # a 7-day view with 40 shifts = 200+ SQL queries.
+        return (
+            WeeklySchedule.objects
+            .filter(restaurant=self.request.user.restaurant)
+            .select_related('restaurant')
+            .prefetch_related(Prefetch('assigned_shifts', queryset=_assigned_shift_eager()))
+            .order_by('-week_start')
+        )
 
     def list(self, request, *args, **kwargs):
         import logging
@@ -122,16 +155,26 @@ class WeeklyScheduleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyA
     lookup_field = 'pk'
 
     def get_queryset(self):
-        return WeeklySchedule.objects.filter(restaurant=self.request.user.restaurant)
+        return (
+            WeeklySchedule.objects
+            .filter(restaurant=self.request.user.restaurant)
+            .select_related('restaurant')
+            .prefetch_related(Prefetch('assigned_shifts', queryset=_assigned_shift_eager()))
+        )
 
 
 class WeeklyScheduleViewSet(viewsets.ModelViewSet):
     """ViewSet for weekly schedules with analytics endpoints"""
     serializer_class = WeeklyScheduleSerializer
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
-    
+
     def get_queryset(self):
-        return WeeklySchedule.objects.filter(restaurant=self.request.user.restaurant)
+        return (
+            WeeklySchedule.objects
+            .filter(restaurant=self.request.user.restaurant)
+            .select_related('restaurant')
+            .prefetch_related(Prefetch('assigned_shifts', queryset=_assigned_shift_eager()))
+        )
     
     def list(self, request, *args, **kwargs):
         import logging
@@ -629,9 +672,24 @@ class ShiftSwapRequestListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        return ShiftSwapRequest.objects.filter(
-            Q(requester=user) | Q(receiver=user) | Q(receiver__isnull=True, shift_to_swap__schedule__restaurant=user.restaurant)
-        ).order_by('-created_at')
+        return (
+            ShiftSwapRequest.objects
+            .filter(
+                Q(requester=user)
+                | Q(receiver=user)
+                | Q(receiver__isnull=True, shift_to_swap__schedule__restaurant=user.restaurant)
+            )
+            .select_related(
+                'requester', 'requester__profile',
+                'receiver', 'receiver__profile',
+                'shift_to_swap', 'shift_to_swap__staff', 'shift_to_swap__schedule',
+            )
+            .prefetch_related(
+                'shift_to_swap__task_templates',
+                'shift_to_swap__staff_members',
+            )
+            .order_by('-created_at')
+        )
 
     def perform_create(self, serializer):
         shift_to_swap = serializer.validated_data['shift_to_swap']
@@ -705,23 +763,37 @@ class ShiftTaskViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        queryset = ShiftTask.objects.filter(shift__schedule__restaurant=user.restaurant)
-        
-        # Filter by assigned_to if query param is provided
+        queryset = (
+            ShiftTask.objects
+            .filter(shift__schedule__restaurant=user.restaurant)
+            .select_related(
+                'shift', 'shift__schedule', 'shift__staff',
+                'category',
+                'assigned_to', 'assigned_to__profile',
+                'created_by', 'parent_task',
+            )
+            .prefetch_related(
+                Prefetch(
+                    'subtasks',
+                    queryset=ShiftTask.objects.select_related(
+                        'category', 'assigned_to', 'assigned_to__profile', 'created_by',
+                    ),
+                ),
+            )
+        )
+
         assigned_to = self.request.query_params.get('assigned_to')
         if assigned_to:
             queryset = queryset.filter(assigned_to__id=assigned_to)
-        
-        # Filter by status
+
         status_param = self.request.query_params.get('status')
         if status_param:
             queryset = queryset.filter(status=status_param)
-        
-        # Filter by shift
+
         shift_id = self.request.query_params.get('shift_id')
         if shift_id:
             queryset = queryset.filter(shift__id=shift_id)
-        
+
         return queryset.order_by('-priority', 'created_at')
 
     def perform_create(self, serializer):
@@ -1097,13 +1169,32 @@ class TimesheetViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         user = self.request.user
-        # Staff can see only their own timesheets
-        if user.role == 'ADMIN' or user.role == 'SUPER_ADMIN' or user.role == 'MANAGER':
-            # Admins/managers can see all timesheets for their restaurant
-            return Timesheet.objects.filter(restaurant=user.restaurant).order_by('-end_date')
-        else:
-            # Staff can only see their own timesheets
-            return Timesheet.objects.filter(staff=user).order_by('-end_date')
+        # TimesheetSerializer nests every TimesheetEntry, which in turn nests
+        # the full AssignedShift (with its tasks, templates, and staff).
+        # Eager-load the entire graph so a timesheet with 30 entries fires
+        # a handful of queries instead of hundreds.
+        entries_qs = (
+            TimesheetEntry.objects
+            .select_related('shift', 'shift__schedule', 'shift__staff', 'shift__staff__profile')
+            .prefetch_related(
+                'shift__task_templates',
+                'shift__staff_members',
+                Prefetch(
+                    'shift__tasks',
+                    queryset=ShiftTask.objects.select_related(
+                        'category', 'assigned_to', 'assigned_to__profile', 'created_by',
+                    ),
+                ),
+            )
+        )
+        base = (
+            Timesheet.objects
+            .select_related('staff', 'staff__profile', 'approved_by', 'restaurant')
+            .prefetch_related(Prefetch('entries', queryset=entries_qs))
+        )
+        if user.role in ('ADMIN', 'SUPER_ADMIN', 'MANAGER'):
+            return base.filter(restaurant=user.restaurant).order_by('-end_date')
+        return base.filter(staff=user).order_by('-end_date')
     
     def perform_create(self, serializer):
         # Managers/admins create timesheets for staff
@@ -1251,13 +1342,27 @@ class TimesheetEntryViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     
     def get_queryset(self):
+        base = (
+            TimesheetEntry.objects
+            .select_related('timesheet', 'timesheet__staff', 'shift', 'shift__schedule', 'shift__staff')
+            .prefetch_related(
+                'shift__task_templates',
+                'shift__staff_members',
+                Prefetch(
+                    'shift__tasks',
+                    queryset=ShiftTask.objects.select_related(
+                        'category', 'assigned_to', 'assigned_to__profile', 'created_by',
+                    ),
+                ),
+            )
+        )
         timesheet_id = self.request.query_params.get('timesheet_id')
         if timesheet_id:
-            return TimesheetEntry.objects.filter(
+            return base.filter(
                 timesheet__id=timesheet_id,
-                timesheet__restaurant=self.request.user.restaurant
+                timesheet__restaurant=self.request.user.restaurant,
             )
-        return TimesheetEntry.objects.filter(timesheet__restaurant=self.request.user.restaurant)
+        return base.filter(timesheet__restaurant=self.request.user.restaurant)
     
     def perform_create(self, serializer):
         serializer.save()

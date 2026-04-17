@@ -87,9 +87,11 @@ def parse_guest_order_from_transcript(text: str) -> Dict[str, str]:
     name_patterns = [
         r"(?:customer|guest|client)\s+name\s+is\s*[: ]*\s*([^\n\.,]+)",
         r"(?:customer|guest|client)\s*:\s*([^\n\.,]+)",
+        r"(?:customer|guest|client)\s+(?:is|called|named)\s+([^\n\.,]+)",
         r"(?:nom|الاسم)\s*(?:du\s+client\s*)?[: ]*\s*([^\n\.,]+)",
         r"\bname\s+is\s+([^\n\.,]+)",
         r"\bfor\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s*(?:,|\.|phone|table|at\b|$)",
+        r"\bfor\s+([A-Z][a-z]{1,30})\s*(?:,|\.|phone|table|$)",
     ]
     for pat in name_patterns:
         m = re.search(pat, raw, flags=re.IGNORECASE)
@@ -103,22 +105,24 @@ def parse_guest_order_from_transcript(text: str) -> Dict[str, str]:
 
     # --- Table / location ---
     loc_patterns = [
-        r"\btable\s*(?:number)?\s*#?\s*([A-Za-z0-9][A-Za-z0-9\s\-]{0,40})",
-        r"\bbooth\s*#?\s*([A-Za-z0-9][A-Za-z0-9\s\-]{0,20})",
-        r"\b(?:at|@)\s+([A-Z][A-Za-z0-9]{2,24})\b",
-        r"\b(?:counter|bar)\s*#?\s*([A-Za-z0-9]{1,20})",
+        (r"\btable\s*(?:number)?\s*#?\s*([A-Za-z0-9][A-Za-z0-9\-]{0,39})", True, "Table "),
+        (r"\bbooth\s*#?\s*([A-Za-z0-9][A-Za-z0-9\-]{0,19})", True, "Booth "),
+        (r"\b(?:at|@)\s+([A-Z][A-Za-z0-9]{2,24})\b", False, ""),
+        (r"\b(?:counter|bar)\s*#?\s*([A-Za-z0-9]{1,20})", True, ""),
+        (r"\bdeliver(?:ed)?\s+to\s+([^\n\.,]{3,120})", False, ""),
     ]
-    for pat in loc_patterns:
-        m = re.search(pat, raw)
+    for pat, allow_single, prefix in loc_patterns:
+        m = re.search(pat, raw, flags=re.IGNORECASE)
         if m:
-            loc = m.group(1).strip()
-            if len(loc) >= 2:
-                out["table_or_location"] = loc[:120]
+            loc = m.group(1).strip(" ,.;")
+            # For table/booth/counter numbers, a single digit is valid ("Table 7").
+            min_len = 1 if allow_single else 2
+            if len(loc) >= min_len:
+                out["table_or_location"] = (prefix + loc)[:120]
                 working = working.replace(m.group(0), " ", 1)
                 break
 
-    # --- Dietary / allergens (line or phrase) ---
-    diet_bits = []
+    # --- Dietary / allergens (phrase-level so we don't swallow the whole transcript) ---
     diet_kw = (
         "allerg",
         "nut",
@@ -135,12 +139,35 @@ def parse_guest_order_from_transcript(text: str) -> Dict[str, str]:
         "shellfish",
         "sesame",
     )
-    for line in raw.splitlines():
-        low = line.lower().strip()
+    diet_bits: list[str] = []
+    # Split on newlines AND common clause separators (comma/semicolon) to pick phrases.
+    fragments = re.split(r"[\n;,]", raw)
+    for frag in fragments:
+        low = frag.lower().strip()
+        if not low:
+            continue
         if any(k in low for k in diet_kw):
-            diet_bits.append(line.strip())
+            diet_bits.append(frag.strip())
+    # Fallback: if still empty and the whole transcript mentions an allergen keyword,
+    # pick a narrow window around the first match.
+    if not diet_bits:
+        low_full = raw.lower()
+        for k in diet_kw:
+            idx = low_full.find(k)
+            if idx >= 0:
+                start = max(0, idx - 25)
+                end = min(len(raw), idx + 40)
+                diet_bits.append(raw[start:end].strip(" ,.;"))
+                break
     if diet_bits:
-        out["dietary_notes"] = "; ".join(diet_bits)[:2000]
+        seen: set[str] = set()
+        uniq = []
+        for b in diet_bits:
+            k = b.lower()
+            if k not in seen:
+                seen.add(k)
+                uniq.append(b)
+        out["dietary_notes"] = "; ".join(uniq)[:2000]
 
     # --- Special instructions ---
     spec_patterns = [
