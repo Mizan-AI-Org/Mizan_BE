@@ -728,14 +728,16 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
             return Response(serializer.data)
         
         elif request.method == 'POST':
-            # Update geolocation
+            # Legacy single-location endpoint — forwards writes to the tenant's
+            # PRIMARY BusinessLocation. The location model's save() mirrors the
+            # fields back onto Restaurant.* so old readers (reports, agent tools)
+            # still see current values.
             latitude = request.data.get('latitude')
             longitude = request.data.get('longitude')
-            radius = request.data.get('radius', 100)  # Default to 100m (max in 5-100m range)
+            radius = request.data.get('radius', 100)
             geofence_enabled = request.data.get('geofence_enabled', True)
             geofence_polygon = request.data.get('geofence_polygon', [])
 
-            # Permanent lock: once coordinates are set, only SUPER_ADMIN can change them
             if (
                 restaurant.latitude is not None and restaurant.longitude is not None
                 and request.user.role != 'SUPER_ADMIN'
@@ -748,12 +750,34 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
                     status=status.HTTP_403_FORBIDDEN
                 )
 
-            restaurant.latitude = latitude
-            restaurant.longitude = longitude
-            restaurant.radius = radius
-            restaurant.geofence_enabled = geofence_enabled
-            restaurant.geofence_polygon = geofence_polygon
-            restaurant.save()
+            from .models import BusinessLocation
+
+            primary = BusinessLocation.objects.filter(
+                restaurant=restaurant, is_primary=True
+            ).first()
+            if primary is None:
+                # First-ever configuration for this tenant (migration missed
+                # them, or a freshly created workspace): create the primary
+                # row from the payload.
+                primary = BusinessLocation.objects.create(
+                    restaurant=restaurant,
+                    name=(restaurant.name or 'Main') + ' - Main',
+                    address=restaurant.address or '',
+                    latitude=latitude,
+                    longitude=longitude,
+                    radius=radius,
+                    geofence_enabled=geofence_enabled,
+                    geofence_polygon=geofence_polygon or [],
+                    is_primary=True,
+                    is_active=True,
+                )
+            else:
+                primary.latitude = latitude
+                primary.longitude = longitude
+                primary.radius = radius
+                primary.geofence_enabled = geofence_enabled
+                primary.geofence_polygon = geofence_polygon or []
+                primary.save()
 
             serializer = RestaurantGeolocationSerializer(restaurant)
             return Response(serializer.data)

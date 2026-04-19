@@ -108,6 +108,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',    # REQUIRED for admin
     'django.contrib.messages.middleware.MessageMiddleware',       # REQUIRED for admin
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'core.middleware.AuditLoggingMiddleware',                     # Persists "who did what"
 ]
 
 CORS_ALLOW_CREDENTIALS = True

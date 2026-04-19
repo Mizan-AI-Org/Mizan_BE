@@ -1,9 +1,34 @@
 from rest_framework import serializers
 from .models import (
-    CustomUser, Restaurant, UserInvitation, StaffProfile, StaffInvitation, AuditLog
+    CustomUser, Restaurant, UserInvitation, StaffProfile, StaffInvitation, AuditLog,
+    BusinessLocation,
 )
 from django.contrib.auth import authenticate
 import sys
+
+
+def _location_brief(loc):
+    """Minimal nested representation for a BusinessLocation in list payloads."""
+    if loc is None:
+        return None
+    return {
+        'id': str(loc.id),
+        'name': loc.name,
+        'is_primary': bool(getattr(loc, 'is_primary', False)),
+    }
+
+
+def _validate_locations_same_tenant(locations, restaurant):
+    """Ensure every BusinessLocation belongs to ``restaurant``. Raises
+    ``serializers.ValidationError`` on the first offender. Used by the staff
+    serializers below to prevent cross-tenant assignment."""
+    if not restaurant or not locations:
+        return
+    for loc in locations:
+        if loc.restaurant_id != restaurant.id:
+            raise serializers.ValidationError(
+                f"Location '{loc.name}' does not belong to this restaurant."
+            )
 
 class StaffProfileSerializer(serializers.ModelSerializer):
     class Meta:
@@ -28,13 +53,41 @@ class CustomUserSerializer(serializers.ModelSerializer):
     email = serializers.EmailField(required=False)
     role_display = serializers.SerializerMethodField(read_only=True)
 
+    primary_location = serializers.PrimaryKeyRelatedField(
+        queryset=BusinessLocation.objects.all(), required=False, allow_null=True,
+    )
+    primary_location_data = serializers.SerializerMethodField(read_only=True)
+    allowed_locations = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=BusinessLocation.objects.all(), required=False,
+    )
+    allowed_locations_data = serializers.SerializerMethodField(read_only=True)
+    managed_locations = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=BusinessLocation.objects.all(), required=False,
+    )
+    managed_locations_data = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = CustomUser
         fields = [
             'id', 'email', 'first_name', 'last_name', 'role', 'role_display', 'custom_role_label',
             'phone', 'restaurant', 'restaurant_name', 'is_verified', 'created_at', 'updated_at', 'profile',
+            'primary_location', 'primary_location_data',
+            'allowed_locations', 'allowed_locations_data',
+            'managed_locations', 'managed_locations_data',
         ]
-        read_only_fields = ['id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name', 'role_display']
+        read_only_fields = [
+            'id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name', 'role_display',
+            'primary_location_data', 'allowed_locations_data', 'managed_locations_data',
+        ]
+
+    def get_primary_location_data(self, obj):
+        return _location_brief(obj.primary_location)
+
+    def get_allowed_locations_data(self, obj):
+        return [_location_brief(l) for l in obj.allowed_locations.all()]
+
+    def get_managed_locations_data(self, obj):
+        return [_location_brief(l) for l in obj.managed_locations.all()]
 
     def get_role_display(self, obj):
         if obj.role == 'CUSTOM' and (getattr(obj, 'custom_role_label', '') or '').strip():
@@ -56,21 +109,38 @@ class CustomUserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("A user with this email address already exists.")
         return value
 
+    def validate(self, attrs):
+        restaurant = attrs.get('restaurant') or getattr(self.instance, 'restaurant', None)
+        primary = attrs.get('primary_location')
+        if primary is not None:
+            _validate_locations_same_tenant([primary], restaurant)
+        _validate_locations_same_tenant(attrs.get('allowed_locations') or [], restaurant)
+        _validate_locations_same_tenant(attrs.get('managed_locations') or [], restaurant)
+        return super().validate(attrs)
+
     def update(self, instance, validated_data):
         profile_data = validated_data.pop('profile', None)
-        
+        # M2M fields need to be handled post-save.
+        allowed_locations = validated_data.pop('allowed_locations', None)
+        managed_locations = validated_data.pop('managed_locations', None)
+
         # Update CustomUser fields
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
         instance.save()
-        
+
+        if allowed_locations is not None:
+            instance.allowed_locations.set(allowed_locations)
+        if managed_locations is not None:
+            instance.managed_locations.set(managed_locations)
+
         # Update or create StaffProfile
         if profile_data:
             profile, created = StaffProfile.objects.get_or_create(user=instance)
             profile_serializer = StaffProfileSerializer(profile, data=profile_data, partial=True)
             if profile_serializer.is_valid(raise_exception=True):
                 profile_serializer.save()
-        
+
         return instance
 
 
@@ -169,21 +239,56 @@ class UserSerializer(serializers.ModelSerializer):
     restaurant_data = RestaurantSerializer(source='restaurant', read_only=True)
     profile = StaffProfileSerializer(read_only=True)
 
+    primary_location = serializers.PrimaryKeyRelatedField(
+        queryset=BusinessLocation.objects.all(), required=False, allow_null=True,
+    )
+    primary_location_data = serializers.SerializerMethodField(read_only=True)
+    allowed_locations = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=BusinessLocation.objects.all(), required=False,
+    )
+    allowed_locations_data = serializers.SerializerMethodField(read_only=True)
+    managed_locations = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=BusinessLocation.objects.all(), required=False,
+    )
+    managed_locations_data = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = CustomUser
         fields = [
             'id', 'email', 'first_name', 'last_name', 'role', 'role_display', 'custom_role_label',
             'phone', 'restaurant', 'restaurant_name', 'restaurant_data', 'is_verified', 'is_active',
             'created_at', 'updated_at', 'profile', 'preferred_language',
+            'primary_location', 'primary_location_data',
+            'allowed_locations', 'allowed_locations_data',
+            'managed_locations', 'managed_locations_data',
         ]
         read_only_fields = [
             'id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name', 'role_display', 'restaurant_data',
+            'primary_location_data', 'allowed_locations_data', 'managed_locations_data',
         ]
 
     def get_role_display(self, obj):
         if obj.role == 'CUSTOM' and (getattr(obj, 'custom_role_label', '') or '').strip():
             return obj.custom_role_label.strip()
         return obj.get_role_display()
+
+    def get_primary_location_data(self, obj):
+        return _location_brief(obj.primary_location)
+
+    def get_allowed_locations_data(self, obj):
+        return [_location_brief(l) for l in obj.allowed_locations.all()]
+
+    def get_managed_locations_data(self, obj):
+        return [_location_brief(l) for l in obj.managed_locations.all()]
+
+    def validate(self, attrs):
+        restaurant = attrs.get('restaurant') or getattr(self.instance, 'restaurant', None)
+        primary = attrs.get('primary_location')
+        if primary is not None:
+            _validate_locations_same_tenant([primary], restaurant)
+        _validate_locations_same_tenant(attrs.get('allowed_locations') or [], restaurant)
+        _validate_locations_same_tenant(attrs.get('managed_locations') or [], restaurant)
+        return super().validate(attrs)
 
 
 class BulkInviteSerializer(serializers.Serializer):
@@ -231,15 +336,52 @@ class StaffSerializer(serializers.ModelSerializer):
     profile = StaffProfileSerializer(read_only=True)
     role_display = serializers.SerializerMethodField(read_only=True)
 
+    primary_location = serializers.PrimaryKeyRelatedField(
+        queryset=BusinessLocation.objects.all(), required=False, allow_null=True,
+    )
+    primary_location_data = serializers.SerializerMethodField(read_only=True)
+    allowed_locations = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=BusinessLocation.objects.all(), required=False,
+    )
+    allowed_locations_data = serializers.SerializerMethodField(read_only=True)
+    managed_locations = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=BusinessLocation.objects.all(), required=False,
+    )
+    managed_locations_data = serializers.SerializerMethodField(read_only=True)
+
     class Meta:
         model = CustomUser
         fields = [
             'id', 'email', 'first_name', 'last_name', 'role', 'role_display', 'custom_role_label',
             'phone', 'is_active', 'created_at', 'updated_at', 'profile',
+            'primary_location', 'primary_location_data',
+            'allowed_locations', 'allowed_locations_data',
+            'managed_locations', 'managed_locations_data',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'role_display']
+        read_only_fields = [
+            'id', 'created_at', 'updated_at', 'role_display',
+            'primary_location_data', 'allowed_locations_data', 'managed_locations_data',
+        ]
 
     def get_role_display(self, obj):
         if obj.role == 'CUSTOM' and (getattr(obj, 'custom_role_label', '') or '').strip():
             return obj.custom_role_label.strip()
         return obj.get_role_display()
+
+    def get_primary_location_data(self, obj):
+        return _location_brief(obj.primary_location)
+
+    def get_allowed_locations_data(self, obj):
+        return [_location_brief(l) for l in obj.allowed_locations.all()]
+
+    def get_managed_locations_data(self, obj):
+        return [_location_brief(l) for l in obj.managed_locations.all()]
+
+    def validate(self, attrs):
+        restaurant = getattr(self.instance, 'restaurant', None)
+        primary = attrs.get('primary_location')
+        if primary is not None:
+            _validate_locations_same_tenant([primary], restaurant)
+        _validate_locations_same_tenant(attrs.get('allowed_locations') or [], restaurant)
+        _validate_locations_same_tenant(attrs.get('managed_locations') or [], restaurant)
+        return super().validate(attrs)

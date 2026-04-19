@@ -29,12 +29,18 @@ def get_staff_hourly_rate(user):
     return 15.0
 
 
-def labor_cost_from_real_data(restaurant, start_date, end_date):
+def labor_cost_from_real_data(restaurant, start_date, end_date, location=None):
     """
     Compute labor cost from timesheets (preferred) and from clock events + hourly rate.
     Returns: total_hours, total_cost, by_staff, by_role, currency.
+
+    When ``location`` (a ``BusinessLocation`` instance or UUID) is given,
+    scope all sources to that branch: timesheets are filtered by the
+    assigned staff member's ``primary_location`` (their home branch for
+    payroll purposes); shifts are filtered by ``AssignedShift.location``.
     """
     currency = getattr(restaurant, 'currency', 'USD') or 'USD'
+    location_id = getattr(location, 'id', None) or (location if isinstance(location, (str, int)) else None)
     # 1) From Timesheets (approved/submitted/paid)
     timesheets = Timesheet.objects.filter(
         restaurant=restaurant,
@@ -42,6 +48,8 @@ def labor_cost_from_real_data(restaurant, start_date, end_date):
         end_date__gte=start_date,
         status__in=['SUBMITTED', 'APPROVED', 'PAID']
     )
+    if location_id:
+        timesheets = timesheets.filter(staff__primary_location_id=location_id)
     ts_hours = timesheets.aggregate(Sum('total_hours'))['total_hours__sum'] or Decimal('0')
     ts_earnings = timesheets.aggregate(Sum('total_earnings'))['total_earnings__sum'] or Decimal('0')
     total_hours = float(ts_hours)
@@ -55,6 +63,8 @@ def labor_cost_from_real_data(restaurant, start_date, end_date):
             shift_date__lte=end_date,
             status__in=['COMPLETED', 'CONFIRMED', 'IN_PROGRESS']
         ).select_related('staff')
+        if location_id:
+            shifts = shifts.filter(location_id=location_id)
         by_staff = {}
         by_role = {}
         for s in shifts:
@@ -124,20 +134,31 @@ def labor_budget_for_period(restaurant, start_date, end_date):
     return None
 
 
-def planned_vs_actual_hours(restaurant, start_date, end_date):
+def planned_vs_actual_hours(restaurant, start_date, end_date, location=None):
     """
     Planned hours from AssignedShift (scheduled), actual from ClockEvent (clock in/out).
     Returns: summary + list of staff with planned_hours, actual_hours, variance, late_count, no_show_count.
+
+    When ``location`` is given (BusinessLocation or UUID), scope the report
+    to that branch: planned hours come from ``AssignedShift.location``,
+    actual hours come from ``ClockEvent.location``. Staff without any
+    activity at the selected branch are excluded from the "all active
+    staff" fallback so the table isn't padded with zero-hour strangers.
     """
     from collections import defaultdict
+    location_id = getattr(location, 'id', None) or (location if isinstance(location, (str, int)) else None)
+
     planned_by_staff = defaultdict(float)
     shifts_by_staff = defaultdict(list)
-    for s in AssignedShift.objects.filter(
+    shifts_qs = AssignedShift.objects.filter(
         schedule__restaurant=restaurant,
         shift_date__gte=start_date,
         shift_date__lte=end_date,
         status__in=['SCHEDULED', 'CONFIRMED', 'COMPLETED', 'IN_PROGRESS']
-    ).select_related('staff'):
+    ).select_related('staff')
+    if location_id:
+        shifts_qs = shifts_qs.filter(location_id=location_id)
+    for s in shifts_qs:
         if not s.staff:
             continue
         hrs = getattr(s, 'actual_hours', 0) or 0
@@ -148,11 +169,14 @@ def planned_vs_actual_hours(restaurant, start_date, end_date):
 
     # Actual from clock events: pair in/out per day
     actual_by_staff = defaultdict(float)
-    events = ClockEvent.objects.filter(
+    events_qs = ClockEvent.objects.filter(
         staff__restaurant=restaurant,
         timestamp__date__gte=start_date,
         timestamp__date__lte=end_date
-    ).order_by('staff_id', 'timestamp').values('staff_id', 'event_type', 'timestamp')
+    )
+    if location_id:
+        events_qs = events_qs.filter(location_id=location_id)
+    events = events_qs.order_by('staff_id', 'timestamp').values('staff_id', 'event_type', 'timestamp')
     current_in = {}
     for e in events:
         sid = str(e['staff_id'])
@@ -173,12 +197,20 @@ def planned_vs_actual_hours(restaurant, start_date, end_date):
 
     result = []
     all_staff_ids = set(planned_by_staff.keys()) | set(actual_by_staff.keys())
-    # Include all active restaurant staff so the report lists everyone (paginated on frontend)
+    # Include all active restaurant staff so the report lists everyone (paginated on frontend).
+    # When branch-scoped, only include staff whose home branch is the selected
+    # branch (or who are explicitly allowed to work there) — otherwise we
+    # pad the report with unrelated staff from other branches.
     from accounts.models import CustomUser
     active_staff = CustomUser.objects.filter(
         restaurant=restaurant, is_active=True
-    ).exclude(role='SUPER_ADMIN').values_list('id', flat=True)
-    for uid in active_staff:
+    ).exclude(role='SUPER_ADMIN')
+    if location_id:
+        from django.db.models import Q as _Q
+        active_staff = active_staff.filter(
+            _Q(primary_location_id=location_id) | _Q(allowed_locations__id=location_id)
+        ).distinct()
+    for uid in active_staff.values_list('id', flat=True):
         all_staff_ids.add(str(uid))
     total_planned = 0
     total_actual = 0
@@ -243,9 +275,13 @@ def planned_vs_actual_hours(restaurant, start_date, end_date):
     }
 
 
-def overtime_and_compliance(restaurant, start_date, end_date):
+def overtime_and_compliance(restaurant, start_date, end_date, location=None):
     """
     Detect overtime (hours > policy.overtime_after_hours_per_week) and return compliance summary.
+
+    When ``location`` is provided, restrict timesheets to staff whose home
+    branch (``primary_location``) is the given branch so the report
+    reflects per-branch payroll exposure.
     """
     policy = None
     try:
@@ -255,15 +291,20 @@ def overtime_and_compliance(restaurant, start_date, end_date):
     max_week = float(getattr(policy, 'overtime_after_hours_per_week', None) or 40)
     max_day = float(getattr(policy, 'max_hours_per_day', None) or 8) if policy else 8
 
+    location_id = getattr(location, 'id', None) or (location if isinstance(location, (str, int)) else None)
+
     # Weekly hours per staff from clock or timesheet
     from collections import defaultdict
     weekly_hours = defaultdict(lambda: defaultdict(float))
-    for ts in Timesheet.objects.filter(
+    ts_qs = Timesheet.objects.filter(
         restaurant=restaurant,
         start_date__lte=end_date,
         end_date__gte=start_date,
         status__in=['SUBMITTED', 'APPROVED', 'PAID']
-    ):
+    )
+    if location_id:
+        ts_qs = ts_qs.filter(staff__primary_location_id=location_id)
+    for ts in ts_qs:
         sid = str(ts.staff_id)
         w = ts.start_date.isocalendar()[1]
         weekly_hours[sid][w] += float(ts.total_hours)

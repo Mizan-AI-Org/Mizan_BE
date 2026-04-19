@@ -77,6 +77,7 @@ class Table(models.Model):
         ('AVAILABLE', 'Available'),
         ('OCCUPIED', 'Occupied'),
         ('RESERVED', 'Reserved'),
+        ('NEEDS_CLEANING', 'Needs Cleaning'),
         ('MAINTENANCE', 'Maintenance'),
     )
     
