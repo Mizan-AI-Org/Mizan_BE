@@ -33,30 +33,103 @@ def is_within_geofence(restaurant_lat, restaurant_lon, user_lat, user_lon, radiu
 
 def validate_clockin_location(restaurant, user_lat, user_lon):
     """
-    Comprehensive location validation for clock-in
+    Comprehensive location validation for clock-in.
+
+    Evaluates ALL active BusinessLocation rows for the tenant (multi-site
+    chains) and passes if the user is inside any one of them. Falls back to
+    the legacy Restaurant.* columns when no BusinessLocation rows exist (e.g.
+    immediately after deploy on a DB that hasn't been migrated yet).
     """
-    if not restaurant.latitude or not restaurant.longitude:
-        # If restaurant location not set, allow clock-in (for development)
-        return True, "Restaurant location not configured"
-    
-    is_within = is_within_geofence(
-        restaurant.latitude,
-        restaurant.longitude,
-        user_lat,
-        user_lon,
-        float(restaurant.radius) if restaurant.radius else 100
-    )
-    
-    if is_within:
+    match, distance, nearest = find_matching_location(restaurant, user_lat, user_lon)
+    if match is not None:
         return True, "Location verified"
-    else:
-        distance = calculate_distance(
-            restaurant.latitude,
-            restaurant.longitude,
-            user_lat,
-            user_lon
+
+    # No site defined at all — keep the legacy permissive behaviour so we
+    # don't brick tenants that haven't configured anything yet.
+    if nearest is None and (not restaurant.latitude or not restaurant.longitude):
+        return True, "Restaurant location not configured"
+
+    site_label = nearest.name if nearest is not None else 'restaurant'
+    return False, f"Outside geofence. {distance:.0f}m from {site_label}"
+
+
+def find_matching_location(restaurant, user_lat, user_lon):
+    """
+    Evaluate the user's coordinates against every active BusinessLocation on
+    the tenant. Returns a tuple (match, distance, nearest):
+
+      - match:    the BusinessLocation the user is currently inside, or None
+      - distance: distance in metres (to match if hit, else to nearest site)
+      - nearest:  the nearest active BusinessLocation by distance, or None if
+                  the tenant has no configured locations at all
+
+    The caller typically only cares about `match` ("can this person clock in?")
+    but the other two are handy for error messages and analytics.
+    """
+    try:
+        user_lat_f = float(user_lat)
+        user_lon_f = float(user_lon)
+    except (TypeError, ValueError):
+        return None, None, None
+
+    # Local import to keep utils.py importable during app init (no model
+    # registry required at module load).
+    from .models import BusinessLocation
+
+    locations = list(
+        BusinessLocation.objects.filter(restaurant=restaurant, is_active=True)
+    )
+
+    # Legacy fallback: older tenants might not have a BusinessLocation row
+    # yet (e.g. tests, or a restaurant created via an old code path). Treat
+    # Restaurant.* as a single ad-hoc site.
+    if not locations:
+        if restaurant.latitude is None or restaurant.longitude is None:
+            return None, None, None
+        dist = calculate_distance(
+            float(restaurant.latitude), float(restaurant.longitude),
+            user_lat_f, user_lon_f,
         )
-        return False, f"Outside geofence. {distance:.0f}m from restaurant"
+        radius = float(restaurant.radius) if restaurant.radius else 100
+        radius = max(5.0, min(100.0, radius))
+
+        # Build a transient proxy so callers can still read .name / .id.
+        class _LegacySite:
+            id = None
+            name = 'Main'
+            latitude = restaurant.latitude
+            longitude = restaurant.longitude
+            radius = radius
+            geofence_enabled = bool(restaurant.geofence_enabled)
+        nearest = _LegacySite()
+        if dist <= radius and nearest.geofence_enabled:
+            return nearest, dist, nearest
+        return None, dist, nearest
+
+    best_match = None
+    best_match_dist = None
+    nearest = None
+    nearest_dist = None
+
+    for loc in locations:
+        if loc.latitude is None or loc.longitude is None:
+            continue
+        dist = calculate_distance(
+            float(loc.latitude), float(loc.longitude),
+            user_lat_f, user_lon_f,
+        )
+        if nearest is None or dist < nearest_dist:
+            nearest, nearest_dist = loc, dist
+        if not loc.geofence_enabled:
+            continue
+        radius = float(loc.radius) if loc.radius else 100
+        radius = max(5.0, min(100.0, radius))
+        if dist <= radius and (best_match_dist is None or dist < best_match_dist):
+            best_match, best_match_dist = loc, dist
+
+    if best_match is not None:
+        return best_match, best_match_dist, best_match
+    return None, nearest_dist, nearest
     
 
 def send_whatsapp(phone, message, template_name, language_code="en_US"):

@@ -22,8 +22,66 @@ from django.conf import settings
 from .models import (
     Restaurant, CustomUser, StaffProfile,
     Role, Permission, RolePermission, UserInvitation,
-    UserRole, AuditLog, StaffActivationRecord,
+    UserRole, AuditLog, StaffActivationRecord, BusinessLocation,
 )
+
+
+def apply_invitation_locations(user, invitation):
+    """Apply branch assignments from ``invitation.extra_data`` to a
+    freshly-created user. Falls back to the restaurant's primary
+    ``BusinessLocation`` when the invitation did not specify one.
+
+    Silently skips unknown or cross-tenant IDs so that callers don't need
+    to pre-validate. Expected ``extra_data`` keys:
+        - ``primary_location``: str (UUID)
+        - ``allowed_locations``: list[str]
+        - ``managed_locations``: list[str]
+    """
+    extra = getattr(invitation, 'extra_data', None) or {}
+    if not getattr(invitation, 'restaurant_id', None):
+        return
+
+    tenant_locs = BusinessLocation.objects.filter(restaurant_id=invitation.restaurant_id)
+
+    primary_id = extra.get('primary_location')
+    primary = None
+    if primary_id:
+        primary = tenant_locs.filter(id=primary_id).first()
+    if primary is None:
+        # Default every new staff to the tenant's primary branch so reports
+        # and shift scheduling have a meaningful home location.
+        primary = tenant_locs.filter(is_primary=True, is_active=True).first()
+    if primary is not None:
+        user.primary_location = primary
+        user.save(update_fields=['primary_location'])
+
+    allowed_ids = extra.get('allowed_locations') or []
+    if allowed_ids:
+        allowed_qs = tenant_locs.filter(id__in=allowed_ids)
+        if allowed_qs.exists():
+            user.allowed_locations.set(allowed_qs)
+
+    managed_ids = extra.get('managed_locations') or []
+    if managed_ids:
+        managed_qs = tenant_locs.filter(id__in=managed_ids)
+        if managed_qs.exists():
+            user.managed_locations.set(managed_qs)
+
+
+def apply_default_primary_location(user):
+    """For user-creation paths that don't go through an invitation (e.g. the
+    WhatsApp one-tap activation flow), default the new user's
+    ``primary_location`` to the tenant's primary ``BusinessLocation``."""
+    if not getattr(user, 'restaurant_id', None) or user.primary_location_id:
+        return
+    primary = (
+        BusinessLocation.objects
+        .filter(restaurant_id=user.restaurant_id, is_primary=True, is_active=True)
+        .first()
+    )
+    if primary is not None:
+        user.primary_location = primary
+        user.save(update_fields=['primary_location'])
 from .custom_staff_roles import validate_custom_invite
 from .tasks import send_whatsapp_invitation_task
 from .business_vertical import ALLOWED_BUSINESS_VERTICALS
@@ -373,6 +431,8 @@ def try_activate_staff_on_inbound_message(phone_digits):
         # Ensure StaffProfile exists (used elsewhere)
         if not getattr(user, "profile", None):
             StaffProfile.objects.get_or_create(user=user, defaults={})
+        # Default new WhatsApp-activated staff to the restaurant's primary branch.
+        apply_default_primary_location(user)
         # Log activation (timestamp, phone, batch_id)
         try:
             AuditLog.create_log(
@@ -1068,6 +1128,10 @@ class UserManagementService:
                 if phone:
                     user.phone = phone
                     user.save(update_fields=['phone'])
+
+                # Apply branch assignments from the invitation (defaults to
+                # the tenant's primary BusinessLocation when unspecified).
+                apply_invitation_locations(user, invitation)
 
                 # Create/update staff profile with department
                 department = (invitation.extra_data or {}).get('department')

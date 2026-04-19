@@ -90,6 +90,16 @@ class AssignedShift(models.Model):
     # Location and workspace details
     workspace_location = models.CharField(max_length=255, blank=True, null=True, help_text="Specific workspace/station assignment")
     department = models.CharField(max_length=100, blank=True, null=True, help_text="Department assignment")
+    # Branch this shift is scheduled at (for multi-location chains). Nullable
+    # for backward compatibility with single-site tenants that don't set a
+    # branch on their shifts.
+    location = models.ForeignKey(
+        'accounts.BusinessLocation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_shifts',
+    )
     
     # Compliance and safety
     safety_briefing_required = models.BooleanField(default=False)

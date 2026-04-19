@@ -752,6 +752,44 @@ def _normalize_uuid(val):
         return None
 
 
+def _resolve_business_location(restaurant, location_id=None, location_name=None):
+    """Resolve an active BusinessLocation inside ``restaurant``.
+
+    Accepts either a UUID (string, or dict containing ``id``) or a human
+    name. Name matching is tiered: iexact → istartswith → icontains. Returns
+    ``None`` when nothing matches so callers can fall back to the staff
+    member's primary_location via ``effective_shift_location``.
+    """
+    if restaurant is None:
+        return None
+    from accounts.models import BusinessLocation
+
+    if location_id:
+        raw = location_id
+        if isinstance(raw, dict):
+            raw = raw.get('id') or raw.get('location_id') or raw.get('uuid')
+        loc_id = _normalize_uuid(str(raw) if raw else '')
+        if loc_id:
+            try:
+                return BusinessLocation.objects.get(
+                    id=loc_id, restaurant=restaurant, is_active=True
+                )
+            except BusinessLocation.DoesNotExist:
+                pass
+
+    if location_name:
+        name = str(location_name).strip()
+        if name:
+            qs = BusinessLocation.objects.filter(
+                restaurant=restaurant, is_active=True
+            )
+            for lookup in ('iexact', 'istartswith', 'icontains'):
+                found = qs.filter(**{f'name__{lookup}': name}).first()
+                if found:
+                    return found
+    return None
+
+
 @csrf_exempt
 @api_view(['POST'])
 @authentication_classes([])  # Bypass JWT auth
@@ -921,6 +959,24 @@ def agent_create_shift(request):
         # Optional metadata to improve titles/context
         department = data.get('department') or None
         workspace_location = data.get('workspace_location') or data.get('workspaceLocation') or None
+
+        # Multi-location branch resolution. Miya can pass either `location_id`
+        # (UUID) or `location_name` (human name). When neither is given, fall
+        # back to the staff member's primary_location so chains always tag a
+        # branch on the shift — the serializer does this for the REST path
+        # but agent code builds the model directly.
+        branch_location_id_raw = _get_from_any('location_id', 'locationId', 'branch_id', 'branchId')
+        branch_location_name_raw = _get_from_any('location_name', 'locationName', 'branch_name', 'branchName', 'location')
+        branch = _resolve_business_location(
+            restaurant,
+            location_id=branch_location_id_raw,
+            location_name=branch_location_name_raw,
+        )
+        if branch is None and staff is not None:
+            try:
+                branch = staff.effective_shift_location()
+            except Exception:
+                branch = None
         
         # Get or create weekly schedule for this date
         # Calculate week start (Monday)
@@ -1040,6 +1096,7 @@ def agent_create_shift(request):
             preparation_instructions=shift_notes,
             department=department or None,
             workspace_location=workspace_location or None,
+            location=branch,
             status='SCHEDULED',
             created_by=acting_user if isinstance(acting_user, CustomUser) else None,
             last_modified_by=acting_user if isinstance(acting_user, CustomUser) else None,
@@ -1313,6 +1370,22 @@ def agent_create_shifts_by_role(request):
                 'error': 'Invalid start_time or end_time. Use HH:MM format.'
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        # Optional branch resolution for multi-location tenants. When supplied,
+        # every created shift is tagged with this branch. When omitted, team
+        # shifts fall back to the tenant's primary BusinessLocation and
+        # individual shifts fall back to each staff member's primary_location.
+        branch_location_id_raw = data.get('location_id') or payload.get('location_id') or data.get('branch_id') or payload.get('branch_id')
+        branch_location_name_raw = (
+            data.get('location_name') or payload.get('location_name')
+            or data.get('branch_name') or payload.get('branch_name')
+            or data.get('location') or payload.get('location')
+        )
+        explicit_branch = _resolve_business_location(
+            restaurant,
+            location_id=branch_location_id_raw,
+            location_name=branch_location_name_raw,
+        )
+
         # Respect explicit confirmation from the manager (via Miya): force=true lets
         # the bulk path proceed even when overlaps are detected. Without it, we
         # pre-flight every (staff, date) and short-circuit with a 409 so Miya can
@@ -1391,6 +1464,12 @@ def agent_create_shifts_by_role(request):
                 if individual_flag:
                     # Back-compat path: one AssignedShift per staff per date.
                     for staff in staff_list:
+                        per_staff_branch = explicit_branch
+                        if per_staff_branch is None:
+                            try:
+                                per_staff_branch = staff.effective_shift_location()
+                            except Exception:
+                                per_staff_branch = None
                         shift = AssignedShift(
                             schedule=schedule,
                             staff=staff,
@@ -1399,6 +1478,7 @@ def agent_create_shifts_by_role(request):
                             end_time=end_dt,
                             role=role,
                             notes=f"{role} shift",
+                            location=per_staff_branch,
                             status='SCHEDULED',
                             created_by=acting_user,
                             last_modified_by=acting_user,
@@ -1433,6 +1513,16 @@ def agent_create_shifts_by_role(request):
                 # Team-shift path (default): one consolidated shift per (date, time).
                 # Leave legacy `staff` FK as NULL so Miya never signals "owned by one
                 # person" — this is a team card. All members go on `staff_members`.
+                team_branch = explicit_branch
+                if team_branch is None:
+                    # No explicit branch: for a team card the sensible fallback
+                    # is the tenant's primary BusinessLocation. Individual staff
+                    # primary_locations may differ across the team so we don't
+                    # try to pick one here.
+                    team_branch = (
+                        restaurant.locations.filter(is_primary=True, is_active=True).first()
+                        if hasattr(restaurant, 'locations') else None
+                    )
                 shift = AssignedShift(
                     schedule=schedule,
                     staff=None,
@@ -1441,6 +1531,7 @@ def agent_create_shifts_by_role(request):
                     end_time=end_dt,
                     role=role,
                     notes=f"{role} team shift",
+                    location=team_branch,
                     status='SCHEDULED',
                     created_by=acting_user,
                     last_modified_by=acting_user,

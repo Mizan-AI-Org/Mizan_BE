@@ -11,6 +11,7 @@ from .views import (
     redirect_to_wa_activation,
 )
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
+from .views_locations import BusinessLocationViewSet
 from .views_eatnow_webhook import eatnow_webhook
 from .views_invitations import InvitationViewSet, UserManagementViewSet
 from .views_agent import (
@@ -37,10 +38,16 @@ from .views_rbac import (
     RolePermissionDetailView,
     EffectivePermissionsView,
 )
+from .views_onboarding import (
+    OnboardingSeedView,
+    OnboardingStatusView,
+    audit_log_list,
+)
 
 router = DefaultRouter()
 router.register(r'settings', RestaurantSettingsViewSet, basename='settings')
 router.register(r'location', StaffLocationViewSet, basename='location')
+router.register(r'locations', BusinessLocationViewSet, basename='locations')
 router.register(r'invitations', InvitationViewSet, basename='invitations')
 router.register(r'users', UserManagementViewSet, basename='users')
 
@@ -96,6 +103,11 @@ urlpatterns = [
     path('agent/hr-lifecycle/', agent_hr_lifecycle, name='agent_hr_lifecycle'),
     path('agent/grant-role/', agent_grant_role, name='agent_grant_role'),
     path('agent/staff-documents/', agent_staff_documents, name='agent_staff_documents'),
+
+    # Onboarding (first-run wizard) + Activity log
+    path('onboarding/', OnboardingStatusView.as_view(), name='onboarding_status'),
+    path('onboarding/seed/', OnboardingSeedView.as_view(), name='onboarding_seed'),
+    path('audit-logs/', audit_log_list, name='audit_log_list'),
 
     # RBAC
     path('rbac/catalog/', RBACCatalogView.as_view(), name='rbac_catalog'),

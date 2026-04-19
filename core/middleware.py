@@ -113,21 +113,128 @@ class TenantIsolationMiddleware(MiddlewareMixin):
 
 
 class AuditLoggingMiddleware(MiddlewareMixin):
+    """Persist a row in ``accounts.AuditLog`` for material tenant actions.
+
+    We deliberately only log a *curated* set of paths (auth, staff, settings,
+    invitations, billing, menu, schedule, POS, inventory, checklists) so the
+    table stays useful for "who did what" audits instead of becoming a noisy
+    firehose of every GET/POST. Read-only (GET/HEAD/OPTIONS) requests, health
+    checks, docs and agent endpoints are skipped.
+
+    Failures are swallowed: middleware must never break an API response just
+    because the audit write errored.
     """
-    Logs all tenant actions for audit trail
-    """
-    
+
+    # Keep this list narrow. We care about state changes humans care about.
+    _LOGGED_PATH_PREFIXES = (
+        '/api/auth/',
+        '/api/accounts/',
+        '/api/staff/',
+        '/api/scheduling/',
+        '/api/timeclock/',
+        '/api/pos/',
+        '/api/menu/',
+        '/api/inventory/',
+        '/api/checklists/',
+        '/api/billing/',
+        '/api/reporting/',
+        '/api/notifications/',
+    )
+    _SKIP_PATH_PREFIXES = (
+        '/api/auth/refresh',
+        '/api/scheduling/agent/',
+        '/api/reporting/agent/',
+        '/api/checklists/agent/',
+        '/api/notifications/agent/',
+        '/api/timeclock/agent/',
+        '/api/pos/agent/',
+        '/api/staff/agent/',
+        '/api/inventory/agent/',
+        '/api/accounts/agent/',
+    )
+    _MUTATING_METHODS = {'POST', 'PUT', 'PATCH', 'DELETE'}
+
+    @classmethod
+    def _should_log(cls, request) -> bool:
+        path = request.path or ''
+        if request.method not in cls._MUTATING_METHODS:
+            return False
+        if any(path.startswith(p) for p in cls._SKIP_PATH_PREFIXES):
+            return False
+        return any(path.startswith(p) for p in cls._LOGGED_PATH_PREFIXES)
+
+    @staticmethod
+    def _client_ip(request) -> str | None:
+        xff = request.META.get('HTTP_X_FORWARDED_FOR')
+        if xff:
+            return xff.split(',')[0].strip()
+        return request.META.get('REMOTE_ADDR')
+
+    @staticmethod
+    def _infer_entity_and_action(path: str, method: str) -> tuple[str, str]:
+        """Best-effort (entity_type, action_type) from URL + HTTP verb.
+
+        Entity is the first meaningful segment after ``/api/`` (e.g. ``staff``,
+        ``invitations``). Action maps POST→CREATE, PUT/PATCH→UPDATE,
+        DELETE→DELETE. Auth endpoints get special-cased.
+        """
+        lowered = path.lower()
+        if lowered.startswith('/api/auth/login'):
+            return ('AUTH', 'LOGIN')
+        if lowered.startswith('/api/auth/logout'):
+            return ('AUTH', 'LOGOUT')
+        if 'password' in lowered:
+            return ('AUTH', 'PASSWORD_CHANGED')
+        if '/pin' in lowered:
+            return ('AUTH', 'PIN_CHANGED')
+
+        parts = [p for p in lowered.split('/') if p]
+        # parts like ['api', 'accounts', 'settings', ...]
+        entity = parts[1] if len(parts) > 1 else 'unknown'
+        entity = entity.rstrip('s').upper() or 'UNKNOWN'
+
+        action_map = {
+            'POST': 'CREATE',
+            'PUT': 'UPDATE',
+            'PATCH': 'UPDATE',
+            'DELETE': 'DELETE',
+        }
+        return (entity, action_map.get(method, 'OTHER'))
+
     def process_response(self, request, response):
-        # Log tenant actions for audit
-        if hasattr(request, 'tenant_id') and hasattr(request, 'user'):
-            if request.method in ['POST', 'PUT', 'PATCH', 'DELETE']:
-                logger.info(
-                    f"Tenant Action: {request.method} {request.path} | "
-                    f"Tenant: {request.tenant_name} | "
-                    f"User: {request.user.email} | "
-                    f"Status: {response.status_code}"
-                )
-        
+        try:
+            if not self._should_log(request):
+                return response
+            user = getattr(request, 'user', None)
+            if not user or not getattr(user, 'is_authenticated', False):
+                # Only log failed logins via the login view itself; otherwise skip.
+                return response
+            # Swallow responses from unrelated content types (e.g. 401/403) — we
+            # still want DELETEs that succeeded and UPDATEs that changed state.
+            if response.status_code >= 500:
+                return response
+
+            # Lazy import to avoid app-loading ordering issues.
+            from accounts.models import AuditLog
+
+            entity_type, action_type = self._infer_entity_and_action(
+                request.path, request.method
+            )
+            description = (
+                f"{request.method} {request.path} → {response.status_code}"
+            )
+            restaurant = getattr(user, 'restaurant', None)
+            AuditLog.objects.create(
+                restaurant=restaurant,
+                user=user,
+                action_type=action_type,
+                entity_type=entity_type,
+                description=description,
+                ip_address=self._client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')[:512],
+            )
+        except Exception as exc:  # never break the response on audit failure
+            logger.warning("AuditLoggingMiddleware failed: %s", exc)
         return response
 
 

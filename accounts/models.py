@@ -123,6 +123,13 @@ class Restaurant(models.Model):
     # Reservation integrations (Eat Now / Eat App Concierge API key, etc.) — encrypted JSON
     reservation_oauth_data = models.TextField(blank=True, null=True)
 
+    # First-run onboarding state. ``onboarding_completed_at`` is set when the
+    # owner finishes the setup wizard (branch, shift template, checklist,
+    # menu). ``onboarding_state`` tracks per-step completion so the wizard can
+    # resume mid-flow.
+    onboarding_completed_at = models.DateTimeField(null=True, blank=True)
+    onboarding_state = models.JSONField(default=dict, blank=True)
+
     class Meta:
         db_table = 'restaurants'
     
@@ -173,6 +180,91 @@ class Restaurant(models.Model):
     def set_reservation_oauth(self, payload: dict) -> None:
         self.reservation_oauth_data = encrypt_json(payload or {})
 
+
+class BusinessLocation(models.Model):
+    """
+    A single physical site (branch / outlet) owned by a Restaurant (tenant).
+
+    Originally Restaurant carried latitude/longitude/radius directly which
+    assumed a one-site-per-tenant world. This model lets chains register
+    multiple sites and have clock-in evaluate them all. The primary location
+    mirrors back into Restaurant.latitude/longitude/radius/geofence_* on save
+    so every legacy code path (reports, agent tools, old mobile clients) keeps
+    working unchanged.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        Restaurant, on_delete=models.CASCADE, related_name='locations'
+    )
+    name = models.CharField(max_length=120)
+    address = models.CharField(max_length=255, blank=True, default='')
+    latitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    longitude = models.DecimalField(max_digits=9, decimal_places=6, null=True, blank=True)
+    # Matches Restaurant.radius: 5m..100m allowed, default 100m.
+    radius = models.DecimalField(
+        max_digits=9,
+        decimal_places=2,
+        default=100,
+        validators=[MinValueValidator(5), MaxValueValidator(100)],
+    )
+    geofence_enabled = models.BooleanField(default=True)
+    geofence_polygon = models.JSONField(default=list, blank=True)
+    # Optional per-branch timezone override (falls back to Restaurant.timezone).
+    timezone = models.CharField(max_length=50, blank=True, default='')
+    is_primary = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'business_locations'
+        ordering = ['-is_primary', 'name']
+        constraints = [
+            # Exactly one primary per tenant, enforced at the DB level so a
+            # race in two concurrent "Make primary" requests can't leave the
+            # tenant with two primaries.
+            models.UniqueConstraint(
+                fields=['restaurant'],
+                condition=models.Q(is_primary=True),
+                name='unique_primary_location_per_restaurant',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['restaurant', 'is_active']),
+        ]
+
+    def __str__(self):
+        suffix = ' (primary)' if self.is_primary else ''
+        return f"{self.name}{suffix}"
+
+    def clean(self):
+        # Radius clamp mirrors Restaurant.radius validators.
+        if self.radius is not None and (self.radius < 5 or self.radius > 100):
+            raise ValidationError({'radius': 'Geofence radius must be between 5 and 100 meters.'})
+
+    def save(self, *args, **kwargs):
+        # The first location saved for a tenant must be primary — no usable
+        # geofence otherwise. Callers don't need to remember this.
+        if not self.pk and not self.is_primary:
+            has_any = BusinessLocation.objects.filter(restaurant=self.restaurant).exists()
+            if not has_any:
+                self.is_primary = True
+        super().save(*args, **kwargs)
+        # Keep Restaurant.* in sync with the primary so legacy code paths that
+        # read restaurant.latitude/longitude/radius/geofence_* continue to see
+        # current values without any migration of callers.
+        if self.is_primary:
+            rest = self.restaurant
+            dirty = False
+            for attr in ('latitude', 'longitude', 'radius', 'geofence_enabled', 'geofence_polygon'):
+                if getattr(rest, attr) != getattr(self, attr):
+                    setattr(rest, attr, getattr(self, attr))
+                    dirty = True
+            if dirty:
+                rest.save(update_fields=['latitude', 'longitude', 'radius', 'geofence_enabled', 'geofence_polygon', 'updated_at'])
+
+
 class CustomUser(AbstractUser):
     ROLE_CHOICES = settings.STAFF_ROLES_CHOICES
     
@@ -212,7 +304,36 @@ class CustomUser(AbstractUser):
     # Dashboard widget order (manager customization); null = client uses local default until saved
     dashboard_widget_order = models.JSONField(null=True, blank=True)
 
-    
+    # --- Multi-location assignments -----------------------------------------
+    # The staff member's "home" branch. Used for payroll grouping, default
+    # shift location, and as the implicit allowed branch when
+    # `allowed_locations` is empty. Nullable for legacy single-site tenants
+    # that haven't opted into multi-location yet.
+    primary_location = models.ForeignKey(
+        'accounts.BusinessLocation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='primary_staff',
+    )
+    # Extra branches this staff member is allowed to work at. When empty,
+    # the staff member can work at ANY active branch of the restaurant
+    # (backward-compatible with pre-multi-location behaviour). When
+    # non-empty, clock-in at a branch outside this set will be flagged as
+    # a mismatch (not blocked).
+    allowed_locations = models.ManyToManyField(
+        'accounts.BusinessLocation',
+        blank=True,
+        related_name='allowed_staff',
+    )
+    # For managers: the branches this manager is responsible for. Empty =
+    # whole tenant (current behaviour). Non-empty = scoped view/auth.
+    managed_locations = models.ManyToManyField(
+        'accounts.BusinessLocation',
+        blank=True,
+        related_name='managers',
+    )
+
     # Remove username and use email instead
     username = None
     email = models.EmailField(unique=True)
@@ -336,6 +457,40 @@ class CustomUser(AbstractUser):
         self.password_reset_token = None
         self.password_reset_expires = None
         self.save(update_fields=['password_reset_token', 'password_reset_expires'])
+
+    def can_work_at(self, location) -> bool:
+        """Return True if this staff member is allowed to work at the given
+        branch. Empty ``allowed_locations`` means the staff can work at any
+        active branch (backward-compatible default)."""
+        if location is None:
+            return True
+        allowed_ids = list(self.allowed_locations.values_list('id', flat=True))
+        if not allowed_ids:
+            return True
+        return location.pk in allowed_ids
+
+    def manages_location(self, location) -> bool:
+        """For managers: return True if this user manages the given branch.
+        Empty ``managed_locations`` means they manage the whole tenant."""
+        if location is None:
+            return True
+        managed_ids = list(self.managed_locations.values_list('id', flat=True))
+        if not managed_ids:
+            return True
+        return location.pk in managed_ids
+
+    def effective_shift_location(self):
+        """Return the best-guess branch for a new shift: the staff's primary
+        location, falling back to the restaurant's primary ``BusinessLocation``."""
+        if self.primary_location_id:
+            return self.primary_location
+        if self.restaurant_id:
+            return (
+                self.restaurant.locations.filter(is_primary=True, is_active=True)
+                .first()
+            )
+        return None
+
 
 class StaffInvitation(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

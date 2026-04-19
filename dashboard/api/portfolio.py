@@ -1,0 +1,445 @@
+"""
+Portfolio summary endpoint for multi-location owners.
+
+Unlike ``DashboardSummaryView`` which aggregates everything at the tenant
+level, this endpoint returns per-``BusinessLocation`` rollups plus a
+tenant-wide total. It powers the "Locations Overview" page — the owner's
+command center where they see every branch at a glance.
+
+Design notes:
+- One tight pass of queries; no per-location N+1. Each domain (clock
+  events, shifts, cash, checklists) is fetched once for the tenant and
+  bucketed by ``location_id`` in Python.
+- POS sales are deliberately omitted for now: the POS layer isn't
+  branch-tagged yet. Labor cost uses ``StaffProfile.hourly_rate`` on the
+  clocked-in staff.
+- Every metric degrades gracefully: a tenant with one branch and no
+  ``location`` FKs on its events still gets sensible numbers (they all
+  bucket to the tenant's primary location).
+- Cached for 60 s under a dedicated key so it doesn't poison the
+  existing ``dashboard:summary`` cache and doesn't need its own
+  invalidation wiring yet (short TTL is enough for an owner glance).
+"""
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import Any
+
+from django.db.models import Count, Q, Sum
+from django.utils import timezone
+from rest_framework import permissions
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from accounts.models import BusinessLocation
+from core.read_through_cache import safe_cache_get, safe_cache_set
+from scheduling.models import AssignedShift, ShiftSwapRequest
+from timeclock.models import CashSession, ClockEvent
+
+
+PORTFOLIO_ALLOWED_ROLES = {"SUPER_ADMIN", "ADMIN", "OWNER", "MANAGER"}
+PORTFOLIO_CACHE_TTL_SECONDS = 60
+GRACE_MINUTES_FOR_POTENTIAL_NOSHOW = 10
+
+
+def _portfolio_cache_key(restaurant_id, day) -> str:
+    return f"dashboard:portfolio:v1:{restaurant_id}:{day.isoformat()}"
+
+
+def _zero_metrics() -> dict[str, Any]:
+    return {
+        "staff_count": 0,
+        "clocked_in_now": 0,
+        "scheduled_today": 0,
+        "coverage_pct": None,
+        "no_shows_today": 0,
+        "potential_no_shows": 0,
+        "location_mismatches_today": 0,
+        "shift_gaps_today": 0,
+        "open_cash_sessions": 0,
+        "flagged_cash_sessions": 0,
+        "cash_variance_today": 0.0,
+        "pending_swap_requests": 0,
+        "checklist_completion_pct": None,
+        "checklists_completed": 0,
+        "checklists_total": 0,
+        "labor_cost_today": 0.0,
+    }
+
+
+def _derive_status_and_concern(metrics: dict[str, Any]) -> tuple[str, str | None]:
+    """
+    Decide traffic-light colour + a single human-readable top concern.
+
+    Ordered by severity: any red trigger wins, then amber, then green.
+    Tuned for restaurant ops; thresholds deliberately conservative so
+    we flag early rather than late.
+    """
+    no_shows = metrics["no_shows_today"]
+    mismatches = metrics["location_mismatches_today"]
+    flagged_cash = metrics["flagged_cash_sessions"]
+    potential = metrics["potential_no_shows"]
+    gaps = metrics["shift_gaps_today"]
+    coverage = metrics["coverage_pct"]
+    checklist_pct = metrics["checklist_completion_pct"]
+
+    if no_shows > 0:
+        return "red", f"{no_shows} no-show{'s' if no_shows != 1 else ''} today"
+    if flagged_cash > 0:
+        return "red", f"{flagged_cash} cash session{'s' if flagged_cash != 1 else ''} flagged"
+    if mismatches > 0:
+        return "red", f"{mismatches} location mismatch{'es' if mismatches != 1 else ''}"
+    if coverage is not None and coverage < 50:
+        return "red", f"Only {coverage}% shift coverage"
+
+    if potential > 0:
+        return "amber", f"{potential} potential no-show{'s' if potential != 1 else ''}"
+    if gaps > 0:
+        return "amber", f"{gaps} unfilled shift{'s' if gaps != 1 else ''}"
+    if coverage is not None and coverage < 80:
+        return "amber", f"{coverage}% shift coverage"
+    if checklist_pct is not None and checklist_pct < 60 and metrics["checklists_total"] > 0:
+        return "amber", f"{checklist_pct}% checklists done"
+
+    return "green", None
+
+
+class PortfolioSummaryView(APIView):
+    """
+    GET /api/dashboard/portfolio/
+
+    Returns per-branch ops rollups plus tenant-wide totals for the
+    requesting user's tenant. MANAGER callers with configured
+    ``managed_locations`` see only those branches; ADMIN/SUPER_ADMIN/OWNER
+    see everything.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        restaurant = getattr(user, "restaurant", None)
+        if restaurant is None:
+            return Response({"error": "No workspace associated"}, status=400)
+
+        role = getattr(user, "role", None)
+        if role not in PORTFOLIO_ALLOWED_ROLES:
+            return Response({"error": "Forbidden"}, status=403)
+
+        today = timezone.now().date()
+        cache_key = _portfolio_cache_key(restaurant.id, today)
+        cached = safe_cache_get(cache_key)
+        # Serve cache only for unscoped callers; scoped managers have their
+        # own view of the data so we skip cache for them to avoid leaking.
+        is_scoped_manager = (
+            role == "MANAGER" and user.managed_locations.exists()
+        )
+        if cached is not None and not is_scoped_manager:
+            return Response(cached)
+
+        payload = self._compute(restaurant, user, role, today)
+
+        if not is_scoped_manager:
+            safe_cache_set(cache_key, payload, PORTFOLIO_CACHE_TTL_SECONDS)
+        return Response(payload)
+
+    def _compute(self, restaurant, user, role, today) -> dict[str, Any]:
+        now = timezone.now()
+
+        locations_qs = BusinessLocation.objects.filter(
+            restaurant=restaurant, is_active=True
+        )
+        if role == "MANAGER":
+            managed_ids = list(
+                user.managed_locations.values_list("id", flat=True)
+            )
+            if managed_ids:
+                locations_qs = locations_qs.filter(id__in=managed_ids)
+        locations = list(locations_qs.order_by("-is_primary", "name"))
+
+        # Primary location id is our fallback bucket for rows whose
+        # location FK is null (legacy events, single-site tenants that
+        # never set location on their shifts, etc.).
+        primary_location = next(
+            (loc for loc in locations if loc.is_primary), locations[0] if locations else None
+        )
+        primary_id = primary_location.id if primary_location else None
+        known_ids = {loc.id for loc in locations}
+
+        def bucket_for(loc_id):
+            """Return the location id this row should count against,
+            falling back to primary when unknown/null."""
+            if loc_id in known_ids:
+                return loc_id
+            return primary_id
+
+        # Per-location metric buckets (initialised so every branch always
+        # appears in the response, even if it had zero activity today).
+        metrics_by_loc: dict[Any, dict[str, Any]] = {
+            loc.id: _zero_metrics() for loc in locations
+        }
+
+        # ---- Clock events today -> clocked_in_now, mismatches, labor cost
+        clock_events = list(
+            ClockEvent.objects.filter(
+                staff__restaurant=restaurant,
+                timestamp__date=today,
+            )
+            .select_related("staff", "staff__profile", "location")
+            .order_by("staff_id", "timestamp")
+        )
+
+        # Pair events per staff to derive "still clocked in" and hours.
+        # One staff may clock in at branch A and out at branch B; we
+        # attribute labour cost to the branch of the FIRST in of the day.
+        per_staff: dict[Any, dict[str, Any]] = defaultdict(
+            lambda: {
+                "first_in": None,
+                "last_out": None,
+                "location_of_first_in": None,
+                "hourly_rate": Decimal("0"),
+                "mismatched": False,
+            }
+        )
+        mismatches_by_loc: dict[Any, int] = defaultdict(int)
+
+        for ev in clock_events:
+            sid = ev.staff_id
+            if sid is None:
+                continue
+            evt = (ev.event_type or "").lower()
+            is_in = evt in ("in", "clock_in")
+            is_out = evt in ("out", "clock_out")
+            slot = per_staff[sid]
+            if is_in and slot["first_in"] is None:
+                slot["first_in"] = ev.timestamp
+                slot["location_of_first_in"] = bucket_for(ev.location_id)
+                profile = getattr(ev.staff, "profile", None)
+                slot["hourly_rate"] = (
+                    profile.hourly_rate if profile and profile.hourly_rate else Decimal("0")
+                )
+            if is_out:
+                slot["last_out"] = ev.timestamp
+            if ev.location_mismatch:
+                b = bucket_for(ev.location_id)
+                if b is not None:
+                    mismatches_by_loc[b] += 1
+
+        for sid, slot in per_staff.items():
+            loc_id = slot["location_of_first_in"]
+            if loc_id not in metrics_by_loc:
+                continue
+            bucket = metrics_by_loc[loc_id]
+            # Currently clocked in = had an 'in' and no matching 'out'
+            # after it. We approximate with "no last_out" which is fine
+            # for today's snapshot.
+            if slot["first_in"] is not None and slot["last_out"] is None:
+                bucket["clocked_in_now"] += 1
+                end_time = now
+            else:
+                end_time = slot["last_out"] or now
+            if slot["first_in"]:
+                hours = max(0.0, (end_time - slot["first_in"]).total_seconds() / 3600.0)
+                bucket["labor_cost_today"] += round(hours * float(slot["hourly_rate"]), 2)
+
+        for loc_id, count in mismatches_by_loc.items():
+            if loc_id in metrics_by_loc:
+                metrics_by_loc[loc_id]["location_mismatches_today"] = count
+
+        # ---- Shifts today -> scheduled, no-shows, potential no-shows, gaps
+        shifts_today = AssignedShift.objects.filter(
+            schedule__restaurant=restaurant,
+            shift_date=today,
+        ).only(
+            "id", "status", "start_time", "staff_id", "location_id"
+        )
+
+        staff_clocked_in_today = {
+            sid for sid, slot in per_staff.items() if slot["first_in"] is not None
+        }
+        grace_cutoff = now - timedelta(minutes=GRACE_MINUTES_FOR_POTENTIAL_NOSHOW)
+
+        # Track shift gaps via .annotate to avoid loading m2m per row.
+        shifts_with_staff_counts = AssignedShift.objects.filter(
+            schedule__restaurant=restaurant,
+            shift_date=today,
+            status__in=["SCHEDULED", "CONFIRMED"],
+        ).annotate(members_count=Count("staff_members"))
+
+        for s in shifts_today:
+            loc_id = bucket_for(s.location_id)
+            if loc_id not in metrics_by_loc:
+                continue
+            bucket = metrics_by_loc[loc_id]
+            if s.staff_id is not None:
+                bucket["scheduled_today"] += 1
+            if s.status == "NO_SHOW":
+                bucket["no_shows_today"] += 1
+            elif (
+                s.status in ("SCHEDULED", "CONFIRMED")
+                and s.staff_id is not None
+                and s.start_time is not None
+                and s.start_time <= grace_cutoff
+                and s.staff_id not in staff_clocked_in_today
+            ):
+                bucket["potential_no_shows"] += 1
+
+        for s in shifts_with_staff_counts.only("id", "staff_id", "members_count", "location_id"):
+            if s.staff_id is None and s.members_count == 0:
+                loc_id = bucket_for(s.location_id)
+                if loc_id in metrics_by_loc:
+                    metrics_by_loc[loc_id]["shift_gaps_today"] += 1
+
+        # ---- Cash sessions today
+        cash_today = CashSession.objects.filter(
+            restaurant=restaurant, session_date=today
+        ).select_related("shift", "staff", "staff__primary_location")
+
+        for cs in cash_today:
+            # Prefer the shift's branch; fall back to the staff member's
+            # primary_location; fall back to tenant primary.
+            loc_id = None
+            if cs.shift_id and cs.shift and cs.shift.location_id:
+                loc_id = cs.shift.location_id
+            elif cs.staff and cs.staff.primary_location_id:
+                loc_id = cs.staff.primary_location_id
+            loc_id = bucket_for(loc_id)
+            if loc_id not in metrics_by_loc:
+                continue
+            bucket = metrics_by_loc[loc_id]
+            if cs.status in ("OPEN", "COUNTED"):
+                bucket["open_cash_sessions"] += 1
+            if cs.status == "FLAGGED":
+                bucket["flagged_cash_sessions"] += 1
+            if cs.variance is not None:
+                bucket["cash_variance_today"] = round(
+                    bucket["cash_variance_today"] + float(cs.variance), 2
+                )
+
+        # ---- Pending swap requests (tenant-wide, bucketed by shift loc)
+        swaps = ShiftSwapRequest.objects.filter(
+            shift_to_swap__schedule__restaurant=restaurant,
+            status="PENDING",
+        ).values("shift_to_swap__location_id").annotate(n=Count("id"))
+
+        for row in swaps:
+            loc_id = bucket_for(row["shift_to_swap__location_id"])
+            if loc_id in metrics_by_loc:
+                metrics_by_loc[loc_id]["pending_swap_requests"] += row["n"]
+
+        # ---- Checklist completion today (shift checklist progress)
+        try:
+            from scheduling.models import ShiftChecklistProgress
+
+            progress_qs = (
+                ShiftChecklistProgress.objects.filter(
+                    shift__schedule__restaurant=restaurant,
+                    shift__shift_date=today,
+                )
+                .values("shift__location_id", "status")
+                .annotate(n=Count("id"))
+            )
+            for row in progress_qs:
+                loc_id = bucket_for(row["shift__location_id"])
+                if loc_id not in metrics_by_loc:
+                    continue
+                bucket = metrics_by_loc[loc_id]
+                bucket["checklists_total"] += row["n"]
+                if row["status"] == "COMPLETED":
+                    bucket["checklists_completed"] += row["n"]
+        except Exception:
+            # Checklists are optional per tenant — never let them
+            # break the portfolio view.
+            pass
+
+        # ---- Staff count per branch (primary_location is the home branch)
+        from accounts.models import CustomUser
+
+        staff_rows = (
+            CustomUser.objects.filter(
+                restaurant=restaurant, is_active=True
+            )
+            .exclude(role="SUPER_ADMIN")
+            .values("primary_location_id")
+            .annotate(n=Count("id"))
+        )
+        for row in staff_rows:
+            loc_id = bucket_for(row["primary_location_id"])
+            if loc_id in metrics_by_loc:
+                metrics_by_loc[loc_id]["staff_count"] += row["n"]
+
+        # ---- Derive coverage %, checklist %, and status per branch
+        locations_payload: list[dict[str, Any]] = []
+        for loc in locations:
+            m = metrics_by_loc[loc.id]
+            if m["scheduled_today"] > 0:
+                m["coverage_pct"] = int(
+                    round(100.0 * m["clocked_in_now"] / m["scheduled_today"])
+                )
+            if m["checklists_total"] > 0:
+                m["checklist_completion_pct"] = int(
+                    round(100.0 * m["checklists_completed"] / m["checklists_total"])
+                )
+            status, concern = _derive_status_and_concern(m)
+            locations_payload.append(
+                {
+                    "id": str(loc.id),
+                    "name": loc.name,
+                    "is_primary": loc.is_primary,
+                    "is_active": loc.is_active,
+                    "status": status,
+                    "top_concern": concern,
+                    "metrics": m,
+                }
+            )
+
+        totals = self._aggregate_totals(metrics_by_loc.values())
+
+        return {
+            "generated_at": now.isoformat(),
+            "today": today.isoformat(),
+            "tenant": {"id": restaurant.id, "name": getattr(restaurant, "name", "")},
+            "totals": totals,
+            "locations": locations_payload,
+        }
+
+    @staticmethod
+    def _aggregate_totals(per_loc_metrics) -> dict[str, Any]:
+        agg = _zero_metrics()
+        # Checklists are summed, not averaged, so we recompute the
+        # percentage once at the end from the grand totals.
+        clocked_in_now = 0
+        scheduled_today = 0
+        for m in per_loc_metrics:
+            clocked_in_now += m["clocked_in_now"]
+            scheduled_today += m["scheduled_today"]
+            for k in (
+                "staff_count",
+                "no_shows_today",
+                "potential_no_shows",
+                "location_mismatches_today",
+                "shift_gaps_today",
+                "open_cash_sessions",
+                "flagged_cash_sessions",
+                "pending_swap_requests",
+                "checklists_completed",
+                "checklists_total",
+            ):
+                agg[k] += m[k]
+            agg["cash_variance_today"] = round(
+                agg["cash_variance_today"] + m["cash_variance_today"], 2
+            )
+            agg["labor_cost_today"] = round(
+                agg["labor_cost_today"] + m["labor_cost_today"], 2
+            )
+        agg["clocked_in_now"] = clocked_in_now
+        agg["scheduled_today"] = scheduled_today
+        if scheduled_today > 0:
+            agg["coverage_pct"] = int(round(100.0 * clocked_in_now / scheduled_today))
+        if agg["checklists_total"] > 0:
+            agg["checklist_completion_pct"] = int(
+                round(100.0 * agg["checklists_completed"] / agg["checklists_total"])
+            )
+        return agg

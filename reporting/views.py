@@ -88,6 +88,25 @@ class IncidentCreateAPIView(generics.CreateAPIView):
 
 # ----- Labor: planned vs actual, compliance, certifications, sales recommendation -----
 
+def _resolve_report_location(request):
+    """Resolve a ``?location=<uuid>`` filter to a BusinessLocation (or None).
+
+    Returns the matched branch for the caller's tenant, or None when the
+    param is missing / blank / "all". Silently ignores invalid UUIDs so a
+    typo in the query string degrades to "all branches" instead of 400ing.
+    """
+    raw = (request.query_params.get('location') or '').strip()
+    if not raw or raw.lower() in ('all', 'any', '__all__'):
+        return None
+    from accounts.models import BusinessLocation
+    try:
+        return BusinessLocation.objects.filter(
+            id=raw, restaurant=request.user.restaurant, is_active=True
+        ).first()
+    except (ValueError, Exception):
+        return None
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated, IsAdminOrSuperAdmin])
 def labor_planned_vs_actual(request):
@@ -101,7 +120,11 @@ def labor_planned_vs_actual(request):
     except ValueError:
         return Response({'error': 'Invalid date format'}, status=status.HTTP_400_BAD_REQUEST)
     from reporting.services_labor import planned_vs_actual_hours
-    data = planned_vs_actual_hours(request.user.restaurant, start_date, end_date)
+    branch = _resolve_report_location(request)
+    data = planned_vs_actual_hours(request.user.restaurant, start_date, end_date, location=branch)
+    data['location'] = (
+        {'id': str(branch.id), 'name': branch.name} if branch is not None else None
+    )
     return Response(data)
 
 
@@ -118,7 +141,11 @@ def labor_compliance(request):
     except ValueError:
         return Response({'error': 'Invalid date format'}, status=status.HTTP_400_BAD_REQUEST)
     from reporting.services_labor import overtime_and_compliance
-    data = overtime_and_compliance(request.user.restaurant, start_date, end_date)
+    branch = _resolve_report_location(request)
+    data = overtime_and_compliance(request.user.restaurant, start_date, end_date, location=branch)
+    data['location'] = (
+        {'id': str(branch.id), 'name': branch.name} if branch is not None else None
+    )
     return Response(data)
 
 

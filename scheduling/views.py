@@ -418,9 +418,21 @@ class AssignedShiftViewSet(viewsets.ModelViewSet):
         recurrence_group_id = self.request.query_params.get('recurrence_group_id')
         if recurrence_group_id:
             queryset = queryset.filter(recurrence_group_id=recurrence_group_id)
-        
+
+        # Filter by branch (explicit query param)
+        requested_loc = self.request.query_params.get('location')
+        if requested_loc:
+            queryset = queryset.filter(location_id=requested_loc)
+
+        # Branch-scoped managers: restrict shifts to branches this manager
+        # is responsible for. ADMIN/SUPER_ADMIN/OWNER are unaffected.
+        if user.role == 'MANAGER':
+            managed_ids = list(user.managed_locations.values_list('id', flat=True))
+            if managed_ids:
+                queryset = queryset.filter(location_id__in=managed_ids)
+
         return queryset.prefetch_related('task_templates', 'tasks', 'staff_members').select_related(
-            'staff', 'schedule'
+            'staff', 'schedule', 'location'
         ).order_by('shift_date', 'start_time')
 
     def perform_create(self, serializer):
@@ -1193,8 +1205,20 @@ class TimesheetViewSet(viewsets.ModelViewSet):
             .prefetch_related(Prefetch('entries', queryset=entries_qs))
         )
         if user.role in ('ADMIN', 'SUPER_ADMIN', 'MANAGER'):
-            return base.filter(restaurant=user.restaurant).order_by('-end_date')
-        return base.filter(staff=user).order_by('-end_date')
+            qs = base.filter(restaurant=user.restaurant)
+        else:
+            qs = base.filter(staff=user)
+        # Optional branch-scoping: `?location=<uuid>` filters to staff whose
+        # home branch matches. Managers with a restricted `managed_locations`
+        # set cannot override this to peek at other branches — the query
+        # simply returns the intersection of the two scopes.
+        raw_loc = (self.request.query_params.get('location') or '').strip()
+        if raw_loc and raw_loc.lower() not in ('all', 'any', '__all__'):
+            try:
+                qs = qs.filter(staff__primary_location_id=raw_loc)
+            except (ValueError, Exception):
+                pass
+        return qs.order_by('-end_date')
     
     def perform_create(self, serializer):
         # Managers/admins create timesheets for staff

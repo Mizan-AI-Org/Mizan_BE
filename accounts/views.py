@@ -11,7 +11,7 @@ from .serializers import (
 )
 from rest_framework.views import APIView
 from django.contrib.auth import authenticate
-from .models import CustomUser, Restaurant, UserInvitation, StaffProfile, AuditLog, StaffActivationRecord
+from .models import CustomUser, Restaurant, UserInvitation, StaffProfile, AuditLog, StaffActivationRecord, BusinessLocation
 from django.utils import timezone
 from django.core.files.base import ContentFile
 import base64, logging, os
@@ -31,7 +31,7 @@ from django.utils.html import strip_tags
 from django.template.loader import render_to_string
 from notifications.services import notification_service
 from .models import InvitationDeliveryLog
-from .services import sync_user_to_lua_agent, UserManagementService, _find_active_user_by_phone
+from .services import sync_user_to_lua_agent, UserManagementService, _find_active_user_by_phone, apply_invitation_locations
 from .permissions import IsAdminOrManager
 from core.permissions import IsOwnerOrSuperAdmin
 
@@ -850,6 +850,9 @@ class AcceptInvitationView(APIView):
             user.set_pin(pin_code)  # We know pin_code exists because we checked it
             user.save()
 
+            # 4. Apply multi-location assignments from the invitation, if present
+            apply_invitation_locations(user, invitation)
+
             from django.utils import timezone as dj_tz
             invitation.is_accepted = True
             invitation.status = 'ACCEPTED'
@@ -1184,13 +1187,38 @@ class StaffListAPIView(generics.ListAPIView):
         # StaffSerializer embeds `profile` via StaffProfileSerializer, which
         # otherwise triggers +1 query per staff member on a restaurant with 30+
         # staff. select_related keeps it to a single JOIN.
-        return (
+        qs = (
             CustomUser.objects
             .filter(restaurant=user.restaurant, is_active=True)
             .exclude(role='SUPER_ADMIN')
-            .select_related('profile')
+            .select_related('profile', 'primary_location')
+            .prefetch_related('allowed_locations', 'managed_locations')
             .order_by('first_name', 'last_name')
         )
+
+        # Branch-scoped managers: if the caller is a MANAGER with a
+        # non-empty ``managed_locations`` set, only surface staff whose
+        # primary or allowed locations overlap with those branches.
+        # ADMIN/SUPER_ADMIN/OWNER always see the whole tenant.
+        if user.role == 'MANAGER':
+            managed_ids = list(user.managed_locations.values_list('id', flat=True))
+            if managed_ids:
+                from django.db.models import Q
+                qs = qs.filter(
+                    Q(primary_location_id__in=managed_ids)
+                    | Q(allowed_locations__id__in=managed_ids)
+                ).distinct()
+
+        # Optional explicit branch filter via query param (?location=<uuid>).
+        requested_loc = self.request.query_params.get('location')
+        if requested_loc:
+            from django.db.models import Q
+            qs = qs.filter(
+                Q(primary_location_id=requested_loc)
+                | Q(allowed_locations__id=requested_loc)
+            ).distinct()
+
+        return qs
 
 
 class StaffMemberDetailView(APIView):

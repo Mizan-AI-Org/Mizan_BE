@@ -8,7 +8,74 @@ from django.http import Http404
 from notifications.utils import send_realtime_notification
 from notifications.services import notification_service
 
-from accounts.utils import calculate_distance
+
+def _notify_managers_of_location_mismatch(clock_event, user, branch):
+    """Fan-out an in-app notification to the branch's managers whenever a
+    staff member clocks in at a branch outside their ``allowed_locations``
+    set (``ClockEvent.location_mismatch=True``).
+
+    Scope: if the branch has named managers (``BusinessLocation.managers``
+    via ``managed_locations`` M2M), ping only them. Otherwise fall back to
+    every active OWNER/ADMIN of the tenant so the signal doesn't go into a
+    black hole when tenants haven't assigned managers to branches yet.
+    Every error is swallowed — we never want the notification path to
+    break an otherwise-valid clock-in.
+    """
+    try:
+        if branch is None or user is None:
+            return
+        from accounts.models import CustomUser
+        staff_name = (
+            f"{(user.first_name or '').strip()} {(user.last_name or '').strip()}".strip()
+            or user.email
+            or "A staff member"
+        )
+        branch_name = getattr(branch, 'name', None) or 'the branch'
+        restaurant = getattr(user, 'restaurant', None)
+
+        # Prefer explicit branch managers; fall back to tenant admins.
+        recipients = list(branch.managers.filter(is_active=True)) if hasattr(branch, 'managers') else []
+        if not recipients and restaurant is not None:
+            recipients = list(
+                CustomUser.objects.filter(
+                    restaurant=restaurant,
+                    is_active=True,
+                    role__in=['OWNER', 'ADMIN', 'SUPER_ADMIN'],
+                )
+            )
+        if not recipients:
+            return
+
+        title = "Clock-in at unexpected branch"
+        message = (
+            f"{staff_name} just clocked in at {branch_name}, which isn't in their "
+            "allowed branches. Review on the dashboard."
+        )
+        seen = set()
+        for recipient in recipients:
+            if recipient.id == getattr(user, 'id', None):
+                continue  # don't ping the staff about their own event
+            if recipient.id in seen:
+                continue
+            seen.add(recipient.id)
+            try:
+                notification_service.send_custom_notification(
+                    recipient=recipient,
+                    message=message,
+                    notification_type='LOCATION_MISMATCH',
+                    channels=['app'],
+                    title=title,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to notify %s about location mismatch on ClockEvent %s",
+                    recipient.id,
+                    getattr(clock_event, 'id', None),
+                )
+    except Exception:
+        logger.exception("Unexpected error while sending location-mismatch notification")
+
+from accounts.utils import calculate_distance, find_matching_location
 from .models import ClockEvent
 from .serializers import ClockEventSerializer, ClockInSerializer, ShiftSerializer
 from accounts.models import CustomUser, AuditLog
@@ -229,61 +296,88 @@ def web_clock_in(request):
             'last_clock_in': last_event.timestamp.isoformat()
         }, status=status.HTTP_400_BAD_REQUEST)
     
-    # Verify location is within restaurant premises
+    # Verify the user is within ANY of the tenant's active branches. For
+    # chains this means a waiter assigned to branch A can still clock in at
+    # branch B if they're covering a shift there — the business decides
+    # whether that's desirable by which branches are kept active.
     restaurant = user.restaurant
-    if restaurant.latitude and restaurant.longitude:
-        distance = calculate_distance(
-            float(restaurant.latitude),
-            float(restaurant.longitude),
-            float(latitude),
-            float(longitude)
-        )
-        
-        # Check if within allowed distance using restaurant geofence radius
-        radius = float(restaurant.radius) if restaurant.radius else 100
-        # Clamp radius to safe range (5m - 100m)
+    matched_location, distance, nearest = find_matching_location(restaurant, latitude, longitude)
+    if matched_location is None and nearest is not None:
+        # Build a helpful message that names the nearest branch and says how
+        # far the staff member currently is from it.
+        try:
+            radius = float(getattr(nearest, 'radius', 100) or 100)
+        except (TypeError, ValueError):
+            radius = 100.0
         radius = max(5.0, min(100.0, radius))
-        if distance > radius:
-            try:
-                ip_address = get_client_ip(request)
-                user_agent = request.META.get('HTTP_USER_AGENT', '')
-                AuditLog.create_log(
-                    restaurant=request.user.restaurant,
-                    user=request.user,
-                    action_type='OTHER',
-                    entity_type='CLOCK_EVENT',
-                    entity_id=None,
-                    description=f'Web clock-in rejected: outside geofence (distance {distance:.2f}m, radius {radius:.2f}m)',
-                    old_values={},
-                    new_values={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy, 'distance': distance, 'radius': radius},
-                    ip_address=ip_address,
-                    user_agent=user_agent,
-                )
-            except Exception:
-                pass
-            return Response({
-                'error': 'Location verification failed',
-                'message': f'You are {distance:.0f}m away from the restaurant. Please be within {radius:.0f}m to clock in.',
-                'distance': distance,
-                'within_range': False
-            }, status=status.HTTP_400_BAD_REQUEST)
-    else:
-        # Restaurant location not set, allow clock-in with warning
-        distance = None
+        dist_m = float(distance) if distance is not None else 0.0
+        try:
+            ip_address = get_client_ip(request)
+            user_agent = request.META.get('HTTP_USER_AGENT', '')
+            AuditLog.create_log(
+                restaurant=request.user.restaurant,
+                user=request.user,
+                action_type='OTHER',
+                entity_type='CLOCK_EVENT',
+                entity_id=None,
+                description=(
+                    f"Web clock-in rejected: outside geofence of all branches "
+                    f"(nearest '{getattr(nearest, 'name', 'Main')}' at {dist_m:.2f}m, radius {radius:.2f}m)"
+                ),
+                old_values={},
+                new_values={
+                    'latitude': latitude,
+                    'longitude': longitude,
+                    'accuracy': accuracy,
+                    'distance': dist_m,
+                    'radius': radius,
+                    'nearest_location': getattr(nearest, 'name', None),
+                },
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+        except Exception:
+            pass
+        return Response({
+            'error': 'Location verification failed',
+            'message': (
+                f"You are {dist_m:.0f}m away from the nearest location "
+                f"({getattr(nearest, 'name', 'Main')}). Please be within {radius:.0f}m of "
+                f"a registered site to clock in."
+            ),
+            'distance': dist_m,
+            'nearest_location': {
+                'id': str(nearest.id) if getattr(nearest, 'id', None) else None,
+                'name': getattr(nearest, 'name', 'Main'),
+            },
+            'within_range': False,
+        }, status=status.HTTP_400_BAD_REQUEST)
     
     # Use client_device_id if provided, otherwise fall back to User-Agent
     device_id = client_device_id or request.META.get('HTTP_USER_AGENT', '')
     
-    # Create clock in event (without photo first)
+    # Persist which branch the event belongs to. `matched_location` is the
+    # legacy proxy object when no BusinessLocation row exists yet, so we
+    # only attach when we have a real DB-backed FK id.
+    matched_loc_fk = matched_location if getattr(matched_location, 'id', None) else None
+    # Multi-location: flag events where the staff member clocked in at a
+    # branch that isn't in their ``allowed_locations`` set. We don't block
+    # the clock-in (warn-but-allow policy), just surface it for managers.
+    location_mismatch = bool(matched_loc_fk and not user.can_work_at(matched_loc_fk))
+
     clock_event = ClockEvent.objects.create(
         staff=user,
         event_type='in',
         latitude=latitude,
         longitude=longitude,
-        device_id=device_id,  # <--- UPDATED THIS
+        device_id=device_id,
         notes=f"Web clock-in | GPS Accuracy: {accuracy}m" if accuracy else "Web clock-in",
-        photo=photo  
+        photo=photo,
+        location=matched_loc_fk,
+        location_mismatch=location_mismatch,
     )
+    if location_mismatch:
+        _notify_managers_of_location_mismatch(clock_event, user, matched_loc_fk)
 
     # --- Handle and save the photo ---
     if photo_data:
@@ -311,9 +405,19 @@ def web_clock_in(request):
         'session_id': str(clock_event.id),
         'clock_in_time': clock_event.timestamp.isoformat(),
         'location_verified': True,
-        'distance_from_restaurant': f"{distance:.0f}m" if distance else "Unknown",
+        'distance_from_restaurant': f"{distance:.0f}m" if distance is not None else "Unknown",
+        # Multi-location builds want to know which branch the event was
+        # attributed to so the shift list can badge it. None when we fell
+        # through to the legacy single-location proxy.
+        'matched_location': (
+            {
+                'id': str(matched_location.id) if getattr(matched_location, 'id', None) else None,
+                'name': getattr(matched_location, 'name', 'Main'),
+            }
+            if matched_location is not None else None
+        ),
         'message': 'Clocked in successfully with location verification',
-        'photo_url': clock_event.photo.url if clock_event.photo else None # <--- ADDED
+        'photo_url': clock_event.photo.url if clock_event.photo else None
     }
     # Audit success
     try:
@@ -468,25 +572,76 @@ def current_session(request):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def restaurant_location(request):
-    """Get restaurant location for geolocation verification"""
+    """
+    Return the tenant's branch list for staff clock-in. The top-level fields
+    mirror the PRIMARY branch so legacy single-site mobile clients keep working
+    without any update.
+    """
     user = request.user
     restaurant = user.restaurant
-    
-    if not restaurant.latitude or not restaurant.longitude:
+
+    from accounts.models import BusinessLocation
+
+    locations_qs = (
+        BusinessLocation.objects.filter(restaurant=restaurant, is_active=True)
+        .order_by('-is_primary', 'name')
+    )
+    locations = [
+        {
+            'id': str(loc.id),
+            'name': loc.name,
+            'address': loc.address,
+            'latitude': float(loc.latitude) if loc.latitude is not None else None,
+            'longitude': float(loc.longitude) if loc.longitude is not None else None,
+            'radius': float(loc.radius) if loc.radius is not None else 100,
+            'geofence_enabled': loc.geofence_enabled,
+            'geofence_polygon': loc.geofence_polygon or [],
+            'is_primary': loc.is_primary,
+            'timezone': loc.timezone or getattr(restaurant, 'timezone', None),
+        }
+        for loc in locations_qs
+        if loc.latitude is not None and loc.longitude is not None
+    ]
+
+    # Backfill from Restaurant.* when the tenant has zero BusinessLocation
+    # rows (e.g. migration hasn't run or all locations were deleted). This
+    # keeps the endpoint compatible with single-site deployments.
+    if not locations and restaurant.latitude and restaurant.longitude:
+        locations = [{
+            'id': None,
+            'name': restaurant.name or 'Main',
+            'address': restaurant.address or '',
+            'latitude': float(restaurant.latitude),
+            'longitude': float(restaurant.longitude),
+            'radius': float(restaurant.radius) if restaurant.radius else 100,
+            'geofence_enabled': bool(restaurant.geofence_enabled),
+            'geofence_polygon': restaurant.geofence_polygon or [],
+            'is_primary': True,
+            'timezone': getattr(restaurant, 'timezone', None),
+        }]
+
+    if not locations:
         return Response({
             'error': 'Restaurant location not set',
-            'message': 'Please contact administrator to set restaurant location'
+            'message': 'Please contact administrator to set the restaurant location.'
         }, status=status.HTTP_400_BAD_REQUEST)
-    
+
+    primary = locations[0]  # -is_primary sort guarantees primary first
+
     return Response({
         'restaurant': {
             'name': restaurant.name,
             'address': restaurant.address,
-            'latitude': float(restaurant.latitude),
-            'longitude': float(restaurant.longitude),
-            'geofence_radius': float(restaurant.radius) if restaurant.radius else 100,  # meters (5-100m range)
+            # Legacy top-level coords: the primary branch so old mobile
+            # clients still work without any code change.
+            'latitude': primary['latitude'],
+            'longitude': primary['longitude'],
+            'geofence_radius': primary['radius'],
             'language': getattr(restaurant, 'language', 'en') or 'en',
-            'timezone': getattr(restaurant, 'timezone', None),
+            'timezone': primary['timezone'],
+            # New field: full list of branches. Multi-site clients should
+            # iterate this and check against each site's geofence.
+            'locations': locations,
         }
     })
 
@@ -530,23 +685,22 @@ def verify_location(request):
         pass
     
     restaurant = user.restaurant
-    if not restaurant.latitude or not restaurant.longitude:
+    matched_location, distance, nearest = find_matching_location(
+        restaurant, latitude, longitude
+    )
+    if nearest is None:
         return Response({
             'error': 'Restaurant location not configured',
             'within_range': False
         }, status=status.HTTP_400_BAD_REQUEST)
-    
-    distance = calculate_distance(
-        float(restaurant.latitude),
-        float(restaurant.longitude),
-        float(latitude),
-        float(longitude)
-    )
-    
-    # Use restaurant geofence radius with safe clamp
-    radius = float(restaurant.radius) if restaurant.radius else 100
+
+    within_range = matched_location is not None
+    try:
+        radius = float(getattr(matched_location or nearest, 'radius', 100) or 100)
+    except (TypeError, ValueError):
+        radius = 100.0
     radius = max(5.0, min(100.0, radius))
-    within_range = distance <= radius
+    distance = float(distance) if distance is not None else 0.0
 
     # Log failures only to avoid excessive logs from frequent checks
     try:
@@ -559,21 +713,41 @@ def verify_location(request):
                 action_type='OTHER',
                 entity_type='GEOLOCATION_VERIFY',
                 entity_id=None,
-                description=f'Location verification failed: outside geofence (distance {distance:.2f}m, radius {radius:.2f}m)',
+                description=(
+                    f"Location verification failed: outside all branches "
+                    f"(nearest '{getattr(nearest, 'name', 'Main')}' at {distance:.2f}m, radius {radius:.2f}m)"
+                ),
                 old_values={},
-                new_values={'latitude': latitude, 'longitude': longitude, 'accuracy': accuracy, 'distance': distance, 'radius': radius},
+                new_values={
+                    'latitude': latitude,
+                    'longitude': longitude,
+                    'accuracy': accuracy,
+                    'distance': distance,
+                    'radius': radius,
+                    'nearest_location': getattr(nearest, 'name', None),
+                },
                 ip_address=ip_address,
                 user_agent=user_agent,
             )
     except Exception:
         pass
 
+    anchor = matched_location or nearest
     return Response({
         'within_range': within_range,
         'distance': round(distance, 2),
+        'matched_location': (
+            {'id': str(matched_location.id), 'name': matched_location.name}
+            if matched_location is not None and getattr(matched_location, 'id', None)
+            else None
+        ),
+        'nearest_location': {
+            'id': str(nearest.id) if getattr(nearest, 'id', None) else None,
+            'name': getattr(nearest, 'name', 'Main'),
+        },
         'restaurant_location': {
-            'latitude': float(restaurant.latitude),
-            'longitude': float(restaurant.longitude)
+            'latitude': float(anchor.latitude) if getattr(anchor, 'latitude', None) else None,
+            'longitude': float(anchor.longitude) if getattr(anchor, 'longitude', None) else None,
         },
         'current_location': {
             'latitude': float(latitude),
@@ -1076,17 +1250,14 @@ def agent_clock_in(request):
                 'message': 'Please share live location to clock in.',
             }, status=status.HTTP_400_BAD_REQUEST)
         rest = getattr(user, 'restaurant', None)
-        if rest and getattr(rest, 'latitude', None) is not None and getattr(rest, 'longitude', None) is not None and getattr(rest, 'radius', None) is not None:
+        matched_location = None
+        if rest is not None:
             try:
-                dist = calculate_distance(
-                    float(rest.latitude), float(rest.longitude),
-                    float(latitude), float(longitude)
-                )
-                radius = float(rest.radius or 100)
-                if dist > radius:
+                matched_location, _mdist, nearest = find_matching_location(rest, latitude, longitude)
+                if matched_location is None and nearest is not None:
                     return Response({
                         'error': 'Outside geofence',
-                        'message': "You are not within the restaurant's approved location zone. Please move closer and try again.",
+                        'message': "You are not within any approved location zone. Please move closer and try again.",
                     }, status=status.HTTP_400_BAD_REQUEST)
             except (TypeError, ValueError):
                 return Response({'error': 'Invalid coordinates'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1100,14 +1271,20 @@ def agent_clock_in(request):
                 'last_clock_in': last_event.timestamp
             }, status=status.HTTP_400_BAD_REQUEST)
 
+        matched_loc_fk = matched_location if getattr(matched_location, 'id', None) else None
+        location_mismatch = bool(matched_loc_fk and not user.can_work_at(matched_loc_fk))
         clock_event = ClockEvent.objects.create(
             staff=user,
             event_type='in',
             latitude=latitude,
             longitude=longitude,
             device_id="Lua Agent",
-            notes="Clock-in via WhatsApp Agent (location verified)"
+            notes="Clock-in via WhatsApp Agent (location verified)",
+            location=matched_loc_fk,
+            location_mismatch=location_mismatch,
         )
+        if location_mismatch:
+            _notify_managers_of_location_mismatch(clock_event, user, matched_loc_fk)
         if timestamp:
             try:
                 # If timestamp provided, we could override it or just log it
@@ -1189,7 +1366,7 @@ def agent_clock_in_by_phone(request):
                 'location_request_sent': ok,
                 'message_for_user': "Tap Share Location above to clock in." if ok else "Share your location to clock in.",
             }, status=status.HTTP_400_BAD_REQUEST)
-        if not rest or not getattr(rest, 'latitude', None) or not getattr(rest, 'longitude', None) or not getattr(rest, 'radius', None):
+        if not rest:
             return Response({
                 'success': False,
                 'error': 'Geofence not configured',
@@ -1197,17 +1374,19 @@ def agent_clock_in_by_phone(request):
             }, status=status.HTTP_400_BAD_REQUEST)
         try:
             lat_f, lon_f = float(latitude), float(longitude)
-            radius = float(getattr(rest, 'radius', None) or 100)
-            dist = calculate_distance(
-                float(rest.latitude), float(rest.longitude),
-                lat_f, lon_f
-            )
-            if dist > radius:
+            matched_location, _mdist, nearest = find_matching_location(rest, lat_f, lon_f)
+            if nearest is None:
+                return Response({
+                    'success': False,
+                    'error': 'Geofence not configured',
+                    'message_for_user': "Location check is not set up for your restaurant. Please contact your manager to clock in.",
+                }, status=status.HTTP_400_BAD_REQUEST)
+            if matched_location is None:
                 return Response({
                     'success': False,
                     'error': 'Outside geofence',
                     'message_for_user': (
-                        "You are not within the restaurant's approved location zone. Please move closer and try again."
+                        "You are not within any approved location zone. Please move closer and try again."
                     ),
                 }, status=status.HTTP_400_BAD_REQUEST)
             latitude, longitude = lat_f, lon_f
@@ -1233,6 +1412,8 @@ def agent_clock_in_by_phone(request):
                     'clock_event_id': str(last_event.id),
                 }, status=status.HTTP_200_OK)
 
+            matched_loc_fk = matched_location if getattr(matched_location, 'id', None) else None
+            location_mismatch = bool(matched_loc_fk and not user.can_work_at(matched_loc_fk))
             clock_event = ClockEvent.objects.create(
                 staff=user,
                 event_type='in',
@@ -1240,7 +1421,11 @@ def agent_clock_in_by_phone(request):
                 longitude=longitude,
                 device_id="Lua Agent",
                 notes="Clock-in via Miya (by phone, location verified)",
+                location=matched_loc_fk,
+                location_mismatch=location_mismatch,
             )
+        if location_mismatch:
+            _notify_managers_of_location_mismatch(clock_event, user, matched_loc_fk)
 
         success_message = f"Clock-in recorded. Have a great shift {first_name}!"
         try:

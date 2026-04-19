@@ -77,6 +77,7 @@ class TableViewSet(viewsets.ModelViewSet):
             'available': tables.filter(status='AVAILABLE').count(),
             'occupied': tables.filter(status='OCCUPIED').count(),
             'reserved': tables.filter(status='RESERVED').count(),
+            'needs_cleaning': tables.filter(status='NEEDS_CLEANING').count(),
             'maintenance': tables.filter(status='MAINTENANCE').count(),
             'occupancy_rate': round(
                 (tables.filter(status='OCCUPIED').count() / tables.count() * 100)
@@ -85,6 +86,32 @@ class TableViewSet(viewsets.ModelViewSet):
             )
         }
         return Response(stats)
+
+    @action(detail=False, methods=['get'], url_path='needing-cleaning')
+    def needing_cleaning(self, request):
+        """List tables flagged as needing cleaning (post-meal turnover).
+
+        Matches the FOH cleaning queue used by CLEANER staff: when a dine-in
+        order is completed the table is flipped to NEEDS_CLEANING (see
+        ``OrderViewSet.complete`` / payment processing), and a cleaner marks it
+        ``AVAILABLE`` again via :meth:`mark_clean` once wiped down.
+        """
+        qs = self.get_queryset().filter(status='NEEDS_CLEANING', is_active=True)
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='mark-clean')
+    def mark_clean(self, request, pk=None):
+        """Mark a NEEDS_CLEANING table as AVAILABLE again (cleaner action)."""
+        table = self.get_object()
+        if table.status != 'NEEDS_CLEANING':
+            return Response(
+                {'detail': f'Table is {table.status}, not awaiting cleaning.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        table.status = 'AVAILABLE'
+        table.save(update_fields=['status', 'updated_at'])
+        return Response(TableSerializer(table).data)
 
 
 class OrderLineItemViewSet(viewsets.ModelViewSet):
@@ -364,11 +391,15 @@ class OrderViewSet(viewsets.ModelViewSet):
         order.status = 'COMPLETED'
         order.completion_time = timezone.now()
         order.save()
-        
+
         if order.table:
-            order.table.status = 'AVAILABLE'
-            order.table.save()
-        
+            # Dine-in turnover: table goes to the cleaner queue before it can
+            # seat the next guest. Takeout/delivery orders have no table.
+            order.table.status = (
+                'NEEDS_CLEANING' if order.order_type == 'DINE_IN' else 'AVAILABLE'
+            )
+            order.table.save(update_fields=['status', 'updated_at'])
+
         POSTransaction.objects.create(
             restaurant=order.restaurant,
             order=order,
@@ -387,11 +418,13 @@ class OrderViewSet(viewsets.ModelViewSet):
         order.status = 'COMPLETED'
         order.completion_time = timezone.now()
         order.save()
-        
+
         if order.table:
-            order.table.status = 'AVAILABLE'
-            order.table.save()
-        
+            order.table.status = (
+                'NEEDS_CLEANING' if order.order_type == 'DINE_IN' else 'AVAILABLE'
+            )
+            order.table.save(update_fields=['status', 'updated_at'])
+
         return Response(OrderSerializer(order).data)
     
     @action(detail=False, methods=['get'])

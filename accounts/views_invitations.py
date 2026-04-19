@@ -255,6 +255,12 @@ class InvitationViewSet(viewsets.ModelViewSet):
                 if key in request.data and request.data.get(key) is not None:
                     extra_data[key] = request.data.get(key)
 
+            # Multi-location fields: carry selected branches through the
+            # invitation so they are applied when the user accepts.
+            for key in ('primary_location', 'allowed_locations', 'managed_locations'):
+                if key in request.data and request.data.get(key) is not None:
+                    extra_data[key] = request.data.get(key)
+
             # Save with server-side fields
             invitation = serializer.save(
                 restaurant=restaurant,

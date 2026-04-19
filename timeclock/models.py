@@ -28,6 +28,21 @@ class ClockEvent(models.Model):
         related_name='clock_events_performed'
     )
     override_reason = models.TextField(blank=True)
+    # For multi-location chains: which branch was the user inside when the
+    # event was created. Nullable because legacy events and single-site
+    # tenants may not have a BusinessLocation row at all.
+    location = models.ForeignKey(
+        'accounts.BusinessLocation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='clock_events',
+    )
+    # True when the staff member clocked in at a branch that is NOT in their
+    # ``CustomUser.allowed_locations`` set. The event is still recorded
+    # (warn-but-allow policy) so managers can review mismatches.
+    location_mismatch = models.BooleanField(default=False)
+
     class Meta:
         ordering = ['-timestamp']
     

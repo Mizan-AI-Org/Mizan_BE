@@ -38,6 +38,7 @@ APPS: list[dict[str, str]] = [
     {"id": "staff_requests", "label": "Staff inbox / requests"},
     {"id": "table_management", "label": "Table management"},
     {"id": "supervisor", "label": "Supervisor dashboard"},
+    {"id": "locations_overview", "label": "Locations overview (multi-branch command center)"},
     {"id": "inventory", "label": "Inventory"},
     {"id": "take_orders", "label": "Take orders"},
     {"id": "settings", "label": "Settings"},

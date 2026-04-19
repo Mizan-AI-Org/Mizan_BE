@@ -280,18 +280,22 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
 
     recurrence_end_date = serializers.SerializerMethodField(read_only=True)
 
+    location_name = serializers.CharField(source='location.name', read_only=True)
+
     class Meta:
         model = AssignedShift
         fields = [
             'id', 'schedule', 'staff', 'staff_members', 'staff_name', 'staff_members_details',
             'shift_date', 'start_time', 'end_time', 'break_duration', 'role', 'notes', 'title', 'color',
             'created_at', 'updated_at', 'tasks', 'task_templates', 'task_templates_details',
-            'is_recurring', 'recurrence_group_id', 'recurrence_end_date'
+            'is_recurring', 'recurrence_group_id', 'recurrence_end_date',
+            'location', 'location_name',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'schedule']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'schedule', 'location_name']
         extra_kwargs = {
             'role': {'required': False},
             'staff': {'required': False},
+            'location': {'required': False, 'allow_null': True},
         }
 
     def get_recurrence_end_date(self, obj):
@@ -456,7 +460,17 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
         # Backward compatibility: set staff to first member if not provided
         if staff_members and not validated_data.get('staff'):
             validated_data['staff'] = staff_members[0]
-            
+
+        # Multi-location default: if no branch was supplied, fall back to
+        # the assigned staff member's primary location so the shift is
+        # always attributable to a branch in chains.
+        if not validated_data.get('location'):
+            staff_for_default = validated_data.get('staff') or (staff_members[0] if staff_members else None)
+            if staff_for_default is not None:
+                default_loc = staff_for_default.effective_shift_location()
+                if default_loc is not None:
+                    validated_data['location'] = default_loc
+
         shift = AssignedShift.objects.create(**validated_data)
         
         if staff_members:
