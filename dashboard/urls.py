@@ -18,6 +18,7 @@ from .views_extended import (
 from .api.summary import DashboardSummaryView
 from .api.action_center import ActionCenterView
 from .api.portfolio import PortfolioSummaryView, LocationDetailView
+from .api.tasks_demands import TasksDemandsView, TaskStatusUpdateView
 from .views import mark_shift_no_show
 from .views_widget_layout import (
     AgentDashboardCategoryCreateView,
@@ -70,6 +71,16 @@ urlpatterns = [
         name='dashboard-portfolio-location-detail',
     ),
     path('action-center/', ActionCenterView.as_view(), name='dashboard-action-center'),
+    path(
+        'tasks-demands/',
+        TasksDemandsView.as_view(),
+        name='dashboard-tasks-demands',
+    ),
+    path(
+        'tasks-demands/<uuid:pk>/status/',
+        TaskStatusUpdateView.as_view(),
+        name='dashboard-tasks-demands-status',
+    ),
     path('attendance/mark-no-show/', mark_shift_no_show, name='dashboard-mark-no-show'),
     path('kpis/', DailyKPIListAPIView.as_view(), name='daily-kpi-list'),
     path('captured-orders/', StaffCapturedOrderListCreateAPIView.as_view(), name='staff-captured-orders'),
