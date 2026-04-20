@@ -443,3 +443,183 @@ class PortfolioSummaryView(APIView):
                 round(100.0 * agg["checklists_completed"] / agg["checklists_total"])
             )
         return agg
+
+
+class LocationDetailView(APIView):
+    """
+    GET /api/dashboard/portfolio/locations/<uuid:loc_id>/
+
+    Per-branch deep-dive for the Locations Overview drill-in. Returns the
+    same metrics as PortfolioSummaryView for one location, plus today's
+    raw activity (shifts, clock events, mismatches, cash sessions) so the
+    owner can see why a branch is green/amber/red without leaving the page.
+
+    MANAGER callers can only access branches in their managed_locations.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, loc_id):
+        user = request.user
+        restaurant = getattr(user, "restaurant", None)
+        if restaurant is None:
+            return Response({"error": "No workspace associated"}, status=400)
+
+        role = getattr(user, "role", None)
+        if role not in PORTFOLIO_ALLOWED_ROLES:
+            return Response({"error": "Forbidden"}, status=403)
+
+        try:
+            location = BusinessLocation.objects.get(
+                id=loc_id, restaurant=restaurant
+            )
+        except BusinessLocation.DoesNotExist:
+            return Response({"error": "Location not found"}, status=404)
+
+        if role == "MANAGER":
+            managed_ids = set(
+                str(i) for i in user.managed_locations.values_list("id", flat=True)
+            )
+            if managed_ids and str(location.id) not in managed_ids:
+                return Response({"error": "Forbidden"}, status=403)
+
+        # Reuse the portfolio compute so a single branch's metrics here
+        # match exactly what's shown on the overview page (no drift).
+        portfolio = PortfolioSummaryView()
+        full = portfolio._compute(restaurant, user, role, timezone.now().date())
+        row = next(
+            (r for r in full["locations"] if str(r["id"]) == str(location.id)),
+            None,
+        )
+        if row is None:
+            return Response({"error": "Location not in scope"}, status=404)
+
+        today = timezone.now().date()
+        details = self._collect_today(restaurant, location, today)
+
+        return Response(
+            {
+                "generated_at": full["generated_at"],
+                "today": full["today"],
+                "tenant": full["tenant"],
+                "location": row,
+                **details,
+            }
+        )
+
+    def _collect_today(self, restaurant, location, today) -> dict[str, Any]:
+        """
+        Pull today's raw activity for one branch. Capped per list so a
+        very busy branch doesn't blow up the response; deep links on the
+        page point at the proper scoped reports for the long tail.
+        """
+        ROW_CAP = 50
+        primary = BusinessLocation.objects.filter(
+            restaurant=restaurant, is_primary=True
+        ).first()
+        is_primary_branch = primary and primary.id == location.id
+
+        # ---- Today's shifts at this branch (or unscoped shifts if primary)
+        shift_filter = Q(location_id=location.id)
+        if is_primary_branch:
+            shift_filter = shift_filter | Q(location__isnull=True)
+        shifts = (
+            AssignedShift.objects.filter(
+                schedule__restaurant=restaurant,
+                shift_date=today,
+            )
+            .filter(shift_filter)
+            .select_related("staff")
+            .order_by("start_time")[:ROW_CAP]
+        )
+        shifts_payload = [
+            {
+                "id": str(s.id),
+                "staff_name": (
+                    f"{s.staff.first_name} {s.staff.last_name}".strip()
+                    if s.staff_id
+                    else "Unassigned"
+                ),
+                "role": s.role or "",
+                "status": s.status,
+                "start_time": s.start_time.isoformat() if s.start_time else None,
+                "end_time": s.end_time.isoformat() if s.end_time else None,
+            }
+            for s in shifts
+        ]
+
+        # ---- Today's clock events at this branch
+        clock_filter = Q(location_id=location.id)
+        if is_primary_branch:
+            clock_filter = clock_filter | Q(location__isnull=True)
+        events = (
+            ClockEvent.objects.filter(
+                staff__restaurant=restaurant,
+                timestamp__date=today,
+            )
+            .filter(clock_filter)
+            .select_related("staff", "location")
+            .order_by("-timestamp")[:ROW_CAP]
+        )
+        events_payload = [
+            {
+                "id": str(ev.id),
+                "staff_name": (
+                    f"{ev.staff.first_name} {ev.staff.last_name}".strip()
+                    if ev.staff_id
+                    else "—"
+                ),
+                "event_type": ev.event_type,
+                "timestamp": ev.timestamp.isoformat(),
+                "location_mismatch": bool(ev.location_mismatch),
+            }
+            for ev in events
+        ]
+
+        # ---- Today's cash sessions touching this branch
+        cash_qs = CashSession.objects.filter(
+            restaurant=restaurant, session_date=today
+        ).select_related("shift", "staff", "staff__primary_location")
+        cash_payload: list[dict[str, Any]] = []
+        for cs in cash_qs:
+            loc_id = None
+            if cs.shift_id and cs.shift and cs.shift.location_id:
+                loc_id = cs.shift.location_id
+            elif cs.staff and cs.staff.primary_location_id:
+                loc_id = cs.staff.primary_location_id
+            # Bucket unknown to primary so the primary branch sees them.
+            belongs_here = (
+                loc_id == location.id
+                or (loc_id is None and is_primary_branch)
+            )
+            if not belongs_here:
+                continue
+            cash_payload.append(
+                {
+                    "id": str(cs.id),
+                    "staff_name": (
+                        f"{cs.staff.first_name} {cs.staff.last_name}".strip()
+                        if cs.staff_id
+                        else "—"
+                    ),
+                    "status": cs.status,
+                    "variance": float(cs.variance) if cs.variance is not None else None,
+                    "opening_float": (
+                        float(cs.opening_float) if cs.opening_float is not None else None
+                    ),
+                    "counted_cash": (
+                        float(cs.counted_cash) if cs.counted_cash is not None else None
+                    ),
+                    "expected_cash": (
+                        float(cs.expected_cash) if cs.expected_cash is not None else None
+                    ),
+                }
+            )
+            if len(cash_payload) >= ROW_CAP:
+                break
+
+        return {
+            "shifts_today": shifts_payload,
+            "clock_events_today": events_payload,
+            "cash_sessions_today": cash_payload,
+        }
