@@ -29,6 +29,16 @@ def safe_cache_set(key: str, value: Any, timeout: int) -> None:
         logger.warning("cache set failed key=%s: %s", key, exc)
 
 
+def safe_cache_delete(key: str) -> None:
+    """Best-effort cache invalidation. Never raises from the cache layer so
+    that a Redis hiccup can't turn a successful DB write into a 500.
+    """
+    try:
+        cache.delete(key)
+    except Exception as exc:
+        logger.warning("cache delete failed key=%s: %s", key, exc)
+
+
 def get_or_set(key: str, timeout: int, factory: Callable[[], T]) -> T:
     """Return cached value or compute, store, and return. Never raises from cache layer."""
     hit = safe_cache_get(key)
