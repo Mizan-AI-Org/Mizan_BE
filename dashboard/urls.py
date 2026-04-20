@@ -17,7 +17,7 @@ from .views_extended import (
 )
 from .api.summary import DashboardSummaryView
 from .api.action_center import ActionCenterView
-from .api.portfolio import PortfolioSummaryView
+from .api.portfolio import PortfolioSummaryView, LocationDetailView
 from .views import mark_shift_no_show
 from .views_widget_layout import (
     AgentDashboardCategoryCreateView,
@@ -64,6 +64,11 @@ urlpatterns = [
     path('agent/categories/create/', AgentDashboardCategoryCreateView.as_view(), name='dashboard-agent-categories-create'),
     path('summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
     path('portfolio/', PortfolioSummaryView.as_view(), name='dashboard-portfolio'),
+    path(
+        'portfolio/locations/<uuid:loc_id>/',
+        LocationDetailView.as_view(),
+        name='dashboard-portfolio-location-detail',
+    ),
     path('action-center/', ActionCenterView.as_view(), name='dashboard-action-center'),
     path('attendance/mark-no-show/', mark_shift_no_show, name='dashboard-mark-no-show'),
     path('kpis/', DailyKPIListAPIView.as_view(), name='daily-kpi-list'),
