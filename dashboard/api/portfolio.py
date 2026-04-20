@@ -22,6 +22,7 @@ Design notes:
 """
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -37,6 +38,8 @@ from accounts.models import BusinessLocation
 from core.read_through_cache import safe_cache_get, safe_cache_set
 from scheduling.models import AssignedShift, ShiftSwapRequest
 from timeclock.models import CashSession, ClockEvent
+
+logger = logging.getLogger(__name__)
 
 
 PORTFOLIO_ALLOWED_ROLES = {"SUPER_ADMIN", "ADMIN", "OWNER", "MANAGER"}
@@ -133,17 +136,94 @@ class PortfolioSummaryView(APIView):
         cached = safe_cache_get(cache_key)
         # Serve cache only for unscoped callers; scoped managers have their
         # own view of the data so we skip cache for them to avoid leaking.
-        is_scoped_manager = (
-            role == "MANAGER" and user.managed_locations.exists()
-        )
+        # Defensive: if the user model doesn't have managed_locations yet
+        # (rare, mid-deploy), treat them as unscoped instead of 500'ing.
+        try:
+            is_scoped_manager = (
+                role == "MANAGER" and user.managed_locations.exists()
+            )
+        except Exception as exc:
+            logger.warning(
+                "portfolio: managed_locations lookup failed for user=%s: %s",
+                getattr(user, "id", None),
+                exc,
+            )
+            is_scoped_manager = False
+
         if cached is not None and not is_scoped_manager:
             return Response(cached)
 
-        payload = self._compute(restaurant, user, role, today)
+        try:
+            payload = self._compute(restaurant, user, role, today)
+        except Exception as exc:
+            # Log the full traceback so we can diagnose, but still hand the
+            # caller a useful response: at minimum the list of branches and
+            # an error message they can show in the UI. This is what stops
+            # "Locations Overview" going completely blank when one of the
+            # downstream queries blows up (e.g. a missing migration on a
+            # joined table).
+            logger.exception(
+                "portfolio: _compute failed for restaurant=%s, falling back to locations-only payload",
+                restaurant.id,
+            )
+            payload = self._safe_fallback(restaurant, user, role, today, exc)
+            return Response(payload, status=200)
 
         if not is_scoped_manager:
             safe_cache_set(cache_key, payload, PORTFOLIO_CACHE_TTL_SECONDS)
         return Response(payload)
+
+    def _safe_fallback(self, restaurant, user, role, today, exc) -> dict[str, Any]:
+        """
+        Build a degraded-but-useful response when the full metrics compute
+        fails. We never want the Locations Overview to render an empty
+        page just because one downstream domain (POS, scheduling, …) blew
+        up — the owner still needs to see every branch they have.
+        """
+        try:
+            locations_qs = BusinessLocation.objects.filter(
+                restaurant=restaurant, is_active=True
+            )
+            if role == "MANAGER":
+                try:
+                    managed_ids = list(
+                        user.managed_locations.values_list("id", flat=True)
+                    )
+                    if managed_ids:
+                        locations_qs = locations_qs.filter(id__in=managed_ids)
+                except Exception:
+                    pass
+            locations = list(locations_qs.order_by("-is_primary", "name"))
+        except Exception:
+            locations = []
+
+        locations_payload = [
+            {
+                "id": str(loc.id),
+                "name": loc.name,
+                "is_primary": loc.is_primary,
+                "is_active": loc.is_active,
+                "status": "unknown",
+                "top_concern": None,
+                "metrics": _zero_metrics(),
+            }
+            for loc in locations
+        ]
+        return {
+            "generated_at": timezone.now().isoformat(),
+            "today": today.isoformat(),
+            "tenant": {
+                "id": str(restaurant.id),
+                "name": getattr(restaurant, "name", ""),
+            },
+            "totals": _zero_metrics(),
+            "locations": locations_payload,
+            "degraded": True,
+            "error": (
+                "Some live metrics could not be computed; showing branches "
+                "without today's numbers. Detail: " + str(exc)[:200]
+            ),
+        }
 
     def _compute(self, restaurant, user, role, today) -> dict[str, Any]:
         now = timezone.now()
@@ -181,16 +261,6 @@ class PortfolioSummaryView(APIView):
             loc.id: _zero_metrics() for loc in locations
         }
 
-        # ---- Clock events today -> clocked_in_now, mismatches, labor cost
-        clock_events = list(
-            ClockEvent.objects.filter(
-                staff__restaurant=restaurant,
-                timestamp__date=today,
-            )
-            .select_related("staff", "staff__profile", "location")
-            .order_by("staff_id", "timestamp")
-        )
-
         # Pair events per staff to derive "still clocked in" and hours.
         # One staff may clock in at branch A and out at branch B; we
         # attribute labour cost to the branch of the FIRST in of the day.
@@ -203,131 +273,157 @@ class PortfolioSummaryView(APIView):
                 "mismatched": False,
             }
         )
-        mismatches_by_loc: dict[Any, int] = defaultdict(int)
 
-        for ev in clock_events:
-            sid = ev.staff_id
-            if sid is None:
-                continue
-            evt = (ev.event_type or "").lower()
-            is_in = evt in ("in", "clock_in")
-            is_out = evt in ("out", "clock_out")
-            slot = per_staff[sid]
-            if is_in and slot["first_in"] is None:
-                slot["first_in"] = ev.timestamp
-                slot["location_of_first_in"] = bucket_for(ev.location_id)
-                profile = getattr(ev.staff, "profile", None)
-                slot["hourly_rate"] = (
-                    profile.hourly_rate if profile and profile.hourly_rate else Decimal("0")
+        # ---- Clock events today -> clocked_in_now, mismatches, labor cost
+        try:
+            clock_events = list(
+                ClockEvent.objects.filter(
+                    staff__restaurant=restaurant,
+                    timestamp__date=today,
                 )
-            if is_out:
-                slot["last_out"] = ev.timestamp
-            if ev.location_mismatch:
-                b = bucket_for(ev.location_id)
-                if b is not None:
-                    mismatches_by_loc[b] += 1
+                .select_related("staff", "staff__profile", "location")
+                .order_by("staff_id", "timestamp")
+            )
 
-        for sid, slot in per_staff.items():
-            loc_id = slot["location_of_first_in"]
-            if loc_id not in metrics_by_loc:
-                continue
-            bucket = metrics_by_loc[loc_id]
-            # Currently clocked in = had an 'in' and no matching 'out'
-            # after it. We approximate with "no last_out" which is fine
-            # for today's snapshot.
-            if slot["first_in"] is not None and slot["last_out"] is None:
-                bucket["clocked_in_now"] += 1
-                end_time = now
-            else:
-                end_time = slot["last_out"] or now
-            if slot["first_in"]:
-                hours = max(0.0, (end_time - slot["first_in"]).total_seconds() / 3600.0)
-                bucket["labor_cost_today"] += round(hours * float(slot["hourly_rate"]), 2)
+            mismatches_by_loc: dict[Any, int] = defaultdict(int)
 
-        for loc_id, count in mismatches_by_loc.items():
-            if loc_id in metrics_by_loc:
-                metrics_by_loc[loc_id]["location_mismatches_today"] = count
+            for ev in clock_events:
+                sid = ev.staff_id
+                if sid is None:
+                    continue
+                evt = (ev.event_type or "").lower()
+                is_in = evt in ("in", "clock_in")
+                is_out = evt in ("out", "clock_out")
+                slot = per_staff[sid]
+                if is_in and slot["first_in"] is None:
+                    slot["first_in"] = ev.timestamp
+                    slot["location_of_first_in"] = bucket_for(ev.location_id)
+                    profile = getattr(ev.staff, "profile", None)
+                    slot["hourly_rate"] = (
+                        profile.hourly_rate if profile and profile.hourly_rate else Decimal("0")
+                    )
+                if is_out:
+                    slot["last_out"] = ev.timestamp
+                if ev.location_mismatch:
+                    b = bucket_for(ev.location_id)
+                    if b is not None:
+                        mismatches_by_loc[b] += 1
+
+            for sid, slot in per_staff.items():
+                loc_id = slot["location_of_first_in"]
+                if loc_id not in metrics_by_loc:
+                    continue
+                bucket = metrics_by_loc[loc_id]
+                # Currently clocked in = had an 'in' and no matching 'out'
+                # after it. We approximate with "no last_out" which is fine
+                # for today's snapshot.
+                if slot["first_in"] is not None and slot["last_out"] is None:
+                    bucket["clocked_in_now"] += 1
+                    end_time = now
+                else:
+                    end_time = slot["last_out"] or now
+                if slot["first_in"]:
+                    hours = max(0.0, (end_time - slot["first_in"]).total_seconds() / 3600.0)
+                    bucket["labor_cost_today"] += round(hours * float(slot["hourly_rate"]), 2)
+
+            for loc_id, count in mismatches_by_loc.items():
+                if loc_id in metrics_by_loc:
+                    metrics_by_loc[loc_id]["location_mismatches_today"] = count
+        except Exception:
+            logger.exception("portfolio: clock-event aggregation failed; skipping")
 
         # ---- Shifts today -> scheduled, no-shows, potential no-shows, gaps
-        shifts_today = AssignedShift.objects.filter(
-            schedule__restaurant=restaurant,
-            shift_date=today,
-        ).only(
-            "id", "status", "start_time", "staff_id", "location_id"
-        )
+        try:
+            shifts_today = AssignedShift.objects.filter(
+                schedule__restaurant=restaurant,
+                shift_date=today,
+            ).only(
+                "id", "status", "start_time", "staff_id", "location_id"
+            )
 
-        staff_clocked_in_today = {
-            sid for sid, slot in per_staff.items() if slot["first_in"] is not None
-        }
-        grace_cutoff = now - timedelta(minutes=GRACE_MINUTES_FOR_POTENTIAL_NOSHOW)
+            staff_clocked_in_today = {
+                sid for sid, slot in per_staff.items() if slot["first_in"] is not None
+            }
+            grace_cutoff = now - timedelta(minutes=GRACE_MINUTES_FOR_POTENTIAL_NOSHOW)
 
-        # Track shift gaps via .annotate to avoid loading m2m per row.
-        shifts_with_staff_counts = AssignedShift.objects.filter(
-            schedule__restaurant=restaurant,
-            shift_date=today,
-            status__in=["SCHEDULED", "CONFIRMED"],
-        ).annotate(members_count=Count("staff_members"))
-
-        for s in shifts_today:
-            loc_id = bucket_for(s.location_id)
-            if loc_id not in metrics_by_loc:
-                continue
-            bucket = metrics_by_loc[loc_id]
-            if s.staff_id is not None:
-                bucket["scheduled_today"] += 1
-            if s.status == "NO_SHOW":
-                bucket["no_shows_today"] += 1
-            elif (
-                s.status in ("SCHEDULED", "CONFIRMED")
-                and s.staff_id is not None
-                and s.start_time is not None
-                and s.start_time <= grace_cutoff
-                and s.staff_id not in staff_clocked_in_today
-            ):
-                bucket["potential_no_shows"] += 1
-
-        for s in shifts_with_staff_counts.only("id", "staff_id", "location_id"):
-            if s.staff_id is None and s.members_count == 0:
+            for s in shifts_today:
                 loc_id = bucket_for(s.location_id)
-                if loc_id in metrics_by_loc:
-                    metrics_by_loc[loc_id]["shift_gaps_today"] += 1
+                if loc_id not in metrics_by_loc:
+                    continue
+                bucket = metrics_by_loc[loc_id]
+                if s.staff_id is not None:
+                    bucket["scheduled_today"] += 1
+                if s.status == "NO_SHOW":
+                    bucket["no_shows_today"] += 1
+                elif (
+                    s.status in ("SCHEDULED", "CONFIRMED")
+                    and s.staff_id is not None
+                    and s.start_time is not None
+                    and s.start_time <= grace_cutoff
+                    and s.staff_id not in staff_clocked_in_today
+                ):
+                    bucket["potential_no_shows"] += 1
+        except Exception:
+            logger.exception("portfolio: shift aggregation failed; skipping")
+
+        # ---- Shift gaps (assigned shifts with no staff assigned at all)
+        try:
+            shifts_with_staff_counts = AssignedShift.objects.filter(
+                schedule__restaurant=restaurant,
+                shift_date=today,
+                status__in=["SCHEDULED", "CONFIRMED"],
+            ).annotate(members_count=Count("staff_members"))
+
+            for s in shifts_with_staff_counts.only("id", "staff_id", "location_id"):
+                if s.staff_id is None and s.members_count == 0:
+                    loc_id = bucket_for(s.location_id)
+                    if loc_id in metrics_by_loc:
+                        metrics_by_loc[loc_id]["shift_gaps_today"] += 1
+        except Exception:
+            logger.exception("portfolio: shift-gap aggregation failed; skipping")
 
         # ---- Cash sessions today
-        cash_today = CashSession.objects.filter(
-            restaurant=restaurant, session_date=today
-        ).select_related("shift", "staff", "staff__primary_location")
+        try:
+            cash_today = CashSession.objects.filter(
+                restaurant=restaurant, session_date=today
+            ).select_related("shift", "staff", "staff__primary_location")
 
-        for cs in cash_today:
-            # Prefer the shift's branch; fall back to the staff member's
-            # primary_location; fall back to tenant primary.
-            loc_id = None
-            if cs.shift_id and cs.shift and cs.shift.location_id:
-                loc_id = cs.shift.location_id
-            elif cs.staff and cs.staff.primary_location_id:
-                loc_id = cs.staff.primary_location_id
-            loc_id = bucket_for(loc_id)
-            if loc_id not in metrics_by_loc:
-                continue
-            bucket = metrics_by_loc[loc_id]
-            if cs.status in ("OPEN", "COUNTED"):
-                bucket["open_cash_sessions"] += 1
-            if cs.status == "FLAGGED":
-                bucket["flagged_cash_sessions"] += 1
-            if cs.variance is not None:
-                bucket["cash_variance_today"] = round(
-                    bucket["cash_variance_today"] + float(cs.variance), 2
-                )
+            for cs in cash_today:
+                # Prefer the shift's branch; fall back to the staff member's
+                # primary_location; fall back to tenant primary.
+                loc_id = None
+                if cs.shift_id and cs.shift and cs.shift.location_id:
+                    loc_id = cs.shift.location_id
+                elif cs.staff and getattr(cs.staff, "primary_location_id", None):
+                    loc_id = cs.staff.primary_location_id
+                loc_id = bucket_for(loc_id)
+                if loc_id not in metrics_by_loc:
+                    continue
+                bucket = metrics_by_loc[loc_id]
+                if cs.status in ("OPEN", "COUNTED"):
+                    bucket["open_cash_sessions"] += 1
+                if cs.status == "FLAGGED":
+                    bucket["flagged_cash_sessions"] += 1
+                if cs.variance is not None:
+                    bucket["cash_variance_today"] = round(
+                        bucket["cash_variance_today"] + float(cs.variance), 2
+                    )
+        except Exception:
+            logger.exception("portfolio: cash-session aggregation failed; skipping")
 
         # ---- Pending swap requests (tenant-wide, bucketed by shift loc)
-        swaps = ShiftSwapRequest.objects.filter(
-            shift_to_swap__schedule__restaurant=restaurant,
-            status="PENDING",
-        ).values("shift_to_swap__location_id").annotate(n=Count("id"))
+        try:
+            swaps = ShiftSwapRequest.objects.filter(
+                shift_to_swap__schedule__restaurant=restaurant,
+                status="PENDING",
+            ).values("shift_to_swap__location_id").annotate(n=Count("id"))
 
-        for row in swaps:
-            loc_id = bucket_for(row["shift_to_swap__location_id"])
-            if loc_id in metrics_by_loc:
-                metrics_by_loc[loc_id]["pending_swap_requests"] += row["n"]
+            for row in swaps:
+                loc_id = bucket_for(row["shift_to_swap__location_id"])
+                if loc_id in metrics_by_loc:
+                    metrics_by_loc[loc_id]["pending_swap_requests"] += row["n"]
+        except Exception:
+            logger.exception("portfolio: swap-request aggregation failed; skipping")
 
         # ---- Checklist completion today (shift checklist progress)
         try:
@@ -355,20 +451,42 @@ class PortfolioSummaryView(APIView):
             pass
 
         # ---- Staff count per branch (primary_location is the home branch)
-        from accounts.models import CustomUser
+        # If `primary_location_id` doesn't exist on the deployed schema yet
+        # (mid-deploy / migration not applied), fall back to bucketing every
+        # active staff to the tenant primary so the column at least renders.
+        try:
+            from accounts.models import CustomUser
 
-        staff_rows = (
-            CustomUser.objects.filter(
-                restaurant=restaurant, is_active=True
+            staff_rows = (
+                CustomUser.objects.filter(
+                    restaurant=restaurant, is_active=True
+                )
+                .exclude(role="SUPER_ADMIN")
+                .values("primary_location_id")
+                .annotate(n=Count("id"))
             )
-            .exclude(role="SUPER_ADMIN")
-            .values("primary_location_id")
-            .annotate(n=Count("id"))
-        )
-        for row in staff_rows:
-            loc_id = bucket_for(row["primary_location_id"])
-            if loc_id in metrics_by_loc:
-                metrics_by_loc[loc_id]["staff_count"] += row["n"]
+            for row in staff_rows:
+                loc_id = bucket_for(row["primary_location_id"])
+                if loc_id in metrics_by_loc:
+                    metrics_by_loc[loc_id]["staff_count"] += row["n"]
+        except Exception:
+            logger.exception(
+                "portfolio: per-branch staff count failed; falling back to tenant total on primary"
+            )
+            try:
+                from accounts.models import CustomUser
+
+                total_staff = (
+                    CustomUser.objects.filter(
+                        restaurant=restaurant, is_active=True
+                    )
+                    .exclude(role="SUPER_ADMIN")
+                    .count()
+                )
+                if primary_id and primary_id in metrics_by_loc:
+                    metrics_by_loc[primary_id]["staff_count"] += total_staff
+            except Exception:
+                logger.exception("portfolio: tenant staff count fallback also failed")
 
         # ---- Derive coverage %, checklist %, and status per branch
         locations_payload: list[dict[str, Any]] = []
@@ -400,7 +518,7 @@ class PortfolioSummaryView(APIView):
         return {
             "generated_at": now.isoformat(),
             "today": today.isoformat(),
-            "tenant": {"id": restaurant.id, "name": getattr(restaurant, "name", "")},
+            "tenant": {"id": str(restaurant.id), "name": getattr(restaurant, "name", "")},
             "totals": totals,
             "locations": locations_payload,
         }
