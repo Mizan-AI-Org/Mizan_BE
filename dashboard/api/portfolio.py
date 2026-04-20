@@ -23,6 +23,7 @@ Design notes:
 from __future__ import annotations
 
 import logging
+import traceback
 from collections import defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -40,6 +41,13 @@ from scheduling.models import AssignedShift, ShiftSwapRequest
 from timeclock.models import CashSession, ClockEvent
 
 logger = logging.getLogger(__name__)
+
+# Roles that are allowed to see a detailed server-side traceback in the
+# response body when the portfolio endpoint fails. This makes it possible
+# to diagnose production incidents straight from the browser DevTools
+# without needing access to the backend host's log stream — the whole
+# point of Locations Overview is these people, and only these people.
+_TRACEBACK_ROLES = {"SUPER_ADMIN", "ADMIN", "OWNER"}
 
 
 PORTFOLIO_ALLOWED_ROLES = {"SUPER_ADMIN", "ADMIN", "OWNER", "MANAGER"}
@@ -122,6 +130,37 @@ class PortfolioSummaryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        # Ultimate safety net: nothing in this endpoint should ever be
+        # able to make the frontend render "Couldn't load portfolio data"
+        # because the HTTP layer 500'd. Any uncaught exception below is
+        # turned into a degraded 200 response containing at least the
+        # list of branches and — for admins — the traceback so we can
+        # debug from the browser.
+        try:
+            return self._get_inner(request)
+        except Exception as exc:
+            logger.exception("portfolio: top-level handler failed")
+            user = getattr(request, "user", None)
+            role = getattr(user, "role", None) if user else None
+            restaurant = getattr(user, "restaurant", None) if user else None
+            today = timezone.now().date()
+            payload = self._safe_fallback(
+                restaurant, user, role, today, exc
+            ) if restaurant else {
+                "generated_at": timezone.now().isoformat(),
+                "today": today.isoformat(),
+                "tenant": {"id": None, "name": ""},
+                "totals": _zero_metrics(),
+                "locations": [],
+                "degraded": True,
+                "error": "Portfolio endpoint hit an unexpected error: "
+                + str(exc)[:200],
+            }
+            if role in _TRACEBACK_ROLES:
+                payload["traceback"] = traceback.format_exc()[-2000:]
+            return Response(payload, status=200)
+
+    def _get_inner(self, request):
         user = request.user
         restaurant = getattr(user, "restaurant", None)
         if restaurant is None:
@@ -167,6 +206,8 @@ class PortfolioSummaryView(APIView):
                 restaurant.id,
             )
             payload = self._safe_fallback(restaurant, user, role, today, exc)
+            if role in _TRACEBACK_ROLES:
+                payload["traceback"] = traceback.format_exc()[-2000:]
             return Response(payload, status=200)
 
         if not is_scoped_manager:
