@@ -286,7 +286,7 @@ class PortfolioSummaryView(APIView):
             ):
                 bucket["potential_no_shows"] += 1
 
-        for s in shifts_with_staff_counts.only("id", "staff_id", "members_count", "location_id"):
+        for s in shifts_with_staff_counts.only("id", "staff_id", "location_id"):
             if s.staff_id is None and s.members_count == 0:
                 loc_id = bucket_for(s.location_id)
                 if loc_id in metrics_by_loc:
