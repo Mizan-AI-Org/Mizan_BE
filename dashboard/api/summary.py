@@ -67,12 +67,22 @@ class DashboardSummaryView(APIView):
 
         today = timezone.now().date()
         from core.dashboard_cache_keys import dashboard_summary_cache_key
+        from core.http_caching import json_response_with_cache
         from core.read_through_cache import safe_cache_get, safe_cache_set
 
         _summary_cache_key = dashboard_summary_cache_key(restaurant.id, today)
         _cached_summary = safe_cache_get(_summary_cache_key)
         if _cached_summary is not None:
-            return Response(_cached_summary)
+            # Cached: also let the client short-circuit with a 304 if it
+            # already has the same ETag — this is the cheapest possible
+            # response we can serve to a polling dashboard.
+            return json_response_with_cache(
+                request,
+                _cached_summary,
+                max_age=55,
+                private=True,
+                stale_while_revalidate=120,
+            )
 
         now = timezone.now()
         last_24h = now - timedelta(hours=24)
@@ -704,4 +714,10 @@ class DashboardSummaryView(APIView):
         }
 
         safe_cache_set(_summary_cache_key, data, 55)
-        return Response(data)
+        return json_response_with_cache(
+            request,
+            data,
+            max_age=55,
+            private=True,
+            stale_while_revalidate=120,
+        )
