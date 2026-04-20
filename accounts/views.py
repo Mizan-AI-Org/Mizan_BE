@@ -559,6 +559,30 @@ class InviteStaffView(APIView):
         if role == 'CUSTOM' and custom_label:
             invitation.extra_data['custom_role_id'] = custom_role_id
             invitation.extra_data['custom_role_name'] = custom_label
+
+        # Capture per-branch assignments sent from the Invite Staff dialog
+        # when the tenant has multiple locations. These are later applied to
+        # the freshly-created user by ``apply_invitation_locations`` during
+        # invitation acceptance. We accept either UUID strings or lists of
+        # UUID strings; unknown IDs are silently dropped there, so we only
+        # need a light-touch sanity check here.
+        def _normalize_id_list(raw):
+            if isinstance(raw, list):
+                return [str(x) for x in raw if x]
+            if isinstance(raw, str) and raw.strip():
+                return [raw.strip()]
+            return []
+
+        primary_location = request.data.get('primary_location')
+        if isinstance(primary_location, str) and primary_location.strip():
+            invitation.extra_data['primary_location'] = primary_location.strip()
+        allowed_locations = _normalize_id_list(request.data.get('allowed_locations'))
+        if allowed_locations:
+            invitation.extra_data['allowed_locations'] = allowed_locations
+        managed_locations = _normalize_id_list(request.data.get('managed_locations'))
+        if managed_locations:
+            invitation.extra_data['managed_locations'] = managed_locations
+
         invitation.save(update_fields=['first_name', 'last_name', 'extra_data'])
 
         invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={token}"
@@ -634,11 +658,17 @@ class InviteStaffBulkCsvView(APIView):
                 })
             else:
                 invitations.append({'email': '', 'role': ''})
+        default_primary_location = request.data.get('primary_location')
+        if isinstance(default_primary_location, str):
+            default_primary_location = default_primary_location.strip() or None
+        else:
+            default_primary_location = None
         try:
             results = UserManagementService.bulk_invite_from_list(
                 invitations=invitations,
                 restaurant=request.user.restaurant,
                 invited_by=request.user,
+                default_primary_location_id=default_primary_location,
             )
             return Response({
                 'created': results['success'],

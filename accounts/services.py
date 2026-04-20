@@ -581,10 +581,23 @@ class UserManagementService:
         return results
 
     @staticmethod
-    def bulk_invite_from_list(invitations, restaurant, invited_by, expires_in_days=7):
+    def bulk_invite_from_list(invitations, restaurant, invited_by, expires_in_days=7, default_primary_location_id=None):
         """
         Process JSON list of invitations with the same fields as CSV.
+
+        ``default_primary_location_id`` is applied to every row that doesn't
+        already specify a ``primary_location`` — this is how the "Assign this
+        batch to branch" picker on the bulk-invite dialog propagates a
+        branch choice to all invited staff.
         """
+        default_primary_location_id = str(default_primary_location_id).strip() if default_primary_location_id else ''
+        # Validate once — if the picked branch doesn't belong to this tenant
+        # we silently drop it rather than 400 the whole upload.
+        if default_primary_location_id:
+            if not BusinessLocation.objects.filter(
+                id=default_primary_location_id, restaurant=restaurant
+            ).exists():
+                default_primary_location_id = ''
         results = { 'success': 0, 'failed': 0, 'errors': [], 'invitations': [] }
         for idx, item in enumerate(invitations, start=1):
             try:
@@ -634,6 +647,13 @@ class UserManagementService:
                     'department': department,
                     'phone': phone
                 }
+                # Per-row branch override wins; otherwise fall back to the
+                # batch default from the caller.
+                row_primary = str(item.get('primary_location') or '').strip()
+                if row_primary:
+                    extra_data['primary_location'] = row_primary
+                elif default_primary_location_id:
+                    extra_data['primary_location'] = default_primary_location_id
                 if role_value == "CUSTOM":
                     ok, err, cr_label = validate_custom_invite(restaurant, "CUSTOM", custom_role_id or None)
                     if not ok:

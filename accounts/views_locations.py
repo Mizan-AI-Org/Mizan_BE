@@ -1,13 +1,35 @@
+from datetime import timedelta
+
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from core.read_through_cache import safe_cache_delete
+
 from .models import BusinessLocation
 
 
 WRITE_ROLES = {'SUPER_ADMIN', 'ADMIN', 'MANAGER'}
+
+
+def _invalidate_portfolio_cache(restaurant_id):
+    """
+    Drop the multi-location portfolio cache entries for a tenant whenever a
+    branch is created/updated/deleted/promoted, so the Locations Overview
+    page picks up the change on the next poll instead of waiting out the
+    60 s TTL. We clear today and yesterday because a late-night edit may
+    straddle the day boundary on the server timezone.
+    """
+    if not restaurant_id:
+        return
+    today = timezone.now().date()
+    for day in (today, today - timedelta(days=1)):
+        safe_cache_delete(
+            f"dashboard:portfolio:v1:{restaurant_id}:{day.isoformat()}"
+        )
 
 
 class BusinessLocationSerializer(serializers.ModelSerializer):
@@ -123,6 +145,7 @@ class BusinessLocationViewSet(viewsets.ModelViewSet):
                 {'detail': 'You do not have permission to add business locations.'}
             )
         serializer.save(restaurant=rest)
+        _invalidate_portfolio_cache(rest.id)
 
     def perform_update(self, serializer):
         # Mirror the existing single-location lock: once coordinates are set
@@ -144,6 +167,7 @@ class BusinessLocationViewSet(viewsets.ModelViewSet):
                 {'detail': 'Primary location coordinates are locked. Contact a SUPER_ADMIN to move it.'}
             )
         serializer.save()
+        _invalidate_portfolio_cache(instance.restaurant_id)
 
     def perform_destroy(self, instance):
         rest = instance.restaurant
@@ -168,6 +192,7 @@ class BusinessLocationViewSet(viewsets.ModelViewSet):
                 instance.delete()
         else:
             instance.delete()
+        _invalidate_portfolio_cache(rest.id)
 
     @action(detail=True, methods=['post'], url_path='set-primary')
     def set_primary(self, request, pk=None):
@@ -187,5 +212,6 @@ class BusinessLocationViewSet(viewsets.ModelViewSet):
             ).exclude(pk=location.pk).update(is_primary=False)
             location.is_primary = True
             location.save()  # syncs Restaurant.*
+        _invalidate_portfolio_cache(location.restaurant_id)
         serializer = self.get_serializer(location)
         return Response(serializer.data)
