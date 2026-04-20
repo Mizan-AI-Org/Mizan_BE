@@ -7,7 +7,7 @@ import requests
 from django.conf import settings
 from django.db import models
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from .models import Order, OrderLineItem, Payment
 from menu.models import MenuItem, MenuCategory
 from django.utils import timezone
@@ -1467,11 +1467,34 @@ class IntegrationManager:
     @classmethod
     def generate_prep_list(cls, restaurant, target_date=None, target_start_date=None, target_end_date=None) -> Dict:
         """Generate a prep list based on POS sales history, recipes, and inventory.
-        Uses same-day-of-week sales from last 4 weeks (fetched from POS) as the forecast base.
-        Supports single date (target_date) or date range (target_start_date, target_end_date).
-        Does NOT use OrderLineItem — all sales data comes from the connected POS."""
+
+        Phase 1 & 2 forecasting:
+
+        * Weighted (EWMA) mean of same-day-of-week sales over the last 4 weeks
+          — recent weeks count more than old ones.
+        * Per-item **dynamic buffer** from the coefficient of variation of those
+          weeks, clamped to [5%, 30%]. Noisy items get cushion, flat items don't.
+        * **EatNow covers overlay** — if expected reservations on the target
+          dates differ materially from the 4-week baseline we scale the forecast
+          proportionally (clamped to 0.5x–2.0x).
+        * Recipe quantities are **unit-converted** into each ingredient's
+          inventory-native unit before gap math (g↔kg, ml↔l, box↔unit via
+          ``pack_size``).
+        * Shortages include **suggested_order_qty** rounded up to the
+          supplier's pack size and bounded by ``min_order_qty``; ``order_by``
+          is the target_start minus the supplier's lead time.
+        """
         from menu.models import RecipeIngredient
         from inventory.models import InventoryItem
+        from inventory.unit_conversion import to_inventory_unit
+        from .forecast import (
+            covers_multiplier,
+            eatnow_covers_for_dates,
+            forecast_item,
+            order_by_date,
+            samples_by_item,
+            suggest_order_qty,
+        )
 
         if target_start_date and target_end_date:
             target_dates = []
@@ -1485,22 +1508,37 @@ class IntegrationManager:
             target_dates = [target]
         dow = target.weekday()
 
-        provider = (restaurant.pos_provider or '').strip().upper()
-        if provider in ('NONE', '') or not restaurant.pos_is_connected:
-            day_of_week = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][dow]
+        day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+        def _day_of_week_label() -> str:
+            label = day_names[dow]
             if len(target_dates) > 1:
-                day_of_week = f"{day_of_week} – {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][target_dates[-1].weekday()]}"
+                label = f"{label} – {day_names[target_dates[-1].weekday()]}"
+            return label
+
+        def _empty_response(message: str) -> Dict:
             return {
                 'success': True,
                 'target_date': target.isoformat(),
                 'target_end_date': target_dates[-1].isoformat() if len(target_dates) > 1 else None,
-                'day_of_week': day_of_week,
+                'day_of_week': _day_of_week_label(),
                 'forecast_portions': [],
                 'ingredient_prep_list': [],
                 'shortages': [],
-                'message_for_user': 'Connect your POS in Settings to generate a data-driven prep list.',
-                'miya_recommendation': cls._build_prep_list_miya_recommendation(target, [], [], [], {}, target_dates),
+                'covers_multiplier': 1.0,
+                'forecast_algo': 'ewma',
+                'buffer_mode': 'dynamic',
+                'message_for_user': message,
+                'miya_recommendation': cls._build_prep_list_miya_recommendation(
+                    target, [], [], [], {}, target_dates
+                ),
             }
+
+        provider = (restaurant.pos_provider or '').strip().upper()
+        if provider in ('NONE', '') or not restaurant.pos_is_connected:
+            return _empty_response(
+                'Connect your POS in Settings to generate a data-driven prep list.'
+            )
 
         all_lookback = []
         for t in target_dates:
@@ -1510,60 +1548,60 @@ class IntegrationManager:
 
         integration = cls.get_integration(restaurant)
         if not integration:
-            day_of_week = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][dow]
-            if len(target_dates) > 1:
-                day_of_week = f"{day_of_week} – {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][target_dates[-1].weekday()]}"
-            return {
-                'success': True,
-                'target_date': target.isoformat(),
-                'target_end_date': target_dates[-1].isoformat() if len(target_dates) > 1 else None,
-                'day_of_week': day_of_week,
-                'forecast_portions': [],
-                'ingredient_prep_list': [],
-                'shortages': [],
-                'message_for_user': 'No POS integration configured. Connect your POS in Settings.',
-                'miya_recommendation': cls._build_prep_list_miya_recommendation(target, [], [], [], {}, target_dates),
-            }
+            return _empty_response(
+                'No POS integration configured. Connect your POS in Settings.'
+            )
 
         pos_sales_by_date = integration.get_item_sales_for_date_range(start_date, end_date)
         if not pos_sales_by_date:
-            day_of_week = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][dow]
-            if len(target_dates) > 1:
-                day_of_week = f"{day_of_week} – {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][target_dates[-1].weekday()]}"
-            return {
-                'success': True,
-                'target_date': target.isoformat(),
-                'target_end_date': target_dates[-1].isoformat() if len(target_dates) > 1 else None,
-                'day_of_week': day_of_week,
-                'forecast_portions': [],
-                'ingredient_prep_list': [],
-                'shortages': [],
-                'message_for_user': 'No sales history found for this day of week from your POS. Ensure your POS has sales data for the last 4 weeks.',
-                'miya_recommendation': cls._build_prep_list_miya_recommendation(target, [], [], [], {}, target_dates),
-            }
+            return _empty_response(
+                'No sales history found for this day of week from your POS. '
+                'Ensure your POS has sales data for the last 4 weeks.'
+            )
 
-        item_totals_by_name = {}
+        # --- Phase 2: EatNow covers overlay -----------------------------------
+        try:
+            expected, baseline = eatnow_covers_for_dates(restaurant, target_dates)
+        except Exception:  # keep prep list robust even if reservations FK fails
+            expected, baseline = 0.0, 0.0
+        covers_mult = covers_multiplier(expected, baseline)
+
+        # --- Phase 2: EWMA + dynamic buffer per item --------------------------
+        # Build a per-item week-series indexed by the first target date; when the
+        # range spans multiple days we aggregate the forecasts.
+        aggregated: Dict[str, Dict[str, float]] = {}
         for t in target_dates:
-            lookback_dates = [t - timedelta(weeks=w) for w in range(1, 5)]
-            for lb_date in lookback_dates:
-                day_data = pos_sales_by_date.get(lb_date, {})
-                for item_name, qty in day_data.items():
-                    if not item_name:
-                        continue
-                    item_totals_by_name[item_name] = item_totals_by_name.get(item_name, 0) + qty
+            samples = samples_by_item(pos_sales_by_date, t, weeks=4)
+            for name, series in samples.items():
+                f = forecast_item(series, covers_multiplier=covers_mult)
+                if f.forecast_portions <= 0:
+                    continue
+                slot = aggregated.setdefault(name, {
+                    'forecast': 0.0, 'baseline': 0.0, 'buffer': f.buffer,
+                    'samples': f.samples,
+                })
+                slot['forecast'] += f.forecast_portions
+                slot['baseline'] += f.baseline_mean
+                # Keep the *max* buffer across dates — reflects the worst
+                # volatility inside the window.
+                slot['buffer'] = max(slot['buffer'], f.buffer)
+                slot['samples'] = max(slot['samples'], f.samples)
 
-        n_dates = len([d for d in all_lookback if d in pos_sales_by_date]) or 1
-        item_avg = [(name, total / n_dates) for name, total in item_totals_by_name.items() if total > 0]
-        item_avg.sort(key=lambda x: -x[1])
+        item_avg: List[Tuple[str, Dict[str, float]]] = sorted(
+            aggregated.items(), key=lambda x: -x[1]['forecast']
+        )
 
-        prep_items = []
-        ingredient_totals = {}
+        prep_items: List[Dict] = []
+        ingredient_totals: Dict[str, Dict] = {}
 
-        for item_name, avg_qty in item_avg:
-            forecast_qty = round(float(avg_qty) * 1.1, 1)
+        for item_name, info in item_avg:
+            forecast_qty = round(info['forecast'], 2)
             prep_items.append({
                 'menu_item': item_name,
                 'forecast_portions': forecast_qty,
+                'baseline_mean': round(info['baseline'], 2),
+                'buffer': round(info['buffer'], 3),
+                'samples': info['samples'],
             })
 
             menu_item = MenuItem.objects.filter(
@@ -1600,51 +1638,89 @@ class IntegrationManager:
 
             for ri in recipe_ings:
                 ing_name = ri.ingredient.name
-                qty_needed = float(ri.quantity) * forecast_qty
+                inv_item = InventoryItem.objects.filter(
+                    restaurant=restaurant, name__iexact=ing_name, is_active=True
+                ).select_related('supplier').first()
+
+                # Recipe unit → inventory unit conversion (g→kg etc.).
+                recipe_unit = getattr(ri, 'unit', None) or getattr(ri.ingredient, 'unit', None) or ''
+                inv_unit = inv_item.unit if inv_item else recipe_unit
+                pack_size = inv_item.pack_size if inv_item else None
+                qty_raw = float(ri.quantity) * forecast_qty
+                qty_converted, _ok = to_inventory_unit(qty_raw, recipe_unit, inv_unit, pack_size)
+                qty_needed = float(qty_converted)
+
                 if ing_name in ingredient_totals:
                     ingredient_totals[ing_name]['needed'] += qty_needed
                 else:
-                    inv_item = InventoryItem.objects.filter(
-                        restaurant=restaurant, name__iexact=ing_name, is_active=True
-                    ).first()
                     ingredient_totals[ing_name] = {
                         'needed': qty_needed,
-                        'unit': getattr(ri, 'unit', None) or getattr(ri.ingredient, 'unit', None) or (inv_item.unit if inv_item else ''),
+                        'unit': inv_unit or recipe_unit or '',
                         'in_stock': float(inv_item.current_stock) if inv_item else None,
+                        'pack_size': float(inv_item.pack_size) if inv_item and inv_item.pack_size else None,
+                        'min_order_qty': float(inv_item.min_order_qty) if inv_item and inv_item.min_order_qty else None,
+                        'shelf_life_days': inv_item.shelf_life_days if inv_item else None,
+                        'cost_per_unit': float(inv_item.cost_per_unit) if inv_item else 0.0,
+                        'inventory_item_id': str(inv_item.id) if inv_item else None,
+                        'supplier_id': str(inv_item.supplier.id) if inv_item and inv_item.supplier else None,
+                        'supplier_name': inv_item.supplier.name if inv_item and inv_item.supplier else None,
+                        'lead_time_days': inv_item.supplier.lead_time_days if inv_item and inv_item.supplier else None,
                     }
 
-        prep_list = []
-        shortages = []
+        prep_list: List[Dict] = []
+        shortages: List[str] = []
+        # Phase 1: supplier lead-time drives the "order by" date.
         for name, info in sorted(ingredient_totals.items(), key=lambda x: -x[1]['needed']):
             entry = {
                 'ingredient': name,
                 'needed': round(info['needed'], 2),
                 'unit': info['unit'],
                 'in_stock': info['in_stock'],
+                'pack_size': info['pack_size'],
+                'min_order_qty': info['min_order_qty'],
+                'shelf_life_days': info['shelf_life_days'],
+                'cost_per_unit': info['cost_per_unit'],
+                'inventory_item_id': info['inventory_item_id'],
+                'supplier_id': info['supplier_id'],
+                'supplier_name': info['supplier_name'],
+                'lead_time_days': info['lead_time_days'],
+                'order_by': order_by_date(target, info['lead_time_days']).isoformat(),
             }
             if info['in_stock'] is not None:
                 entry['gap'] = round(info['needed'] - info['in_stock'], 2)
                 if entry['gap'] > 0:
-                    shortages.append(f"{name}: need {entry['needed']}{info['unit']}, have {info['in_stock']}{info['unit']} (short {entry['gap']}{info['unit']})")
+                    sugg = suggest_order_qty(
+                        entry['gap'], info['pack_size'], info['min_order_qty']
+                    )
+                    entry['suggested_order_qty'] = float(sugg)
+                    entry['suggested_order_cost'] = float(sugg) * info['cost_per_unit']
+                    shortages.append(
+                        f"{name}: need {entry['needed']}{info['unit']}, "
+                        f"have {info['in_stock']}{info['unit']} "
+                        f"(short {entry['gap']}{info['unit']}, order {entry['suggested_order_qty']}{info['unit']})"
+                    )
             prep_list.append(entry)
 
         miya_recommendation = cls._build_prep_list_miya_recommendation(
             target, prep_items, prep_list, shortages, pos_sales_by_date, target_dates
         )
 
-        day_of_week = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][dow]
-        if len(target_dates) > 1:
-            day_of_week = f"{day_of_week} – {['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][target_dates[-1].weekday()]}"
-
         out = {
             'success': True,
             'target_date': target.isoformat(),
             'target_end_date': target_dates[-1].isoformat() if len(target_dates) > 1 else None,
-            'day_of_week': day_of_week,
+            'day_of_week': _day_of_week_label(),
             'forecast_portions': prep_items[:20],
             'ingredient_prep_list': prep_list[:30],
             'shortages': shortages,
-            'message_for_user': cls._build_prep_message(target, dow, prep_items, prep_list, shortages, target_dates),
+            'covers_multiplier': covers_mult,
+            'expected_covers': round(expected, 1),
+            'baseline_covers': round(baseline, 1),
+            'forecast_algo': 'ewma',
+            'buffer_mode': 'dynamic',
+            'message_for_user': cls._build_prep_message(
+                target, dow, prep_items, prep_list, shortages, target_dates, covers_mult
+            ),
             'miya_recommendation': miya_recommendation,
         }
         return out
@@ -1688,7 +1764,9 @@ class IntegrationManager:
         }
 
     @staticmethod
-    def _build_prep_message(target, dow, prep_items, prep_list, shortages, target_dates=None) -> str:
+    def _build_prep_message(
+        target, dow, prep_items, prep_list, shortages, target_dates=None, covers_mult: float = 1.0,
+    ) -> str:
         target_dates = target_dates or [target]
         day_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
         day_name = day_names[dow]
@@ -1697,10 +1775,34 @@ class IntegrationManager:
         if not prep_items:
             return "No sales history found for this day of week. Prep list couldn't be generated."
         date_range = f"{target.isoformat()} – {target_dates[-1].isoformat()}" if len(target_dates) > 1 else target.isoformat()
-        header = f"📋 Prep list for {date_range} ({day_name}), based on last 4 weeks' sales:\n"
+        covers_note = ''
+        if covers_mult and abs(covers_mult - 1.0) >= 0.1:
+            pct = int(round((covers_mult - 1.0) * 100))
+            direction = 'up' if pct > 0 else 'down'
+            covers_note = f" · EatNow bookings {direction} {abs(pct)}% vs baseline"
+        header = (
+            f"📋 Prep list for {date_range} ({day_name}){covers_note}, "
+            f"EWMA of the last 4 weeks' sales with per-item buffer:\n"
+        )
         if prep_list:
-            lines = [f"• {p['ingredient']}: {p['needed']} {p['unit']}" + (f" (⚠️ short {p['gap']}{p['unit']})" if p.get('gap', 0) > 0 else " ✓") for p in prep_list[:15]]
-            footer = f"\n\n⚠️ {len(shortages)} ingredient(s) may need reordering." if shortages else "\n\n✅ All ingredients in stock."
+            lines = []
+            for p in prep_list[:15]:
+                line = f"• {p['ingredient']}: {p['needed']} {p['unit']}"
+                if p.get('gap', 0) > 0:
+                    if p.get('suggested_order_qty'):
+                        line += (
+                            f" (⚠️ short {p['gap']}{p['unit']}, "
+                            f"order {p['suggested_order_qty']}{p['unit']})"
+                        )
+                    else:
+                        line += f" (⚠️ short {p['gap']}{p['unit']})"
+                else:
+                    line += " ✓"
+                lines.append(line)
+            footer = (
+                f"\n\n⚠️ {len(shortages)} ingredient(s) may need reordering."
+                if shortages else "\n\n✅ All ingredients in stock."
+            )
             return header + '\n'.join(lines) + footer
         lines = [f"• {p['menu_item']}: ~{p['forecast_portions']} portions" for p in prep_items[:15]]
         return header + '\n'.join(lines) + "\n\nℹ️ No recipes configured yet — showing forecast portions only. Add recipes in your menu to get ingredient-level prep lists."

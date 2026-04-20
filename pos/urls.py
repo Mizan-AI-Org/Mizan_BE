@@ -7,6 +7,7 @@ from .views import (
 )
 from . import webhooks
 from . import views_agent
+from . import views_auto_po
 from . import views_oauth
 from . import views_analytics
 
@@ -29,6 +30,7 @@ urlpatterns = [
     # Manager analytics (sales today, prep list for tomorrow)
     path('sales/today/', views_analytics.sales_today, name='pos-sales-today'),
     path('prep-list/', views_analytics.prep_list, name='pos-prep-list'),
+    path('prep-list/auto-po/', views_auto_po.auto_purchase_orders, name='pos-prep-list-auto-po'),
     
     # Webhooks
     path('webhooks/toast/', webhooks.TOASTWebhookView.as_view(), name='toast-webhook'),

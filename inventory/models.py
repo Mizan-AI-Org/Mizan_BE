@@ -22,6 +22,21 @@ class InventoryItem(models.Model):
     cost_per_unit = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
     supplier = models.ForeignKey('Supplier', on_delete=models.SET_NULL, null=True, blank=True, related_name='supplied_items')
     last_restock_date = models.DateField(null=True, blank=True)
+    # Prep-planning / purchasing hints. Used by the auto-PO engine to round
+    # orders up to the supplier's actual pack/case, honour minimum order
+    # quantities, and bucket perishables into per-day sub-orders.
+    pack_size = models.DecimalField(
+        max_digits=10, decimal_places=3, null=True, blank=True,
+        help_text="Units per case/pack (e.g. 12 for a 12-pack, 5 for a 5 kg sack).",
+    )
+    min_order_qty = models.DecimalField(
+        max_digits=10, decimal_places=3, null=True, blank=True,
+        help_text="Supplier minimum order quantity in this item's unit.",
+    )
+    shelf_life_days = models.PositiveSmallIntegerField(
+        null=True, blank=True,
+        help_text="Days the item stays usable once received. Perishables (e.g. fresh fish) = 1–2; dry goods can be left blank.",
+    )
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -41,6 +56,10 @@ class Supplier(models.Model):
     phone = models.CharField(max_length=20, blank=True, null=True)
     email = models.EmailField(blank=True, null=True)
     address = models.TextField(blank=True, null=True)
+    lead_time_days = models.PositiveSmallIntegerField(
+        default=2,
+        help_text="Days between placing an order and receiving it. Drives the prep list's 'order-by' date.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
