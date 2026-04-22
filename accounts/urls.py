@@ -15,6 +15,7 @@ from .views_locations import BusinessLocationViewSet
 from .views_eatnow_webhook import eatnow_webhook
 from .views_invitations import InvitationViewSet, UserManagementViewSet
 from .views_agent import (
+    agent_activity_log,
     AgentContextView,
     accept_invitation_from_agent,
     get_invitation_by_phone,
@@ -23,8 +24,6 @@ from .views_agent import (
     agent_retry_invite,
     agent_miya_instructions,
     agent_list_reservations,
-    agent_list_shift_reviews,
-    agent_submit_shift_review,
     agent_recognize_staff,
     agent_list_recognitions,
     agent_hr_lifecycle,
@@ -37,10 +36,18 @@ from .views_rbac import (
     RolePermissionListView,
     RolePermissionDetailView,
     EffectivePermissionsView,
+    AssignableUsersView,
+    UserPermissionListView,
+    UserPermissionDetailView,
+    UserPermissionBulkView,
 )
 from .views_onboarding import (
+    GoogleCalendarOAuthCallbackView,
+    OnboardingCategoryOwnersView,
+    OnboardingGoogleCalendarView,
     OnboardingSeedView,
     OnboardingStatusView,
+    OnboardingWidgetVisibilityView,
     audit_log_list,
 )
 
@@ -96,22 +103,61 @@ urlpatterns = [
     path('agent/miya-instructions/', agent_miya_instructions, name='agent_miya_instructions'),
     path('agent/staff-report-pdf/', agent_staff_report_pdf, name='agent_staff_report_pdf'),
     path('agent/reservations/', agent_list_reservations, name='agent_list_reservations'),
-    path('agent/shift-reviews/', agent_list_shift_reviews, name='agent_list_shift_reviews'),
-    path('agent/shift-reviews/submit/', agent_submit_shift_review, name='agent_submit_shift_review'),
     path('agent/recognize-staff/', agent_recognize_staff, name='agent_recognize_staff'),
     path('agent/recognitions/', agent_list_recognitions, name='agent_list_recognitions'),
     path('agent/hr-lifecycle/', agent_hr_lifecycle, name='agent_hr_lifecycle'),
     path('agent/grant-role/', agent_grant_role, name='agent_grant_role'),
     path('agent/staff-documents/', agent_staff_documents, name='agent_staff_documents'),
+    path('agent/activity-log/', agent_activity_log, name='agent_activity_log'),
 
     # Onboarding (first-run wizard) + Activity log
     path('onboarding/', OnboardingStatusView.as_view(), name='onboarding_status'),
     path('onboarding/seed/', OnboardingSeedView.as_view(), name='onboarding_seed'),
+    path(
+        'onboarding/widget-visibility/',
+        OnboardingWidgetVisibilityView.as_view(),
+        name='onboarding_widget_visibility',
+    ),
+    path(
+        'onboarding/category-owners/',
+        OnboardingCategoryOwnersView.as_view(),
+        name='onboarding_category_owners',
+    ),
+    path(
+        'integrations/google-calendar/',
+        OnboardingGoogleCalendarView.as_view(),
+        name='onboarding_google_calendar',
+    ),
+    path(
+        'integrations/google-calendar/callback/',
+        GoogleCalendarOAuthCallbackView.as_view(),
+        name='google_calendar_oauth_callback',
+    ),
     path('audit-logs/', audit_log_list, name='audit_log_list'),
 
     # RBAC
     path('rbac/catalog/', RBACCatalogView.as_view(), name='rbac_catalog'),
     path('rbac/role-permissions/', RolePermissionListView.as_view(), name='rbac_role_permissions_list'),
     path('rbac/role-permissions/<str:role>/', RolePermissionDetailView.as_view(), name='rbac_role_permissions_detail'),
+    path(
+        'rbac/user-permissions/assignable/',
+        AssignableUsersView.as_view(),
+        name='rbac_user_permissions_assignable',
+    ),
+    path(
+        'rbac/user-permissions/bulk/',
+        UserPermissionBulkView.as_view(),
+        name='rbac_user_permissions_bulk',
+    ),
+    path(
+        'rbac/user-permissions/',
+        UserPermissionListView.as_view(),
+        name='rbac_user_permissions_list',
+    ),
+    path(
+        'rbac/user-permissions/<uuid:user_id>/',
+        UserPermissionDetailView.as_view(),
+        name='rbac_user_permissions_detail',
+    ),
     path('rbac/me/', EffectivePermissionsView.as_view(), name='rbac_me'),
 ]

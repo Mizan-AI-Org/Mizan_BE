@@ -168,6 +168,41 @@ class Restaurant(models.Model):
         sq = self.get_square_oauth()
         return sq.get("refresh_token") or ""
 
+    # --- Toast helpers (provider-specific) ---
+    # Toast uses partner-credentials auth (no per-merchant refresh token);
+    # what we persist is the `restaurantGuid`, the most recently fetched
+    # `access_token`, and its `expires_at` so we only hit the login
+    # endpoint when the cached token is near expiry.
+    def get_toast_oauth(self) -> dict:
+        return (self.get_pos_oauth() or {}).get("toast", {}) or {}
+
+    def set_toast_oauth(self, toast_payload: dict) -> None:
+        root = self.get_pos_oauth() or {}
+        root["toast"] = toast_payload or {}
+        self.set_pos_oauth(root)
+
+    def get_toast_restaurant_guid(self) -> str:
+        return (self.get_toast_oauth() or {}).get("restaurant_guid") or ""
+
+    # --- Clover helpers (provider-specific) ---
+    # Clover follows standard OAuth 2.0 — access + refresh tokens are
+    # stored under the provider key so the SaaS partner credentials
+    # (CLOVER_APP_ID / _SECRET) can rotate without losing tenant bindings.
+    def get_clover_oauth(self) -> dict:
+        return (self.get_pos_oauth() or {}).get("clover", {}) or {}
+
+    def set_clover_oauth(self, clover_payload: dict) -> None:
+        root = self.get_pos_oauth() or {}
+        root["clover"] = clover_payload or {}
+        self.set_pos_oauth(root)
+
+    def get_clover_access_token(self) -> str:
+        cv = self.get_clover_oauth()
+        return cv.get("access_token") or (self.pos_api_key or "")
+
+    def get_clover_refresh_token(self) -> str:
+        return (self.get_clover_oauth() or {}).get("refresh_token") or ""
+
     def get_reservation_oauth(self) -> dict:
         """Decrypted secrets for reservation providers (Eat Now API key, etc.)."""
         if not self.reservation_oauth_data:
@@ -718,12 +753,27 @@ class AuditLog(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='audit_logs', null=True, blank=True)
     user = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='audit_logs')
+    # The person the action was *directed at* (assignee / subject). Lets us
+    # answer "who was the task assigned to?" or "who did Alice message?"
+    # without parsing the description. Nullable — not every action has a
+    # target (e.g. LOGIN, settings update).
+    target_user = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='audit_logs_as_target',
+    )
     action_type = models.CharField(max_length=50, choices=ACTION_TYPES)
     entity_type = models.CharField(max_length=100)
     entity_id = models.CharField(max_length=100, blank=True, null=True)
     description = models.TextField()
     old_values = models.JSONField(default=dict, blank=True)
     new_values = models.JSONField(default=dict, blank=True)
+    # Free-form semantic bucket: HTTP method, status, path, labels (e.g.
+    # {"method":"POST","status":200,"path":"/api/...","task_title":"Clean fryer"})
+    # Kept small (< a few KB) so Miya can render it to humans.
+    metadata = models.JSONField(default=dict, blank=True)
     ip_address = models.GenericIPAddressField(blank=True, null=True)
     user_agent = models.TextField(blank=True, null=True)
     timestamp = models.DateTimeField(auto_now_add=True)
@@ -731,6 +781,13 @@ class AuditLog(models.Model):
     class Meta:
         db_table = 'audit_logs'
         ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['restaurant', '-timestamp'], name='audit_restaurant_ts_idx'),
+            models.Index(fields=['user', '-timestamp'], name='audit_actor_ts_idx'),
+            models.Index(fields=['target_user', '-timestamp'], name='audit_target_ts_idx'),
+            models.Index(fields=['entity_type', 'action_type'], name='audit_entity_action_idx'),
+            models.Index(fields=['entity_type', 'entity_id'], name='audit_entity_id_idx'),
+        ]
     
     def __str__(self):
         return f"{self.get_action_type_display()} by {self.user.email if self.user else 'Unknown'}"
@@ -738,17 +795,25 @@ class AuditLog(models.Model):
     @classmethod
     def create_log(cls, restaurant, user, action_type, entity_type, description, 
                    entity_id=None, old_values=None, new_values=None, 
-                   ip_address=None, user_agent=None):
-        """Create an audit log entry."""
+                   ip_address=None, user_agent=None,
+                   target_user=None, metadata=None):
+        """Create an audit log entry.
+
+        ``target_user`` records *who the action affected* (e.g. the staff
+        member a task was assigned to). ``metadata`` carries free-form
+        semantic details the middleware or service layer wants Miya to see.
+        """
         return cls.objects.create(
             restaurant=restaurant,
             user=user,
+            target_user=target_user,
             action_type=action_type,
             entity_type=entity_type,
             entity_id=entity_id,
             description=description,
             old_values=old_values or {},
             new_values=new_values or {},
+            metadata=metadata or {},
             ip_address=ip_address,
             user_agent=user_agent
         )
@@ -1033,4 +1098,52 @@ class RolePermissionSet(models.Model):
 
     def __str__(self):
         return f"{self.restaurant_id} · {self.role}"
+
+
+class UserPermissionSet(models.Model):
+    """
+    Tenant-scoped permission override for a single user.
+
+    Takes precedence over any RolePermissionSet for the same restaurant +
+    role. Absence of a row means "use the role-level permissions (or
+    catalog defaults) for this user". SUPER_ADMIN / ADMIN / OWNER are never
+    gated: their effective permissions always resolve to full access.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        Restaurant,
+        on_delete=models.CASCADE,
+        related_name='user_permission_sets',
+    )
+    user = models.ForeignKey(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name='permission_override',
+    )
+    permissions = models.JSONField(default=dict, blank=True)
+    updated_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='user_permission_edits',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'rbac_user_permission_sets'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['restaurant', 'user'],
+                name='uniq_user_permission_set_per_restaurant',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['restaurant', 'user']),
+        ]
+
+    def __str__(self):
+        return f"{self.restaurant_id} · {self.user_id}"
 

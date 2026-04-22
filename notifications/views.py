@@ -1273,31 +1273,6 @@ def whatsapp_webhook(request):
                             btn_id = btn_reply.get('id')
                             btn_title = (btn_reply.get('title') or '').strip()
 
-                            # Shift review template button reply (Bad / Decent / Good / Great)
-                            if session.state == 'awaiting_feedback' and btn_title in ('Bad', 'Decent', 'Good', 'Great'):
-                                from attendance.models import ShiftReview
-                                rating_map = {'Bad': 1, 'Decent': 2, 'Good': 3, 'Great': 4}
-                                rating = rating_map.get(btn_title)
-                                last_session_id = session.context.get('last_session_id')
-                                if last_session_id and user and rating is not None:
-                                    try:
-                                        ShiftReview.objects.create(
-                                            session_id=last_session_id,
-                                            staff=user,
-                                            restaurant=user.restaurant,
-                                            rating=rating,
-                                            comments='Feedback via WhatsApp (shift_review template)',
-                                            completed_at=timezone.now(),
-                                        )
-                                        notification_service.send_whatsapp_text(phone_digits, "Thank you for your feedback! Have a great rest of your day! ✨")
-                                    except Exception as e:
-                                        logger.error("Failed to save shift review from template button: %s", e)
-                                        notification_service.send_whatsapp_text(phone_digits, "Thank you for your rating!")
-                                session.state = 'idle'
-                                session.context.pop('last_session_id', None)
-                                session.save(update_fields=['state', 'context'])
-                                continue
-
                             if btn_id == 'clock_in_now':
                                 if not user:
                                     notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
@@ -1356,16 +1331,13 @@ def whatsapp_webhook(request):
                                             notes=notes,
                                             location_encrypted='PRECISE_GPS' if within_geofence else 'UNVERIFIED',
                                         )
-                                        # Send summary then shift_review template (Hi {{1}}, how was your shift today? + Bad/Decent/Good/Great)
                                         summary_msg = (
                                             f"✅ *Clock-out successful!*\n\n"
                                             f"⏱️ Duration: *{duration:.2f} hours*"
                                         )
                                         notification_service.send_whatsapp_text(phone_digits, summary_msg)
-                                        notification_service.send_shift_review_request(phone_digits, user.first_name)
-                                        session.state = 'awaiting_feedback'
-                                        session.context['last_session_id'] = str(last_event.id)
-                                        session.save(update_fields=['state', 'context'])
+                                        session.state = 'idle'
+                                        session.save(update_fields=['state'])
                                     else:
                                         notification_service.send_whatsapp_text(phone_digits, R(user, 'clockout_no'))
                                 else:
@@ -2545,32 +2517,6 @@ def whatsapp_webhook(request):
                         continue
                     
 
-                    # Handle Awaiting Feedback state
-                    if session.state == 'awaiting_feedback' and body.isdigit():
-                        rating = int(body)
-                        if 1 <= rating <= 5:
-                            from attendance.models import ShiftReview
-                            last_session_id = session.context.get('last_session_id')
-                            if last_session_id:
-                                try:
-                                    ShiftReview.objects.create(
-                                        session_id=last_session_id,
-                                        staff=user,
-                                        restaurant=user.restaurant,
-                                        rating=rating,
-                                        comments="Feedback via WhatsApp",
-                                        completed_at=timezone.now()
-                                    )
-                                    notification_service.send_whatsapp_text(phone_digits, "Thank you for your feedback! Have a great rest of your day! ✨")
-                                except Exception as e:
-                                    logger.error(f"Failed to save shift review: {e}")
-                                    notification_service.send_whatsapp_text(phone_digits, "Thank you for your rating!")
-                            
-                            session.state = 'idle'
-                            session.context.pop('last_session_id', None)
-                            session.save(update_fields=['state', 'context'])
-                            continue
-
                     if body in ['hi', 'hello', 'menu', 'help']:
                         notification_service.send_whatsapp_text(phone_digits, R(user, 'help'))
                         continue
@@ -2627,10 +2573,8 @@ def whatsapp_webhook(request):
                                     f"⏱️ Duration: *{duration:.2f} hours*"
                                 )
                                 notification_service.send_whatsapp_text(phone_digits, summary_msg)
-                                notification_service.send_shift_review_request(phone_digits, user.first_name)
-                                session.state = 'awaiting_feedback'
-                                session.context['last_session_id'] = str(last_event.id)
-                                session.save(update_fields=['state', 'context'])
+                                session.state = 'idle'
+                                session.save(update_fields=['state'])
                             else:
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'clockout_no'))
                         else:

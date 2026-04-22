@@ -9,6 +9,8 @@ from . import webhooks
 from . import views_agent
 from . import views_auto_po
 from . import views_oauth
+from . import views_toast_oauth
+from . import views_clover_oauth
 from . import views_analytics
 
 router = DefaultRouter()
@@ -52,5 +54,15 @@ urlpatterns = [
     path('square/authorize/', views_oauth.square_authorize, name='square-authorize'),
     path('square/callback/', views_oauth.square_callback, name='square-callback'),
     path('square/disconnect/', views_oauth.square_disconnect, name='square-disconnect'),
+
+    # Toast partner-credentials connect/disconnect
+    path('toast/connect/', views_toast_oauth.toast_connect, name='toast-connect'),
+    path('toast/disconnect/', views_toast_oauth.toast_disconnect, name='toast-disconnect'),
+
+    # Clover OAuth 2.0 connect/callback/disconnect
+    path('clover/authorize/', views_clover_oauth.clover_authorize, name='clover-authorize'),
+    path('clover/callback/', views_clover_oauth.clover_callback, name='clover-callback'),
+    path('clover/disconnect/', views_clover_oauth.clover_disconnect, name='clover-disconnect'),
+
     path('connection-status/', views_oauth.pos_connection_status, name='pos-connection-status'),
 ]

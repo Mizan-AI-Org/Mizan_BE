@@ -57,7 +57,6 @@ INSTALLED_APPS = [
     'notifications.apps.NotificationsConfig',
 
     # Local apps
-    'attendance', # Attendance module app
     'accounts',
     'dashboard',
     'scheduling',
@@ -419,9 +418,6 @@ CLOCK_IN_WINDOW_MINUTES_BEFORE = int(config('CLOCK_IN_WINDOW_MINUTES_BEFORE', de
 CLOCK_IN_WINDOW_MINUTES_AFTER = int(config('CLOCK_IN_WINDOW_MINUTES_AFTER', default='15'))
 # Optional: use approved staff_checklist template for each step (body {{1}} = question; buttons Yes/No/N/A). Empty = use interactive buttons with dynamic task text.
 WHATSAPP_TEMPLATE_STAFF_CHECKLIST = config('WHATSAPP_TEMPLATE_STAFF_CHECKLIST', default='staff_checklist')
-# Shift review: sent when staff shift ends (body {{1}} = first name; buttons Bad/Decent/Good/Great).
-WHATSAPP_TEMPLATE_SHIFT_REVIEW = config('WHATSAPP_TEMPLATE_SHIFT_REVIEW', default='shift_review')
-WHATSAPP_TEMPLATE_SHIFT_REVIEW_LANGUAGE = config('WHATSAPP_TEMPLATE_SHIFT_REVIEW_LANGUAGE', default='en_US')
 
 # ---------------------------
 # Stripe Configuration
@@ -429,6 +425,16 @@ WHATSAPP_TEMPLATE_SHIFT_REVIEW_LANGUAGE = config('WHATSAPP_TEMPLATE_SHIFT_REVIEW
 STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY', default='')
 STRIPE_PUBLISHABLE_KEY = config('STRIPE_PUBLISHABLE_KEY', default='')
 STRIPE_WEBHOOK_SECRET = config('STRIPE_WEBHOOK_SECRET', default='')
+
+# Currency used by the seed_subscription_plans management command. Pricing
+# cards on the frontend read currency from the plan rows, so switching this
+# (and re-running the command) is enough to re-launch in a new market.
+BILLING_CURRENCY = config('BILLING_CURRENCY', default='USD')
+
+# Tier granted to tenants without an active paid subscription. During the
+# pilot this is 'GROWTH' so nothing breaks as pricing rolls out. Set to
+# 'STARTER' (or 'FREE') once enforcement should kick in.
+BILLING_PILOT_DEFAULT_TIER = config('BILLING_PILOT_DEFAULT_TIER', default='GROWTH')
 
 # ---------------------------
 # Square POS Configuration
@@ -447,6 +453,33 @@ SQUARE_WEBHOOK_NOTIFICATION_URL = config('SQUARE_WEBHOOK_NOTIFICATION_URL', defa
 # Optional template for tenant-scoped webhook endpoints, e.g.
 # https://api.heymizan.ai/api/pos/webhooks/square/{restaurant_id}/
 SQUARE_WEBHOOK_NOTIFICATION_URL_TEMPLATE = config('SQUARE_WEBHOOK_NOTIFICATION_URL_TEMPLATE', default='')
+
+# ---------------------------
+# Toast POS Configuration
+# ---------------------------
+# Toast's partner API uses a single `client_credentials` grant — there is no
+# per-merchant OAuth redirect. Partners receive one client_id/secret and call
+# /authentication/v1/authentication/login per restaurantGuid to obtain a
+# short-lived access token (used to read orders, menus, labor, etc.).
+# Docs: https://doc.toasttab.com/doc/devguide/apiAuthenticationTokens.html
+TOAST_ENV = config('TOAST_ENV', default=('sandbox' if DEBUG else 'production'))
+TOAST_CLIENT_ID = config('TOAST_CLIENT_ID', default='')
+TOAST_CLIENT_SECRET = config('TOAST_CLIENT_SECRET', default='')
+# Webhook signing secret from Toast partner portal (HMAC-SHA256 of raw body
+# is sent in `toast-signature` header).
+TOAST_WEBHOOK_SIGNING_SECRET = config('TOAST_WEBHOOK_SIGNING_SECRET', default='')
+
+# ---------------------------
+# Clover POS Configuration
+# ---------------------------
+# Clover uses standard OAuth 2.0 (authorization code flow) via the App Market.
+# Docs: https://docs.clover.com/docs/using-oauth-20
+CLOVER_ENV = config('CLOVER_ENV', default=('sandbox' if DEBUG else 'production'))
+CLOVER_APP_ID = config('CLOVER_APP_ID', default='')
+CLOVER_APP_SECRET = config('CLOVER_APP_SECRET', default='')
+CLOVER_REDIRECT_URI = config('CLOVER_REDIRECT_URI', default='')
+# Clover webhooks are signed with an `x-clover-auth` header (HMAC-SHA256).
+CLOVER_WEBHOOK_SIGNING_SECRET = config('CLOVER_WEBHOOK_SIGNING_SECRET', default='')
 
 # Eat Now / Eat App Concierge API (default production; sandbox: https://api.eat-sandbox.co)
 EATNOW_CONCIERGE_API_BASE = config('EATNOW_CONCIERGE_API_BASE', default='https://api.eatapp.co')

@@ -334,6 +334,11 @@ class StaffRequest(models.Model):
         ('SCHEDULING', 'Scheduling'),
         ('PAYROLL', 'Payroll'),
         ('OPERATIONS', 'Operations'),
+        # First-class buckets for the intelligent inbox — previously implied
+        # via incident.* slugs or sibling models (Reservations, Inventory).
+        ('MAINTENANCE', 'Maintenance'),
+        ('RESERVATIONS', 'Reservations'),
+        ('INVENTORY', 'Inventory'),
         ('OTHER', 'Other'),
     )
 
@@ -352,7 +357,27 @@ class StaffRequest(models.Model):
     subject = models.CharField(max_length=255, blank=True, default='')
     description = models.TextField(blank=True, default='')
 
-    source = models.CharField(max_length=30, blank=True, default='whatsapp', help_text="Origin channel: whatsapp/lua/web")
+    # First-class assignee — previously escalate stored this in `metadata`,
+    # which made it impossible to filter "requests assigned to me" at the DB
+    # level. Now Miya auto-populates it from the tenant's category_owners
+    # map at creation time; managers can reassign via the UI/API.
+    assignee = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_staff_requests',
+    )
+
+    # Voice-note support. WhatsApp audio is already transcribed via
+    # Whisper (``notifications/services.py::transcribe_audio_bytes``); we
+    # persist the audio URL + text here so the inbox can show an audio
+    # player and the original transcription (including detected language).
+    voice_audio_url = models.URLField(max_length=1024, blank=True, default='')
+    transcription = models.TextField(blank=True, default='')
+    transcription_language = models.CharField(max_length=16, blank=True, default='')
+
+    source = models.CharField(max_length=30, blank=True, default='whatsapp', help_text="Origin channel: whatsapp/lua/web/app")
     external_id = models.CharField(max_length=128, blank=True, default='', help_text="External inquiry/ticket id if applicable")
     metadata = models.JSONField(default=dict, blank=True)
 
@@ -368,6 +393,10 @@ class StaffRequest(models.Model):
             models.Index(fields=['restaurant', 'status']),
             models.Index(fields=['restaurant', 'created_at']),
             models.Index(fields=['staff_phone']),
+            # Supports "what's in my inbox?" and "what's assigned to Aicha?"
+            # lookups without a full table scan.
+            models.Index(fields=['assignee', 'status'], name='staffreq_assignee_status_idx'),
+            models.Index(fields=['restaurant', 'category', 'status'], name='staffreq_rest_cat_stat_idx'),
         ]
 
     def __str__(self):

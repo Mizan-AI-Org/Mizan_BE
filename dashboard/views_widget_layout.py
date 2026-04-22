@@ -369,6 +369,309 @@ class AgentDashboardWidgetCreateView(APIView):
         )
 
 
+class AgentDashboardWidgetListView(APIView):
+    """
+    Miya/Lua: list a user's current dashboard widget layout + the catalogue of
+    built-in widgets the agent may `add`. Includes any Miya-created custom
+    tiles owned by the user.
+
+    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Body: user_id | email | phone (at least one).
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        ok, err = _validate_agent_key(request)
+        if not ok:
+            return Response({"success": False, "error": err}, status=status.HTTP_401_UNAUTHORIZED)
+
+        data = request.data or {}
+        user = _resolve_user_from_agent_payload(data)
+        if user is None:
+            return Response(
+                {"success": False, "error": "Could not resolve user; pass user_id, email, or phone"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        current = _clean_order(getattr(user, "dashboard_widget_order", None), user)
+        if current is None:
+            current = list(DEFAULT_DASHBOARD_WIDGET_ORDER)
+
+        custom_qs = (
+            DashboardCustomWidget.objects.filter(user=user)
+            .select_related("category")
+            .order_by("-created_at")
+        )
+        custom_widgets = []
+        for w in custom_qs:
+            custom_widgets.append(
+                {
+                    "id": str(w.id),
+                    "slot_id": w.slot_id(),
+                    "title": w.title,
+                    "subtitle": w.subtitle or "",
+                    "link_url": w.link_url or "",
+                    "icon": w.icon or "sparkles",
+                    "category_id": str(w.category_id) if w.category_id else None,
+                    "in_layout": w.slot_id() in current,
+                }
+            )
+
+        # Build a description-friendly summary of the ordered layout so the
+        # LLM can echo it verbatim without extra round-trips.
+        custom_by_slot = {w["slot_id"]: w for w in custom_widgets}
+        ordered_summary = []
+        for slot in current:
+            if slot.startswith(CUSTOM_WIDGET_PREFIX):
+                info = custom_by_slot.get(slot)
+                ordered_summary.append(
+                    {"id": slot, "kind": "custom", "title": (info or {}).get("title") or slot}
+                )
+            else:
+                ordered_summary.append({"id": slot, "kind": "builtin", "title": slot})
+
+        return Response(
+            {
+                "success": True,
+                "user_id": str(user.id),
+                "order": current,
+                "order_detail": ordered_summary,
+                "custom_widgets": custom_widgets,
+                "allowed_builtin_ids": sorted(DASHBOARD_WIDGET_IDS),
+                "default_builtin_order": list(DEFAULT_DASHBOARD_WIDGET_ORDER),
+                "allowed_custom_icons": sorted(ALLOWED_CUSTOM_WIDGET_ICONS),
+            }
+        )
+
+
+class AgentDashboardWidgetsRemoveView(APIView):
+    """
+    Miya/Lua: remove one or more widgets from the user's dashboard layout.
+
+    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Body:
+      - widgets: required list of widget ids (built-in IDs or `custom:<uuid>`
+                 slots). Unknown ids are silently ignored so partial success
+                 is safe.
+      - user_id | email | phone
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        ok, err = _validate_agent_key(request)
+        if not ok:
+            return Response({"success": False, "error": err}, status=status.HTTP_401_UNAUTHORIZED)
+
+        data = request.data or {}
+        widgets = data.get("widgets") or data.get("widget_ids") or []
+        if not isinstance(widgets, list) or not widgets:
+            return Response(
+                {"success": False, "error": "widgets must be a non-empty list of widget ids"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = _resolve_user_from_agent_payload(data)
+        if user is None:
+            return Response(
+                {"success": False, "error": "Could not resolve user; pass user_id, email, or phone"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not _can_customize_dashboard(user):
+            return Response(
+                {"success": False, "error": "User cannot customize dashboard (need manager role)"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        current = _clean_order(user.dashboard_widget_order, user)
+        if current is None:
+            current = list(DEFAULT_DASHBOARD_WIDGET_ORDER)
+
+        to_remove = {w for w in widgets if isinstance(w, str)}
+        removed = [w for w in current if w in to_remove]
+        current = [w for w in current if w not in to_remove]
+
+        user.dashboard_widget_order = current
+        user.save(update_fields=["dashboard_widget_order"])
+
+        return Response(
+            {
+                "success": True,
+                "user_id": str(user.id),
+                "order": current,
+                "removed": removed,
+                "message_for_user": (
+                    f"Removed {len(removed)} widget(s) from your dashboard: {', '.join(removed)}. "
+                    "Open or refresh the dashboard to see the new layout."
+                    if removed
+                    else "None of those widgets were on your dashboard."
+                ),
+            }
+        )
+
+
+class AgentDashboardWidgetsReorderView(APIView):
+    """
+    Miya/Lua: replace the user's full dashboard widget order.
+
+    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Body:
+      - order: required list of widget ids. Invalid / unknown ids are
+               dropped but the call still succeeds so Miya can reorder the
+               valid subset.
+      - user_id | email | phone
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        ok, err = _validate_agent_key(request)
+        if not ok:
+            return Response({"success": False, "error": err}, status=status.HTTP_401_UNAUTHORIZED)
+
+        data = request.data or {}
+        order = data.get("order")
+        if not isinstance(order, list) or not order:
+            return Response(
+                {"success": False, "error": "order must be a non-empty list of widget ids"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = _resolve_user_from_agent_payload(data)
+        if user is None:
+            return Response(
+                {"success": False, "error": "Could not resolve user; pass user_id, email, or phone"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not _can_customize_dashboard(user):
+            return Response(
+                {"success": False, "error": "User cannot customize dashboard (need manager role)"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        cleaned = _clean_order(order, user) or []
+        dropped = [w for w in order if isinstance(w, str) and w not in cleaned]
+
+        user.dashboard_widget_order = cleaned
+        user.save(update_fields=["dashboard_widget_order"])
+
+        return Response(
+            {
+                "success": True,
+                "user_id": str(user.id),
+                "order": cleaned,
+                "dropped": dropped,
+                "message_for_user": (
+                    "Dashboard reordered. "
+                    + (
+                        f"{len(dropped)} unknown id(s) were skipped: {', '.join(dropped)}."
+                        if dropped
+                        else ""
+                    )
+                ).strip(),
+            }
+        )
+
+
+class AgentDashboardCustomWidgetDeleteView(APIView):
+    """
+    Miya/Lua: permanently delete a Miya-created custom widget tile and remove
+    it from the user's saved layout.
+
+    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Body:
+      - widget_id: required UUID of the DashboardCustomWidget, OR `custom:<uuid>` slot.
+      - user_id | email | phone: target user (must own the widget or be a
+                                  manager in the same tenant).
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        ok, err = _validate_agent_key(request)
+        if not ok:
+            return Response({"success": False, "error": err}, status=status.HTTP_401_UNAUTHORIZED)
+
+        data = request.data or {}
+        raw_id = str(data.get("widget_id") or data.get("id") or "").strip()
+        if not raw_id:
+            return Response(
+                {"success": False, "error": "widget_id is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Accept either the raw UUID or a `custom:<uuid>` slot id.
+        parsed_from_slot = _parse_custom_slot_id(raw_id)
+        if parsed_from_slot is not None:
+            widget_uuid = parsed_from_slot
+        else:
+            try:
+                widget_uuid = uuid.UUID(raw_id)
+            except ValueError:
+                return Response(
+                    {"success": False, "error": "widget_id must be a UUID or a 'custom:<uuid>' slot"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        user = _resolve_user_from_agent_payload(data)
+        if user is None:
+            return Response(
+                {"success": False, "error": "Could not resolve user; pass user_id, email, or phone"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not getattr(user, "restaurant_id", None):
+            return Response(
+                {"success": False, "error": "User has no restaurant"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Owner OR manager in the same tenant may delete the tile (mirrors the
+        # authenticated endpoint in views_categories.DashboardCustomWidgetDetailView).
+        w = DashboardCustomWidget.objects.filter(
+            id=widget_uuid, restaurant_id=user.restaurant_id
+        ).first()
+        if w is None:
+            return Response(
+                {"success": False, "error": "Custom widget not found in this tenant"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if w.user_id != user.id and not _can_customize_dashboard(user):
+            return Response(
+                {"success": False, "error": "Only the owner or a manager may delete this widget"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        slot = w.slot_id()
+        title = w.title
+        owner = w.user
+        w.delete()
+
+        # Best-effort: drop the slot from the owner's layout too.
+        try:
+            current = _clean_order(getattr(owner, "dashboard_widget_order", None), owner)
+            if current is not None and slot in current:
+                owner.dashboard_widget_order = [s for s in current if s != slot]
+                owner.save(update_fields=["dashboard_widget_order"])
+        except Exception:  # pragma: no cover — layout cleanup is best-effort.
+            logger.warning("Failed to clean widget %s from owner layout", slot, exc_info=True)
+
+        return Response(
+            {
+                "success": True,
+                "widget_id": slot,
+                "removed_slot": slot,
+                "message_for_user": (
+                    f'Deleted dashboard card "{title}". Open or refresh the dashboard to see the new layout.'
+                ),
+            }
+        )
+
+
 class AgentDashboardCategoryCreateView(APIView):
     """
     Miya/Lua: create a dashboard category (tenant-wide) for grouping custom

@@ -66,23 +66,41 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
         status_q = self.request.query_params.get('status')
         if status_q:
             qs = qs.filter(status=str(status_q).upper())
+
+        # Category filter — supports the intelligent-inbox's category tabs
+        # (HR / Maintenance / Reservations / etc.) without client-side
+        # post-filtering.
+        category_q = self.request.query_params.get('category')
+        if category_q:
+            qs = qs.filter(category=str(category_q).upper())
+
+        # "Assigned to me" / "Assigned to X" filters. Managers use these
+        # to scope their inbox to rows they're personally responsible for.
+        if str(self.request.query_params.get('assigned_to_me') or '').lower() in ('1', 'true', 'yes'):
+            qs = qs.filter(assignee=user)
+        else:
+            assignee_q = self.request.query_params.get('assignee')
+            if assignee_q:
+                qs = qs.filter(assignee_id=assignee_q)
+
         if not _is_manager(user):
             # Staff view: only their own
             qs = qs.filter(Q(staff=user) | Q(staff_phone__icontains=''.join(filter(str.isdigit, str(getattr(user, 'phone', '') or '')))))
 
         # Eager-load relations so the serializer never triggers per-row queries.
-        # - list: only needs `staff` (for display name fallback), nothing else.
-        # - retrieve/update: needs the staff's restaurant + profile (full
-        #   CustomUserSerializer) and the comments (with each author's profile).
+        # - list: only needs `staff` + `assignee` (for display name fallback).
+        # - retrieve/update: also needs the full restaurant + profile nests
+        #   and the prefetched comments with each author's profile.
         if self.action == 'list':
-            # list payload only touches `staff.first_name` / `.last_name` —
-            # a single JOIN is enough, no need to pull restaurant/profile.
-            qs = qs.select_related('staff')
+            qs = qs.select_related('staff', 'assignee')
         else:
             qs = qs.select_related(
                 'staff',
                 'staff__restaurant',
                 'staff__profile',
+                'assignee',
+                'assignee__restaurant',
+                'assignee__profile',
             ).prefetch_related(
                 Prefetch(
                     'comments',
@@ -175,18 +193,38 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
         qs = StaffRequest.objects.all()
         if getattr(user, 'restaurant', None):
             qs = qs.filter(restaurant=user.restaurant)
-        
+
+        if str(request.query_params.get('assigned_to_me') or '').lower() in ('1', 'true', 'yes'):
+            qs = qs.filter(assignee=user)
+        elif request.query_params.get('assignee'):
+            qs = qs.filter(assignee_id=request.query_params.get('assignee'))
+        if request.query_params.get('category'):
+            qs = qs.filter(category=str(request.query_params.get('category')).upper())
+
         if not _is_manager(user):
             qs = qs.filter(Q(staff=user) | Q(staff_phone__icontains=''.join(filter(str.isdigit, str(getattr(user, 'phone', '') or '')))))
-            
+
         from django.db.models import Count
         status_counts = qs.values('status').annotate(total=Count('id'))
-        # Get status choices from model
         counts = {s: 0 for s, _ in StaffRequest.STATUS_CHOICES}
         for item in status_counts:
             counts[item['status']] = item['total']
-            
-        return Response({'success': True, 'counts': counts})
+
+        # Extra aggregate: total rows currently owned by the calling user,
+        # used by the frontend to render the "Assigned to me (N)" pill.
+        mine_count = 0
+        if getattr(user, 'id', None):
+            mine_qs = StaffRequest.objects.filter(
+                restaurant=getattr(user, 'restaurant', None),
+                assignee=user,
+            ).exclude(status__in=['CLOSED', 'REJECTED'])
+            mine_count = mine_qs.count()
+
+        return Response({
+            'success': True,
+            'counts': counts,
+            'assigned_to_me_open': mine_count,
+        })
 
     @action(detail=True, methods=['post'])
     def comment(self, request, pk=None):
@@ -273,7 +311,15 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
         req.reviewed_by = request.user
         req.reviewed_at = timezone.now()
         req.metadata = md
-        req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at', 'metadata'])
+        # Mirror the escalation target into the first-class ``assignee``
+        # column so the inbox can filter on it at the DB level (the old
+        # behaviour of only storing this in ``metadata`` meant managers
+        # had no way to see their personal queue).
+        update_fields = ['status', 'reviewed_by', 'reviewed_at', 'updated_at', 'metadata']
+        if assignee:
+            req.assignee = assignee
+            update_fields.append('assignee')
+        req.save(update_fields=update_fields)
 
         comment_lines = [f"Escalated by {request.user.get_full_name() or request.user.email}"]
         if note:
@@ -313,6 +359,88 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
                     )
             except Exception:
                 logger.exception('WhatsApp notify escalate assignee failed')
+
+        return Response({'success': True, 'request': self.get_serializer(req).data})
+
+    @action(detail=True, methods=['post'])
+    def reassign(self, request, pk=None):
+        """
+        Lateral reassignment: change the owner of the request without
+        altering its status. Different from ``escalate`` which bumps
+        status to ESCALATED. Manager-only.
+
+        Body: assignee_id (required), note (optional).
+        """
+        req = self.get_object()
+        if not _is_manager(request.user):
+            return Response({'success': False, 'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        assignee_id = request.data.get('assignee_id') or request.data.get('assignee')
+        note = str(request.data.get('note') or '').strip()
+        if not assignee_id:
+            return Response(
+                {'success': False, 'error': 'assignee_id is required'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            new_assignee = CustomUser.objects.get(id=assignee_id, is_active=True)
+        except (CustomUser.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {'success': False, 'error': 'Assignee not found'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if new_assignee.restaurant_id != req.restaurant_id:
+            return Response(
+                {'success': False, 'error': 'Assignee must belong to this restaurant'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        previous = req.assignee
+        previous_display = (
+            (previous.get_full_name() or previous.email) if previous else 'Unassigned'
+        )
+        new_display = new_assignee.get_full_name() or new_assignee.email
+
+        req.assignee = new_assignee
+        req.save(update_fields=['assignee', 'updated_at'])
+
+        self._add_comment(
+            req,
+            request.user,
+            (
+                f"Reassigned by {request.user.get_full_name() or request.user.email}: "
+                f"{previous_display} → {new_display}"
+                + (f" — {note}" if note else '')
+            ),
+            kind='system',
+            metadata={
+                'previous_assignee_id': str(previous.id) if previous else None,
+                'previous_assignee_name': previous_display if previous else None,
+                'new_assignee_id': str(new_assignee.id),
+                'new_assignee_name': new_display,
+                'note': note,
+            },
+        )
+
+        # Best-effort WhatsApp ping to the new owner.
+        if getattr(new_assignee, 'phone', None):
+            try:
+                from notifications.services import (
+                    notification_service,
+                    normalize_whatsapp_phone,
+                )
+
+                digits, phone_err = normalize_whatsapp_phone(new_assignee.phone)
+                if not phone_err:
+                    notification_service.send_whatsapp_text(
+                        digits,
+                        (
+                            f"📩 *Assigned to you:* \"{req.subject or 'Staff request'}\"\n"
+                            f"Open the Staff Requests inbox to review."
+                        ),
+                    )
+            except Exception:
+                logger.exception('WhatsApp notify reassign failed')
 
         return Response({'success': True, 'request': self.get_serializer(req).data})
 

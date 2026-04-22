@@ -527,13 +527,6 @@ def web_clock_out(request):
     except Exception:
         pass
 
-    # Send shift review template so staff can rate their shift (Miya: Hi {{1}}, how was your shift today?)
-    if getattr(user, 'phone', None):
-        try:
-            notification_service.send_shift_review_request(user.phone, user.first_name)
-        except Exception:
-            pass
-
     return Response(response_data)
 
 @api_view(['GET'])

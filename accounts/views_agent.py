@@ -170,6 +170,25 @@ When a manager asks to **create a dashboard category / group of shortcuts** (e.g
 * After creating a category, if the manager also asked for widgets inside it, call the widgets/create endpoint above with the returned `category_id` (or just pass `category_name` to do it in one shot).
 
 ---
+15. CREATE A TASK FOR A STAFF MEMBER + WHATSAPP NOTIFY (MANAGER — LUA / MIYA)
+When a manager tells you to **create a task/demand and assign it to a staff member** (e.g. "Create a task for Ahmed to clean the fryer by tomorrow and let him know", "Ask Salima to restock the bar before Friday", "Assign a high-priority task to Sarah: call the supplier"):
+* Call **POST /api/dashboard/agent/tasks/create/** with `Authorization: Bearer <LUA_WEBHOOK_API_KEY>` (same header as other agent tools).
+* This single call creates the task on the **Tasks & Demands** dashboard widget AND sends a WhatsApp message to the staff member in one shot. Do **not** also call the WhatsApp send endpoint — it's already handled server-side.
+* Body JSON:
+  - `title` (required, <=255 chars) — short imperative ("Clean the fryer", "Restock the bar").
+  - `description` (optional) — any longer context the manager gave you.
+  - `priority` (optional) — one of `LOW`, `MEDIUM`, `HIGH`, `URGENT` (default `MEDIUM`). Pick `URGENT` only if the manager used words like "urgent", "asap", "right now", "critical".
+  - `due_date` (optional) — `YYYY-MM-DD`, or natural phrases `today`, `tomorrow`, `day after tomorrow`, `in 3 days`, `in 1 week`. Resolve "by Friday" yourself to the right `YYYY-MM-DD`.
+  - `ai_summary` (optional) — a one-sentence summary; it's highlighted in green on the widget card, so use it to surface the single most important thing ("Supplier is coming at 9am — fryer must be spotless").
+  - `notify_whatsapp` (optional, default `true`) — set to `false` ONLY if the manager explicitly said "don't tell them yet" / "just create the task".
+  - `whatsapp_message` (optional) — overrides the default WhatsApp body if the manager dictated a specific message.
+  - **Assignee — pass exactly ONE of** (ordered by preference): `user_id` (UUID), `email`, `phone`, or `name` (free text — server does fuzzy match like "Ahmed" → "Ahmed Hassan"). Prefer `user_id` or `email` if you already have them from a previous `agent_list_staff` call.
+* Response shape: `{success, task, assignee:{id,name,phone,role}, whatsapp:{sent,skipped_reason,error,provider_status}, message_for_user}`. Relay `message_for_user` verbatim to the manager. It already includes the assignee name, priority, due date, and whether WhatsApp succeeded.
+* If the response has `success: false` with an ambiguous-assignee error (e.g. "Multiple staff match 'Sara'"), ask the manager to clarify which staff member, then retry.
+* If `whatsapp.skipped_reason: "no_phone"`, the task still got created and is in the staff member's in-app inbox — tell the manager that in plain language and suggest adding a phone number to that staff profile.
+* Never invent a task title, priority, or assignee name — if the manager didn't give enough info, ask a single, specific clarifying question before calling the tool.
+
+---
 FINAL DIRECTIVE
 Behave like a super-intelligent, database-connected **multi-vertical operations platform** for this workspace: answer correctly every time; execute safely; recommend intelligently; respect **business_vertical**; protect tenant isolation; never contradict system data; never hallucinate. You are mission-critical infrastructure."""
 
@@ -861,169 +880,6 @@ def agent_list_reservations(request):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Shift Reviews (attendance.ShiftReview)
-# ─────────────────────────────────────────────────────────────────────────────
-@api_view(['GET'])
-@authentication_classes([])
-@permission_classes([permissions.AllowAny])
-def agent_list_shift_reviews(request):
-    """
-    List recent shift reviews for the workspace.
-    Auth: LUA_WEBHOOK_API_KEY.
-    Query: restaurant_id (required), days (default 7), min_rating (optional 1-5),
-           staff_id (optional), limit (default 25, max 100).
-    """
-    is_valid, error = _validate_agent_key(request)
-    if not is_valid:
-        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
-    from .models import Restaurant
-    from attendance.models import ShiftReview
-    from datetime import timedelta
-
-    rid = _resolve_restaurant_id_agent(request)
-    if not rid:
-        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-    try:
-        restaurant = Restaurant.objects.get(id=str(rid).strip())
-    except (Restaurant.DoesNotExist, ValueError, TypeError):
-        return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    qp = request.query_params
-    try:
-        days = max(1, min(int(qp.get('days') or '7'), 90))
-    except (TypeError, ValueError):
-        days = 7
-    try:
-        limit = max(1, min(int(qp.get('limit') or '25'), 100))
-    except (TypeError, ValueError):
-        limit = 25
-    min_rating = qp.get('min_rating')
-    staff_id = qp.get('staff_id')
-
-    since = timezone.now() - timedelta(days=days)
-    qs = ShiftReview.objects.filter(restaurant=restaurant, completed_at__gte=since).select_related('staff')
-    if min_rating:
-        try:
-            qs = qs.filter(rating__gte=int(min_rating))
-        except (TypeError, ValueError):
-            pass
-    if staff_id:
-        qs = qs.filter(staff_id=staff_id)
-    qs = qs.order_by('-completed_at')[:limit]
-
-    items = []
-    total_rating = 0
-    count = 0
-    for r in qs:
-        total_rating += int(r.rating or 0)
-        count += 1
-        items.append({
-            'id': str(r.id),
-            'staff_id': str(r.staff_id),
-            'staff_name': (r.staff.get_full_name() if r.staff else '') or getattr(r.staff, 'email', ''),
-            'rating': r.rating,
-            'tags': r.tags or [],
-            'comments': r.comments or '',
-            'hours': float(r.hours_decimal) if r.hours_decimal is not None else None,
-            'completed_at': r.completed_at.isoformat() if r.completed_at else None,
-        })
-    avg = round(total_rating / count, 2) if count else None
-    return Response({
-        'success': True,
-        'restaurant_id': str(restaurant.id),
-        'days': days,
-        'count': count,
-        'average_rating': avg,
-        'reviews': items,
-    })
-
-
-@api_view(['POST'])
-@authentication_classes([])
-@permission_classes([permissions.AllowAny])
-def agent_submit_shift_review(request):
-    """
-    Submit a shift review on behalf of a staff member (voice/text from WhatsApp).
-    Auth: LUA_WEBHOOK_API_KEY.
-    Body: restaurant_id, rating (1-5, required), staff_id OR phone, session_id (optional),
-          tags (optional list), comments (optional), completed_at (optional ISO).
-    """
-    is_valid, error = _validate_agent_key(request)
-    if not is_valid:
-        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
-    from .models import Restaurant
-    from attendance.models import ShiftReview
-    from uuid import uuid4
-
-    data = request.data or {}
-    rid = data.get('restaurant_id') or data.get('restaurantId') or _resolve_restaurant_id_agent(request)
-    if not rid:
-        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
-    try:
-        restaurant = Restaurant.objects.get(id=str(rid).strip())
-    except (Restaurant.DoesNotExist, ValueError, TypeError):
-        return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    try:
-        rating = int(data.get('rating'))
-    except (TypeError, ValueError):
-        return Response({'success': False, 'error': 'rating must be an integer 1..5'}, status=status.HTTP_400_BAD_REQUEST)
-    if rating < 1 or rating > 5:
-        return Response({'success': False, 'error': 'rating must be 1..5'}, status=status.HTTP_400_BAD_REQUEST)
-
-    staff_id = data.get('staff_id') or data.get('user_id')
-    phone = data.get('phone') or data.get('staff_phone')
-    staff_user = None
-    if staff_id:
-        staff_user = CustomUser.objects.filter(id=staff_id, restaurant=restaurant).first()
-    if not staff_user and phone:
-        import re as _re
-        digits = _re.sub(r'\D', '', str(phone))
-        if digits:
-            staff_user = (
-                CustomUser.objects.filter(restaurant=restaurant, phone__contains=digits).first()
-                or CustomUser.objects.filter(phone__contains=digits, restaurant=restaurant).first()
-            )
-    if not staff_user:
-        return Response({'success': False, 'error': 'Could not resolve staff from staff_id or phone.'}, status=status.HTTP_404_NOT_FOUND)
-
-    tags = data.get('tags') or []
-    if isinstance(tags, str):
-        tags = [t.strip() for t in tags.split(',') if t.strip()]
-    comments = (data.get('comments') or '').strip() or None
-    completed_raw = data.get('completed_at')
-    completed_at = None
-    if completed_raw:
-        try:
-            from django.utils.dateparse import parse_datetime
-            completed_at = parse_datetime(completed_raw)
-        except Exception:
-            completed_at = None
-    if not completed_at:
-        completed_at = timezone.now()
-
-    session_id = data.get('session_id') or uuid4()
-
-    review = ShiftReview.objects.create(
-        session_id=session_id,
-        staff=staff_user,
-        restaurant=restaurant,
-        rating=rating,
-        tags=list(tags) if tags else [],
-        comments=comments,
-        completed_at=completed_at,
-    )
-    return Response({
-        'success': True,
-        'review_id': str(review.id),
-        'staff_id': str(staff_user.id),
-        'staff_name': staff_user.get_full_name(),
-        'rating': review.rating,
-        'message': 'Shift review submitted.',
-    })
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Recognition / Kudos (staff.SafetyRecognition — used more broadly for kudos)
 # ─────────────────────────────────────────────────────────────────────────────
 @api_view(['POST'])
@@ -1462,4 +1318,131 @@ def agent_staff_documents(request):
         'staff_id': str(staff_user.id),
         'title': title,
         'message': f'Document {title!r} recorded for {staff_user.get_full_name()}.',
+    })
+
+
+# ---------------------------------------------------------------------------
+# Activity log — Miya's "memory". Lets Miya answer:
+#   - "who did X?" / "what did Alice do yesterday?"
+#   - "who was task T assigned to?" / "who worked on Y?"
+#   - "show me every login from IP 1.2.3.4 this week"
+# All filters are optional; defaults return the most recent 25 events for
+# the restaurant. Results include actor + target + metadata so the LLM can
+# phrase precise answers without a second round-trip.
+# ---------------------------------------------------------------------------
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_activity_log(request):
+    """Return audit-log rows scoped to the agent's workspace.
+
+    Auth: ``Authorization: Bearer <LUA_WEBHOOK_API_KEY>``.
+
+    Query params (all optional):
+        * ``restaurant_id`` / ``X-Restaurant-Id`` — tenant (required)
+        * ``user_id``          — filter by actor (the person who did it)
+        * ``target_user_id``   — filter by assignee / subject
+        * ``entity_type``      — repeatable, e.g. ``TASK``, ``SHIFT``, ``AUTH``
+        * ``action_type``      — repeatable, e.g. ``CREATE``, ``UPDATE``, ``LOGIN``
+        * ``entity_id``        — exact match on the target object's UUID
+        * ``q``                — free-text over description + actor/target names
+        * ``since`` / ``until``— ISO-8601 timestamps
+        * ``days``             — shorthand for ``since=now-Ndays`` (1..365)
+        * ``limit``            — 1..200, default 25
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response(
+            {'success': False, 'error': error},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+    from .models import AuditLog, Restaurant
+    from .views_onboarding import serialize_audit_entry
+    from datetime import timedelta
+    from django.db.models import Q
+
+    rid = _resolve_restaurant_id_agent(request)
+    if not rid:
+        return Response(
+            {'success': False, 'error': 'restaurant_id is required'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        restaurant = Restaurant.objects.get(id=str(rid).strip())
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response(
+            {'success': False, 'error': 'Workspace not found'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    qp = request.query_params
+    try:
+        limit = max(1, min(int(qp.get('limit') or '25'), 200))
+    except (TypeError, ValueError):
+        limit = 25
+
+    qs = AuditLog.objects.select_related('user', 'target_user').filter(
+        restaurant=restaurant
+    )
+
+    # ``days`` is a convenience for Miya ("last 7 days"); it never overrides
+    # an explicit ``since`` if the caller supplied one.
+    days_raw = qp.get('days')
+    if days_raw and not qp.get('since'):
+        try:
+            days = max(1, min(int(days_raw), 365))
+            qs = qs.filter(timestamp__gte=timezone.now() - timedelta(days=days))
+        except (TypeError, ValueError):
+            pass
+
+    since = qp.get('since')
+    if since:
+        qs = qs.filter(timestamp__gte=since)
+    until = qp.get('until')
+    if until:
+        qs = qs.filter(timestamp__lte=until)
+
+    actor_id = qp.get('user_id')
+    if actor_id:
+        qs = qs.filter(user_id=actor_id)
+
+    target_id = qp.get('target_user_id')
+    if target_id:
+        qs = qs.filter(target_user_id=target_id)
+
+    entity_id = qp.get('entity_id')
+    if entity_id:
+        qs = qs.filter(entity_id=entity_id)
+
+    action_types = qp.getlist('action_type')
+    if action_types:
+        qs = qs.filter(action_type__in=[a.upper() for a in action_types])
+
+    entity_types = qp.getlist('entity_type')
+    if entity_types:
+        qs = qs.filter(entity_type__in=[e.upper() for e in entity_types])
+
+    q = (qp.get('q') or '').strip()
+    if q:
+        qs = qs.filter(
+            Q(description__icontains=q)
+            | Q(user__email__icontains=q)
+            | Q(user__first_name__icontains=q)
+            | Q(user__last_name__icontains=q)
+            | Q(target_user__email__icontains=q)
+            | Q(target_user__first_name__icontains=q)
+            | Q(target_user__last_name__icontains=q)
+        )
+
+    # Counting before slicing gives Miya an honest "there are N matches"
+    # signal even when we return a bounded page.
+    total = qs.count()
+    rows = [serialize_audit_entry(entry) for entry in qs.order_by('-timestamp')[:limit]]
+
+    return Response({
+        'success': True,
+        'restaurant_id': str(restaurant.id),
+        'count': len(rows),
+        'total': total,
+        'events': rows,
     })

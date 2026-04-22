@@ -51,8 +51,37 @@ from notifications.models import Notification
 
 from .models import StaffRequest, StaffRequestComment
 from .models_task import SafetyConcernReport
+from .request_routing import resolve_default_assignee_for_category
 
 logger = logging.getLogger(__name__)
+
+
+# Canonical values for StaffRequest.category — kept in one place so agent
+# ingest, the manager API, and the frontend all validate against the same
+# list. Must match ``StaffRequest.CATEGORY_CHOICES``.
+STAFF_REQUEST_CATEGORIES = (
+    'DOCUMENT', 'HR', 'SCHEDULING', 'PAYROLL', 'OPERATIONS',
+    'MAINTENANCE', 'RESERVATIONS', 'INVENTORY', 'OTHER',
+)
+
+
+def _normalize_category(raw) -> str:
+    """Return a valid StaffRequest.category or 'OTHER'."""
+    cat = str(raw or 'OTHER').upper().strip()
+    # Accept a few common synonyms Miya (or webhook payloads) may send.
+    aliases = {
+        'MAINTAIN': 'MAINTENANCE',
+        'REPAIR': 'MAINTENANCE',
+        'EQUIPMENT': 'MAINTENANCE',
+        'RESERVATION': 'RESERVATIONS',
+        'BOOKING': 'RESERVATIONS',
+        'BOOKINGS': 'RESERVATIONS',
+        'STOCK': 'INVENTORY',
+        'SUPPLIES': 'INVENTORY',
+        'DOCUMENTS': 'DOCUMENT',
+    }
+    cat = aliases.get(cat, cat)
+    return cat if cat in STAFF_REQUEST_CATEGORIES else 'OTHER'
 
 
 def validate_agent_key(request):
@@ -151,12 +180,16 @@ def agent_ingest_staff_request(request):
     if priority not in ['LOW', 'MEDIUM', 'HIGH', 'URGENT']:
         priority = 'MEDIUM'
 
-    category = str(data.get('category') or 'OTHER').upper()
-    if category not in ['DOCUMENT', 'HR', 'SCHEDULING', 'PAYROLL', 'OPERATIONS', 'OTHER']:
-        category = 'OTHER'
+    category = _normalize_category(data.get('category'))
 
     external_id = (data.get('external_id') or data.get('inquiryId') or data.get('ticketId') or '').strip()
     source = (data.get('source') or data.get('channel') or 'whatsapp').strip().lower()
+
+    # Voice note fields — populated when WhatsApp audio was transcribed
+    # by ``notifications/services.py::transcribe_audio_bytes`` upstream.
+    voice_audio_url = (data.get('voice_audio_url') or data.get('audio_url') or '').strip()
+    transcription = (data.get('transcription') or data.get('transcript') or '').strip()
+    transcription_language = (data.get('transcription_language') or data.get('language') or '').strip()[:16]
 
     phone_raw = data.get('phone') or data.get('phoneNumber') or data.get('from')
     phone_digits = ''.join(filter(str.isdigit, str(phone_raw or '')))
@@ -184,6 +217,29 @@ def agent_ingest_staff_request(request):
             except Exception:
                 staff = None
 
+    # Auto-assign from the tenant's onboarding category-owners map.
+    # Miya may override this by passing an explicit ``assignee_id`` / ``assignee_email``.
+    assignee = None
+    explicit_assignee = (data.get('assignee_id') or data.get('assigneeId') or '').strip()
+    explicit_assignee_email = (data.get('assignee_email') or '').strip()
+    if explicit_assignee:
+        try:
+            assignee = CustomUser.objects.filter(
+                id=explicit_assignee, restaurant=restaurant, is_active=True
+            ).first()
+        except (ValueError, TypeError):
+            assignee = None
+    if not assignee and explicit_assignee_email:
+        assignee = CustomUser.objects.filter(
+            email__iexact=explicit_assignee_email,
+            restaurant=restaurant,
+            is_active=True,
+        ).first()
+    auto_assigned = False
+    if not assignee and str(data.get('auto_assign', True)).lower() not in ('false', '0', 'no'):
+        assignee = resolve_default_assignee_for_category(restaurant, category)
+        auto_assigned = assignee is not None
+
     req = StaffRequest.objects.create(
         restaurant=restaurant,
         staff=staff,
@@ -194,6 +250,10 @@ def agent_ingest_staff_request(request):
         status='PENDING',
         subject=subject,
         description=description,
+        assignee=assignee,
+        voice_audio_url=voice_audio_url,
+        transcription=transcription,
+        transcription_language=transcription_language,
         source=source,
         external_id=external_id,
         metadata=dict(data.get('metadata') or {}),
@@ -207,12 +267,57 @@ def agent_ingest_staff_request(request):
         metadata={'source': source, 'external_id': external_id, 'phone': phone_digits},
     )
 
+    if assignee:
+        StaffRequestComment.objects.create(
+            request=req,
+            author=None,
+            kind='system',
+            body=(
+                f"Auto-assigned to {assignee.get_full_name() or assignee.email} "
+                f"(category owner for {category.lower()})"
+                if auto_assigned
+                else f"Assigned to {assignee.get_full_name() or assignee.email}"
+            ),
+            metadata={
+                'assignee_id': str(assignee.id),
+                'assignee_name': assignee.get_full_name() or assignee.email,
+                'auto_assigned': auto_assigned,
+                'category': category,
+            },
+        )
+        # Best-effort WhatsApp ping to the owner so they know something
+        # landed in their lane. Silent on failure — not critical.
+        owner_phone = getattr(assignee, 'phone', '') or ''
+        if owner_phone:
+            try:
+                notification_service.send_whatsapp_text(
+                    owner_phone,
+                    (
+                        f"📩 New {category.lower()} request from "
+                        f"{staff_name or 'a staff member'}: "
+                        f"\"{subject[:80]}\". Open the inbox to review."
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("StaffRequest assignee WhatsApp ping failed: %s", exc)
+
     _notify_managers_of_staff_request(req)
 
     return Response({
         'success': True,
         'id': str(req.id),
         'status': req.status,
+        'category': req.category,
+        'assignee': (
+            {
+                'id': str(assignee.id),
+                'name': assignee.get_full_name() or assignee.email,
+                'email': assignee.email,
+                'auto_assigned': auto_assigned,
+            }
+            if assignee
+            else None
+        ),
     }, status=status.HTTP_201_CREATED)
 
 
@@ -262,7 +367,7 @@ def agent_list_staff_requests(request):
     qs = StaffRequest.objects.filter(restaurant=restaurant).order_by('-created_at')
     if status_filter != 'ALL':
         qs = qs.filter(status=status_filter)
-    qs = qs[:50].select_related('staff')
+    qs = qs[:50].select_related('staff', 'assignee')
     items = [
         {
             'id': str(r.id),
@@ -274,6 +379,16 @@ def agent_list_staff_requests(request):
             'priority': r.priority,
             'status': r.status,
             'created_at': r.created_at.isoformat() if r.created_at else None,
+            'assignee': (
+                {
+                    'id': str(r.assignee_id),
+                    'name': r.assignee.get_full_name() or r.assignee.email,
+                    'email': r.assignee.email,
+                }
+                if r.assignee_id
+                else None
+            ),
+            'has_voice': bool(r.voice_audio_url),
         }
         for r in qs
     ]
@@ -379,6 +494,103 @@ def agent_reject_staff_request(request):
         'message': 'Request rejected. Staff has been notified via WhatsApp.',
         'request_id': str(req.id),
         'status': req.status,
+    })
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_assign_staff_request(request):
+    """
+    Assign (or reassign) an existing StaffRequest to a specific user.
+    Miya calls this when a manager says e.g. "reassign that plumbing
+    request to Yassine" or when a category owner changes.
+
+    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Body: request_id, assignee_id OR assignee_email, note (optional),
+          restaurant_id (or X-Restaurant-Id).
+    """
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    restaurant, err = _resolve_restaurant_for_staff_agent(request)
+    if err:
+        return Response({'success': False, 'error': err['error']}, status=err['status'])
+
+    data = request.data or {}
+    req_id = data.get('request_id') or data.get('requestId') or data.get('id')
+    if not req_id:
+        return Response({'success': False, 'error': 'request_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        req = StaffRequest.objects.get(id=req_id, restaurant=restaurant)
+    except (StaffRequest.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    new_assignee = None
+    assignee_id = (data.get('assignee_id') or data.get('assigneeId') or '').strip()
+    assignee_email = (data.get('assignee_email') or data.get('email') or '').strip()
+    if assignee_id:
+        try:
+            new_assignee = CustomUser.objects.filter(
+                id=assignee_id, restaurant=restaurant, is_active=True
+            ).first()
+        except (ValueError, TypeError):
+            new_assignee = None
+    if not new_assignee and assignee_email:
+        new_assignee = CustomUser.objects.filter(
+            email__iexact=assignee_email,
+            restaurant=restaurant,
+            is_active=True,
+        ).first()
+    if not new_assignee:
+        return Response(
+            {'success': False, 'error': 'assignee_id or assignee_email must resolve to an active user in this restaurant'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    previous_id = str(req.assignee_id) if req.assignee_id else None
+    req.assignee = new_assignee
+    req.save(update_fields=['assignee', 'updated_at'])
+
+    note = (data.get('note') or data.get('reason') or '').strip()
+    StaffRequestComment.objects.create(
+        request=req,
+        author=None,
+        kind='system',
+        body=(
+            f"Reassigned to {new_assignee.get_full_name() or new_assignee.email}"
+            + (f" — {note}" if note else " via Miya")
+        ),
+        metadata={
+            'previous_assignee_id': previous_id,
+            'new_assignee_id': str(new_assignee.id),
+            'new_assignee_name': new_assignee.get_full_name() or new_assignee.email,
+            'note': note,
+        },
+    )
+
+    # Best-effort WhatsApp ping to the new owner.
+    owner_phone = getattr(new_assignee, 'phone', '') or ''
+    if owner_phone:
+        try:
+            notification_service.send_whatsapp_text(
+                owner_phone,
+                (
+                    f"📩 You've been assigned a {req.category.lower()} request: "
+                    f"\"{(req.subject or '')[:80]}\"."
+                ),
+            )
+        except Exception as exc:
+            logger.warning("StaffRequest reassign WhatsApp ping failed: %s", exc)
+
+    return Response({
+        'success': True,
+        'request_id': str(req.id),
+        'assignee': {
+            'id': str(new_assignee.id),
+            'name': new_assignee.get_full_name() or new_assignee.email,
+            'email': new_assignee.email,
+        },
     })
 
 

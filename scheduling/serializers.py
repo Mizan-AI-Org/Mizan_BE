@@ -217,14 +217,119 @@ class TaskSerializer(serializers.ModelSerializer):
     assigned_to_details = serializers.SerializerMethodField()
     category_details = TaskCategorySerializer(source='category', read_only=True)
     subtasks_count = serializers.SerializerMethodField()
-    
+    # Use plain CharField so we can normalize case/aliases ourselves.
+    priority = serializers.CharField(required=False, allow_blank=True)
+    status = serializers.CharField(required=False, allow_blank=True)
+
     class Meta:
         model = Task
         fields = '__all__'
-        
+        # Server-managed fields: these are injected in perform_create/update
+        # on the viewset, so clients must not be required to send them.
+        read_only_fields = [
+            'id',
+            'restaurant',
+            'created_by',
+            'completed_by',
+            'completed_at',
+            'created_at',
+            'updated_at',
+        ]
+        extra_kwargs = {
+            # Allow creating a task with no initial assignee.
+            'assigned_to': {'required': False, 'allow_empty': True},
+        }
+
+    def validate_priority(self, value):
+        """Normalize priority to canonical uppercase choices."""
+        if not value:
+            return 'MEDIUM'
+        normalized = str(value).strip().upper()
+        allowed = {'LOW', 'MEDIUM', 'HIGH', 'URGENT'}
+        if normalized not in allowed:
+            raise serializers.ValidationError(
+                f"Invalid priority. Must be one of {sorted(allowed)}."
+            )
+        return normalized
+
+    def validate_status(self, value):
+        """Normalize status to canonical uppercase choices.
+
+        Accepts the frontend's display vocabulary (NOT_STARTED, OVERDUE)
+        as well as the DB canonical values (TODO, IN_PROGRESS, ...).
+        OVERDUE is a computed UI state, not a stored value, so we map it
+        back to TODO on write.
+        """
+        if not value:
+            return 'TODO'
+        normalized = str(value).strip().upper().replace(' ', '_').replace('-', '_')
+        aliases = {
+            'TO_DO': 'TODO',
+            'TODO': 'TODO',
+            'NOT_STARTED': 'TODO',
+            'NOTSTARTED': 'TODO',
+            'PENDING': 'TODO',
+            'OVERDUE': 'TODO',
+            'IN_PROGRESS': 'IN_PROGRESS',
+            'INPROGRESS': 'IN_PROGRESS',
+            'STARTED': 'IN_PROGRESS',
+            'COMPLETED': 'COMPLETED',
+            'DONE': 'COMPLETED',
+            'CANCELLED': 'CANCELLED',
+            'CANCELED': 'CANCELLED',
+        }
+        if normalized not in aliases:
+            raise serializers.ValidationError(
+                "Invalid status. Must be one of TODO, IN_PROGRESS, COMPLETED, CANCELLED."
+            )
+        return aliases[normalized]
+
+    def validate_estimated_duration(self, value):
+        """Accept minutes (int/str) or timedelta.
+
+        Frontend sends an integer number of MINUTES ("Est. Duration (min)").
+        Django/DRF's DurationField parses a bare integer as SECONDS, which
+        caused tasks to be stored with 30s instead of 30min. We normalize
+        any plain integer input to minutes here.
+        """
+        import datetime as _dt
+        if value in (None, ''):
+            return None
+        if isinstance(value, _dt.timedelta):
+            return value
+        # DRF may have already parsed a string like "00:30:00" into timedelta.
+        # For raw ints/strings that look like plain minutes, coerce correctly.
+        try:
+            minutes = int(value)
+            if minutes < 0:
+                raise serializers.ValidationError(
+                    "Estimated duration must be zero or positive."
+                )
+            return _dt.timedelta(minutes=minutes)
+        except (TypeError, ValueError):
+            return value
+
+    def to_internal_value(self, data):
+        """Pre-coerce `estimated_duration` before DRF DurationField parsing.
+
+        DRF's DurationField.to_internal_value runs before field-level
+        validators, so a bare integer would be parsed as seconds. We rewrite
+        the payload here so "30" becomes "00:30:00" (30 minutes).
+        """
+        if isinstance(data, dict) and 'estimated_duration' in data:
+            raw = data.get('estimated_duration')
+            if raw not in (None, ''):
+                try:
+                    minutes = int(raw)
+                    hours, mins = divmod(max(minutes, 0), 60)
+                    data = {**data, 'estimated_duration': f"{hours:02d}:{mins:02d}:00"}
+                except (TypeError, ValueError):
+                    pass
+        return super().to_internal_value(data)
+
     def get_subtasks_count(self, obj):
         return obj.subtasks.count()
-        
+
     def get_assigned_to_details(self, obj):
         from accounts.serializers import UserSerializer
         return UserSerializer(obj.assigned_to.all(), many=True).data

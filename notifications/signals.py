@@ -110,34 +110,55 @@ def handle_availability_notifications(sender, instance, created, **kwargs):
 
 @receiver(post_save, sender='scheduling.Task')
 def handle_task_notifications(sender, instance, created, **kwargs):
-    """Handle notifications for task assignments and updates"""
+    """Handle notifications for task assignments and updates.
+
+    Note: `assigned_to` is a ManyToManyField. On post_save for a freshly
+    created object the relation is typically empty because M2M rows are
+    written after the parent row. We therefore fan out per-recipient and
+    silently skip when there are no assignees yet.
+    """
     try:
-        if created and instance.assigned_to:
-            # New task assigned
-            notification_service.send_custom_notification(
-                recipient=instance.assigned_to,
-                message=f"New task assigned: {instance.title}\n"
-                       f"Due: {instance.due_date.strftime('%Y-%m-%d %H:%M') if instance.due_date else 'No due date'}\n"
-                       f"Priority: {instance.get_priority_display()}\n"
-                       f"Description: {instance.description[:100]}{'...' if len(instance.description) > 100 else ''}",
-                notification_type='TASK_ASSIGNED',
-                channels=['app', 'push']
-            )
+        description = instance.description or ""
+        description_preview = (
+            f"{description[:100]}{'...' if len(description) > 100 else ''}"
+            if description else ""
+        )
+
+        if created:
+            recipients = list(instance.assigned_to.all())
+            if not recipients:
+                return
+            for recipient in recipients:
+                notification_service.send_custom_notification(
+                    recipient=recipient,
+                    message=(
+                        f"New task assigned: {instance.title}\n"
+                        f"Due: {instance.due_date.strftime('%Y-%m-%d') if instance.due_date else 'No due date'}\n"
+                        f"Priority: {instance.get_priority_display()}"
+                        + (f"\nDescription: {description_preview}" if description_preview else "")
+                    ),
+                    notification_type='TASK_ASSIGNED',
+                    channels=['app', 'push'],
+                )
             logger.info(f"Task assignment notification sent for task {instance.id}")
-            
-        elif not created and instance.status == 'COMPLETED':
-            # Task completed - notify supervisor if exists
-            if hasattr(instance, 'created_by') and instance.created_by:
+
+        elif instance.status == 'COMPLETED':
+            if getattr(instance, 'created_by', None):
+                assignee_names = ", ".join(
+                    filter(None, (u.get_full_name() for u in instance.assigned_to.all()))
+                ) or "Unknown"
                 notification_service.send_custom_notification(
                     recipient=instance.created_by,
-                    message=f"Task completed: {instance.title}\n"
-                           f"Completed by: {instance.assigned_to.get_full_name() if instance.assigned_to else 'Unknown'}\n"
-                           f"Completion time: {timezone.now().strftime('%Y-%m-%d %H:%M')}",
+                    message=(
+                        f"Task completed: {instance.title}\n"
+                        f"Completed by: {assignee_names}\n"
+                        f"Completion time: {timezone.now().strftime('%Y-%m-%d %H:%M')}"
+                    ),
                     notification_type='TASK_COMPLETED',
-                    channels=['app']
+                    channels=['app'],
                 )
                 logger.info(f"Task completion notification sent for task {instance.id}")
-                
+
     except Exception as e:
         logger.error(f"Failed to send task notification for task {instance.id}: {str(e)}")
 

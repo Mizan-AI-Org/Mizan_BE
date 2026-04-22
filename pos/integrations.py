@@ -192,92 +192,236 @@ class BasePOSIntegration(ABC):
 
 
 class ToastIntegration(BasePOSIntegration):
-    """Toast POS Integration"""
-    BASE_URL = "https://api.toasttab.com/v1"
-    
-    def sync_menu_items(self) -> Dict:
-        """Sync menu from Toast"""
+    """Toast POS Integration — Partner Credentials auth.
+
+    Toast doesn't expose a per-merchant OAuth redirect; instead every
+    Toast API call carries:
+      * ``Authorization: Bearer <partner_token>`` — minted via the
+        /authentication/v1/authentication/login endpoint with the
+        partner's ``client_id`` / ``client_secret`` from Django settings.
+      * ``Toast-Restaurant-External-ID: <restaurantGuid>`` — scopes the
+        request to this tenant's restaurant.
+
+    The partner token lives ~60 minutes. We cache it inside the encrypted
+    ``pos_oauth_data.toast`` envelope and refresh it when it's within 2
+    minutes of expiry.
+    """
+
+    def _env_host(self) -> str:
+        env = (getattr(settings, "TOAST_ENV", "sandbox") or "sandbox").lower()
+        return (
+            "https://ws-api.toasttab.com"
+            if env == "production"
+            else "https://ws-sandbox-api.eng.toasttab.com"
+        )
+
+    def _restaurant_guid(self) -> str:
+        # Stored under pos_oauth_data.toast.restaurant_guid (preferred)
+        # with a fallback to the legacy `pos_merchant_id` column for
+        # restaurants connected before the envelope existed.
+        guid = (self.restaurant.get_toast_restaurant_guid() or "").strip()
+        return guid or (self.restaurant.pos_merchant_id or "").strip()
+
+    def _partner_configured(self) -> bool:
+        return bool(
+            getattr(settings, "TOAST_CLIENT_ID", "")
+            and getattr(settings, "TOAST_CLIENT_SECRET", "")
+        )
+
+    def _fresh_access_token(self) -> str:
+        """Return a valid Toast access token, minting a new one if needed."""
+        if not self._partner_configured():
+            return ""
+
+        tv = self.restaurant.get_toast_oauth() or {}
+        cached = tv.get("cached_access_token") or ""
+        exp = tv.get("expires_at")
+        if cached and exp:
+            try:
+                from django.utils.dateparse import parse_datetime
+
+                expires_dt = parse_datetime(exp)
+                if expires_dt and timezone.now() < (expires_dt - timedelta(minutes=2)):
+                    return cached
+            except Exception:
+                pass
+
+        # Lazy import to avoid circular import at module load time.
+        from .views_toast_oauth import fetch_toast_access_token
+
+        minted = fetch_toast_access_token() or {}
+        token = minted.get("access_token") or ""
+        if not token:
+            return ""
+
+        tv["cached_access_token"] = token
+        tv["expires_at"] = minted.get("expires_at")
+        self.restaurant.set_toast_oauth(tv)
         try:
-            headers = {'Authorization': f'Bearer {self.api_key}'}
-            response = requests.get(
-                f"{self.BASE_URL}/menus",
-                headers=headers
+            self.restaurant.save(update_fields=["pos_oauth_data"])
+        except Exception:
+            # Best-effort — the token still works in memory for this request.
+            logger.debug("Failed to persist cached Toast token", exc_info=True)
+        return token
+
+    def _headers(self) -> Dict[str, str]:
+        token = self._fresh_access_token()
+        guid = self._restaurant_guid()
+        return {
+            "Authorization": f"Bearer {token}",
+            "Toast-Restaurant-External-ID": guid,
+            "Accept": "application/json",
+        }
+
+    def _request(self, method: str, path: str, *, params=None, json_body=None, timeout=20):
+        if not self._restaurant_guid():
+            raise requests.RequestException("Toast restaurantGuid not configured")
+        url = f"{self._env_host()}{path}"
+        resp = requests.request(
+            method, url, headers=self._headers(), params=params, json=json_body, timeout=timeout
+        )
+        if resp.status_code == 401:
+            # Token was accepted when we cached it but may have been
+            # revoked; invalidate and retry once.
+            tv = self.restaurant.get_toast_oauth() or {}
+            tv.pop("cached_access_token", None)
+            tv.pop("expires_at", None)
+            self.restaurant.set_toast_oauth(tv)
+            try:
+                self.restaurant.save(update_fields=["pos_oauth_data"])
+            except Exception:
+                pass
+            resp = requests.request(
+                method, url, headers=self._headers(), params=params, json=json_body, timeout=timeout
             )
-            response.raise_for_status()
-            
-            menu_data = response.json()
-            synced_items = []
-            
-            for group in menu_data.get('menuGroups', []):
-                for item in group.get('items', []):
-                    menu_item, created = MenuItem.objects.update_or_create(
+            if resp.status_code == 401:
+                self.restaurant.pos_is_connected = False
+                try:
+                    self.restaurant.save(update_fields=["pos_is_connected"])
+                except Exception:
+                    pass
+        resp.raise_for_status()
+        return resp
+
+    def sync_menu_items(self) -> Dict:
+        """Pull the full published menu via Toast's v2 `/menus` endpoint."""
+        try:
+            resp = self._request("GET", "/menus/v2/menus")
+            menus = resp.json() or {}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+        synced_items: list = []
+        for menu in menus.get("menus", []) or []:
+            for group in menu.get("menuGroups", []) or []:
+                cat_name = group.get("name") or "Uncategorized"
+                category, _ = MenuCategory.objects.update_or_create(
+                    restaurant=self.restaurant,
+                    external_provider="TOAST",
+                    external_id=group.get("guid") or cat_name,
+                    defaults={"name": cat_name, "is_active": True},
+                )
+                for item in group.get("menuItems", []) or group.get("items", []) or []:
+                    # Toast returns top-level price when there are no
+                    # variations, and a `defaultPrice` on the parent when
+                    # there are. Units are in cents, as dollars decimal,
+                    # depending on the endpoint — normalize both.
+                    raw_price = item.get("price") or item.get("defaultPrice") or 0
+                    price = float(raw_price) / 100 if isinstance(raw_price, int) and raw_price > 1000 else float(raw_price)
+                    menu_item, _ = MenuItem.objects.update_or_create(
                         restaurant=self.restaurant,
                         external_provider="TOAST",
-                        external_id=item['guid'],
+                        external_id=item.get("guid"),
                         defaults={
-                            'name': item['name'],
-                            'description': item.get('description', ''),
-                            'price': item.get('price', 0) / 100,  # Toast uses cents
-                            'is_active': item.get('visibility') == 'AVAILABLE'
-                        }
+                            "category": category,
+                            "name": item.get("name") or "Item",
+                            "description": item.get("description") or "",
+                            "price": price,
+                            "is_active": (item.get("visibility") or "").upper() != "HIDDEN",
+                        },
                     )
                     synced_items.append(menu_item.id)
-            
-            return {
-                'success': True,
-                'items_synced': len(synced_items),
-                'provider': 'Toast'
-            }
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-    
+
+        return {"success": True, "items_synced": len(synced_items), "provider": "Toast"}
+
     def sync_orders(self, start_date=None, end_date=None) -> List[Dict]:
-        """Sync orders from Toast"""
-        headers = {'Authorization': f'Bearer {self.api_key}'}
-        params = {}
-        if start_date:
-            params['startDate'] = start_date.isoformat()
-        if end_date:
-            params['endDate'] = end_date.isoformat()
-            
-        response = requests.get(
-            f"{self.BASE_URL}/orders",
-            headers=headers,
-            params=params
-        )
-        response.raise_for_status()
-        return response.json().get('orders', [])
-    
+        """Pull orders via the `/orders/v2/ordersBulk` read endpoint.
+
+        Toast exposes a bulk endpoint that returns the full order graph
+        (checks, selections, payments) and accepts ISO-8601 UTC
+        ``startDate`` / ``endDate`` query params. Paginated via
+        ``pageToken``; we cap at ~5 pages (500 orders) per sync call.
+        """
+        sd = start_date or timezone.now().date()
+        ed = end_date or timezone.now().date()
+        start_iso = sd.isoformat() + "T00:00:00.000+0000" if hasattr(sd, "isoformat") else str(sd)
+        end_iso = ed.isoformat() + "T23:59:59.999+0000" if hasattr(ed, "isoformat") else str(ed)
+
+        all_orders: list = []
+        page_token: str | None = None
+        for _ in range(5):
+            params = {"startDate": start_iso, "endDate": end_iso, "pageSize": 100}
+            if page_token:
+                params["pageToken"] = page_token
+            try:
+                resp = self._request("GET", "/orders/v2/ordersBulk", params=params)
+                body = resp.json() or {}
+            except Exception:
+                break
+            orders = body if isinstance(body, list) else body.get("orders") or []
+            all_orders.extend(orders)
+            # Toast returns nextPageToken in a header OR in the body depending on endpoint.
+            page_token = (body.get("nextPageToken") if isinstance(body, dict) else None) or resp.headers.get("Toast-Next-Page-Token")
+            if not page_token:
+                break
+        return all_orders
+
+    def get_item_sales_for_date_range(self, start_date, end_date) -> Dict:
+        """Returns {date: {item_name: quantity}} for prep-list forecasting."""
+        from django.utils.dateparse import parse_datetime
+
+        try:
+            orders = self.sync_orders(start_date, end_date)
+        except Exception:
+            return {}
+
+        result: Dict = {}
+        for order in orders or []:
+            created = order.get("openedDate") or order.get("createdDate") or order.get("modifiedDate")
+            order_date = None
+            if created:
+                dt = parse_datetime(str(created))
+                if dt and hasattr(dt, "date"):
+                    order_date = dt.date()
+            if not order_date or order_date < start_date or order_date > end_date:
+                continue
+            result.setdefault(order_date, {})
+            for check in order.get("checks", []) or []:
+                for sel in check.get("selections", []) or []:
+                    if sel.get("voided"):
+                        continue
+                    name = (sel.get("displayName") or sel.get("itemName") or "").strip()
+                    if not name:
+                        # Fall back to nested item reference when the display name is missing.
+                        name = ((sel.get("item") or {}).get("guid") or "").strip()
+                    if not name:
+                        continue
+                    qty = float(sel.get("quantity") or 1)
+                    result[order_date][name] = result[order_date].get(name, 0) + qty
+        return result
+
     def create_order(self, order: Order) -> Dict:
-        """Push order to Toast POS"""
-        headers = {'Authorization': f'Bearer {self.api_key}', 'Content-Type': 'application/json'}
-        
-        order_data = {
-            'guid': str(order.id),
-            'checks': [{
-                'selections': [
-                    {
-                        'itemGuid': str(item.menu_item.external_id),
-                        'quantity': item.quantity,
-                        'price': int(item.unit_price * 100)
-                    }
-                    for item in order.line_items.all()
-                ]
-            }]
+        """Push an order back to Toast (writes are optional; most
+        restaurants keep Toast as the source of truth and let Mizan
+        read-only). Left intentionally minimal — return informative
+        error rather than silently failing."""
+        return {
+            "success": False,
+            "error": "Toast write-back is disabled. Orders should be created in Toast directly.",
         }
-        
-        response = requests.post(
-            f"{self.BASE_URL}/orders",
-            headers=headers,
-            json=order_data
-        )
-        response.raise_for_status()
-        return response.json()
-    
+
     def process_payment(self, payment: Payment) -> Dict:
-        """Process payment through Toast"""
-        # Toast payment processing implementation
-        return {'success': True, 'transaction_id': f'TOAST_{payment.id}'}
+        return {"success": True, "transaction_id": f"TOAST_{payment.id}"}
 
 
 class SquareIntegration(BasePOSIntegration):
@@ -545,89 +689,217 @@ class SquareIntegration(BasePOSIntegration):
 
 
 class CloverIntegration(BasePOSIntegration):
-    """Clover POS Integration"""
-    BASE_URL = "https://api.clover.com/v3"
-    
-    def sync_menu_items(self) -> Dict:
-        """Sync menu from Clover"""
+    """Clover POS Integration — OAuth 2.0 per-merchant tokens.
+
+    Each connected restaurant owns its own ``access_token`` /
+    ``refresh_token`` pair stored under ``pos_oauth_data.clover``. The
+    ``merchant_id`` (Clover's tenant identifier) is in ``pos_merchant_id``.
+    The environment (sandbox vs production) is pinned at connect time so
+    requests hit the correct host even if the global setting changes.
+    """
+
+    def _env(self) -> str:
+        cv = self.restaurant.get_clover_oauth() or {}
+        env = (cv.get("env") or getattr(settings, "CLOVER_ENV", "sandbox") or "sandbox").lower()
+        return env
+
+    def _api_host(self) -> str:
+        return (
+            "https://api.clover.com"
+            if self._env() == "production"
+            else "https://apisandbox.dev.clover.com"
+        )
+
+    def _access_token(self) -> str:
+        return self.restaurant.get_clover_access_token() or ""
+
+    def _merchant_id(self) -> str:
+        return (self.restaurant.pos_merchant_id or "").strip()
+
+    def _refresh_access_token(self) -> bool:
+        """Exchange the refresh token for a new access token (v2 only)."""
+        refresh_token = self.restaurant.get_clover_refresh_token()
+        app_id = getattr(settings, "CLOVER_APP_ID", "")
+        app_secret = getattr(settings, "CLOVER_APP_SECRET", "")
+        if not (refresh_token and app_id and app_secret):
+            return False
         try:
-            headers = {'Authorization': f'Bearer {self.api_key}'}
-            response = requests.get(
-                f"{self.BASE_URL}/merchants/{self.merchant_id}/items",
-                headers=headers
+            resp = requests.post(
+                f"{self._api_host()}/oauth/v2/refresh",
+                json={
+                    "client_id": app_id,
+                    "refresh_token": refresh_token,
+                },
+                timeout=15,
             )
-            response.raise_for_status()
-            
-            items = response.json().get('elements', [])
-            synced_items = []
-            
-            for item in items:
-                menu_item, created = MenuItem.objects.update_or_create(
+            data = resp.json() if resp.content else {}
+            resp.raise_for_status()
+        except Exception:
+            logger.warning("Clover refresh failed for restaurant %s", self.restaurant.id, exc_info=True)
+            return False
+
+        new_access = data.get("access_token")
+        new_refresh = data.get("refresh_token") or refresh_token
+        expires_epoch = data.get("access_token_expiration")
+        if not new_access:
+            return False
+
+        cv = self.restaurant.get_clover_oauth() or {}
+        cv["access_token"] = new_access
+        cv["refresh_token"] = new_refresh
+        if expires_epoch:
+            try:
+                from datetime import datetime, timezone as dt_tz
+
+                expires_dt = datetime.fromtimestamp(int(expires_epoch), tz=dt_tz.utc)
+                cv["expires_at"] = expires_dt.isoformat()
+                self.restaurant.pos_token_expires_at = expires_dt
+            except Exception:
+                pass
+        self.restaurant.set_clover_oauth(cv)
+        try:
+            self.restaurant.save(update_fields=["pos_oauth_data", "pos_token_expires_at"])
+        except Exception:
+            pass
+        return True
+
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self._access_token()}",
+            "Accept": "application/json",
+        }
+
+    def _request(self, method: str, path: str, *, params=None, json_body=None, timeout=20):
+        url = f"{self._api_host()}{path}"
+        resp = requests.request(
+            method, url, headers=self._headers(), params=params, json=json_body, timeout=timeout
+        )
+        if resp.status_code == 401 and self._refresh_access_token():
+            resp = requests.request(
+                method, url, headers=self._headers(), params=params, json=json_body, timeout=timeout
+            )
+        if resp.status_code == 401:
+            try:
+                self.restaurant.pos_is_connected = False
+                self.restaurant.save(update_fields=["pos_is_connected"])
+            except Exception:
+                pass
+        resp.raise_for_status()
+        return resp
+
+    def sync_menu_items(self) -> Dict:
+        if not self._merchant_id():
+            return {"success": False, "error": "Clover merchant_id missing — reconnect."}
+        try:
+            resp = self._request(
+                "GET",
+                f"/v3/merchants/{self._merchant_id()}/items",
+                params={"limit": 1000, "expand": "categories,priceClass"},
+            )
+            items = (resp.json() or {}).get("elements", []) or []
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+        synced_items = []
+        synced_categories = 0
+        for item in items:
+            # Clover categories live per-item under `categories.elements`.
+            cat = None
+            for c in ((item.get("categories") or {}).get("elements") or []):
+                cat, _ = MenuCategory.objects.update_or_create(
                     restaurant=self.restaurant,
                     external_provider="CLOVER",
-                    external_id=item['id'],
-                    defaults={
-                        'name': item['name'],
-                        'description': item.get('description', ''),
-                        'price': item.get('price', 0) / 100,  # Clover uses cents
-                        'is_active': not item.get('hidden', False)
-                    }
+                    external_id=c.get("id") or "uncategorized",
+                    defaults={"name": c.get("name") or "Uncategorized", "is_active": True},
                 )
-                synced_items.append(menu_item.id)
-            
-            return {
-                'success': True,
-                'items_synced': len(synced_items),
-                'provider': 'Clover'
-            }
-        except Exception as e:
-            return {'success': False, 'error': str(e)}
-    
+                synced_categories += 1
+                break  # Mizan treats the first category as primary.
+
+            price_cents = int(item.get("price") or 0)
+            menu_item, _ = MenuItem.objects.update_or_create(
+                restaurant=self.restaurant,
+                external_provider="CLOVER",
+                external_id=item.get("id"),
+                defaults={
+                    "category": cat,
+                    "name": item.get("name") or "Item",
+                    "description": item.get("alternateName") or "",
+                    "price": price_cents / 100,
+                    "is_active": not bool(item.get("hidden", False)),
+                },
+            )
+            synced_items.append(menu_item.id)
+
+        return {
+            "success": True,
+            "items_synced": len(synced_items),
+            "categories_synced": synced_categories,
+            "provider": "Clover",
+        }
+
     def sync_orders(self, start_date=None, end_date=None) -> List[Dict]:
-        """Sync orders from Clover"""
-        headers = {'Authorization': f'Bearer {self.api_key}'}
-        params = {}
-        if start_date:
-            params['filter'] = f'createdTime>={int(start_date.timestamp() * 1000)}'
-        
-        response = requests.get(
-            f"{self.BASE_URL}/merchants/{self.merchant_id}/orders",
-            headers=headers,
-            params=params
-        )
-        response.raise_for_status()
-        return response.json().get('elements', [])
-    
+        """Fetch orders in a date window.
+
+        Clover filters use epoch-millis on ``createdTime``. We default to
+        today-today when no range supplied and cap at 1000 orders per
+        sync call (bump with explicit ``limit`` later if needed).
+        """
+        if not self._merchant_id():
+            return []
+        sd = start_date or timezone.now().date()
+        ed = end_date or timezone.now().date()
+
+        from datetime import datetime, time as dtime
+        # Convert day boundaries to UTC epoch millis — Clover expects them.
+        start_ms = int(datetime.combine(sd, dtime.min).timestamp() * 1000)
+        end_ms = int(datetime.combine(ed, dtime.max).timestamp() * 1000)
+
+        params = {
+            "filter": f"createdTime>={start_ms} AND createdTime<={end_ms}",
+            "expand": "lineItems,payments,lineItems.modifications",
+            "limit": 1000,
+        }
+        try:
+            resp = self._request("GET", f"/v3/merchants/{self._merchant_id()}/orders", params=params)
+        except Exception:
+            return []
+        return ((resp.json() or {}).get("elements") or [])
+
+    def get_item_sales_for_date_range(self, start_date, end_date) -> Dict:
+        """Returns {date: {item_name: quantity}} for prep-list forecasting."""
+        try:
+            orders = self.sync_orders(start_date, end_date)
+        except Exception:
+            return {}
+        result: Dict = {}
+        from datetime import datetime
+
+        for o in orders or []:
+            created_ms = o.get("createdTime") or 0
+            try:
+                order_date = datetime.fromtimestamp(int(created_ms) / 1000).date()
+            except Exception:
+                continue
+            if order_date < start_date or order_date > end_date:
+                continue
+            result.setdefault(order_date, {})
+            for li in ((o.get("lineItems") or {}).get("elements") or []):
+                name = (li.get("name") or "").strip()
+                if not name:
+                    continue
+                # Clover represents partial quantities with `unitQty` (millis).
+                qty = float(li.get("unitQty") or 0) / 1000 if li.get("unitQty") else 1.0
+                result[order_date][name] = result[order_date].get(name, 0) + qty
+        return result
+
     def create_order(self, order: Order) -> Dict:
-        """Push order to Clover"""
-        headers = {
-            'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json'
+        return {
+            "success": False,
+            "error": "Clover write-back is disabled. Orders should be created on the Clover device directly.",
         }
-        
-        order_data = {
-            'state': 'open',
-            'lineItems': [
-                {
-                    'item': {'id': str(item.menu_item.external_id)},
-                    'unitQty': item.quantity,
-                    'price': int(item.unit_price * 100)
-                }
-                for item in order.line_items.all()
-            ]
-        }
-        
-        response = requests.post(
-            f"{self.BASE_URL}/merchants/{self.merchant_id}/orders",
-            headers=headers,
-            json=order_data
-        )
-        response.raise_for_status()
-        return response.json()
-    
+
     def process_payment(self, payment: Payment) -> Dict:
-        """Process payment through Clover"""
-        return {'success': True, 'transaction_id': f'CLOVER_{payment.id}'}
+        return {"success": True, "transaction_id": f"CLOVER_{payment.id}"}
 
 
 class CustomAPIIntegration(BasePOSIntegration):
@@ -1107,6 +1379,16 @@ class IntegrationManager:
                 return cls._get_lightspeed_retail_x_daily_sales(restaurant, target_date)
             return cls._get_lightspeed_k_daily_sales(restaurant, target_date)
 
+        # Toast and Clover: reuse each provider's sync_orders() and aggregate
+        # totals in-process. Both return rich order graphs (checks /
+        # selections / payments for Toast; lineItems / payments for
+        # Clover) so we can compute totals, taxes, tips, and cash vs
+        # card splits without a second API call.
+        if provider == 'TOAST':
+            return cls._get_toast_daily_sales(restaurant, target_date)
+        if provider == 'CLOVER':
+            return cls._get_clover_daily_sales(restaurant, target_date)
+
         day_start = timezone.make_aware(timezone.datetime.combine(target_date, timezone.datetime.min.time()))
         day_end = timezone.make_aware(timezone.datetime.combine(target_date, timezone.datetime.max.time()))
 
@@ -1293,6 +1575,166 @@ class IntegrationManager:
             'cash_total': round(cash_total, 2),
             'card_total': round(card_total, 2),
             'by_order_type': {},
+            'currency': restaurant.currency or 'USD',
+        }
+
+    @classmethod
+    def _get_toast_daily_sales(cls, restaurant, target_date) -> Dict:
+        """Aggregate a single day of Toast sales from `ordersBulk`.
+
+        Amounts on Toast come back in cents as integers inside ``amount``
+        fields. We count only checks that have a ``paidDate`` (i.e. closed
+        sales) and ignore voided selections so numbers match Toast's own
+        Sales Summary report.
+        """
+        integration = cls.get_integration(restaurant)
+        if not integration or not isinstance(integration, ToastIntegration):
+            return {'success': True, 'connected': False, 'error': 'Toast integration unavailable.'}
+        if not integration._restaurant_guid():
+            return {'success': True, 'connected': False, 'error': 'Toast restaurantGuid missing — reconnect.'}
+        try:
+            orders = integration.sync_orders(target_date, target_date)
+        except requests.RequestException as e:
+            return {
+                'success': True, 'connected': True,
+                'error': f'Toast API error: {e}',
+                'total_sales': 0, 'order_count': 0, 'avg_ticket': 0,
+                'currency': restaurant.currency or 'USD',
+            }
+
+        total_sales = 0.0
+        total_tax = 0.0
+        total_discount = 0.0
+        cash_total = 0.0
+        card_total = 0.0
+        tips_total = 0.0
+        order_count = 0
+        by_type: Dict[str, Dict] = {}
+
+        for order in orders or []:
+            if order.get('voided') or order.get('deleted'):
+                continue
+            for check in order.get('checks', []) or []:
+                if check.get('voided') or check.get('deleted'):
+                    continue
+                if not check.get('paidDate'):
+                    # Unclosed check — don't count in daily totals.
+                    continue
+                order_count += 1
+                # Toast totals are in dollars with 2 decimals on v2.
+                total_sales += float(check.get('totalAmount') or 0)
+                total_tax += float(check.get('taxAmount') or 0)
+                # Applied discounts live in `appliedDiscounts`.
+                for d in check.get('appliedDiscounts', []) or []:
+                    total_discount += float(d.get('discountAmount') or 0)
+                for pmt in check.get('payments', []) or []:
+                    if pmt.get('paymentStatus', '').upper() != 'CAPTURED':
+                        continue
+                    amt = float(pmt.get('amount') or 0)
+                    ptype = (pmt.get('type') or '').upper()
+                    if ptype == 'CASH':
+                        cash_total += amt
+                    else:
+                        card_total += amt
+                    tips_total += float(pmt.get('tipAmount') or 0)
+                # Channel split (DINE_IN / TAKE_OUT / DELIVERY).
+                dc = (order.get('diningOption') or {}).get('behavior') or 'OTHER'
+                agg = by_type.setdefault(dc, {'count': 0, 'total': 0.0})
+                agg['count'] += 1
+                agg['total'] += float(check.get('totalAmount') or 0)
+
+        avg_ticket = total_sales / order_count if order_count else 0
+        return {
+            'success': True,
+            'connected': True,
+            'date': target_date.isoformat(),
+            'total_sales': round(total_sales, 2),
+            'order_count': order_count,
+            'avg_ticket': round(avg_ticket, 2),
+            'total_tax': round(total_tax, 2),
+            'total_discount': round(total_discount, 2),
+            'tips': round(tips_total, 2),
+            'cash_total': round(cash_total, 2),
+            'card_total': round(card_total, 2),
+            'by_order_type': {k: {'count': v['count'], 'total': round(v['total'], 2)} for k, v in by_type.items()},
+            'currency': restaurant.currency or 'USD',
+        }
+
+    @classmethod
+    def _get_clover_daily_sales(cls, restaurant, target_date) -> Dict:
+        """Aggregate a single day of Clover sales.
+
+        Clover returns all monetary amounts in the smallest currency
+        unit (cents). ``state == 'paid'`` identifies closed orders;
+        voided orders have ``state == 'deleted'``.
+        """
+        integration = cls.get_integration(restaurant)
+        if not integration or not isinstance(integration, CloverIntegration):
+            return {'success': True, 'connected': False, 'error': 'Clover integration unavailable.'}
+        if not integration._merchant_id() or not integration._access_token():
+            return {'success': True, 'connected': False, 'error': 'Clover credentials missing — reconnect.'}
+        try:
+            orders = integration.sync_orders(target_date, target_date)
+        except requests.RequestException as e:
+            return {
+                'success': True, 'connected': True,
+                'error': f'Clover API error: {e}',
+                'total_sales': 0, 'order_count': 0, 'avg_ticket': 0,
+                'currency': restaurant.currency or 'USD',
+            }
+
+        total_sales = 0.0
+        total_tax = 0.0
+        total_discount = 0.0
+        cash_total = 0.0
+        card_total = 0.0
+        tips_total = 0.0
+        order_count = 0
+        by_type: Dict[str, Dict] = {}
+
+        for o in orders or []:
+            state = (o.get('state') or '').lower()
+            if state == 'deleted':
+                continue
+            paid = bool(o.get('paymentState') == 'PAID' or state == 'paid')
+            if not paid:
+                continue
+            order_count += 1
+            # All Clover amounts are cents.
+            total_sales += int(o.get('total') or 0) / 100
+            total_tax += int(o.get('taxAmount') or 0) / 100
+            # Clover puts per-order discounts under `discounts.elements`.
+            for d in ((o.get('discounts') or {}).get('elements') or []):
+                total_discount += int(d.get('amount') or 0) / 100
+            for pmt in ((o.get('payments') or {}).get('elements') or []):
+                if (pmt.get('result') or '').upper() != 'SUCCESS':
+                    continue
+                amt = int(pmt.get('amount') or 0) / 100
+                tender_type = ((pmt.get('tender') or {}).get('labelKey') or '').upper()
+                if 'CASH' in tender_type:
+                    cash_total += amt
+                else:
+                    card_total += amt
+                tips_total += int(pmt.get('tipAmount') or 0) / 100
+            ordertype = ((o.get('orderType') or {}).get('labelKey') or 'OTHER').upper()
+            agg = by_type.setdefault(ordertype, {'count': 0, 'total': 0.0})
+            agg['count'] += 1
+            agg['total'] += int(o.get('total') or 0) / 100
+
+        avg_ticket = total_sales / order_count if order_count else 0
+        return {
+            'success': True,
+            'connected': True,
+            'date': target_date.isoformat(),
+            'total_sales': round(total_sales, 2),
+            'order_count': order_count,
+            'avg_ticket': round(avg_ticket, 2),
+            'total_tax': round(total_tax, 2),
+            'total_discount': round(total_discount, 2),
+            'tips': round(tips_total, 2),
+            'cash_total': round(cash_total, 2),
+            'card_total': round(card_total, 2),
+            'by_order_type': {k: {'count': v['count'], 'total': round(v['total'], 2)} for k, v in by_type.items()},
             'currency': restaurant.currency or 'USD',
         }
 
