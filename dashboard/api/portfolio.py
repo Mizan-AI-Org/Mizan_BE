@@ -36,6 +36,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import BusinessLocation
+from core.http_caching import json_response_with_cache
 from core.read_through_cache import safe_cache_get, safe_cache_set
 from scheduling.models import AssignedShift, ShiftSwapRequest
 from timeclock.models import CashSession, ClockEvent
@@ -190,7 +191,15 @@ class PortfolioSummaryView(APIView):
             is_scoped_manager = False
 
         if cached is not None and not is_scoped_manager:
-            return Response(cached)
+            # Add ETag/Cache-Control so a polling client sending the same
+            # If-None-Match gets a cheap 304 instead of the full payload.
+            return json_response_with_cache(
+                request,
+                cached,
+                max_age=PORTFOLIO_CACHE_TTL_SECONDS,
+                private=True,
+                stale_while_revalidate=120,
+            )
 
         try:
             payload = self._compute(restaurant, user, role, today)
@@ -212,7 +221,13 @@ class PortfolioSummaryView(APIView):
 
         if not is_scoped_manager:
             safe_cache_set(cache_key, payload, PORTFOLIO_CACHE_TTL_SECONDS)
-        return Response(payload)
+        return json_response_with_cache(
+            request,
+            payload,
+            max_age=PORTFOLIO_CACHE_TTL_SECONDS,
+            private=True,
+            stale_while_revalidate=120,
+        )
 
     def _safe_fallback(self, restaurant, user, role, today, exc) -> dict[str, Any]:
         """

@@ -145,6 +145,10 @@ class Task(models.Model):
         ('LOW', 'Low'),
         ('MEDIUM', 'Medium'),
         ('HIGH', 'High'),
+        # URGENT is shown as a red "Urgent" pill in the Tasks & Demands
+        # widget. Keeping HIGH for historical rows, URGENT for new AI/WhatsApp
+        # ingested items that carry their own escalation signal.
+        ('URGENT', 'Urgent'),
     )
 
     TASK_STATUS = (
@@ -152,6 +156,17 @@ class Task(models.Model):
         ('IN_PROGRESS', 'In Progress'),
         ('COMPLETED', 'Completed'),
         ('CANCELLED', 'Cancelled'),
+    )
+
+    # Provenance of the task. Lets the UI show "WA Group: Kitchen" /
+    # "From: Legal" next to the title, which is how managers triage their
+    # inbox-style Tasks & Demands widget at a glance.
+    TASK_SOURCE = (
+        ('MANUAL', 'Manual'),
+        ('WHATSAPP', 'WhatsApp'),
+        ('EMAIL', 'Email'),
+        ('MIYA', 'Miya AI'),
+        ('SYSTEM', 'System'),
     )
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -162,6 +177,13 @@ class Task(models.Model):
     priority = models.CharField(max_length=10, choices=TASK_PRIORITY, default='MEDIUM')
     status = models.CharField(max_length=20, choices=TASK_STATUS, default='PENDING')
     due_date = models.DateField(null=True, blank=True)
+    # Optional provenance metadata for the Tasks & Demands widget. Nulls on
+    # old rows are treated as MANUAL / no-label / no-summary by the UI.
+    source = models.CharField(
+        max_length=20, choices=TASK_SOURCE, default='MANUAL', blank=True,
+    )
+    source_label = models.CharField(max_length=120, blank=True, default='')
+    ai_summary = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

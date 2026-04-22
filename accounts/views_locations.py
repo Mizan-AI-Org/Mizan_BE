@@ -7,6 +7,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from core.http_caching import json_response_with_cache
 from core.read_through_cache import safe_cache_delete
 
 from .models import BusinessLocation
@@ -129,6 +130,30 @@ class BusinessLocationViewSet(viewsets.ModelViewSet):
         if rest is None:
             return BusinessLocation.objects.none()
         return BusinessLocation.objects.filter(restaurant=rest)
+
+    def list(self, request, *args, **kwargs):
+        """
+        Override DRF's default list to attach an ETag + Cache-Control. The
+        location list is read on almost every page (sidebar, schedule
+        modals, staff invite, dashboard widgets) but only changes when an
+        admin opens the Settings page — perfect candidate for 304s.
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        serializer = self.get_serializer(
+            page if page is not None else queryset, many=True
+        )
+        if page is not None:
+            payload = self.get_paginated_response(serializer.data).data
+        else:
+            payload = serializer.data
+        return json_response_with_cache(
+            request,
+            payload,
+            max_age=120,                   # 2 min: locations rarely change
+            private=True,
+            stale_while_revalidate=300,    # serve-stale for another 5 min
+        )
 
     def perform_create(self, serializer):
         rest = getattr(self.request.user, 'restaurant', None)

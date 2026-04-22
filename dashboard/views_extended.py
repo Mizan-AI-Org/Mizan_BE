@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 from scheduling.models import ShiftTask, TaskCategory, ShiftChecklistProgress, TaskVerificationRecord
 from scheduling.serializers import ShiftTaskSerializer, TaskCategorySerializer
 from scheduling.process_models import Process, ProcessTask
-from attendance.models import ShiftReview
 from .models import DailyKPI, Alert, Task
 from .serializers import TaskSerializer
 from .serializers import DailyKPISerializer, AlertSerializer
@@ -459,9 +458,6 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         rate_yesterday = int((completed_yesterday / total_yesterday * 100)) if total_yesterday > 0 else 100
         on_time_change = on_time_rate - rate_yesterday
         
-        # 4. Attention Needed (ShiftReviews with rating <= 3)
-        attention_needed = ShiftReview.objects.filter(restaurant=user.restaurant, rating__lte=3).count()
-        
         # 5. Process details for the selector
         process_details = [
             { 'id': 'all', 'name': 'All Processes', 'completion': 0, 'health': 'green' }
@@ -479,7 +475,6 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             },
             'on_time_rate': on_time_rate,
             'on_time_change': on_time_change,
-            'attention_needed': attention_needed,
             'processes': process_details
         })
 

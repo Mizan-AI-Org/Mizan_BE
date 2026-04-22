@@ -3,10 +3,9 @@ from rest_framework.response import Response
 from rest_framework import permissions
 from django.utils import timezone
 from datetime import timedelta
-from django.db.models import Count, Q, Avg
+from django.db.models import Count, Q
 from timeclock.models import ClockEvent
 from scheduling.models import AssignedShift, ShiftSwapRequest, ShiftTask
-from attendance.models import ShiftReview
 from dashboard.models import Task as DashboardTask, Alert
 from accounts.models import CustomUser
 from inventory.models import PurchaseOrder
@@ -67,12 +66,22 @@ class DashboardSummaryView(APIView):
 
         today = timezone.now().date()
         from core.dashboard_cache_keys import dashboard_summary_cache_key
+        from core.http_caching import json_response_with_cache
         from core.read_through_cache import safe_cache_get, safe_cache_set
 
         _summary_cache_key = dashboard_summary_cache_key(restaurant.id, today)
         _cached_summary = safe_cache_get(_summary_cache_key)
         if _cached_summary is not None:
-            return Response(_cached_summary)
+            # Cached: also let the client short-circuit with a 304 if it
+            # already has the same ETag — this is the cheapest possible
+            # response we can serve to a polling dashboard.
+            return json_response_with_cache(
+                request,
+                _cached_summary,
+                max_age=55,
+                private=True,
+                stale_while_revalidate=120,
+            )
 
         now = timezone.now()
         last_24h = now - timedelta(hours=24)
@@ -219,18 +228,6 @@ class DashboardSummaryView(APIView):
             pass
 
         # 2. Operations & Forecast
-        negative_reviews_count = ShiftReview.objects.filter(
-            restaurant=restaurant,
-            rating__lte=3,
-            completed_at__gte=last_24h
-        ).count()
-
-        # Average rating for today/yesterday for trend
-        avg_rating = ShiftReview.objects.filter(
-            restaurant=restaurant,
-            completed_at__gte=last_24h
-        ).aggregate(Avg('rating'))['rating__avg'] or 0
-
         # Forecast: task completion rate today (ShiftTask)
         tasks_today = ShiftTask.objects.filter(
             shift__schedule__restaurant=restaurant,
@@ -560,9 +557,14 @@ class DashboardSummaryView(APIView):
                 )
             )
 
-        # Sort insights by urgency and return only top items to avoid overwhelming
+        # Sort insights by urgency. The widget renders only the top 5,
+        # but we emit the full ranked list so the Operational Issues
+        # page can show everything grouped by priority without a second
+        # round-trip. Computing both here also means the 55 s summary
+        # cache amortises the cost for free.
         insights.sort(key=lambda x: int(x.get("urgency") or 0), reverse=True)
         insights_top = insights[:8]
+        insights_all = insights  # already sorted by urgency desc
         counts_by_level = {}
         for it in insights:
             lvl = str(it.get("level") or "OTHER").upper()
@@ -676,8 +678,6 @@ class DashboardSummaryView(APIView):
                 "late_staff_today": late_staff_today
             },
             "operations": {
-                "negative_reviews": negative_reviews_count,
-                "avg_rating": round(avg_rating, 1),
                 "completion_rate": round(completion_rate, 1),
                 "next_delivery": delivery_info
             },
@@ -688,6 +688,8 @@ class DashboardSummaryView(APIView):
             },
             "insights": {
                 "items": insights_top,
+                "items_all": insights_all,
+                "total": len(insights_all),
                 "counts": counts_by_level,
             },
             "tasks_due": tasks_list,
@@ -704,4 +706,10 @@ class DashboardSummaryView(APIView):
         }
 
         safe_cache_set(_summary_cache_key, data, 55)
-        return Response(data)
+        return json_response_with_cache(
+            request,
+            data,
+            max_age=55,
+            private=True,
+            stale_while_revalidate=120,
+        )

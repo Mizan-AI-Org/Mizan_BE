@@ -1236,17 +1236,6 @@ class NotificationService:
         ok, _ = self.send_whatsapp_template(phone, template_name, language_code=language_code, components=components)
         return ok
 
-    def send_shift_review_request(self, phone, first_name, language_code=None):
-        """
-        Send the shift_review WhatsApp template (Hi {{1}}, how was your shift today?) with quick-reply buttons.
-        Template has one body variable: first name. Buttons Bad/Decent/Good/Great are defined in the template.
-        """
-        template_name = getattr(settings, 'WHATSAPP_TEMPLATE_SHIFT_REVIEW', 'shift_review')
-        lang = language_code or getattr(settings, 'WHATSAPP_TEMPLATE_SHIFT_REVIEW_LANGUAGE', 'en_US')
-        first_name = (first_name or 'there').strip()
-        components = [{"type": "body", "parameters": [{"type": "text", "text": first_name}]}]
-        return self.send_whatsapp_template(phone, template_name, language_code=lang, components=components)
-
     def prepare_checklist_for_miya(self, user, active_shift, phone_digits=None):
         """
         Prepare a checklist for Miya-driven delivery. Creates ShiftChecklistProgress

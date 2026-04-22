@@ -18,11 +18,18 @@ from .views_extended import (
 from .api.summary import DashboardSummaryView
 from .api.action_center import ActionCenterView
 from .api.portfolio import PortfolioSummaryView, LocationDetailView
+from .api.tasks_demands import TasksDemandsView, TaskStatusUpdateView
+from .api.meetings_reminders import MeetingsRemindersView
+from .api.clock_ins import DashboardClockInsView
 from .views import mark_shift_no_show
 from .views_widget_layout import (
     AgentDashboardCategoryCreateView,
+    AgentDashboardCustomWidgetDeleteView,
     AgentDashboardWidgetCreateView,
+    AgentDashboardWidgetListView,
     AgentDashboardWidgetsAddView,
+    AgentDashboardWidgetsRemoveView,
+    AgentDashboardWidgetsReorderView,
     DashboardCustomWidgetListView,
     DashboardWidgetOrderView,
 )
@@ -32,6 +39,7 @@ from .views_categories import (
     DashboardCustomWidgetCreateView,
     DashboardCustomWidgetDetailView,
 )
+from .views_agent import agent_create_dashboard_task
 
 router = DefaultRouter()
 router.register(r'tasks', TaskManagementViewSet, basename='task-management')
@@ -59,8 +67,13 @@ urlpatterns = [
         DashboardCategoryDetailView.as_view(),
         name='dashboard-categories-detail',
     ),
+    path('agent/tasks/create/', agent_create_dashboard_task, name='dashboard-agent-tasks-create'),
+    path('agent/widgets/list/', AgentDashboardWidgetListView.as_view(), name='dashboard-agent-widgets-list'),
     path('agent/widgets/add/', AgentDashboardWidgetsAddView.as_view(), name='dashboard-agent-widgets-add'),
+    path('agent/widgets/remove/', AgentDashboardWidgetsRemoveView.as_view(), name='dashboard-agent-widgets-remove'),
+    path('agent/widgets/reorder/', AgentDashboardWidgetsReorderView.as_view(), name='dashboard-agent-widgets-reorder'),
     path('agent/widgets/create/', AgentDashboardWidgetCreateView.as_view(), name='dashboard-agent-widgets-create'),
+    path('agent/widgets/custom/delete/', AgentDashboardCustomWidgetDeleteView.as_view(), name='dashboard-agent-widgets-custom-delete'),
     path('agent/categories/create/', AgentDashboardCategoryCreateView.as_view(), name='dashboard-agent-categories-create'),
     path('summary/', DashboardSummaryView.as_view(), name='dashboard-summary'),
     path('portfolio/', PortfolioSummaryView.as_view(), name='dashboard-portfolio'),
@@ -70,6 +83,26 @@ urlpatterns = [
         name='dashboard-portfolio-location-detail',
     ),
     path('action-center/', ActionCenterView.as_view(), name='dashboard-action-center'),
+    path(
+        'tasks-demands/',
+        TasksDemandsView.as_view(),
+        name='dashboard-tasks-demands',
+    ),
+    path(
+        'tasks-demands/<uuid:pk>/status/',
+        TaskStatusUpdateView.as_view(),
+        name='dashboard-tasks-demands-status',
+    ),
+    path(
+        'meetings-reminders/',
+        MeetingsRemindersView.as_view(),
+        name='dashboard-meetings-reminders',
+    ),
+    path(
+        'clock-ins/',
+        DashboardClockInsView.as_view(),
+        name='dashboard-clock-ins',
+    ),
     path('attendance/mark-no-show/', mark_shift_no_show, name='dashboard-mark-no-show'),
     path('kpis/', DailyKPIListAPIView.as_view(), name='daily-kpi-list'),
     path('captured-orders/', StaffCapturedOrderListCreateAPIView.as_view(), name='staff-captured-orders'),

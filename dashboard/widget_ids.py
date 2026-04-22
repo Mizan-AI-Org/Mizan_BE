@@ -5,6 +5,7 @@ CUSTOM_WIDGET_PREFIX = "custom:"
 
 DEFAULT_DASHBOARD_WIDGET_ORDER = [
     "insights",
+    "tasks_demands",
     "staffing",
     "sales_or_tasks",
     "operations",
@@ -24,6 +25,8 @@ DASHBOARD_WIDGET_IDS = frozenset(
         "jobsite_crew",
         "ops_reports",
         "staff_inbox",
+        "meetings_reminders",
+        "clock_ins",
     ]
 )
 

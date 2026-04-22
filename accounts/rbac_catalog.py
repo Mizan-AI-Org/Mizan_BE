@@ -22,7 +22,6 @@ APPS: list[dict[str, str]] = [
     {"id": "tasks", "label": "Processes & tasks"},
     {"id": "staff", "label": "Staff"},
     {"id": "checklists", "label": "Checklists & incidents"},
-    {"id": "shift_reviews", "label": "Staff schedules"},
     {"id": "scheduling", "label": "Scheduling"},
     {"id": "scheduling_analytics", "label": "Scheduling analytics"},
     {"id": "reports", "label": "Reports"},
@@ -134,12 +133,12 @@ DEFAULT_PERMISSIONS: dict[str, dict[str, list[str]]] = {
         ],
     },
     "SUPERVISOR": {
-        "apps": ["staff", "shift_reviews", "attendance", "scheduling", "supervisor", "staff_requests"],
+        "apps": ["staff", "scheduling", "supervisor", "staff_requests"],
         "widgets": ["insights", "staffing", "operations", "wellbeing", "live_attendance", "staff_inbox"],
         "actions": ["edit_schedule"],
     },
     "CHEF": {
-        "apps": ["scheduling", "inventory", "shift_reviews"],
+        "apps": ["scheduling", "inventory"],
         "widgets": ["insights", "operations", "inventory_delivery", "task_execution"],
         "actions": [],
     },

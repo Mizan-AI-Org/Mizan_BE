@@ -173,6 +173,7 @@ class StaffRequestListSerializer(serializers.ModelSerializer):
     (comments + full staff object) is fetched on row click via retrieve().
     """
     staff_display_name = serializers.SerializerMethodField()
+    assignee_summary = serializers.SerializerMethodField()
 
     class Meta:
         model = StaffRequest
@@ -189,6 +190,10 @@ class StaffRequestListSerializer(serializers.ModelSerializer):
             'description',
             'source',
             'external_id',
+            'assignee',
+            'assignee_summary',
+            'voice_audio_url',
+            'transcription_language',
             'created_at',
             'updated_at',
         ]
@@ -204,11 +209,28 @@ class StaffRequestListSerializer(serializers.ModelSerializer):
                 return full
         return obj.staff_name or 'Staff'
 
+    def get_assignee_summary(self, obj):
+        if not obj.assignee_id:
+            return None
+        a = getattr(obj, 'assignee', None)
+        if not a:
+            return None
+        first = getattr(a, 'first_name', '') or ''
+        last = getattr(a, 'last_name', '') or ''
+        name = f"{first} {last}".strip() or getattr(a, 'email', '') or ''
+        return {
+            'id': str(obj.assignee_id),
+            'name': name,
+            'email': getattr(a, 'email', '') or '',
+            'role': getattr(a, 'role', '') or '',
+        }
+
 
 class StaffRequestSerializer(serializers.ModelSerializer):
     staff_details = CustomUserSerializer(source='staff', read_only=True)
     staff_display_name = serializers.SerializerMethodField()
     comments = StaffRequestCommentSerializer(many=True, read_only=True)
+    assignee_details = CustomUserSerializer(source='assignee', read_only=True)
 
     class Meta:
         model = StaffRequest
@@ -228,6 +250,11 @@ class StaffRequestSerializer(serializers.ModelSerializer):
             'source',
             'external_id',
             'metadata',
+            'assignee',
+            'assignee_details',
+            'voice_audio_url',
+            'transcription',
+            'transcription_language',
             'created_at',
             'updated_at',
             'reviewed_by',
@@ -240,6 +267,10 @@ class StaffRequestSerializer(serializers.ModelSerializer):
             'staff',
             'staff_details',
             'staff_display_name',
+            'assignee_details',
+            'voice_audio_url',
+            'transcription',
+            'transcription_language',
             'created_at',
             'updated_at',
             'reviewed_by',

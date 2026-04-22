@@ -23,6 +23,55 @@ class TaskSerializer(serializers.ModelSerializer):
         read_only_fields = ('restaurant', 'created_at', 'updated_at')
 
 
+class DashboardTaskCompactSerializer(serializers.ModelSerializer):
+    """
+    Small shape for the Tasks & Demands dashboard widget.
+
+    Keeps the payload tiny so the widget can poll without cost creep:
+    just id / title / description / priority / status / due_date / source
+    info plus the bare-minimum assignee fields needed to render an avatar
+    + name. Full user data (restaurant, permissions, …) is not shipped.
+    """
+
+    assignee = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Task
+        fields = (
+            'id',
+            'title',
+            'description',
+            'priority',
+            'status',
+            'due_date',
+            'source',
+            'source_label',
+            'ai_summary',
+            'assignee',
+            'created_at',
+            'updated_at',
+        )
+        read_only_fields = fields
+
+    def get_assignee(self, obj):
+        u = obj.assigned_to
+        if not u:
+            return None
+        first = (getattr(u, 'first_name', None) or '').strip()
+        last = (getattr(u, 'last_name', None) or '').strip()
+        full = (f"{first} {last}").strip() or (getattr(u, 'email', None) or '')
+        initials = (
+            (first[:1] + last[:1]).upper()
+            or (full[:2] if full else '').upper()
+        )
+        return {
+            'id': str(u.pk),
+            'name': full,
+            'initials': initials or '?',
+            'role': getattr(u, 'role', None),
+        }
+
+
 class StaffCapturedOrderSerializer(serializers.ModelSerializer):
     recorded_by_name = serializers.SerializerMethodField()
 
