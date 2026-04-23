@@ -105,7 +105,10 @@ def agent_send_announcement(request):
                     "success": False,
                     "error": (
                         f"Message sent in-app to {count} recipient(s), but WhatsApp delivery failed for: {', '.join(names)}. "
-                        "Please check that WhatsApp Business API is configured correctly (valid access token and phone number ID) in your dashboard settings."
+                        "Most often this is a phone-number format issue: Miya needs the number as country code + subscriber number, "
+                        "digits only, no '+' and no leading zero — e.g. 212622286214 (Morocco), 2203736808 (Gambia), 254722286214 (Kenya). "
+                        "Open Staff → that person's profile and re-save the WhatsApp number in that format. "
+                        "If the number is already correct, check WhatsApp Business API settings (access token + phone number ID)."
                     ),
                     "notification_count": count,
                     "whatsapp_sent": whatsapp_sent,
@@ -118,7 +121,8 @@ def agent_send_announcement(request):
             message_text = (
                 f"Announcement sent to {count} recipient(s) (WhatsApp: {whatsapp_sent}). "
                 f"The following have no phone number on file, so they only received an in-app message: {', '.join(names)}. "
-                "If your team doesn't use the app, add their phone numbers so Miya can reach them by WhatsApp."
+                "Add their WhatsApp number in this format so Miya can reach them next time: country code + subscriber number, "
+                "digits only, no '+' and no leading zero (e.g. 212622286214, 2203736808, 254722286214)."
             )
         else:
             message_text = f"Announcement sent to {count} recipient(s) via app and WhatsApp."
