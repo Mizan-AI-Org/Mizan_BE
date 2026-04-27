@@ -52,6 +52,12 @@ from notifications.models import Notification
 from .models import StaffRequest, StaffRequestComment
 from .models_task import SafetyConcernReport
 from .request_routing import resolve_default_assignee_for_category
+from .intent_router import (
+    DEST_INCIDENT,
+    IntentDecision,
+    classify_request,
+)
+from .incident_routing import resolve_default_assignee_for_incident_type
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +98,117 @@ def validate_agent_key(request):
     if not auth_header or auth_header != f"Bearer {expected_key}":
         return False, "Unauthorized"
     return True, None
+
+
+def _create_incident_from_inbox_message(
+    *,
+    restaurant,
+    reporter,
+    subject: str,
+    description: str,
+    decision: IntentDecision,
+    requested_priority: str,
+    source: str,
+    external_id: str,
+    metadata: dict,
+):
+    """Create a ``SafetyConcernReport`` (and, best-effort, a legacy
+    ``Incident``) from a staff message that the intent router has
+    flagged as an incident rather than an inbox row.
+
+    This duplicates the persistence layer used by
+    ``reporting/views_agent.agent_create_incident`` but is callable
+    in-process so the staff-request ingest endpoint can transparently
+    re-route without a second HTTP hop.
+
+    The reason we don't simply ``import`` the other view is that it is
+    a DRF ``@api_view`` — calling it requires a fake ``Request`` and
+    smuggles auth concerns. Inlining the few lines we need keeps the
+    code path obvious.
+    """
+    from reporting.models import Incident  # local import to avoid cycles
+
+    incident_type = decision.category or "General"
+    # Prefer router-derived priority, fall back to the agent's hint, then
+    # default to MEDIUM. ``CRITICAL`` is only ever set by the router.
+    valid_priorities = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+    priority = (decision.priority or requested_priority or "MEDIUM").upper()
+    # The inbox uses URGENT — incidents use CRITICAL. Map across.
+    if priority == "URGENT":
+        priority = "CRITICAL"
+    if priority not in valid_priorities:
+        priority = "MEDIUM"
+
+    title = subject or f"{incident_type} incident"
+    title = title[:255]
+
+    assignee = resolve_default_assignee_for_incident_type(restaurant, incident_type)
+
+    concern = SafetyConcernReport.objects.create(
+        restaurant=restaurant,
+        reporter=reporter,
+        is_anonymous=False,
+        incident_type=incident_type,
+        title=title,
+        description=description,
+        severity=priority,
+        status="OPEN",
+        occurred_at=timezone.now(),
+        assigned_to=assignee,
+    )
+
+    # Best-effort mirror into the legacy ``Incident`` table so the
+    # reporting pipeline keeps working — never let this fail the call.
+    try:
+        Incident.objects.create(
+            restaurant=restaurant,
+            reporter=reporter,
+            title=title,
+            description=description,
+            category=incident_type,
+            priority=priority,
+            status="OPEN",
+            assigned_to=assignee,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort mirror
+        logger.warning("Legacy Incident mirror failed: %s", exc)
+
+    # In-app notification for managers so the incident shows up next
+    # to the existing "Reported Incidents" widget without waiting for
+    # the next poll.
+    try:
+        managers = CustomUser.objects.filter(
+            restaurant=restaurant,
+            role__in=["MANAGER", "ADMIN", "SUPER_ADMIN", "OWNER"],
+            is_active=True,
+        )
+        for m in managers:
+            notif = Notification.objects.create(
+                recipient=m,
+                title=f"New {incident_type} incident",
+                message=title,
+                notification_type="INCIDENT",
+                priority=priority,
+                data={
+                    "incident_id": str(concern.id),
+                    "incident_type": incident_type,
+                    "route": "/dashboard/analytics?tab=incidents",
+                    "auto_routed_from": "staff_request_inbox",
+                    "matched_terms": list(decision.matched_terms),
+                },
+            )
+            notification_service.send_custom_notification(
+                recipient=m,
+                notification=notif,
+                message=notif.message,
+                notification_type="INCIDENT",
+                title=notif.title,
+                channels=["app"],
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Incident notify managers failed: %s", exc)
+
+    return concern, assignee, priority
 
 
 def _notify_managers_of_staff_request(req: StaffRequest):
@@ -180,7 +297,31 @@ def agent_ingest_staff_request(request):
     if priority not in ['LOW', 'MEDIUM', 'HIGH', 'URGENT']:
         priority = 'MEDIUM'
 
-    category = _normalize_category(data.get('category'))
+    # Run the deterministic intent router *before* we persist anything.
+    # This is the safety net that stops Miya from dumping every message
+    # into the inbox with category=OTHER: obvious incidents (broken
+    # equipment, fires, leaks, injuries, harassment, food-safety
+    # hazards) get re-routed to the Reported Incidents surface, and
+    # everything else gets a real category instead of falling back to
+    # "OTHER". See ``staff/intent_router.py`` for the rule table.
+    decision = classify_request(
+        subject=subject,
+        description=description,
+        agent_category=data.get('category'),
+    )
+
+    # When the agent sent something concrete, ``_normalize_category``
+    # is still our last line of defence (it accepts a few synonyms and
+    # rejects garbage). The router output wins for inbox rows because
+    # it has already validated against ``INBOX_CATEGORIES`` and
+    # incorporated keyword inference.
+    if decision.is_incident():
+        # We'll call ``_create_incident_from_inbox_message`` below; the
+        # ``category`` variable is unused for this branch but kept
+        # initialised so static analyzers don't complain.
+        category = _normalize_category(data.get('category'))
+    else:
+        category = decision.category
 
     external_id = (data.get('external_id') or data.get('inquiryId') or data.get('ticketId') or '').strip()
     source = (data.get('source') or data.get('channel') or 'whatsapp').strip().lower()
@@ -217,6 +358,55 @@ def agent_ingest_staff_request(request):
             except Exception:
                 staff = None
 
+    # ------------------------------------------------------------------
+    # Routing fork: if the intent router decided this is an incident,
+    # short-circuit and create a SafetyConcernReport instead of an
+    # inbox row. The agent gets a routed=True response so Miya can say
+    # "I logged that as an incident" rather than "I added it to the
+    # inbox" — making the rerouting visible to the user as well.
+    # ------------------------------------------------------------------
+    if decision.is_incident():
+        concern, incident_assignee, incident_priority = _create_incident_from_inbox_message(
+            restaurant=restaurant,
+            reporter=staff,
+            subject=subject,
+            description=description,
+            decision=decision,
+            requested_priority=priority,
+            source=source,
+            external_id=external_id,
+            metadata=dict(data.get('metadata') or {}),
+        )
+        logger.info(
+            "agent_ingest_staff_request: re-routed to incident "
+            "(restaurant=%s, incident=%s, type=%s, terms=%s)",
+            restaurant.id, concern.id, decision.category, decision.matched_terms,
+        )
+        return Response({
+            'success': True,
+            'routed': True,
+            'destination': 'INCIDENT',
+            'incident_id': str(concern.id),
+            'incident_type': decision.category,
+            'priority': incident_priority,
+            'matched_terms': list(decision.matched_terms),
+            'message_for_user': (
+                f"This sounded like a {decision.category.lower()} incident "
+                f"({', '.join(decision.matched_terms[:3]) or 'safety signal'}), "
+                "so I logged it on the Reported Incidents board instead of the inbox."
+            ),
+            'assignee': (
+                {
+                    'id': str(incident_assignee.id),
+                    'name': incident_assignee.get_full_name() or incident_assignee.email,
+                    'email': incident_assignee.email,
+                    'auto_assigned': True,
+                }
+                if incident_assignee
+                else None
+            ),
+        }, status=status.HTTP_201_CREATED)
+
     # Auto-assign from the tenant's onboarding category-owners map.
     # Miya may override this by passing an explicit ``assignee_id`` / ``assignee_email``.
     assignee = None
@@ -240,6 +430,18 @@ def agent_ingest_staff_request(request):
         assignee = resolve_default_assignee_for_category(restaurant, category)
         auto_assigned = assignee is not None
 
+    # Stash the router's reasoning on the row so managers can see "this
+    # was auto-categorised as PAYROLL because of the words salary,
+    # payslip" — handy for tuning the rules later.
+    inbox_metadata = dict(data.get('metadata') or {})
+    inbox_metadata['intent_router'] = {
+        'category': decision.category,
+        'confidence': decision.confidence,
+        'matched_terms': list(decision.matched_terms),
+        'agent_category': (data.get('category') or 'OTHER'),
+        'auto_categorised': decision.category != (data.get('category') or 'OTHER').upper(),
+    }
+
     req = StaffRequest.objects.create(
         restaurant=restaurant,
         staff=staff,
@@ -256,7 +458,7 @@ def agent_ingest_staff_request(request):
         transcription_language=transcription_language,
         source=source,
         external_id=external_id,
-        metadata=dict(data.get('metadata') or {}),
+        metadata=inbox_metadata,
     )
 
     StaffRequestComment.objects.create(
@@ -266,6 +468,20 @@ def agent_ingest_staff_request(request):
         body='Request received',
         metadata={'source': source, 'external_id': external_id, 'phone': phone_digits},
     )
+
+    # Audit comment when the router corrected Miya's category — makes
+    # the auto-categorisation visible in the request timeline.
+    if inbox_metadata['intent_router']['auto_categorised']:
+        StaffRequestComment.objects.create(
+            request=req,
+            author=None,
+            kind='system',
+            body=(
+                f"Auto-categorised as {decision.category} "
+                f"(matched: {', '.join(decision.matched_terms[:5]) or 'fallback'})."
+            ),
+            metadata=inbox_metadata['intent_router'],
+        )
 
     if assignee:
         StaffRequestComment.objects.create(
@@ -305,9 +521,19 @@ def agent_ingest_staff_request(request):
 
     return Response({
         'success': True,
+        'routed': True,
+        'destination': 'INBOX',
         'id': str(req.id),
         'status': req.status,
         'category': req.category,
+        'auto_categorised': inbox_metadata['intent_router']['auto_categorised'],
+        'matched_terms': list(decision.matched_terms),
+        'message_for_user': (
+            f"Logged in the {req.category.title()} lane of the team inbox."
+            if req.category != 'OTHER'
+            else "Logged in the team inbox — I couldn't pin a specific category, "
+                 "so a manager will triage it."
+        ),
         'assignee': (
             {
                 'id': str(assignee.id),

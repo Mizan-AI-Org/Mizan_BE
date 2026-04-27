@@ -879,6 +879,154 @@ def agent_list_reservations(request):
     })
 
 
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_create_reservation(request):
+    """
+    Create a reservation/booking from Miya so it lands directly on the
+    Reservations / Bookings page (not the staff-requests inbox).
+
+    Auth: LUA_WEBHOOK_API_KEY.
+    Body:
+      restaurant_id (required),
+      guest_name (required),
+      reservation_date=YYYY-MM-DD or natural date keyword (today|tomorrow|...),
+      reservation_time=HH:MM (24h),
+      group_size (int, optional),
+      phone (optional),
+      email (optional),
+      notes (optional),
+      tags (list[str], optional),
+      status (optional, default 'PENDING'),
+      external_id (optional — auto-generated if omitted).
+    """
+    is_valid, error = _validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+
+    from .models import Restaurant, EatNowReservation
+    from datetime import date as _date, timedelta
+    import re as _re
+    import uuid as _uuid
+
+    data = request.data or {}
+    rid = data.get('restaurant_id') or data.get('restaurantId') or _resolve_restaurant_id_agent(request)
+    if not rid:
+        return Response({'success': False, 'error': 'restaurant_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    try:
+        restaurant = Restaurant.objects.get(id=str(rid).strip())
+    except (Restaurant.DoesNotExist, ValueError, TypeError):
+        return Response({'success': False, 'error': 'Workspace not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    guest_name = (data.get('guest_name') or data.get('name') or '').strip()
+    if not guest_name:
+        return Response(
+            {'success': False, 'error': 'guest_name is required to create a reservation.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    today = timezone.localdate()
+    raw_date = (data.get('reservation_date') or data.get('date') or 'today').strip().lower()
+    if raw_date in ('today', "aujourd'hui", 'aujourdhui', 'اليوم', 'lyoum'):
+        res_date = today
+    elif raw_date in ('tomorrow', 'demain', 'غدا', 'ghedda', 'gheda'):
+        res_date = today + timedelta(days=1)
+    elif _re.match(r'^\d{4}-\d{2}-\d{2}$', raw_date):
+        try:
+            res_date = _date.fromisoformat(raw_date)
+        except ValueError:
+            return Response(
+                {'success': False, 'error': f"Invalid reservation_date '{raw_date}'. Use YYYY-MM-DD."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    else:
+        return Response(
+            {'success': False, 'error': f"Invalid reservation_date '{raw_date}'. Use YYYY-MM-DD or today/tomorrow."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    raw_time = (data.get('reservation_time') or data.get('time') or '').strip()
+    if raw_time:
+        m = _re.match(r'^(\d{1,2})[:hH](\d{2})$', raw_time) or _re.match(r'^(\d{1,2})$', raw_time)
+        if m:
+            hh = int(m.group(1))
+            mm = int(m.group(2)) if m.lastindex and m.lastindex >= 2 else 0
+            if 0 <= hh <= 23 and 0 <= mm <= 59:
+                raw_time = f"{hh:02d}:{mm:02d}"
+            else:
+                return Response(
+                    {'success': False, 'error': f"Invalid reservation_time '{raw_time}'. Use HH:MM (24h)."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            return Response(
+                {'success': False, 'error': f"Invalid reservation_time '{raw_time}'. Use HH:MM (24h)."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    try:
+        group_size_raw = data.get('group_size') or data.get('party_size') or data.get('guests')
+        group_size = int(group_size_raw) if group_size_raw not in (None, '') else None
+    except (TypeError, ValueError):
+        group_size = None
+
+    external_id = (data.get('external_id') or f"miya-{_uuid.uuid4().hex[:12]}").strip()
+    res_status = (data.get('status') or 'PENDING').strip() or 'PENDING'
+    tags = data.get('tags') or []
+    if not isinstance(tags, list):
+        tags = []
+
+    try:
+        reservation, created = EatNowReservation.objects.get_or_create(
+            restaurant=restaurant,
+            external_id=external_id,
+            defaults={
+                'status': res_status,
+                'group_size': group_size,
+                'reservation_date': res_date,
+                'reservation_time': raw_time,
+                'guest_name': guest_name,
+                'phone': (data.get('phone') or '').strip(),
+                'email': (data.get('email') or '').strip(),
+                'notes': (data.get('notes') or '').strip(),
+                'tags': tags,
+                'source': (data.get('source') or 'miya').strip() or 'miya',
+                'raw_reservation': {'created_via': 'miya_agent', 'input': dict(data)},
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        return Response(
+            {'success': False, 'error': f"Could not create reservation: {exc}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    return Response({
+        'success': True,
+        'created': created,
+        'reservation': {
+            'id': str(reservation.id),
+            'external_id': reservation.external_id,
+            'guest_name': reservation.guest_name,
+            'phone': reservation.phone,
+            'email': reservation.email,
+            'date': reservation.reservation_date.isoformat() if reservation.reservation_date else None,
+            'time': reservation.reservation_time,
+            'group_size': reservation.group_size,
+            'status': reservation.status,
+            'source': reservation.source,
+            'notes': reservation.notes,
+            'tags': reservation.tags or [],
+        },
+        'message': (
+            f"Reservation logged for {reservation.guest_name} on "
+            f"{reservation.reservation_date} {reservation.reservation_time or ''}".strip()
+            + (f" ({reservation.group_size} guests)" if reservation.group_size else "")
+            + ". Visible on the Reservations page."
+        ),
+    })
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Recognition / Kudos (staff.SafetyRecognition — used more broadly for kudos)
 # ─────────────────────────────────────────────────────────────────────────────
