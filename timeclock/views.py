@@ -220,11 +220,20 @@ def clock_out(request):
 @permission_classes([permissions.IsAuthenticated])
 def today_attendance(request):
     today = timezone.now().date()
-    events = ClockEvent.objects.filter(
-        staff__restaurant=request.user.restaurant,
-        timestamp__date=today
-    ).order_by('-timestamp')
-    
+    # Scope through the canonical helper so the live attendance list
+    # surfaces clock-ins by branch (BusinessLocation.restaurant) and by
+    # multi-restaurant staff (StaffRestaurantLink), matching the
+    # dashboard widget. The pre-helper filter (staff__restaurant=R)
+    # silently dropped both groups.
+    from timeclock.services import clock_events_for_restaurant_qs
+    events = (
+        clock_events_for_restaurant_qs(
+            request.user.restaurant, date=today
+        )
+        .select_related("staff", "location")
+        .order_by("-timestamp")
+    )
+
     serializer = ClockEventSerializer(events, many=True)
     return Response(serializer.data)
 
@@ -1608,11 +1617,17 @@ def agent_attendance_report(request):
             shift_date=report_date
         ).select_related('staff')
 
-        # 2. Get all clock-in events for today
-        clock_ins = ClockEvent.objects.filter(
-            staff__restaurant_id=restaurant_id,
-            timestamp__date=report_date,
-            event_type='in'
+        # 2. Get all clock-in events for today via the canonical helper.
+        # Without this Miya would miss clock-ins from staff whose primary
+        # restaurant FK doesn't match the queried restaurant (i.e. anyone
+        # working a shift via StaffRestaurantLink, or anyone clocking in
+        # at a BusinessLocation owned by this restaurant while their
+        # ``CustomUser.restaurant`` points elsewhere).
+        from timeclock.services import clock_events_for_restaurant_qs
+        from accounts.models import Restaurant
+        _rest = Restaurant.objects.filter(id=restaurant_id).first()
+        clock_ins = clock_events_for_restaurant_qs(
+            _rest, event_type='in', date=report_date
         )
 
         # Map clock-ins by staff_id
