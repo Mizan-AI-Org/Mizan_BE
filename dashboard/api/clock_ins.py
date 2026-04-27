@@ -38,6 +38,7 @@ from rest_framework.views import APIView
 from core.http_caching import json_response_with_cache
 
 from timeclock.models import ClockEvent
+from timeclock.services import clock_events_for_restaurant_qs
 
 
 DEFAULT_LIMIT = 5
@@ -198,29 +199,27 @@ class DashboardClockInsView(APIView):
 
         today = timezone.now().date()
 
-        events_qs = (
-            ClockEvent.objects.filter(
-                staff__restaurant=restaurant,
-                event_type="in",
-                timestamp__date=today,
+        # Use the canonical scoping helper so multi-restaurant staff and
+        # branch-level clock-ins are not silently dropped (this was the
+        # bug that made the widget read 0 even with a full floor).
+        all_today = list(
+            clock_events_for_restaurant_qs(
+                restaurant, event_type="in", date=today
             )
             .select_related("staff", "staff__profile", "location")
-            .order_by("-timestamp")[:limit]
+            .order_by("-timestamp")
         )
 
-        items = [_serialize_event(ev) for ev in events_qs]
+        # Serialize the full day so the on_time / late / total counters
+        # reflect the entire shift, not just the top-N slice we render.
+        # ``items`` (top N) is what the card lists; the counters drive
+        # the "X late today" pill and have to stay accurate.
+        all_serialized = [_serialize_event(ev) for ev in all_today]
 
-        # Today's on-time / late totals across ALL events, not just the
-        # trimmed first N — lets the card show "3 late today" even when
-        # it's only rendering the top 5 names.
-        total_today = ClockEvent.objects.filter(
-            staff__restaurant=restaurant,
-            event_type="in",
-            timestamp__date=today,
-        ).count()
-
-        late_count = sum(1 for it in items if it["status"] == "LATE")
-        on_time_count = sum(1 for it in items if it["status"] == "ON_TIME")
+        items = all_serialized[:limit]
+        total_today = len(all_serialized)
+        late_count = sum(1 for it in all_serialized if it["status"] == "LATE")
+        on_time_count = sum(1 for it in all_serialized if it["status"] == "ON_TIME")
 
         data = {
             "items": items,

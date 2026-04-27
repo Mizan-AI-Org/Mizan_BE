@@ -5,6 +5,7 @@ from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Count, Q
 from timeclock.models import ClockEvent
+from timeclock.services import clock_events_for_restaurant_qs
 from scheduling.models import AssignedShift, ShiftSwapRequest, ShiftTask
 from dashboard.models import Task as DashboardTask, Alert
 from accounts.models import CustomUser
@@ -92,11 +93,14 @@ class DashboardSummaryView(APIView):
         week_end = week_start + timedelta(days=6)
 
         # Today's clock-ins: one query, first event per staff (chronological) — reused below to avoid N+1.
+        # Goes through ``clock_events_for_restaurant_qs`` so we count
+        # branch-level clock-ins and multi-restaurant staff that the
+        # naive ``staff__restaurant=R`` filter used to miss.
         _clock_events_today = list(
-            ClockEvent.objects.filter(
-                staff__restaurant=restaurant,
-                event_type__in=["in", "CLOCK_IN"],
-                timestamp__date=today,
+            clock_events_for_restaurant_qs(
+                restaurant,
+                event_type=["in", "CLOCK_IN"],
+                date=today,
             ).select_related("staff").order_by("timestamp")
         )
         first_clockin_by_staff_id: dict[int, ClockEvent] = {}
