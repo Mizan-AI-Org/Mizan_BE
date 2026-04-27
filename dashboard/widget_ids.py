@@ -27,6 +27,7 @@ DASHBOARD_WIDGET_IDS = frozenset(
         "staff_inbox",
         "meetings_reminders",
         "clock_ins",
+        "incidents",
     ]
 )
 
