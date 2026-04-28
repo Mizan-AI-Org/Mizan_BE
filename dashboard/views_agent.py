@@ -63,6 +63,71 @@ logger = logging.getLogger(__name__)
 
 _VALID_PRIORITIES = {"LOW", "MEDIUM", "HIGH", "URGENT"}
 
+# Mirrors ``Task.TASK_CATEGORY`` — kept in sync by hand because importing
+# the choices tuple from ``models`` would create the same circular-style
+# coupling the old code worked hard to avoid.
+_VALID_TASK_CATEGORIES = {
+    "DOCUMENT", "HR", "SCHEDULING", "PAYROLL", "FINANCE",
+    "OPERATIONS", "MAINTENANCE", "RESERVATIONS", "INVENTORY",
+    "MEETING", "OTHER",
+}
+
+
+def _resolve_task_category(*, raw: object, title: str, description: str) -> str | None:
+    """Return the canonical ``Task.category`` for a Miya-created task.
+
+    The agent may pass an explicit ``category`` (e.g. "FINANCE") which we
+    accept verbatim if it's valid. Otherwise we run the deterministic
+    intent router on title + description so the task lands in the right
+    dashboard widget bucket without the LLM having to know about widget
+    ids. Returns ``None`` if neither path produced a known category — the
+    caller will leave the column NULL rather than mislabel the task.
+    """
+    if raw is not None and str(raw).strip():
+        cat = str(raw).strip().upper()
+        # Aliases for the common cases Miya emits.
+        aliases = {
+            "INVOICE": "FINANCE", "INVOICES": "FINANCE",
+            "BILL": "FINANCE", "BILLS": "FINANCE",
+            "TAX": "FINANCE", "TAXES": "FINANCE",
+            "ACCOUNTING": "FINANCE", "FINANCES": "FINANCE",
+            "MEETINGS": "MEETING", "REMINDER": "MEETING",
+            "REMINDERS": "MEETING", "CALENDAR": "MEETING",
+            "DOCUMENTS": "DOCUMENT",
+            "STOCK": "INVENTORY", "SUPPLIES": "INVENTORY",
+            "RESERVATION": "RESERVATIONS", "BOOKING": "RESERVATIONS",
+            "BOOKINGS": "RESERVATIONS",
+            "REPAIR": "MAINTENANCE", "EQUIPMENT": "MAINTENANCE",
+        }
+        cat = aliases.get(cat, cat)
+        if cat in _VALID_TASK_CATEGORIES:
+            return cat
+
+    try:
+        from staff.intent_router import classify_request
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+    try:
+        decision = classify_request(subject=title or "", description=description or "")
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+    cat = (decision.category or "").upper()
+    if cat in _VALID_TASK_CATEGORIES:
+        return cat
+    # Incident classifier returned a SafetyConcernReport sub-category
+    # ("Maintenance" / "Safety" / …) — map the obvious ones into our
+    # widget buckets so the task still finds a home; otherwise leave
+    # the column NULL.
+    incident_to_task = {
+        "MAINTENANCE": "MAINTENANCE",
+        "FOOD SAFETY": "MAINTENANCE",
+        "SAFETY": "MAINTENANCE",
+        "HR": "HR",
+    }
+    return incident_to_task.get(cat)
+
 
 def _norm_name(s: str) -> str:
     """Lowercase, strip diacritics, collapse whitespace."""
@@ -488,6 +553,17 @@ def agent_create_dashboard_task(request):
             sender_display = nm or getattr(acting_user, "email", None) or "Your manager"
         source_label = "Miya AI" + (f" · {sender_display}" if acting_user else "")
 
+        # Pick the dashboard widget bucket (HR / FINANCE / MAINTENANCE /
+        # MEETING / …) so this task shows up in the right widget without
+        # the manager having to file it manually. ``_resolve_task_category``
+        # honours an explicit agent-supplied category first and only then
+        # falls back to the keyword-based intent router.
+        task_category = _resolve_task_category(
+            raw=_get_first(data, "category", "bucket", "widget"),
+            title=title,
+            description=description,
+        )
+
         # Create the task atomically.
         with transaction.atomic():
             task = Task.objects.create(
@@ -501,6 +577,7 @@ def agent_create_dashboard_task(request):
                 source="MIYA",
                 source_label=source_label[:120],
                 ai_summary=ai_summary,
+                category=task_category,
             )
 
         logger.info(

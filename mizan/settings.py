@@ -72,6 +72,7 @@ INSTALLED_APPS = [
     'billing',     # Billing & Subscriptions
     'menu',
     'inventory',
+    'finance',
 ]
 
 # ---------------------------
@@ -509,6 +510,20 @@ CELERY_BEAT_SCHEDULE = {
     "sync_pos_orders_hourly": {
         "task": "pos.tasks.sync_orders_for_connected_pos_restaurants",
         "schedule": crontab(minute=0),  # Every hour: pull orders for all connected POS
+    },
+    # Wakes parked / stale staff requests so the inbox doesn't rot.
+    # Hourly is the right cadence — finer than this just hammers the DB
+    # without any user-visible change (managers don't refresh that often).
+    "staff_request_sla_sweep_hourly": {
+        "task": "staff.tasks.staff_request_sla_sweep",
+        "schedule": crontab(minute=7),  # 7 past every hour to avoid herd-effect with other tasks
+    },
+    # Compliance renewals: scans certifications and opens HR requests for
+    # things expiring within 30 days. Daily at 06:30 local — early enough
+    # that managers see new renewal items in their morning inbox.
+    "compliance_renewal_sweep_daily": {
+        "task": "staff.tasks.compliance_renewal_sweep",
+        "schedule": crontab(minute=30, hour=6),
     },
 }
 

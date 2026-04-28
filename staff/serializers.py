@@ -255,6 +255,8 @@ class StaffRequestSerializer(serializers.ModelSerializer):
             'voice_audio_url',
             'transcription',
             'transcription_language',
+            'follow_up_date',
+            'waiting_reason',
             'created_at',
             'updated_at',
             'reviewed_by',

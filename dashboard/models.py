@@ -169,6 +169,27 @@ class Task(models.Model):
         ('SYSTEM', 'System'),
     )
 
+    # Per-bucket dashboard widgets (Human Resources, Finance, Maintenance,
+    # Meetings & Reminders, …) need to know which lane the task belongs in.
+    # Mirrors ``staff.StaffRequest.CATEGORY_CHOICES`` plus a ``MEETING``
+    # bucket so a Miya-created task like "Meeting with M. Rockefeller" can
+    # land in the Meetings widget without becoming a calendar event.
+    # Nullable on legacy rows; the dashboard endpoint runs the
+    # intent_router classifier as a fallback when this is None.
+    TASK_CATEGORY = (
+        ('DOCUMENT', 'Document'),
+        ('HR', 'HR'),
+        ('SCHEDULING', 'Scheduling'),
+        ('PAYROLL', 'Payroll'),
+        ('FINANCE', 'Finance'),
+        ('OPERATIONS', 'Operations'),
+        ('MAINTENANCE', 'Maintenance'),
+        ('RESERVATIONS', 'Reservations'),
+        ('INVENTORY', 'Inventory'),
+        ('MEETING', 'Meeting / Reminder'),
+        ('OTHER', 'Other'),
+    )
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='tasks')
     assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='dashboard_assigned_tasks')
@@ -184,6 +205,12 @@ class Task(models.Model):
     )
     source_label = models.CharField(max_length=120, blank=True, default='')
     ai_summary = models.TextField(blank=True, default='')
+    # Bucket that drives which dashboard widget this task appears in.
+    # Auto-populated by the intent router when Miya creates the task; can
+    # be overridden by the manager from the Tasks & Demands menu.
+    category = models.CharField(
+        max_length=20, choices=TASK_CATEGORY, blank=True, null=True, db_index=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 # ingest, the manager API, and the frontend all validate against the same
 # list. Must match ``StaffRequest.CATEGORY_CHOICES``.
 STAFF_REQUEST_CATEGORIES = (
-    'DOCUMENT', 'HR', 'SCHEDULING', 'PAYROLL', 'OPERATIONS',
+    'DOCUMENT', 'HR', 'SCHEDULING', 'PAYROLL', 'FINANCE', 'OPERATIONS',
     'MAINTENANCE', 'RESERVATIONS', 'INVENTORY', 'OTHER',
 )
 
@@ -85,6 +85,16 @@ def _normalize_category(raw) -> str:
         'STOCK': 'INVENTORY',
         'SUPPLIES': 'INVENTORY',
         'DOCUMENTS': 'DOCUMENT',
+        # Common ways Miya / managers refer to FINANCE bills:
+        'INVOICE': 'FINANCE',
+        'INVOICES': 'FINANCE',
+        'BILL': 'FINANCE',
+        'BILLS': 'FINANCE',
+        'TAX': 'FINANCE',
+        'TAXES': 'FINANCE',
+        'ACCOUNTING': 'FINANCE',
+        'ACCOUNTS': 'FINANCE',
+        'FINANCES': 'FINANCE',
     }
     cat = aliases.get(cat, cat)
     return cat if cat in STAFF_REQUEST_CATEGORIES else 'OTHER'

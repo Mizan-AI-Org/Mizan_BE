@@ -1904,6 +1904,207 @@ class NotificationService:
                 pass
 
     # ----------------------------------------------------------------------
+    # TEXT-TO-SPEECH + WHATSAPP AUDIO REPLY
+    # ----------------------------------------------------------------------
+
+    def synthesize_speech_bytes(self, text, voice="alloy", fmt="mp3", speed=1.0):
+        """Run OpenAI TTS and return raw audio bytes.
+
+        Picked OpenAI tts-1 because:
+          - we already use OpenAI for Whisper STT and Vision, so one
+            API key + one bill;
+          - mp3 output is supported as-is by WhatsApp Cloud audio
+            messages (no transcoding required);
+          - ~150ms first-byte latency on short replies, which keeps the
+            chat feeling synchronous.
+
+        Returns ``(bytes, mime_type)`` on success or ``(None, None)``
+        on any failure -- caller should fall back to text in that case.
+        """
+        if not text or not str(text).strip():
+            return None, None
+
+        api_key = getattr(settings, 'OPENAI_API_KEY', '') or ''
+        if not api_key:
+            logger.warning("OPENAI_API_KEY not configured; skipping TTS")
+            return None, None
+
+        # Hard cap so a runaway agent reply doesn't burn $1 of TTS for
+        # a 30-page essay. Keep the cap generous enough for an explanation.
+        text = str(text).strip()[:1500]
+
+        # Lock fmt to a small allow-list -- WhatsApp accepts mp3 and ogg.
+        fmt = (fmt or "mp3").lower()
+        if fmt not in ("mp3", "opus", "aac", "flac", "wav"):
+            fmt = "mp3"
+
+        url = "https://api.openai.com/v1/audio/speech"
+        payload = {
+            "model": "tts-1",
+            "input": text,
+            "voice": voice or "alloy",
+            "response_format": fmt,
+            "speed": max(0.25, min(4.0, float(speed or 1.0))),
+        }
+        try:
+            resp = requests.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=45,
+            )
+        except requests.RequestException as e:
+            logger.warning(f"TTS request failed: {e}")
+            return None, None
+        if resp.status_code != 200:
+            logger.warning(f"TTS failed: {resp.status_code} - {resp.text[:300]}")
+            return None, None
+
+        mime = {
+            "mp3": "audio/mpeg",
+            "opus": "audio/ogg",
+            "aac": "audio/aac",
+            "flac": "audio/flac",
+            "wav": "audio/wav",
+        }[fmt]
+        return resp.content, mime
+
+    def upload_whatsapp_media(self, audio_bytes, mime_type="audio/mpeg", filename="reply.mp3"):
+        """Upload media bytes to WhatsApp Cloud and return its media_id.
+
+        Returns ``(media_id, error)`` -- exactly one of them is set.
+        """
+        token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+        phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+        if not token or not phone_id:
+            return None, "WhatsApp not configured"
+        url = (
+            f"https://graph.facebook.com/"
+            f"{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/media"
+        )
+        try:
+            files = {
+                'file': (filename, audio_bytes, mime_type),
+            }
+            data = {
+                'messaging_product': 'whatsapp',
+                'type': mime_type,
+            }
+            resp = requests.post(
+                url,
+                headers={'Authorization': f"Bearer {token}"},
+                files=files,
+                data=data,
+                timeout=45,
+            )
+        except requests.RequestException as e:
+            return None, f"upload failed: {e}"
+        if resp.status_code != 200:
+            return None, f"upload failed: {resp.status_code} {resp.text[:200]}"
+        media_id = (resp.json() or {}).get('id')
+        if not media_id:
+            return None, "upload returned no media id"
+        return str(media_id), None
+
+    def send_whatsapp_audio(self, phone, audio_bytes=None, media_id=None,
+                            mime_type="audio/mpeg", caption=None, notification=None,
+                            voice_note=True):
+        """Send a voice-note style audio message via WhatsApp Cloud.
+
+        Pass ONE of:
+          - ``audio_bytes`` (we'll upload it for you), or
+          - ``media_id`` (already uploaded).
+
+        ``voice_note=True`` makes WhatsApp render it as a push-to-talk
+        bubble (looks like the manager spoke into the mic) rather than
+        an attached audio file.
+        """
+        from .models import NotificationLog
+
+        token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+        phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+        if not token or not phone_id:
+            return False, {"error": "WhatsApp not configured on backend"}
+
+        phone, phone_err = normalize_whatsapp_phone(phone)
+        if phone_err:
+            return False, {"error": phone_err}
+
+        if not media_id:
+            if not audio_bytes:
+                return False, {"error": "Provide audio_bytes or media_id"}
+            media_id, up_err = self.upload_whatsapp_media(
+                audio_bytes,
+                mime_type=mime_type,
+                filename="reply.mp3" if mime_type == "audio/mpeg" else "reply.ogg",
+            )
+            if not media_id:
+                return False, {"error": up_err}
+
+        url = (
+            f"https://graph.facebook.com/"
+            f"{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
+        )
+        audio_obj = {"id": media_id}
+        # WhatsApp's "voice" bubble uses type=audio with voice=true; the
+        # field is undocumented for some carriers so we set it best-effort.
+        if voice_note:
+            audio_obj["voice"] = True
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": phone,
+            "type": "audio",
+            "audio": audio_obj,
+        }
+
+        try:
+            resp = requests.post(
+                url,
+                headers={'Authorization': f"Bearer {token}"},
+                json=payload,
+                timeout=30,
+            )
+        except requests.RequestException as e:
+            return False, {"error": str(e)}
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"error": resp.text}
+
+        ok = resp.status_code == 200
+        external_id = None
+        if isinstance(data, dict) and data.get('messages'):
+            external_id = str(data['messages'][0].get('id'))
+
+        try:
+            NotificationLog.objects.create(
+                notification=notification,
+                channel='whatsapp',
+                recipient_address=phone,
+                status='SENT' if ok else 'FAILED',
+                external_id=external_id,
+                response_data=data if isinstance(data, dict) else {"raw": str(data)},
+                error_message=None if ok else str(data)[:500],
+            )
+        except Exception:
+            pass
+
+        # If a caption was passed AND audio went out, ship it as a
+        # follow-up text bubble -- WhatsApp audio messages do not
+        # support inline captions on their own.
+        if ok and caption:
+            try:
+                self.send_whatsapp_text(phone, caption, notification=notification)
+            except Exception:
+                pass
+
+        return ok, {"status_code": resp.status_code, "data": data, "external_id": external_id, "media_id": media_id}
+
+    # ----------------------------------------------------------------------
     # PREFERENCE HELPERS
     # ----------------------------------------------------------------------
 

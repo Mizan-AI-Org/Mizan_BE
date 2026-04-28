@@ -160,3 +160,81 @@ class InboxCategorisationTests(SimpleTestCase):
         # PAYROLL ranks first, then DOCUMENT — either is acceptable; we
         # only assert the message didn't fall through to OTHER.
         self.assertNotEqual(d.category, "OTHER")
+
+
+class FinanceBucketTests(SimpleTestCase):
+    """The Finance dashboard widget needs vendor/AP/tax items, separate from PAYROLL."""
+
+    def test_vendor_invoice_routes_to_finance(self):
+        d = classify_request(
+            description="Invoice 3445 from the butcher needs to be paid by Friday.",
+        )
+        self.assertEqual(d.destination, DEST_INBOX)
+        self.assertEqual(d.category, "FINANCE")
+
+    def test_city_tax_routes_to_finance(self):
+        d = classify_request(
+            subject="Last day for city tax",
+            description="Today is the last day to pay the city tax.",
+        )
+        self.assertEqual(d.destination, DEST_INBOX)
+        self.assertEqual(d.category, "FINANCE")
+
+    def test_supplier_payment_routes_to_finance(self):
+        d = classify_request(
+            description="We owe the supplier payment for the beverage delivery.",
+        )
+        self.assertEqual(d.destination, DEST_INBOX)
+        self.assertEqual(d.category, "FINANCE")
+
+    def test_payslip_still_goes_to_payroll_not_finance(self):
+        """Employee pay topics belong in PAYROLL, not FINANCE."""
+        d = classify_request(description="I haven't been paid this month.")
+        self.assertEqual(d.category, "PAYROLL")
+
+
+class HrAndDocumentBucketTests(SimpleTestCase):
+    """Onboarding/contract/dismissal copy from the dashboard mockup."""
+
+    def test_onboarding_trainee_routes_to_hr(self):
+        d = classify_request(description="Onboarding the new bar trainee tomorrow.")
+        self.assertEqual(d.category, "HR")
+
+    def test_dismissal_letter_routes_to_hr(self):
+        d = classify_request(description="Need to prepare the barman dismissal letter.")
+        self.assertEqual(d.category, "HR")
+
+    def test_contracts_to_sign_routes_to_document(self):
+        d = classify_request(description="Print and sign contracts for the new hires.")
+        self.assertEqual(d.category, "DOCUMENT")
+
+
+class MaintenanceBucketTests(SimpleTestCase):
+    """Routine / preventive items go to inbox MAINTENANCE, not an incident."""
+
+    def test_extinguishers_recharge_routes_to_maintenance_inbox(self):
+        d = classify_request(description="Schedule extinguishers recharge for next month.")
+        self.assertEqual(d.destination, DEST_INBOX)
+        self.assertEqual(d.category, "MAINTENANCE")
+
+    def test_oven_deepclean_routes_to_maintenance_inbox(self):
+        d = classify_request(description="Oven deepcleaning quarterly task is due.")
+        self.assertEqual(d.destination, DEST_INBOX)
+        self.assertEqual(d.category, "MAINTENANCE")
+
+    def test_annual_sink_maintenance_routes_to_maintenance_inbox(self):
+        d = classify_request(description="Annual sink maintenance visit next week.")
+        self.assertEqual(d.destination, DEST_INBOX)
+        self.assertEqual(d.category, "MAINTENANCE")
+
+
+class MeetingBucketTests(SimpleTestCase):
+    """The MEETING bucket powers the Meetings & Reminders widget for tasks."""
+
+    def test_meeting_with_person_routes_to_meeting(self):
+        d = classify_request(description="Meeting with M. Rockefeller on Thursday.")
+        self.assertEqual(d.category, "MEETING")
+
+    def test_remind_me_to_routes_to_meeting(self):
+        d = classify_request(description="Remind me to call Zoe Karl tomorrow morning.")
+        self.assertEqual(d.category, "MEETING")
