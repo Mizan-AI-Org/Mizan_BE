@@ -794,3 +794,105 @@ def agent_checklist_respond(request):
             f"{no_count} not done, {na_count} skipped out of {total} tasks."
         ),
     })
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def agent_voice_reply(request):
+    """Miya voice-reply endpoint.
+
+    Body:
+      restaurant_id  required (for auditing only -- not used to scope)
+      phone          required E.164 (e.g. +212600000000) or local; we
+                     normalize via normalize_whatsapp_phone
+      text           required, the spoken content (Miya's chat reply)
+      caption        optional follow-up text bubble (e.g. action buttons,
+                     since WhatsApp audio messages don't carry inline text)
+      voice          optional voice id ("alloy", "nova", "shimmer", ...)
+      speed          optional 0.25-4.0
+      voice_note     optional bool, default true (push-to-talk style)
+
+    Response on success:
+      {
+        success: true,
+        delivered: true,
+        media_id: "...",
+        message_id: "...",
+        message_for_user: "Sent voice note (X seconds)"
+      }
+    """
+    ok, err = _validate_agent_key(request)
+    if not ok:
+        return err
+
+    data = request.data or {}
+    text = (data.get("text") or "").strip()
+    phone = (data.get("phone") or "").strip()
+    if not text or not phone:
+        return Response(
+            {
+                "success": False,
+                "error": "phone and text are required",
+                "message_for_user": "I need both a phone number and the text to speak.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    voice = (data.get("voice") or "alloy").strip() or "alloy"
+    try:
+        speed = float(data.get("speed") or 1.0)
+    except (TypeError, ValueError):
+        speed = 1.0
+    voice_note = data.get("voice_note")
+    voice_note = True if voice_note is None else bool(voice_note)
+    caption = (data.get("caption") or "").strip() or None
+
+    audio_bytes, mime = notification_service.synthesize_speech_bytes(
+        text, voice=voice, fmt="mp3", speed=speed,
+    )
+    if not audio_bytes:
+        return Response(
+            {
+                "success": False,
+                "error": "TTS failed",
+                "message_for_user": (
+                    "I couldn't generate the voice note (TTS provider error). "
+                    "Falling back to text would be safer."
+                ),
+            },
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    sent_ok, info = notification_service.send_whatsapp_audio(
+        phone=phone,
+        audio_bytes=audio_bytes,
+        mime_type=mime or "audio/mpeg",
+        caption=caption,
+        voice_note=voice_note,
+    )
+    if not sent_ok:
+        return Response(
+            {
+                "success": False,
+                "delivered": False,
+                "error": (info or {}).get("error") or "WhatsApp send failed",
+                "message_for_user": (
+                    "Generated the audio but WhatsApp wouldn't deliver it. "
+                    "I'll send the reply as text instead."
+                ),
+            },
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return Response(
+        {
+            "success": True,
+            "delivered": True,
+            "media_id": info.get("media_id"),
+            "message_id": info.get("external_id"),
+            "bytes": len(audio_bytes),
+            "message_for_user": "Voice note sent.",
+        },
+        status=status.HTTP_200_OK,
+    )

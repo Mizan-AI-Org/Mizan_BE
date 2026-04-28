@@ -319,6 +319,11 @@ class StaffRequest(models.Model):
         ('REJECTED', 'Rejected'),
         ('ESCALATED', 'Escalated'),
         ('CLOSED', 'Closed'),
+        # Manager has acknowledged and is waiting on someone/something
+        # external (supplier reply, contractor visit, document arriving).
+        # Pairs with ``follow_up_date`` so the SLA sweeper can ping the
+        # manager again on/after that date instead of escalating blindly.
+        ('WAITING_ON', 'Waiting on'),
     )
 
     PRIORITY_CHOICES = (
@@ -333,6 +338,10 @@ class StaffRequest(models.Model):
         ('HR', 'HR'),
         ('SCHEDULING', 'Scheduling'),
         ('PAYROLL', 'Payroll'),
+        # FINANCE is for invoices to pay, supplier bills, taxes, rent,
+        # utilities — anything money-out that is NOT an employee payslip
+        # (which is PAYROLL). Powers the dashboard's Finance widget.
+        ('FINANCE', 'Finance'),
         ('OPERATIONS', 'Operations'),
         # First-class buckets for the intelligent inbox — previously implied
         # via incident.* slugs or sibling models (Reservations, Inventory).
@@ -387,6 +396,19 @@ class StaffRequest(models.Model):
     reviewed_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_staff_requests')
     reviewed_at = models.DateTimeField(null=True, blank=True)
 
+    # Used together with ``status='WAITING_ON'``: the date we expect the
+    # external dependency to land. SLA sweeper uses this to decide when
+    # to nudge the manager again — only requests with follow_up_date in
+    # the past get re-surfaced. NULL is fine; the sweeper falls back to
+    # a default 3-day re-ping window.
+    follow_up_date = models.DateField(null=True, blank=True)
+    waiting_reason = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text='Short note about what we are waiting on, e.g. "Supplier delivery", "Contractor visit", "Document arriving".',
+    )
+
     class Meta:
         ordering = ['-created_at']
         indexes = [
@@ -397,6 +419,9 @@ class StaffRequest(models.Model):
             # lookups without a full table scan.
             models.Index(fields=['assignee', 'status'], name='staffreq_assignee_status_idx'),
             models.Index(fields=['restaurant', 'category', 'status'], name='staffreq_rest_cat_stat_idx'),
+            # Powers the SLA sweep that re-pings the manager when a
+            # WAITING_ON request crosses its follow-up date.
+            models.Index(fields=['status', 'follow_up_date'], name='staffreq_status_followup_idx'),
         ]
 
     def __str__(self):

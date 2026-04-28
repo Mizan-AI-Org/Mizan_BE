@@ -28,6 +28,16 @@ DASHBOARD_WIDGET_IDS = frozenset(
         "meetings_reminders",
         "clock_ins",
         "incidents",
+        # Category-bucketed widgets backed by /api/dashboard/category-tasks/
+        "urgent_top",
+        "human_resources",
+        "finance",
+        "maintenance",
+        # Catch-all lane for general / uncategorised requests Miya couldn't
+        # slot into a named category. Lives behind the same endpoint as the
+        # named lanes (bucket=miscellaneous) and is allow-listed here so
+        # /api/dashboard/widget-order/ doesn't strip it on PATCH.
+        "miscellaneous",
     ]
 )
 

@@ -37,6 +37,7 @@ urlpatterns = [
     path('api/pos/', include('pos.urls')),
     path('', include('checklists.urls')),  # Checklist management URLs
     path('api/billing/', include('billing.urls')),
+    path('api/finance/', include('finance.urls')),
 
     # SWAGGER URLS
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

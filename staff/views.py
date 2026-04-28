@@ -74,6 +74,17 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
         if category_q:
             qs = qs.filter(category=str(category_q).upper())
 
+        # Priority filter — used by the dashboard "Urgent TOP 5" widget's
+        # deep-link (?priority=URGENT). Server-side so the response is
+        # correctly truncated for pagination instead of leaking the full
+        # set to the client. Only LOW/MEDIUM/HIGH/URGENT are valid;
+        # anything else is ignored so a malformed URL doesn't 500.
+        priority_q = self.request.query_params.get('priority')
+        if priority_q:
+            p = str(priority_q).upper().strip()
+            if p in {'LOW', 'MEDIUM', 'HIGH', 'URGENT'}:
+                qs = qs.filter(priority=p)
+
         # "Assigned to me" / "Assigned to X" filters. Managers use these
         # to scope their inbox to rows they're personally responsible for.
         if str(self.request.query_params.get('assigned_to_me') or '').lower() in ('1', 'true', 'yes'):
@@ -456,6 +467,91 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
         req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
         self._add_comment(req, request.user, f"Closed by {request.user.get_full_name()}", kind='status_change', metadata={'from': old, 'to': 'CLOSED'})
         self._notify_staff_via_whatsapp(req, f"Your request \"{req.subject or 'Request'}\" has been *closed*.")
+        return Response({'success': True, 'request': self.get_serializer(req).data})
+
+    @action(detail=True, methods=['post'], url_path='wait-on')
+    def wait_on(self, request, pk=None):
+        """
+        Park an acknowledged request as ``WAITING_ON`` an external dependency
+        (supplier reply, contractor visit, document arriving, ...).
+
+        Body:
+          - reason: short label, e.g. "Supplier delivery"  (recommended)
+          - follow_up_date: ISO date YYYY-MM-DD when we expect the dependency
+            to land. The SLA sweeper re-pings the manager on/after that date.
+            Defaults to today + 3 days when omitted.
+
+        Manager-only. Idempotent: re-calling updates reason / follow_up_date
+        without re-notifying the staff member.
+        """
+        from datetime import date, timedelta
+        from django.utils.dateparse import parse_date
+
+        req = self.get_object()
+        if not _is_manager(request.user):
+            return Response({'success': False, 'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        reason = str(request.data.get('reason') or request.data.get('waiting_reason') or '').strip()[:255]
+        raw_followup = request.data.get('follow_up_date') or request.data.get('followup_date')
+        followup: date | None = None
+        if raw_followup:
+            if isinstance(raw_followup, date):
+                followup = raw_followup
+            else:
+                followup = parse_date(str(raw_followup))
+                if followup is None:
+                    return Response(
+                        {'success': False, 'error': 'follow_up_date must be YYYY-MM-DD'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+        if followup is None:
+            followup = timezone.now().date() + timedelta(days=3)
+
+        old = req.status
+        req.status = 'WAITING_ON'
+        req.reviewed_by = request.user
+        req.reviewed_at = timezone.now()
+        req.follow_up_date = followup
+        if reason:
+            req.waiting_reason = reason
+        req.save(
+            update_fields=[
+                'status',
+                'reviewed_by',
+                'reviewed_at',
+                'follow_up_date',
+                'waiting_reason',
+                'updated_at',
+            ]
+        )
+
+        comment = (
+            f"Parked as 'Waiting on' by {request.user.get_full_name() or request.user.email}"
+            + (f" — {reason}" if reason else "")
+            + f" — follow-up {followup.isoformat()}"
+        )
+        self._add_comment(
+            req,
+            request.user,
+            comment,
+            kind='status_change',
+            metadata={
+                'from': old,
+                'to': 'WAITING_ON',
+                'reason': reason,
+                'follow_up_date': followup.isoformat(),
+            },
+        )
+        # Only ping the staff member on the FIRST transition into the
+        # parked state — subsequent edits to the follow-up date should
+        # not re-notify them.
+        if old != 'WAITING_ON':
+            note = f"⏳ Your request \"{req.subject or 'Request'}\" is being followed up"
+            if reason:
+                note += f" ({reason})"
+            note += f". We'll get back to you around {followup.strftime('%a %d %b')}."
+            self._notify_staff_via_whatsapp(req, note)
+
         return Response({'success': True, 'request': self.get_serializer(req).data})
 
 # Task Management ViewSets

@@ -47,6 +47,7 @@ class DashboardTaskCompactSerializer(serializers.ModelSerializer):
             'source',
             'source_label',
             'ai_summary',
+            'category',
             'assignee',
             'created_at',
             'updated_at',

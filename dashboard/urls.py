@@ -21,6 +21,7 @@ from .api.portfolio import PortfolioSummaryView, LocationDetailView
 from .api.tasks_demands import TasksDemandsView, TaskStatusUpdateView
 from .api.meetings_reminders import MeetingsRemindersView
 from .api.clock_ins import DashboardClockInsView
+from .api.category_tasks import CategoryTasksView
 from .views import mark_shift_no_show
 from .views_widget_layout import (
     AgentDashboardCategoryCreateView,
@@ -40,6 +41,9 @@ from .views_categories import (
     DashboardCustomWidgetDetailView,
 )
 from .views_agent import agent_create_dashboard_task
+from .api.cross_location_report import agent_cross_location_report
+from .api.calendar_write import agent_create_calendar_event
+from .api.photo_router import agent_parse_photo
 
 router = DefaultRouter()
 router.register(r'tasks', TaskManagementViewSet, basename='task-management')
@@ -68,6 +72,21 @@ urlpatterns = [
         name='dashboard-categories-detail',
     ),
     path('agent/tasks/create/', agent_create_dashboard_task, name='dashboard-agent-tasks-create'),
+    path(
+        'agent/cross-location-report/',
+        agent_cross_location_report,
+        name='dashboard-agent-cross-location-report',
+    ),
+    path(
+        'agent/calendar-events/create/',
+        agent_create_calendar_event,
+        name='dashboard-agent-calendar-events-create',
+    ),
+    path(
+        'agent/parse-photo/',
+        agent_parse_photo,
+        name='dashboard-agent-parse-photo',
+    ),
     path('agent/widgets/list/', AgentDashboardWidgetListView.as_view(), name='dashboard-agent-widgets-list'),
     path('agent/widgets/add/', AgentDashboardWidgetsAddView.as_view(), name='dashboard-agent-widgets-add'),
     path('agent/widgets/remove/', AgentDashboardWidgetsRemoveView.as_view(), name='dashboard-agent-widgets-remove'),
@@ -102,6 +121,11 @@ urlpatterns = [
         'clock-ins/',
         DashboardClockInsView.as_view(),
         name='dashboard-clock-ins',
+    ),
+    path(
+        'category-tasks/',
+        CategoryTasksView.as_view(),
+        name='dashboard-category-tasks',
     ),
     path('attendance/mark-no-show/', mark_shift_no_show, name='dashboard-mark-no-show'),
     path('kpis/', DailyKPIListAPIView.as_view(), name='daily-kpi-list'),

@@ -36,18 +36,28 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Iterable
 
-# These must stay in sync with ``StaffRequest.CATEGORY_CHOICES``.
+# These must stay in sync with ``StaffRequest.CATEGORY_CHOICES``. The
+# extra ``MEETING`` slot is a *task-only* bucket (used by the Tasks &
+# Demands → Meetings widget on the dashboard); StaffRequest rows can't
+# carry it, but the classifier still emits it for ``dashboard.Task``
+# rows.
 INBOX_CATEGORIES = (
     "DOCUMENT",
     "HR",
     "SCHEDULING",
     "PAYROLL",
+    "FINANCE",
     "OPERATIONS",
     "MAINTENANCE",
     "RESERVATIONS",
     "INVENTORY",
+    "MEETING",
     "OTHER",
 )
+
+# Subset valid for ``StaffRequest.category`` — MEETING isn't a request
+# bucket (meetings come from the calendar, not the inbox).
+STAFF_REQUEST_CATEGORIES = tuple(c for c in INBOX_CATEGORIES if c != "MEETING")
 
 # Destination buckets returned by the classifier.
 DEST_INCIDENT = "INCIDENT"
@@ -171,10 +181,36 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "PAYROLL",
         (
+            # Strictly *employee* pay topics. Vendor invoices belong in
+            # FINANCE (handled below) — keep PAYROLL for the HR-adjacent
+            # "where is my money" requests so the Payroll team only sees
+            # what's theirs.
             "salary", "payslip", "pay slip", "pay-slip", "payroll",
             "wage", "wages", "bonus", "overtime pay", "ot pay",
             "tips ", "tip share", "deduction", "missing pay",
-            "haven't been paid", "havent been paid", "not paid yet",
+            "haven't been paid", "havent been paid", "not been paid",
+            "not paid yet", "no pay this month", "missing payslip",
+            "garnishment", "tax form for employee",
+        ),
+    ),
+    (
+        "FINANCE",
+        (
+            # Vendor / accounts-payable / treasury / fiscal items. These
+            # are the rows that fill the Finance widget on the dashboard.
+            "invoice", "invoices", "bill to pay", "bills to pay",
+            "supplier payment", "vendor payment", "vendor invoice",
+            "supplier invoice", "pay supplier", "pay vendor",
+            "purchase order", "po number", "credit note",
+            "rent", "rental fee", "lease payment",
+            "utility", "utilities", "electricity bill", "water bill",
+            "internet bill", "phone bill", "gas bill", "telecom bill",
+            "tax", "city tax", "vat", "tva", "income tax",
+            "property tax", "tax declaration", "fiscal", "patente",
+            "license fee", "renewal fee", "permit fee", "subscription fee",
+            "insurance premium", "insurance renewal",
+            "accountant", "bookkeeper", "audit", "statement of account",
+            "bank fee", "bank charge", "loan repayment", "credit card statement",
         ),
     ),
     (
@@ -185,6 +221,9 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "certificate", "diploma", "letter of employment",
             "employment letter", "attestation", "bank letter",
             "loan letter", "tax certificate",
+            # Documents that frequently come up on the HR widget:
+            "print contract", "sign contract", "contracts to sign",
+            "staff picture", "staff photo", "id photo",
         ),
     ),
     (
@@ -221,19 +260,63 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             # Soft-maintenance — handled as inbox MAINTENANCE only when
             # the incident rules above didn't fire (e.g. a *request* to
             # fix something rather than a report of something broken).
+            # Routine / preventive items (recharge extinguishers, oven
+            # deepclean, annual sink service) live here too.
             "please fix", "needs repair", "needs maintenance",
             "service the", "tune up", "tune-up",
+            "extinguisher", "fire extinguisher", "extinguishers recharge",
+            "deep cleaning", "deepcleaning", "deep clean",
+            "annual maintenance", "annual service", "annual sink",
+            "preventive maintenance", "scheduled maintenance",
+            "duct cleaning", "hood cleaning", "filter change",
+            "oven cleaning", "fryer cleaning", "freezer service",
+            "fridge service", "compressor service",
+            "bad smell", "weird smell", "strange smell",
+            "pest control schedule", "pest control visit",
         ),
     ),
     (
         "HR",
         (
             "complaint about", "complain about",
-            "uniform", "training", "onboarding",
+            "uniform", "training", "onboarding", "onboard",
+            "new hire", "new joiner", "new starter", "induction",
+            "orientation", "trainee",
             "policy", "harassment policy",
             "promotion", "raise", "salary review",
             "performance review", "appraisal",
-            "grievance", "discipline",
+            "grievance", "discipline", "disciplinary",
+            # Hire/exit paperwork that frequently shows up on the HR widget:
+            "dismissal", "dismissal letter", "termination",
+            "termination letter", "resignation", "resignation letter",
+            "warning letter", "exit interview",
+            # HR-curated employee assets shown on the HR widget — the
+            # "pictures of staff" mockup row is a typical example.
+            "pictures of staff", "photos of staff", "staff pictures",
+            "staff photos", "employee photos", "employee pictures",
+            "team photo", "team pictures",
+        ),
+    ),
+    (
+        "MEETING",
+        (
+            # Calendar-style reminders that should land in the Meetings
+            # & Reminders dashboard widget rather than a category lane.
+            "meeting with", "meet with", "schedule a meeting",
+            "set up a meeting", "set up meeting", "book a meeting",
+            "team meeting", "weekly meeting", "monthly meeting",
+            "1:1 with", "one on one", "1 on 1",
+            "remind me to", "reminder to", "reminder for",
+            "appointment with", "call with", "zoom with", "teams meeting",
+            "interview with", "interview candidate",
+            # "Demand <person> <day/time>" framing — the dashboard mock
+            # shows rows like "Demand Nadir SAT3:30pm" landing in the
+            # Meetings & Reminders widget, so we treat any "demand" /
+            # "demande" prefix paired with a named time as a meeting.
+            # The pure word "demand" alone is too broad, so we require
+            # an actual demand-meeting phrase.
+            "demand client", "demande client",
+            "demand at ", "demande a ",
         ),
     ),
     (
@@ -337,6 +420,21 @@ def classify_request(
 
     # 1. Incident routing always wins for unambiguous safety/food-safety
     #    hits, even if the agent already chose an inbox category.
+    #
+    # Guard rails for false-positive incidents:
+    #   * "fire extinguisher recharge" / "smoke detector test" are
+    #     *preventive maintenance*, not active fires. We demote to inbox
+    #     MAINTENANCE if the only safety hit was the word "fire" or
+    #     "smoke" AND the message also matches a maintenance/preventive
+    #     keyword.
+    #   * "the fryer is broken, please add to task list" is a task, not
+    #     an incident — handled by the existing `task_framing` check.
+    _PREVENTIVE_HINTS = (
+        "extinguisher", "fire extinguisher", "smoke detector",
+        "smoke alarm", "fire alarm", "sprinkler test",
+        "annual maintenance", "annual service", "preventive maintenance",
+        "scheduled maintenance", "recharge",
+    )
     for incident_type, keywords in _INCIDENT_RULES:
         hits = _matches_any(normalised, keywords)
         if hits:
@@ -353,6 +451,18 @@ def classify_request(
                 )
             )
             if incident_type == INCIDENT_MAINTENANCE and task_framing:
+                return IntentDecision(
+                    destination=DEST_INBOX,
+                    category="MAINTENANCE",
+                    confidence="medium",
+                    matched_terms=hits,
+                )
+            # Preventive-maintenance demotion for safety false positives
+            # (extinguisher recharge / smoke alarm test / annual fire
+            # service). These are routine tasks, not active incidents.
+            if incident_type == INCIDENT_SAFETY and _matches_any(
+                normalised, _PREVENTIVE_HINTS,
+            ):
                 return IntentDecision(
                     destination=DEST_INBOX,
                     category="MAINTENANCE",
