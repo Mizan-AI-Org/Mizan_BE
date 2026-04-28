@@ -384,6 +384,70 @@ def _format_due(d: date | None) -> str:
     return d.strftime("%a %d %b %Y")
 
 
+_WHATSAPP_TOKEN_ERROR_HINTS = (
+    "access token",
+    "access_token",
+    "accesstoken",
+    "expired token",
+    "invalid token",
+    "oauth",
+    "(#190)",
+    "(#102)",
+    "(#10)",
+    "session has expired",
+    "the user is not a confirmed user of the application",
+    "permissions error",
+    "missing permissions",
+    "not authorized",
+    "unauthorized",
+    "401",
+    "403",
+)
+
+
+def _sanitize_whatsapp_error_for_user(raw_error: str | None) -> tuple[str, bool]:
+    """
+    Take a raw Meta/WhatsApp Cloud API error string and return:
+      - user-facing phrase (never leaks "access token", HTTP codes, OAuth, etc.)
+      - is_platform_issue boolean (True when this is a tenant-wide outage we should log loudly)
+
+    The agent persona forbids surfacing internal/HTTP/OAuth errors to end users — this is the
+    server-side belt to enforce that, in case the model regurgitates `message_for_user`.
+    """
+    if not raw_error:
+        return "", False
+    err = str(raw_error).strip()
+    err_lower = err.lower()
+    if any(hint in err_lower for hint in _WHATSAPP_TOKEN_ERROR_HINTS):
+        # Tenant-wide WhatsApp configuration / OAuth problem. The manager can't fix it themselves;
+        # the platform team has to rotate the token / reconnect the WABA.
+        return (
+            "I couldn't reach them on WhatsApp right now — the task is in their inbox and they'll "
+            "see the bell notification. Our team is looking at the WhatsApp connection."
+        ), True
+    # Per-recipient problems (e.g. recipient phone not on WhatsApp, throttling) — keep concise but
+    # avoid raw provider strings.
+    if "phone" in err_lower and ("invalid" in err_lower or "not a whatsapp" in err_lower or "not registered" in err_lower):
+        return (
+            "I couldn't reach them on WhatsApp — looks like their phone number isn't a WhatsApp account. "
+            "The task is in their inbox."
+        ), False
+    if "rate" in err_lower and "limit" in err_lower:
+        return (
+            "WhatsApp is rate-limiting us right now — the task is in their inbox and I'll retry "
+            "automatically in a few minutes."
+        ), False
+    if "template" in err_lower and ("not approved" in err_lower or "not_found" in err_lower):
+        return (
+            "The WhatsApp message template isn't ready for this case. The task is in their inbox."
+        ), False
+    # Catch-all: don't leak the upstream string.
+    return (
+        "I couldn't reach them on WhatsApp this time — the task is in their inbox and they'll see "
+        "the bell notification."
+    ), False
+
+
 def _build_whatsapp_body(
     task: Task,
     sender_name: str,
@@ -665,7 +729,18 @@ def agent_create_dashboard_task(request):
         elif wa_result["skipped_reason"] == "disabled":
             wa_phrase = "WhatsApp notification skipped (caller asked not to send)."
         elif wa_result["error"]:
-            wa_phrase = f"WhatsApp send failed: {wa_result['error']}"
+            user_phrase, is_platform_issue = _sanitize_whatsapp_error_for_user(wa_result["error"])
+            wa_phrase = user_phrase
+            # Keep the raw error in wa_result for ops/monitoring, but stop leaking it to the user.
+            wa_result["raw_error"] = wa_result["error"]
+            wa_result["is_platform_issue"] = is_platform_issue
+            if is_platform_issue:
+                logger.error(
+                    "WhatsApp Cloud API token/auth issue detected (task=%s assignee=%s): %s",
+                    task.id,
+                    assignee.id,
+                    wa_result["error"],
+                )
         else:
             wa_phrase = ""
         message_for_user = (
