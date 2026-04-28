@@ -154,6 +154,101 @@ def _serialize_staff_request(req) -> dict[str, Any]:
     }
 
 
+def _serialize_invoice(inv) -> dict[str, Any]:
+    """Normalise a finance.Invoice into the widget's task shape.
+
+    The Finance widget already pulls Task + StaffRequest(category=FINANCE).
+    Invoices live in their own table (``finance.Invoice``) and were the
+    user-visible black hole behind "Miya says it's in Finance but it's not
+    there" — they were never being injected into this widget. We bridge
+    them here so any invoice Miya logs (via record_invoice or the photo /
+    document router) shows up next to the staff requests automatically.
+
+    Field mapping:
+    - ``title``        : "Invoice {number} — {vendor}" (or just "{vendor}" when no number)
+    - ``ai_summary``   : human-readable amount + due-date phrase
+    - ``priority``     : derived from days_until_due so overdue invoices float to top
+    - ``status``       : OPEN/OVERDUE → PENDING; PAID → COMPLETED; VOIDED → CANCELLED
+    - ``due_date``     : invoice's due_date (drives the secondary sort)
+    - ``assignee``     : the user who created the invoice (or ``None`` for agent-created)
+    """
+    days_left = inv.days_until_due
+    is_overdue = inv.is_overdue
+
+    if inv.status == "PAID":
+        widget_status = "COMPLETED"
+    elif inv.status == "VOIDED":
+        widget_status = "CANCELLED"
+    else:  # OPEN or DRAFT
+        widget_status = "PENDING"
+
+    if widget_status != "PENDING":
+        priority = "MEDIUM"
+    elif is_overdue:
+        priority = "URGENT"
+    elif days_left is not None and days_left <= 1:
+        priority = "URGENT"
+    elif days_left is not None and days_left <= 3:
+        priority = "HIGH"
+    elif days_left is not None and days_left <= 7:
+        priority = "MEDIUM"
+    else:
+        priority = "LOW"
+
+    title_parts: list[str] = []
+    if inv.invoice_number:
+        title_parts.append(f"#{inv.invoice_number}")
+    if inv.vendor_name:
+        title_parts.append(inv.vendor_name)
+    title = " — ".join(title_parts) if title_parts else "Invoice"
+    title = title[:255] or "Invoice"
+
+    if days_left is None:
+        due_phrase = "no due date"
+    elif days_left < 0:
+        due_phrase = f"overdue by {abs(days_left)} day{'s' if abs(days_left) != 1 else ''}"
+    elif days_left == 0:
+        due_phrase = "due today"
+    elif days_left == 1:
+        due_phrase = "due tomorrow"
+    else:
+        due_phrase = f"due in {days_left} days"
+
+    summary = f"{inv.amount} {inv.currency} · {due_phrase}"
+    if inv.status == "PAID":
+        summary = f"{inv.amount} {inv.currency} · paid"
+    elif inv.status == "VOIDED":
+        summary = f"{inv.amount} {inv.currency} · voided"
+
+    assignee = _assignee_payload(inv.created_by)
+
+    return {
+        "id": str(inv.id),
+        "title": title,
+        "description": (inv.notes or "")[:1000],
+        "priority": priority,
+        "status": widget_status,
+        "due_date": inv.due_date.isoformat() if inv.due_date else None,
+        "source": "MIYA",
+        "source_label": "Invoice",
+        "ai_summary": summary,
+        "category": "FINANCE",
+        "assignee": assignee,
+        "created_at": inv.created_at.isoformat() if inv.created_at else None,
+        "updated_at": inv.updated_at.isoformat() if inv.updated_at else None,
+        "kind": "invoice",
+        # Extra fields the widget can use to render a vendor/amount chip
+        # without re-fetching. The frontend ignores unknown keys today —
+        # safe to add forward-looking metadata here.
+        "vendor_name": inv.vendor_name,
+        "invoice_number": inv.invoice_number or "",
+        "amount": str(inv.amount),
+        "currency": inv.currency,
+        "invoice_status": inv.status,
+        "is_overdue": is_overdue,
+    }
+
+
 def _sort_key(item: dict[str, Any]) -> tuple:
     """Order: priority asc → due_date asc (nulls last) → created_at desc."""
     prio = _PRIORITY_RANK_MAP.get(item.get("priority") or "", 4)
@@ -400,11 +495,61 @@ class CategoryTasksView(APIView):
         except Exception:  # pragma: no cover - defensive
             pass
 
+        # ----- finance.Invoice -------------------------------------------
+        # Invoices live in their own table — the Finance widget needs to
+        # surface them alongside Task + StaffRequest rows so a manager
+        # who told Miya "log this bill" actually sees the bill on the
+        # dashboard. We also include them in ``urgent`` when overdue or
+        # due within 24h, since unpaid/late bills are inherently urgent.
+        inv_open: list = []
+        inv_completed: list = []
+        inv_open_count = 0
+        inv_completed_count = 0
+        inv_in_progress_count = 0  # invoices have no in-progress concept; kept for parity
+        if bucket in ("finance", "urgent"):
+            try:
+                from finance.models import Invoice
+
+                inv_qs = (
+                    Invoice.objects.filter(restaurant=restaurant)
+                    .select_related("created_by")
+                )
+                if is_urgent:
+                    # Only the bills that should genuinely be on the urgent
+                    # widget: open + (overdue OR due in next 24h).
+                    inv_open_qs = inv_qs.filter(
+                        status=Invoice.STATUS_OPEN,
+                    ).filter(Q(due_date__lte=today + timedelta(days=1)))
+                    inv_completed_qs = inv_qs.none()
+                else:
+                    inv_open_qs = inv_qs.filter(
+                        status__in=(Invoice.STATUS_OPEN, Invoice.STATUS_DRAFT)
+                    ).filter(
+                        Q(due_date__isnull=True)
+                        | Q(due_date__lte=future_cutoff)
+                        | Q(due_date__lt=today)  # always include overdue, even >14d old
+                    )
+                    inv_completed_qs = inv_qs.filter(
+                        status=Invoice.STATUS_PAID,
+                        updated_at__date__gte=completed_floor,
+                    )
+                inv_open = list(
+                    inv_open_qs.order_by("due_date", "-created_at")[: limit * 3]
+                )
+                inv_completed = list(
+                    inv_completed_qs.order_by("-updated_at")[: limit * 3]
+                )
+                inv_open_count = inv_open_qs.count()
+                inv_completed_count = inv_completed_qs.count()
+            except Exception:  # pragma: no cover - defensive (e.g. unmigrated env)
+                pass
+
         # ----- merge & rank ---------------------------------------------
         open_items: list[dict[str, Any]] = []
         open_items.extend(_serialize_dashboard_task(t) for t in db_open_rows)
         open_items.extend(_serialize_dashboard_task(t) for t in legacy_open)
         open_items.extend(_serialize_staff_request(r) for r in sr_open)
+        open_items.extend(_serialize_invoice(i) for i in inv_open)
 
         # Stable sort by (priority, due_date, -created_at). We sort twice
         # because Python's stable sort can't mix asc/desc on different keys
@@ -424,6 +569,7 @@ class CategoryTasksView(APIView):
         )
         completed_items.extend(_serialize_dashboard_task(t) for t in legacy_completed)
         completed_items.extend(_serialize_staff_request(r) for r in sr_completed)
+        completed_items.extend(_serialize_invoice(i) for i in inv_completed)
         completed_items.sort(
             key=lambda x: x.get("updated_at") or "", reverse=True
         )
@@ -435,14 +581,23 @@ class CategoryTasksView(APIView):
             "items": open_items,
             "completed": completed_items,
             "counts": {
-                "open": db_open_count + legacy_open_count + sr_open_count,
+                "open": (
+                    db_open_count
+                    + legacy_open_count
+                    + sr_open_count
+                    + inv_open_count
+                ),
                 "in_progress": (
                     db_in_progress_count
                     + legacy_in_progress_count
                     + sr_in_progress_count
+                    + inv_in_progress_count
                 ),
                 "completed": (
-                    db_completed_count + legacy_completed_count + sr_completed_count
+                    db_completed_count
+                    + legacy_completed_count
+                    + sr_completed_count
+                    + inv_completed_count
                 ),
             },
             "generated_at": timezone.now().isoformat(),
