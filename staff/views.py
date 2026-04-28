@@ -356,6 +356,7 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
             msg += f"\nNote: {note}"
         self._notify_staff_via_whatsapp(req, msg)
 
+        whatsapp_sent_to_assignee = False
         if assignee and getattr(assignee, 'phone', None):
             try:
                 from notifications.services import notification_service, normalize_whatsapp_phone
@@ -364,14 +365,30 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
                 if not phone_err:
                     subj = req.subject or 'Staff request'
                     rname = req.restaurant.name if req.restaurant else 'Restaurant'
-                    notification_service.send_whatsapp_text(
+                    wa_ok, _wa_info = notification_service.send_whatsapp_text(
                         digits,
                         f"📋 *Escalated to you:* \"{subj}\"\nFrom: {rname}\nCheck Staff Requests in the dashboard.",
                     )
+                    whatsapp_sent_to_assignee = bool(wa_ok)
             except Exception:
                 logger.exception('WhatsApp notify escalate assignee failed')
+                whatsapp_sent_to_assignee = False
 
-        return Response({'success': True, 'request': self.get_serializer(req).data})
+        return Response({
+            'success': True,
+            'request': self.get_serializer(req).data,
+            'whatsapp_sent': whatsapp_sent_to_assignee,
+            'assignee': (
+                {
+                    'id': str(assignee.id),
+                    'name': assignee.get_full_name() or assignee.email,
+                    'has_phone': bool(getattr(assignee, 'phone', '') or ''),
+                    'whatsapp_sent': whatsapp_sent_to_assignee,
+                }
+                if assignee
+                else None
+            ),
+        })
 
     @action(detail=True, methods=['post'])
     def reassign(self, request, pk=None):
@@ -433,7 +450,7 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
             },
         )
 
-        # Best-effort WhatsApp ping to the new owner.
+        whatsapp_sent_to_assignee = False
         if getattr(new_assignee, 'phone', None):
             try:
                 from notifications.services import (
@@ -443,17 +460,29 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
 
                 digits, phone_err = normalize_whatsapp_phone(new_assignee.phone)
                 if not phone_err:
-                    notification_service.send_whatsapp_text(
+                    wa_ok, _wa_info = notification_service.send_whatsapp_text(
                         digits,
                         (
                             f"📩 *Assigned to you:* \"{req.subject or 'Staff request'}\"\n"
                             f"Open the Staff Requests inbox to review."
                         ),
                     )
+                    whatsapp_sent_to_assignee = bool(wa_ok)
             except Exception:
                 logger.exception('WhatsApp notify reassign failed')
+                whatsapp_sent_to_assignee = False
 
-        return Response({'success': True, 'request': self.get_serializer(req).data})
+        return Response({
+            'success': True,
+            'request': self.get_serializer(req).data,
+            'whatsapp_sent': whatsapp_sent_to_assignee,
+            'assignee': {
+                'id': str(new_assignee.id),
+                'name': new_display,
+                'has_phone': bool(getattr(new_assignee, 'phone', '') or ''),
+                'whatsapp_sent': whatsapp_sent_to_assignee,
+            },
+        })
 
     @action(detail=True, methods=['post'])
     def close(self, request, pk=None):

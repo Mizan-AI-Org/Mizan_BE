@@ -347,7 +347,16 @@ class StaffRequest(models.Model):
         # via incident.* slugs or sibling models (Reservations, Inventory).
         ('MAINTENANCE', 'Maintenance'),
         ('RESERVATIONS', 'Reservations'),
+        # INVENTORY is for stock-state observations: "we ran out of milk",
+        # "low on tomatoes", "did the wastage report", "stock count due".
+        # Compare with PURCHASE_ORDER below which is for active buying
+        # requests ("buy 6 bottles of vodka", "order 50kg flour from Acme").
         ('INVENTORY', 'Inventory'),
+        # PURCHASE_ORDER is a procurement / buying ask. Powers the
+        # dashboard's "Purchase Orders" widget so a manager who says
+        # "we need to buy X" sees that request next to other open POs
+        # instead of buried in the generic inbox.
+        ('PURCHASE_ORDER', 'Purchase order'),
         ('OTHER', 'Other'),
     )
 

@@ -493,6 +493,11 @@ def agent_ingest_staff_request(request):
             metadata=inbox_metadata['intent_router'],
         )
 
+    # Track whether the WhatsApp ping to the assignee actually fired so
+    # the agent response can tell Miya the truth — preventing "they've
+    # been notified on WhatsApp" hallucinations when the assignee has
+    # no phone or the send failed.
+    whatsapp_sent_to_assignee = False
     if assignee:
         StaffRequestComment.objects.create(
             request=req,
@@ -512,11 +517,16 @@ def agent_ingest_staff_request(request):
             },
         )
         # Best-effort WhatsApp ping to the owner so they know something
-        # landed in their lane. Silent on failure — not critical.
+        # landed in their lane. Silent on failure — not critical, but we
+        # do flip a flag the agent reads back so its reply doesn't fib.
         owner_phone = getattr(assignee, 'phone', '') or ''
         if owner_phone:
             try:
-                notification_service.send_whatsapp_text(
+                # ``send_whatsapp_text`` returns ``(ok: bool, info: dict)``
+                # — capture the boolean so the agent reply only claims a
+                # WhatsApp ping when one actually went out (HTTP 200 from
+                # Meta). Fail closed otherwise.
+                wa_ok, _wa_info = notification_service.send_whatsapp_text(
                     owner_phone,
                     (
                         f"📩 New {category.lower()} request from "
@@ -524,8 +534,10 @@ def agent_ingest_staff_request(request):
                         f"\"{subject[:80]}\". Open the inbox to review."
                     ),
                 )
+                whatsapp_sent_to_assignee = bool(wa_ok)
             except Exception as exc:
                 logger.warning("StaffRequest assignee WhatsApp ping failed: %s", exc)
+                whatsapp_sent_to_assignee = False
 
     _notify_managers_of_staff_request(req)
 
@@ -550,10 +562,16 @@ def agent_ingest_staff_request(request):
                 'name': assignee.get_full_name() or assignee.email,
                 'email': assignee.email,
                 'auto_assigned': auto_assigned,
+                'has_phone': bool(getattr(assignee, 'phone', '') or ''),
+                'whatsapp_sent': whatsapp_sent_to_assignee,
             }
             if assignee
             else None
         ),
+        # Hoisted to the top level so Miya's reply rules (see persona:
+        # "ESCALATION / ASSIGNMENT") can branch on it without digging
+        # into the assignee sub-object — keeps the persona prompt simple.
+        'whatsapp_sent': whatsapp_sent_to_assignee,
     }, status=status.HTTP_201_CREATED)
 
 
@@ -805,27 +823,34 @@ def agent_assign_staff_request(request):
         },
     )
 
-    # Best-effort WhatsApp ping to the new owner.
+    # Best-effort WhatsApp ping to the new owner. Track success so the
+    # agent reply doesn't claim a notification went out when it didn't.
+    whatsapp_sent_to_assignee = False
     owner_phone = getattr(new_assignee, 'phone', '') or ''
     if owner_phone:
         try:
-            notification_service.send_whatsapp_text(
+            wa_ok, _wa_info = notification_service.send_whatsapp_text(
                 owner_phone,
                 (
                     f"📩 You've been assigned a {req.category.lower()} request: "
                     f"\"{(req.subject or '')[:80]}\"."
                 ),
             )
+            whatsapp_sent_to_assignee = bool(wa_ok)
         except Exception as exc:
             logger.warning("StaffRequest reassign WhatsApp ping failed: %s", exc)
+            whatsapp_sent_to_assignee = False
 
     return Response({
         'success': True,
         'request_id': str(req.id),
+        'whatsapp_sent': whatsapp_sent_to_assignee,
         'assignee': {
             'id': str(new_assignee.id),
             'name': new_assignee.get_full_name() or new_assignee.email,
             'email': new_assignee.email,
+            'has_phone': bool(owner_phone),
+            'whatsapp_sent': whatsapp_sent_to_assignee,
         },
     })
 

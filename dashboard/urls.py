@@ -44,6 +44,7 @@ from .views_agent import agent_create_dashboard_task
 from .api.cross_location_report import agent_cross_location_report
 from .api.calendar_write import agent_create_calendar_event
 from .api.photo_router import agent_parse_photo
+from .api.document_router import agent_parse_document
 
 router = DefaultRouter()
 router.register(r'tasks', TaskManagementViewSet, basename='task-management')
@@ -86,6 +87,11 @@ urlpatterns = [
         'agent/parse-photo/',
         agent_parse_photo,
         name='dashboard-agent-parse-photo',
+    ),
+    path(
+        'agent/parse-document/',
+        agent_parse_document,
+        name='dashboard-agent-parse-document',
     ),
     path('agent/widgets/list/', AgentDashboardWidgetListView.as_view(), name='dashboard-agent-widgets-list'),
     path('agent/widgets/add/', AgentDashboardWidgetsAddView.as_view(), name='dashboard-agent-widgets-add'),
