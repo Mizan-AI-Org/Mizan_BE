@@ -262,6 +262,35 @@ def agent_parse_photo(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    incoming_ct = (getattr(image_file, "content_type", "") or "").lower()
+    incoming_name = (getattr(image_file, "name", "") or "").lower()
+    is_image_mime = incoming_ct.startswith("image/")
+    is_image_ext = incoming_name.endswith(
+        (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif")
+    )
+    if not (is_image_mime or is_image_ext):
+        return Response(
+            {
+                "success": False,
+                "status": "wrong_tool",
+                "code": "USE_PARSE_DOCUMENT",
+                "error": f"parse_photo only handles images, got content_type={incoming_ct or 'unknown'}",
+                "miya_directive": (
+                    "This is not an image (got "
+                    f"{incoming_ct or 'unknown content type'}). DO NOT pretend to have parsed it. "
+                    "If it's a PDF / Word / Excel / CSV / text file, call parse_document with the same "
+                    "URL or bytes. If parse_document also can't read it, ask the user to type out the "
+                    "key fields (vendor, amount, due date, invoice number) before you call record_invoice. "
+                    "NEVER fabricate vendor / amount / invoice_number / due_date."
+                ),
+                "message_for_user": (
+                    "I can only read images directly. If that file is a PDF or a Word/Excel document, "
+                    "tell me the vendor, the amount, the due date, and the invoice number, and I'll log it."
+                ),
+            },
+            status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        )
+
     auto_create_raw = request.data.get("auto_create")
     auto_create = True
     if auto_create_raw is not None:
