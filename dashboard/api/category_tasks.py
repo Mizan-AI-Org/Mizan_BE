@@ -50,6 +50,13 @@ BUCKET_TO_CATEGORIES: dict[str, tuple[str, ...]] = {
     "finance": ("FINANCE", "PAYROLL"),
     "maintenance": ("MAINTENANCE",),
     "meetings": ("MEETING",),
+    # Procurement asks — "we need to buy 6 bottles of vodka", "place a
+    # PO for 50kg of flour". Distinct from FINANCE (paying invoices)
+    # and INVENTORY (state observations). Whoever owns inventory in
+    # the tenant's onboarding settings receives a WhatsApp ping when
+    # Miya creates one, so the manager who said "we need to buy X"
+    # gets confirmation that the right person was notified.
+    "purchase_orders": ("PURCHASE_ORDER",),
     # Catch-all lane for anything Miya couldn't confidently route into a
     # named category (intent_router returned ``OTHER``). Surfacing these
     # on the dashboard means general / one-off requests still get seen

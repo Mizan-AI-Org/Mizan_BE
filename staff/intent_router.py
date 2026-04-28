@@ -51,6 +51,12 @@ INBOX_CATEGORIES = (
     "MAINTENANCE",
     "RESERVATIONS",
     "INVENTORY",
+    # PURCHASE_ORDER captures procurement asks ("we need to buy /
+    # purchase / order X"). Distinct from INVENTORY (state observation:
+    # "we ran out of milk") and FINANCE (paying a vendor invoice that
+    # has already been issued). Powers the dashboard's Purchase Orders
+    # widget.
+    "PURCHASE_ORDER",
     "MEETING",
     "OTHER",
 )
@@ -201,7 +207,7 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "invoice", "invoices", "bill to pay", "bills to pay",
             "supplier payment", "vendor payment", "vendor invoice",
             "supplier invoice", "pay supplier", "pay vendor",
-            "purchase order", "po number", "credit note",
+            "credit note",
             "rent", "rental fee", "lease payment",
             "utility", "utilities", "electricity bill", "water bill",
             "internet bill", "phone bill", "gas bill", "telecom bill",
@@ -236,6 +242,50 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "holiday", "annual leave", "time off", "time-off",
             "sick leave", "sick day", "absent tomorrow",
             "can't come", "cant come", "won't be in",
+        ),
+    ),
+    (
+        # Procurement / buying intent — "we need to purchase / buy /
+        # order X". Distinct from INVENTORY (state observation: "we ran
+        # out of milk") and FINANCE (paying a vendor invoice that has
+        # already been issued). Ranked BEFORE INVENTORY so "buy 6
+        # bottles of vodka" doesn't get swallowed by the generic stock
+        # bucket. We deliberately keep the keywords narrow and verb-led
+        # ("we need to buy / purchase / order X", "place an order",
+        # "commander 50kg de farine") to avoid stealing pure inventory
+        # observations like "ran out of vodka" — that one stays in
+        # INVENTORY because it's a state report, not a procurement ask.
+        "PURCHASE_ORDER",
+        (
+            # English
+            "we need to purchase", "we need to buy", "we need to order",
+            "need to purchase", "need to buy", "need to order",
+            "we have to buy", "we should buy", "we should order",
+            "please purchase", "please buy", "please order",
+            "can you buy", "can you order", "could you order",
+            "buy more", "buy some", "buy a", "buy an", "buy 1",
+            "buy 2", "buy 3", "buy 4", "buy 5", "buy 6", "buy 7",
+            "buy 8", "buy 9", "buy 10", "buy 12", "buy 20", "buy 24",
+            "buy 50", "buy 100",
+            "order 1", "order 2", "order 3", "order 4", "order 5",
+            "order 6", "order 10", "order 12", "order 20", "order 24",
+            "order 50", "order 100",
+            "place an order", "place order", "place a po",
+            "raise a po", "create a po", "new po",
+            "purchase order", "po number",
+            "purchase request", "purchase req", "buying request",
+            "procure", "procurement", "procuring",
+            "supplier order", "stock order", "vendor order",
+            "bulk order", "wholesale order",
+            # French
+            "acheter", "il faut acheter", "il faut commander",
+            "on doit acheter", "on doit commander",
+            "nous devons acheter", "nous devons commander",
+            "passer une commande", "passer commande",
+            "bon de commande", "commande fournisseur",
+            # Arabic (transliterated common spellings — we already strip
+            # diacritics in _normalise so the bare word is enough).
+            "nshrou", "nechri", "nechriw",
         ),
     ),
     (

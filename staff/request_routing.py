@@ -35,6 +35,12 @@ _CATEGORY_TO_SLUGS: dict[str, tuple[str, ...]] = {
     "MAINTENANCE": ("request.maintenance", "incident.equipment"),
     "RESERVATIONS": ("request.reservations",),
     "INVENTORY": ("request.inventory",),
+    # Procurement asks ("buy 6 bottles of vodka"). Most kitchens give
+    # this responsibility to whoever owns inventory, so we fall back
+    # to ``request.inventory`` when the dedicated slug isn't set —
+    # that way existing tenants get sensible routing without having
+    # to revisit onboarding.
+    "PURCHASE_ORDER": ("request.purchase_order", "request.inventory"),
     "OTHER": (),
 }
 
