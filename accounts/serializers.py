@@ -3,6 +3,11 @@ from .models import (
     CustomUser, Restaurant, UserInvitation, StaffProfile, StaffInvitation, AuditLog,
     BusinessLocation,
 )
+from .staff_tags import (
+    CANONICAL_STAFF_TAG_SET,
+    CANONICAL_STAFF_TAGS,
+    normalize_tags,
+)
 from django.contrib.auth import authenticate
 import sys
 
@@ -31,9 +36,24 @@ def _validate_locations_same_tenant(locations, restaurant):
             )
 
 class StaffProfileSerializer(serializers.ModelSerializer):
+    # Operational tag list. Validated against the canonical vocabulary
+    # in :mod:`accounts.staff_tags` — unknown values get rejected with
+    # a 400 so the frontend can surface a clear error rather than
+    # silently dropping a typo. Order is preserved so the UI can use
+    # the first tag as the "primary department".
+    tags = serializers.ListField(
+        child=serializers.CharField(allow_blank=False),
+        required=False,
+        allow_empty=True,
+    )
+
     class Meta:
         model = StaffProfile
-        fields = ['hourly_rate', 'salary_type', 'join_date', 'promotion_history', 'emergency_contact_name', 'emergency_contact_phone', 'notes', 'department']
+        fields = [
+            'hourly_rate', 'salary_type', 'join_date', 'promotion_history',
+            'emergency_contact_name', 'emergency_contact_phone', 'notes',
+            'department', 'tags',
+        ]
         extra_kwargs = {
             'join_date': {'required': False, 'allow_null': True},
             'department': {'required': False, 'allow_null': True, 'allow_blank': True},
@@ -41,6 +61,22 @@ class StaffProfileSerializer(serializers.ModelSerializer):
             'emergency_contact_phone': {'required': False, 'allow_null': True, 'allow_blank': True},
             'notes': {'required': False, 'allow_blank': True},
         }
+
+    def validate_tags(self, value):
+        """Normalise + reject unknown tag identifiers.
+
+        Accepts ``["kitchen", "Front Office"]`` from sloppier clients
+        (case + spaces are folded by ``normalize_tags``), but anything
+        outside :data:`CANONICAL_STAFF_TAG_SET` raises 400.
+        """
+        normalised = normalize_tags(value)
+        unknown = [t for t in normalised if t not in CANONICAL_STAFF_TAG_SET]
+        if unknown:
+            raise serializers.ValidationError(
+                f"Unknown staff tag(s): {', '.join(unknown)}. "
+                f"Allowed: {', '.join(CANONICAL_STAFF_TAGS)}."
+            )
+        return normalised
 
 class RestaurantSerializer(serializers.ModelSerializer):
     class Meta:

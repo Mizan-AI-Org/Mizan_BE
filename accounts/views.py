@@ -1298,7 +1298,49 @@ class StaffListAPIView(generics.ListAPIView):
             if roles:
                 qs = qs.filter(role__in=roles)
 
+        # Optional comma-separated tag filter — each tag must be a
+        # canonical UPPER_SNAKE staff-tag identifier. We use a JSON
+        # ``__contains`` lookup on the related profile so the query
+        # stays a single SQL expression. Multiple tags are ANDed (a
+        # row must carry every tag the caller asked for) so callers
+        # can drill down ("KITCHEN AND PURCHASES" = chefs who also
+        # buy stock) rather than getting a noisy union.
+        tags_filter = (self.request.query_params.get('tags') or '').strip()
+        if tags_filter:
+            from .staff_tags import normalize_tags
+
+            wanted = normalize_tags(tags_filter.split(','))
+            for tag in wanted:
+                qs = qs.filter(profile__tags__contains=[tag])
+            qs = qs.distinct()
+
         return qs
+
+
+class StaffTagsCatalogView(APIView):
+    """Expose the canonical staff-tag vocabulary + category mapping.
+
+    The frontend hits this once on app boot to render localised tag
+    chips and to know which tag is the "default" for each
+    ``StaffRequest.category`` (used by smart filters in the escalate
+    modal).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from .staff_tags import (
+            CANONICAL_STAFF_TAGS,
+            CATEGORY_TAGS,
+            STAFF_TAG_LABELS_EN,
+        )
+
+        return Response({
+            "tags": [
+                {"id": t, "label_en": STAFF_TAG_LABELS_EN.get(t, t.title())}
+                for t in CANONICAL_STAFF_TAGS
+            ],
+            "category_to_tags": {k: list(v) for k, v in CATEGORY_TAGS.items()},
+        })
 
 
 class StaffMemberDetailView(APIView):
