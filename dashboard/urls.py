@@ -18,7 +18,7 @@ from .views_extended import (
 from .api.summary import DashboardSummaryView
 from .api.action_center import ActionCenterView
 from .api.portfolio import PortfolioSummaryView, LocationDetailView
-from .api.tasks_demands import TasksDemandsView, TaskStatusUpdateView
+from .api.tasks_demands import TasksDemandsView, TaskStatusUpdateView, TaskBucketUpdateView
 from .api.meetings_reminders import MeetingsRemindersView
 from .api.clock_ins import DashboardClockInsView
 from .api.category_tasks import CategoryTasksView
@@ -117,6 +117,14 @@ urlpatterns = [
         'tasks-demands/<uuid:pk>/status/',
         TaskStatusUpdateView.as_view(),
         name='dashboard-tasks-demands-status',
+    ),
+    # Drag-and-drop "move this row to another widget" endpoint. The
+    # FE calls it whenever a card is dropped on a different category
+    # widget, and the backend dispatches by source model.
+    path(
+        'tasks-demands/<uuid:pk>/bucket/',
+        TaskBucketUpdateView.as_view(),
+        name='dashboard-tasks-demands-bucket',
     ),
     path(
         'meetings-reminders/',

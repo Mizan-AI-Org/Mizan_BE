@@ -481,3 +481,230 @@ class TaskStatusUpdateView(APIView):
         return Response(
             {"error": "Task not found"}, status=http_status.HTTP_404_NOT_FOUND
         )
+
+
+# Drag-and-drop endpoint vocabulary. The frontend uses a small set of
+# bucket slugs that mirror the dashboard widget grid; this map turns a
+# dropped-into bucket into the StaffRequest.category that should now
+# own the row. ``urgent`` is a priority bump (no category change) and
+# is handled separately.
+_BUCKET_TO_STAFF_REQUEST_CATEGORY = {
+    "human_resources": "HR",
+    "finance": "FINANCE",
+    "maintenance": "MAINTENANCE",
+    "purchase_orders": "PURCHASE_ORDER",
+    "miscellaneous": "OTHER",
+}
+
+ALLOWED_BUCKETS = frozenset({"urgent", *_BUCKET_TO_STAFF_REQUEST_CATEGORY.keys()})
+
+
+class TaskBucketUpdateView(APIView):
+    """
+    PATCH /api/dashboard/tasks-demands/<uuid>/bucket/
+    Body: ``{"bucket": "human_resources" | "finance" | "maintenance" |
+                       "purchase_orders" | "miscellaneous" | "urgent"}``
+
+    Drag-and-drop endpoint: when a manager drags a row from one
+    dashboard category widget onto another, the FE calls this with the
+    destination bucket. We dispatch by source model:
+
+    - ``staff.StaffRequest``: change ``category`` to match the bucket
+      (or bump ``priority`` to URGENT when dropped on the urgent
+      widget). A ``status_change`` comment captures the move on the
+      request timeline so it's auditable from the inbox detail page.
+      If the row had no manual assignee (auto-routed by the inbox or
+      tag-based fallback), we re-resolve the assignee against the new
+      category so the right person picks it up.
+    - ``finance.Invoice``: invoices live exclusively in the finance
+      widget; dropping them anywhere else returns a friendly 400 with
+      a hint to use Mark Paid / Mark Voided instead.
+    - ``dashboard.Task`` and ``scheduling.Task``: rejected with a 400
+      for now — these have their own category systems and need the
+      regular edit dialog. We can wire them up later if managers ask
+      for it; rejecting is safer than guessing the wrong target.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, pk=None):
+        restaurant = getattr(request.user, "restaurant", None)
+        if not restaurant:
+            return Response(
+                {"error": "No workspace associated"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        bucket = str((request.data or {}).get("bucket") or "").lower().strip()
+        if bucket not in ALLOWED_BUCKETS:
+            return Response(
+                {"error": f"bucket must be one of {sorted(ALLOWED_BUCKETS)}"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 1) staff.StaffRequest — the bulk of dashboard widget rows.
+        try:
+            from staff.models import StaffRequest
+
+            try:
+                sr = (
+                    StaffRequest.objects.select_related("staff", "assignee")
+                    .get(pk=pk, restaurant=restaurant)
+                )
+            except StaffRequest.DoesNotExist:
+                sr = None
+        except Exception:  # pragma: no cover - staff app missing
+            sr = None
+
+        if sr is not None:
+            return self._move_staff_request(request, sr, bucket)
+
+        # 2) finance.Invoice — anchored to the finance widget. Allow a
+        #    no-op drop on finance, reject everything else.
+        try:
+            from finance.models import Invoice
+
+            try:
+                inv = Invoice.objects.select_related("created_by").get(
+                    pk=pk, restaurant=restaurant
+                )
+            except Invoice.DoesNotExist:
+                inv = None
+        except Exception:  # pragma: no cover - finance app missing
+            inv = None
+
+        if inv is not None:
+            if bucket == "finance":
+                from .category_tasks import _serialize_invoice
+
+                return Response(_serialize_invoice(inv))
+            return Response(
+                {
+                    "error": (
+                        "Invoices live in the Finance widget only. "
+                        "Use 'Mark as Paid' or 'Mark as Voided' to clear "
+                        "this row instead of moving it."
+                    )
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 3) dashboard.Task — rejected with a clear hint. These rows
+        #    have a TaskCategory FK that doesn't map cleanly to the
+        #    six widget buckets; the manager has to use the task edit
+        #    dialog for now.
+        try:
+            task = Task.objects.get(pk=pk, restaurant=restaurant)
+        except Task.DoesNotExist:
+            task = None
+
+        if task is not None:
+            return Response(
+                {
+                    "error": (
+                        "This task uses a custom category. Open it from "
+                        "the task list to change its category."
+                    )
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 4) scheduling.Task — also rejected; scheduled tasks have
+        #    their own list views.
+        try:
+            from scheduling.task_templates import Task as SchedulingTask
+
+            try:
+                sched = SchedulingTask.objects.get(pk=pk, restaurant=restaurant)
+            except SchedulingTask.DoesNotExist:
+                sched = None
+        except Exception:  # pragma: no cover - scheduling app missing
+            sched = None
+
+        if sched is not None:
+            return Response(
+                {
+                    "error": (
+                        "Scheduled tasks live in their own list and "
+                        "can't be re-bucketed from the dashboard."
+                    )
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {"error": "Item not found"}, status=http_status.HTTP_404_NOT_FOUND
+        )
+
+    # ------------------------------------------------------------------
+    # StaffRequest mover — split out so the dispatcher above stays a
+    # flat read; this method does the actual mutation + audit.
+    # ------------------------------------------------------------------
+    def _move_staff_request(self, request, sr, bucket):
+        update_fields: list[str] = []
+        comment_lines: list[str] = []
+
+        if bucket == "urgent":
+            # The urgent widget is a priority lane, not a category lane.
+            # Bump priority and leave category alone so the manager
+            # doesn't accidentally lose the original classification.
+            if (sr.priority or "").upper() != "URGENT":
+                old_priority = sr.priority or "MEDIUM"
+                sr.priority = "URGENT"
+                update_fields.append("priority")
+                comment_lines.append(
+                    f"Priority bumped from {old_priority} to URGENT via the dashboard."
+                )
+        else:
+            target_category = _BUCKET_TO_STAFF_REQUEST_CATEGORY[bucket]
+            if (sr.category or "").upper() != target_category:
+                old_category = sr.category or "OTHER"
+                sr.category = target_category
+                update_fields.append("category")
+                comment_lines.append(
+                    f"Moved from {old_category} to {target_category} via the dashboard."
+                )
+
+                # Re-resolve the auto-assignee for the new category if
+                # the row currently has no manual assignee. We only
+                # rewrite the assignee when there isn't one — never
+                # silently steal a row from a person the manager
+                # explicitly placed it on.
+                try:
+                    if sr.assignee_id is None:
+                        from staff.request_routing import (
+                            resolve_default_assignee_for_category,
+                        )
+
+                        new_owner = resolve_default_assignee_for_category(
+                            sr.restaurant, target_category
+                        )
+                        if new_owner is not None:
+                            sr.assignee = new_owner
+                            update_fields.append("assignee")
+                            comment_lines.append(
+                                f"Auto-assigned to {new_owner.first_name} {new_owner.last_name} "
+                                f"based on the new category."
+                            )
+                except Exception:
+                    # Routing must never block the bucket move itself.
+                    pass
+
+        if update_fields:
+            update_fields.append("updated_at")
+            sr.save(update_fields=update_fields)
+            try:
+                from staff.models import StaffRequestComment
+
+                StaffRequestComment.objects.create(
+                    request=sr,
+                    author=request.user,
+                    kind="status_change",
+                    body=" ".join(comment_lines) if comment_lines else "Row moved via the dashboard.",
+                )
+            except Exception:
+                pass
+
+        from .category_tasks import _serialize_staff_request
+
+        return Response(_serialize_staff_request(sr))
