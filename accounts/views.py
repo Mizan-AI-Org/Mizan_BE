@@ -1255,11 +1255,24 @@ class StaffListAPIView(generics.ListAPIView):
             .distinct()
         )
 
+        # ``?all_branches=1`` is an explicit opt-out for the escalate /
+        # reassign modal. Branch scope is the right default for the
+        # schedule editor (you don't want to assign a barista from
+        # another city to today's lunch shift), but the escalate flow
+        # needs to reach anyone in the whole tenant — the manager who
+        # signs off on a Finance ask might sit at HQ, not at the
+        # branch where the row was raised. Truthy values: ``1``,
+        # ``true``, ``yes`` (case-insensitive). Anything else falls
+        # through to the legacy branch-scoped behaviour.
+        all_branches = (
+            self.request.query_params.get('all_branches') or ''
+        ).strip().lower() in ('1', 'true', 'yes')
+
         # Branch-scoped managers: if the caller is a MANAGER with a
         # non-empty ``managed_locations`` set, only surface staff whose
         # primary or allowed locations overlap with those branches.
         # ADMIN/SUPER_ADMIN/OWNER always see the whole tenant.
-        if user.role == 'MANAGER':
+        if user.role == 'MANAGER' and not all_branches:
             managed_ids = list(user.managed_locations.values_list('id', flat=True))
             if managed_ids:
                 qs = qs.filter(
