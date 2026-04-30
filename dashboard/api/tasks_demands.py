@@ -294,16 +294,44 @@ class TasksDemandsView(APIView):
         )
 
 
+# StaffRequest uses a richer status vocabulary than the widget. We map
+# both directions so a manager who taps "Mark completed" on a WhatsApp-
+# captured request closes it; tapping "Mark in progress" flips PENDING /
+# ESCALATED rows to APPROVED ("manager has acknowledged & is on it").
+# WAITING_ON is preserved when the source row is already in that state
+# because the widget has no "waiting on" verb — managers set that via the
+# Inbox detail page.
+_WIDGET_STATUS_TO_STAFF_REQUEST = {
+    "PENDING": "PENDING",
+    "IN_PROGRESS": "APPROVED",
+    "COMPLETED": "CLOSED",
+    "CANCELLED": "REJECTED",
+}
+
+
 class TaskStatusUpdateView(APIView):
     """
     PATCH /api/dashboard/tasks-demands/<uuid>/status/
     Body: {"status": "PENDING" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED"}
 
-    Inline action for the widget's row menu. Looks up the task in
-    `dashboard.Task` first, then `scheduling.Task` (mapping status into
-    the scheduling vocabulary). Any authenticated staff from the same
-    tenant can flip status because the whole point of the widget is
-    one-tap triage.
+    Inline action for the widget's row menu. Looks up the row across
+    every source the dashboard widgets surface — ``dashboard.Task``,
+    ``scheduling.Task``, ``staff.StaffRequest``, ``finance.Invoice`` —
+    and applies the status transition in whichever one owns the UUID.
+    Any authenticated staff from the same tenant can flip status because
+    the whole point of the widget is one-tap triage.
+
+    Status transitions per source:
+
+    - ``dashboard.Task`` / ``scheduling.Task``: pass-through (mapped to
+      the scheduling TODO vocabulary for the latter).
+    - ``staff.StaffRequest``: PENDING→PENDING, IN_PROGRESS→APPROVED,
+      COMPLETED→CLOSED, CANCELLED→REJECTED. We don't blow away an
+      existing WAITING_ON state when the manager is just trying to
+      mark something done — the close still flows through.
+    - ``finance.Invoice``: only COMPLETED (→PAID, via ``mark_paid``)
+      and CANCELLED (→VOIDED) are accepted. PENDING / IN_PROGRESS
+      have no meaning for an invoice and return 400.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -350,21 +378,106 @@ class TaskStatusUpdateView(APIView):
         except Exception:  # pragma: no cover - scheduling app missing
             sched = None
 
-        if sched is None:
-            return Response(
-                {"error": "Task not found"}, status=http_status.HTTP_404_NOT_FOUND
-            )
+        if sched is not None:
+            sched_status = _WIDGET_STATUS_TO_SCHED[new_status]
+            update_fields = ["status", "updated_at"]
+            sched.status = sched_status
+            if sched_status == "COMPLETED":
+                sched.completed_at = timezone.now()
+                sched.completed_by = request.user
+                sched.progress = 100
+                update_fields += ["completed_at", "completed_by", "progress"]
+            elif sched_status == "IN_PROGRESS" and (sched.progress or 0) == 0:
+                sched.progress = 10
+                update_fields += ["progress"]
+            sched.save(update_fields=update_fields)
+            return Response(_serialize_scheduling_task(sched))
 
-        sched_status = _WIDGET_STATUS_TO_SCHED[new_status]
-        update_fields = ["status", "updated_at"]
-        sched.status = sched_status
-        if sched_status == "COMPLETED":
-            sched.completed_at = timezone.now()
-            sched.completed_by = request.user
-            sched.progress = 100
-            update_fields += ["completed_at", "completed_by", "progress"]
-        elif sched_status == "IN_PROGRESS" and (sched.progress or 0) == 0:
-            sched.progress = 10
-            update_fields += ["progress"]
-        sched.save(update_fields=update_fields)
-        return Response(_serialize_scheduling_task(sched))
+        # 3) staff.StaffRequest — Miya / WhatsApp ingested rows. Without
+        #    this branch every staff-request row in the dashboard widgets
+        #    was effectively read-only: clicking "Mark completed" hit
+        #    this view, fell through both blocks above, and returned 404.
+        try:
+            from staff.models import StaffRequest
+
+            try:
+                sr = (
+                    StaffRequest.objects.select_related("staff", "assignee")
+                    .get(pk=pk, restaurant=restaurant)
+                )
+            except StaffRequest.DoesNotExist:
+                sr = None
+        except Exception:  # pragma: no cover - staff app missing
+            sr = None
+
+        if sr is not None:
+            target = _WIDGET_STATUS_TO_STAFF_REQUEST[new_status]
+            sr.status = target
+            sr.save(update_fields=["status", "updated_at"])
+            # Best-effort: drop a system-comment on the request timeline
+            # so /dashboard/staff-requests detail shows who closed it
+            # and when — otherwise the widget action is invisible to
+            # anyone reviewing the request's history.
+            try:
+                from staff.models import StaffRequestComment
+
+                StaffRequestComment.objects.create(
+                    request=sr,
+                    author=request.user,
+                    kind="status_change",
+                    body=f"Status changed to {target} from the dashboard widget.",
+                )
+            except Exception:
+                # Comment failure must never block the status flip.
+                pass
+            # Lazy import the granular serializer so older deployments
+            # without the field still respond cleanly.
+            from .category_tasks import _serialize_staff_request
+
+            return Response(_serialize_staff_request(sr))
+
+        # 4) finance.Invoice — manager flipping a Finance-widget row.
+        #    Only COMPLETED (→ PAID) and CANCELLED (→ VOIDED) are valid;
+        #    PENDING / IN_PROGRESS aren't meaningful for an invoice and
+        #    we reject them with a clear message so the UI doesn't show
+        #    a misleading "saved" toast.
+        try:
+            from finance.models import Invoice
+
+            try:
+                inv = Invoice.objects.select_related("created_by").get(
+                    pk=pk, restaurant=restaurant
+                )
+            except Invoice.DoesNotExist:
+                inv = None
+        except Exception:  # pragma: no cover - finance app missing
+            inv = None
+
+        if inv is not None:
+            if new_status == "COMPLETED":
+                # Idempotent — ``mark_paid`` no-ops if the invoice is
+                # already PAID, but bumping it again would overwrite
+                # ``paid_at`` so we guard explicitly.
+                if inv.status != Invoice.STATUS_PAID:
+                    inv.mark_paid(user=request.user)
+            elif new_status == "CANCELLED":
+                if inv.status != Invoice.STATUS_VOIDED:
+                    inv.status = Invoice.STATUS_VOIDED
+                    inv.save(update_fields=["status", "updated_at"])
+            else:
+                return Response(
+                    {
+                        "error": (
+                            "Invoices only accept COMPLETED (mark paid) or "
+                            "CANCELLED (mark voided)."
+                        )
+                    },
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            from .category_tasks import _serialize_invoice
+
+            return Response(_serialize_invoice(inv))
+
+        return Response(
+            {"error": "Task not found"}, status=http_status.HTTP_404_NOT_FOUND
+        )
