@@ -291,8 +291,14 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "INVENTORY",
         (
+            # State observations only. Buying verbs (reorder / restock /
+            # stock up / "buy more" / "order 50") are detected by
+            # ``_PURCHASE_INTENT_PATTERNS`` *before* this loop and routed
+            # to PURCHASE_ORDER, so this list intentionally no longer
+            # mentions them — otherwise "we need to reorder napkins"
+            # would match here on the bare "reorder" keyword.
             "out of stock", "ran out", "running out", "low stock",
-            "restock", "re-stock", "reorder", "re-order", "supplier",
+            "supplier",
             "delivery missing", "stock missing", "stock count",
             "inventory", "wastage", "waste",
         ),
@@ -379,6 +385,123 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# Purchase-intent detector
+# ---------------------------------------------------------------------------
+#
+# A regex pre-pass that runs BEFORE the keyword loop so any clear "we
+# want to buy X" phrasing routes to PURCHASE_ORDER even when the agent
+# (or a human typing fast) labelled the row INVENTORY. Reported issue:
+# "Purchasing-related requests are being incorrectly classified as
+# Inventory instead of Purchases or Orders." The bare keyword matcher
+# couldn't distinguish "running low — please order 6 bottles" (an
+# action: buy) from "we are running out of olive oil" (an observation:
+# stock). These regexes handle the action side; INVENTORY keeps the
+# observation side.
+#
+# Patterns are written against the OUTPUT of ``_normalise``: lowercase,
+# accent-stripped, with every non-alphanumeric run collapsed to a
+# single space. So "re-order" becomes "re order", "we'd like" becomes
+# "we d like" — patterns must use ``\s*`` between fragments rather
+# than literal hyphens / apostrophes / dashes.
+_PURCHASE_INTENT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    # Procurement verb + any positive integer: "buy 30 napkins",
+    # "order 7 bottles", "purchase 50kg flour", "reorder 12".
+    re.compile(
+        r"\b(?:buy|order|purchase|procure|grab|reorder|re\s*order|"
+        r"restock|re\s*stock)\s+\d+\b"
+    ),
+    # Procurement verb + quantifier word: "buy more napkins", "order
+    # some flour", "purchase another fridge", "grab a few cases".
+    re.compile(
+        r"\b(?:buy|order|purchase|procure|grab|reorder|re\s*order|"
+        r"restock|re\s*stock)\s+"
+        r"(?:more|some|another|extra|additional|few|several|"
+        r"a\s+couple|couple\s+of|loads\s+of|lots\s+of)\b"
+    ),
+    # Subject + need / want / should / must + procurement verb: "we
+    # need to buy", "i should reorder", "they have to purchase".
+    re.compile(
+        r"\b(?:we|i|you|she|he|they|let\s+us|lets)\s+"
+        r"(?:need(?:s)?|have\s+to|has\s+to|want(?:s)?|gotta|got\s+to|"
+        r"must|should|will|would\s+like|d\s+like|ought\s+to)\s+"
+        r"(?:to\s+)?"
+        r"(?:buy|order|purchase|procure|reorder|re\s*order|"
+        r"restock|re\s*stock|grab|fetch|source)\b"
+    ),
+    # Polite / imperative + procurement verb: "please order more",
+    # "can you reorder", "kindly buy", "could someone purchase".
+    re.compile(
+        r"\b(?:please|kindly|pls|can|could|would|will)\s+"
+        r"(?:you\s+|someone\s+|somebody\s+|me\s+|us\s+)?"
+        r"(?:buy|order|purchase|procure|reorder|re\s*order|"
+        r"restock|re\s*stock|grab|fetch|bring|source)\b"
+    ),
+    # "place / raise / create / new / open + (po|purchase order|...)".
+    re.compile(
+        r"\b(?:place|raise|create|open|new|draft|start|issue|cut|file)\s+"
+        r"(?:an?\s+)?"
+        r"(?:po|purchase\s+order|supplier\s+order|stock\s+order|"
+        r"vendor\s+order|delivery\s+order|order)\b"
+    ),
+    # Bare "purchase order / request / req / list", "buying request",
+    # "procurement request".
+    re.compile(
+        r"\b(?:purchase|buying|procurement)\s+"
+        r"(?:request|req|order|list)\b"
+    ),
+    # Standalone procurement verbs / nouns: "reorder", "restock",
+    # "stock up", "procuring", "supplier order", "bulk order",
+    # "wholesale order".
+    re.compile(
+        r"\b(?:reorder|re\s*order|restock|re\s*stock|stock\s+up|"
+        r"procurement|procuring|supplier\s+order|vendor\s+order|"
+        r"stock\s+order|bulk\s+order|wholesale\s+order)\b"
+    ),
+    # French canonical PO nouns.
+    re.compile(r"\b(?:bon\s+de\s+commande|commande\s+fournisseur)\b"),
+    # French verbal forms: "il faut acheter", "on doit commander",
+    # "veuillez acheter", "peux tu commander", "je dois reapprovisionner".
+    re.compile(
+        r"\b(?:il\s+faut|on\s+doit|nous\s+devons|veuillez|tu\s+peux|"
+        r"peut\s+on|pouvez\s+vous|peux\s+tu|on\s+devrait|"
+        r"nous\s+devrions|je\s+dois|il\s+faudrait)\s+"
+        r"(?:acheter|commander|reapprovisionner|approvisionner|"
+        r"recommander|repasser\s+commande)\b"
+    ),
+    # French imperative form: "passer une commande", "faire un bon
+    # de commande", "preparer une commande fournisseur".
+    re.compile(
+        r"\b(?:passer|faire|creer|emettre|preparer|etablir|rediger|"
+        r"ajouter|placer)\s+"
+        r"(?:une?\s+)?"
+        r"(?:commande|bon\s+de\s+commande|commande\s+fournisseur)\b"
+    ),
+    # Arabic transliteration ("nshrou / nechri / nechriw" — common
+    # Darija spellings of "let's buy / I'll buy / we buy"). Diacritics
+    # are stripped by ``_normalise`` so we only need bare consonants.
+    re.compile(
+        r"\b(?:nshrou|nechri|nechriw|nshtaru|nshetri|nshri|nshtri|"
+        r"nrobzine|n3ayyto|n3ayto)\b"
+    ),
+)
+
+
+def _has_purchase_intent(normalised: str) -> tuple[str, ...]:
+    """Return matched substrings if the message expresses buying intent.
+
+    ``normalised`` is the output of :func:`_normalise` — i.e. lowercase
+    ASCII with single-space separators. Returns the substrings that
+    fired so callers can log which pattern won.
+    """
+    hits: list[str] = []
+    for pattern in _PURCHASE_INTENT_PATTERNS:
+        match = pattern.search(normalised)
+        if match:
+            hits.append(match.group(0).strip())
+    return tuple(hits)
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +650,24 @@ def classify_request(
                 matched_terms=hits,
             )
 
-    # 2. Honour an explicit, valid agent category (so Miya stays in
+    # 2. Purchase-intent override. A clear buying verb wins over a
+    #    missing / weak agent label AND over an explicit ``INVENTORY``
+    #    label — that was the source of the bug "purchasing requests
+    #    keep landing in Inventory instead of Purchase Orders". We
+    #    deliberately DON'T override other explicit categories (HR,
+    #    PAYROLL, FINANCE, …) because those were probably set on
+    #    purpose and a procurement verb in their body shouldn't steal
+    #    them away (e.g. "please order Karim's HR file" is still HR).
+    purchase_hits = _has_purchase_intent(normalised)
+    if purchase_hits and agent_cat in ("OTHER", "INVENTORY", ""):
+        return IntentDecision(
+            destination=DEST_INBOX,
+            category="PURCHASE_ORDER",
+            confidence="high",
+            matched_terms=purchase_hits,
+        )
+
+    # 3. Honour an explicit, valid agent category (so Miya stays in
     #    control when she did do her job). We still re-validate against
     #    INBOX_CATEGORIES so typos / unknown labels fall through.
     if agent_cat != "OTHER" and agent_cat in INBOX_CATEGORIES:
@@ -538,7 +678,7 @@ def classify_request(
             matched_terms=(f"agent:{agent_cat}",),
         )
 
-    # 3. Otherwise infer category from keywords.
+    # 4. Otherwise infer category from keywords.
     for category, keywords in _INBOX_RULES:
         hits = _matches_any(normalised, keywords)
         if hits:
@@ -549,7 +689,7 @@ def classify_request(
                 matched_terms=hits,
             )
 
-    # 4. Total miss — keep as OTHER but mark the confidence so callers
+    # 5. Total miss — keep as OTHER but mark the confidence so callers
     #    (and dashboards) can surface "uncategorised" rows for review.
     return IntentDecision(
         destination=DEST_INBOX,
