@@ -24,6 +24,10 @@ from .api.tasks_demands import (
     TaskBucketUpdateView,
     TaskAssigneeUpdateView,
 )
+from .api.staff_messages import (
+    StaffMessagesRecentView,
+    StaffMessagesSendView,
+)
 from .api.meetings_reminders import MeetingsRemindersView
 from .api.clock_ins import DashboardClockInsView
 from .api.category_tasks import CategoryTasksView
@@ -138,6 +142,20 @@ urlpatterns = [
         'tasks-demands/<uuid:pk>/assignee/',
         TaskAssigneeUpdateView.as_view(),
         name='dashboard-tasks-demands-assignee',
+    ),
+    # Admin → Staff WhatsApp messaging surface for the dashboard.
+    # The recent feed powers the delivery / read receipts widget;
+    # the send endpoint is the structured composer alternative to
+    # talking to Miya in the chat panel.
+    path(
+        'staff-messages/recent/',
+        StaffMessagesRecentView.as_view(),
+        name='dashboard-staff-messages-recent',
+    ),
+    path(
+        'staff-messages/send/',
+        StaffMessagesSendView.as_view(),
+        name='dashboard-staff-messages-send',
     ),
     path(
         'meetings-reminders/',
