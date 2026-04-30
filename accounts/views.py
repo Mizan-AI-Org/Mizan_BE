@@ -1203,7 +1203,25 @@ class ResendVerificationEmailView(APIView):
 
 class StaffListAPIView(generics.ListAPIView):
     """
-    Lists all *active* staff members for the manager's restaurant.
+    Lists all *active* staff members for the manager's tenant.
+
+    Used by the escalate / reassign modal on the staff requests page, the
+    onboarding org chart, the schedule editor's assignee picker, and a
+    few other "pick somebody from my team" surfaces. The modal showed
+    only a short list of names because two issues stacked:
+
+    - DRF's default pagination kicks in at PAGE_SIZE=10, so the modal
+      saw only the first 10 names unless the caller asked for more.
+    - The queryset filtered on ``restaurant=user.restaurant`` only,
+      which excluded staff whose PRIMARY restaurant is elsewhere but
+      who are linked to this tenant via ``StaffRestaurantLink`` (multi-
+      restaurant chains, branch-shared staff, etc.).
+
+    This view now mirrors the clock-in scoping helper: a user belongs
+    to the manager's restaurant when their primary FK matches OR they
+    have an active ``StaffRestaurantLink`` to it. The frontend can
+    bypass the page-size cap with ``?page_size=500`` (matches
+    ``MAX_PAGE_SIZE`` in settings).
     """
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     serializer_class = StaffSerializer
@@ -1213,17 +1231,28 @@ class StaffListAPIView(generics.ListAPIView):
         This method is automatically called to get the list of objects.
         """
         user = self.request.user
+        from django.db.models import Q
+
+        rid = getattr(user, 'restaurant_id', None)
 
         # StaffSerializer embeds `profile` via StaffProfileSerializer, which
         # otherwise triggers +1 query per staff member on a restaurant with 30+
         # staff. select_related keeps it to a single JOIN.
+        # We OR the primary FK and the ``StaffRestaurantLink`` membership
+        # so multi-restaurant teammates show up in the picker. Without
+        # this OR the escalate modal silently dropped them.
         qs = (
             CustomUser.objects
-            .filter(restaurant=user.restaurant, is_active=True)
+            .filter(
+                Q(restaurant_id=rid)
+                | Q(restaurant_links__restaurant_id=rid, restaurant_links__is_active=True),
+                is_active=True,
+            )
             .exclude(role='SUPER_ADMIN')
             .select_related('profile', 'primary_location')
             .prefetch_related('allowed_locations', 'managed_locations')
             .order_by('first_name', 'last_name')
+            .distinct()
         )
 
         # Branch-scoped managers: if the caller is a MANAGER with a
@@ -1233,7 +1262,6 @@ class StaffListAPIView(generics.ListAPIView):
         if user.role == 'MANAGER':
             managed_ids = list(user.managed_locations.values_list('id', flat=True))
             if managed_ids:
-                from django.db.models import Q
                 qs = qs.filter(
                     Q(primary_location_id__in=managed_ids)
                     | Q(allowed_locations__id__in=managed_ids)
@@ -1242,11 +1270,33 @@ class StaffListAPIView(generics.ListAPIView):
         # Optional explicit branch filter via query param (?location=<uuid>).
         requested_loc = self.request.query_params.get('location')
         if requested_loc:
-            from django.db.models import Q
             qs = qs.filter(
                 Q(primary_location_id=requested_loc)
                 | Q(allowed_locations__id=requested_loc)
             ).distinct()
+
+        # Free-text search over the human-friendly fields. The escalate
+        # modal types into a search box and we filter server-side so
+        # tenants with hundreds of staff don't have to ship the whole
+        # list to the client just to find one person. Empty / missing
+        # query is a no-op.
+        search = (self.request.query_params.get('search') or '').strip()
+        if search:
+            qs = qs.filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(phone__icontains=search)
+            ).distinct()
+
+        # Optional comma-separated role filter so callers can ask for
+        # e.g. "managers + owners only" when escalating something
+        # sensitive. ``role`` is canonicalised to upper-case.
+        role_filter = (self.request.query_params.get('role') or '').strip()
+        if role_filter:
+            roles = [r.strip().upper() for r in role_filter.split(',') if r.strip()]
+            if roles:
+                qs = qs.filter(role__in=roles)
 
         return qs
 
