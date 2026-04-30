@@ -18,7 +18,12 @@ from .views_extended import (
 from .api.summary import DashboardSummaryView
 from .api.action_center import ActionCenterView
 from .api.portfolio import PortfolioSummaryView, LocationDetailView
-from .api.tasks_demands import TasksDemandsView, TaskStatusUpdateView, TaskBucketUpdateView
+from .api.tasks_demands import (
+    TasksDemandsView,
+    TaskStatusUpdateView,
+    TaskBucketUpdateView,
+    TaskAssigneeUpdateView,
+)
 from .api.meetings_reminders import MeetingsRemindersView
 from .api.clock_ins import DashboardClockInsView
 from .api.category_tasks import CategoryTasksView
@@ -125,6 +130,14 @@ urlpatterns = [
         'tasks-demands/<uuid:pk>/bucket/',
         TaskBucketUpdateView.as_view(),
         name='dashboard-tasks-demands-bucket',
+    ),
+    # Reassign endpoint used by the row dropdown's "Reassign" entry.
+    # Same dispatcher pattern as bucket / status — one URL across
+    # StaffRequest / dashboard.Task / scheduling.Task / Invoice.
+    path(
+        'tasks-demands/<uuid:pk>/assignee/',
+        TaskAssigneeUpdateView.as_view(),
+        name='dashboard-tasks-demands-assignee',
     ),
     path(
         'meetings-reminders/',

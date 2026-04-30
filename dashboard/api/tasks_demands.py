@@ -708,3 +708,196 @@ class TaskBucketUpdateView(APIView):
         from .category_tasks import _serialize_staff_request
 
         return Response(_serialize_staff_request(sr))
+
+
+class TaskAssigneeUpdateView(APIView):
+    """
+    PATCH /api/dashboard/tasks-demands/<uuid>/assignee/
+    Body: ``{"assignee_id": "<user-uuid>" | null, "note": "<optional>"}``
+
+    Unified reassign endpoint for the dashboard widget rows. Mirrors
+    ``TaskBucketUpdateView`` — dispatches across the four sources:
+
+    - ``staff.StaffRequest``: writes ``assignee`` + drops a
+      reassignment comment on the timeline (and a system entry when
+      ``assignee_id`` is null = unassign). Reuses the same audit
+      pattern the inbox detail page uses so the timeline stays the
+      single source of truth for who owns what.
+    - ``dashboard.Task``: writes ``assigned_to`` (single user; the
+      legacy field is a FK so we don't try to fan out).
+    - ``scheduling.Task``: replaces the M2M ``assigned_to`` set with
+      a single user — scheduling tasks support multiple owners but
+      the dashboard widget only renders one chip, so a reassign from
+      the widget is a "set primary owner" action.
+    - ``finance.Invoice``: invoices don't carry an assignee; we
+      politely 400 with a hint pointing to the request inbox.
+
+    Permissions match the rest of the widget endpoints: any
+    authenticated tenant member can reassign because the row is
+    already scoped to their restaurant by the dispatcher.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, pk=None):
+        restaurant = getattr(request.user, "restaurant", None)
+        if not restaurant:
+            return Response(
+                {"error": "No workspace associated"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        raw_assignee = (request.data or {}).get("assignee_id")
+        # ``null`` / empty string is a deliberate "unassign" — supported
+        # for StaffRequest and dashboard.Task. Scheduling.Task with
+        # empty list is also valid (= no owner).
+        new_user = None
+        if raw_assignee:
+            from accounts.models import CustomUser
+
+            try:
+                new_user = CustomUser.objects.get(
+                    pk=raw_assignee, is_active=True,
+                )
+            except CustomUser.DoesNotExist:
+                return Response(
+                    {"error": "Assignee not found or inactive."},
+                    status=http_status.HTTP_404_NOT_FOUND,
+                )
+
+            # Cross-tenant guard — never let a manager hand a row to
+            # someone who isn't on their team. The check mirrors the
+            # OR used by the staff list view (primary FK or active
+            # ``StaffRestaurantLink``) so multi-restaurant teammates
+            # remain valid targets.
+            from django.db.models import Q
+            from accounts.models import StaffRestaurantLink
+
+            same_tenant = (
+                new_user.restaurant_id == restaurant.id
+                or StaffRestaurantLink.objects.filter(
+                    user=new_user,
+                    restaurant=restaurant,
+                    is_active=True,
+                ).exists()
+            )
+            if not same_tenant:
+                return Response(
+                    {"error": "That person isn't part of your team."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+
+        note = str((request.data or {}).get("note") or "").strip()
+
+        # 1) staff.StaffRequest
+        try:
+            from staff.models import StaffRequest
+
+            try:
+                sr = (
+                    StaffRequest.objects.select_related("staff", "assignee")
+                    .get(pk=pk, restaurant=restaurant)
+                )
+            except StaffRequest.DoesNotExist:
+                sr = None
+        except Exception:  # pragma: no cover - staff app missing
+            sr = None
+
+        if sr is not None:
+            old = sr.assignee
+            sr.assignee = new_user
+            sr.save(update_fields=["assignee", "updated_at"])
+            try:
+                from staff.models import StaffRequestComment
+
+                if new_user is None:
+                    body = "Unassigned via the dashboard."
+                elif old is None:
+                    body = (
+                        f"Assigned to {new_user.first_name} {new_user.last_name} "
+                        f"via the dashboard."
+                    )
+                else:
+                    body = (
+                        f"Reassigned from {old.first_name} {old.last_name} "
+                        f"to {new_user.first_name} {new_user.last_name} "
+                        f"via the dashboard."
+                    )
+                if note:
+                    body = f"{body} Note: {note}"
+                StaffRequestComment.objects.create(
+                    request=sr,
+                    author=request.user,
+                    kind="reassignment",
+                    body=body,
+                )
+            except Exception:
+                pass
+
+            from .category_tasks import _serialize_staff_request
+
+            return Response(_serialize_staff_request(sr))
+
+        # 2) dashboard.Task
+        try:
+            task = Task.objects.select_related(
+                "assigned_to", "assigned_to__profile"
+            ).get(pk=pk, restaurant=restaurant)
+        except Task.DoesNotExist:
+            task = None
+
+        if task is not None:
+            task.assigned_to = new_user
+            task.save(update_fields=["assigned_to", "updated_at"])
+            return Response(_serialize_dashboard_task(task))
+
+        # 3) scheduling.Task — M2M; widget reassign means "make this
+        #    person the sole assignee" (the kanban can still fan it
+        #    out manually).
+        try:
+            from scheduling.task_templates import Task as SchedulingTask
+
+            try:
+                sched = (
+                    SchedulingTask.objects.prefetch_related("assigned_to")
+                    .get(pk=pk, restaurant=restaurant)
+                )
+            except SchedulingTask.DoesNotExist:
+                sched = None
+        except Exception:  # pragma: no cover - scheduling app missing
+            sched = None
+
+        if sched is not None:
+            if new_user is None:
+                sched.assigned_to.clear()
+            else:
+                sched.assigned_to.set([new_user])
+            sched.save(update_fields=["updated_at"])
+            return Response(_serialize_scheduling_task(sched))
+
+        # 4) finance.Invoice — no assignee field. Reject with a hint.
+        try:
+            from finance.models import Invoice
+
+            try:
+                inv = Invoice.objects.get(pk=pk, restaurant=restaurant)
+            except Invoice.DoesNotExist:
+                inv = None
+        except Exception:  # pragma: no cover - finance app missing
+            inv = None
+
+        if inv is not None:
+            return Response(
+                {
+                    "error": (
+                        "Invoices don't have an owner. Move the request "
+                        "into the inbox if you need to assign it to "
+                        "someone."
+                    )
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {"error": "Item not found"}, status=http_status.HTTP_404_NOT_FOUND
+        )
