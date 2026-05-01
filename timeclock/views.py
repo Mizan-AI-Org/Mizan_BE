@@ -5,8 +5,38 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.http import Http404
+from core.read_through_cache import get_or_set, safe_cache_delete
 from notifications.utils import send_realtime_notification
 from notifications.services import notification_service
+
+
+# ---------------------------------------------------------------------------
+# Shared cache key helper for agent_attendance_report.
+#
+# Miya calls this every time a manager asks "who's working today?" /
+# "is X in yet?" / "show me late staff" — sometimes 3–4× per
+# conversation. The result only changes on clock-in/out and shift
+# edits, both of which fire signals that bust the cache below. TTL is
+# intentionally short (30s) so attendance boards never drift more than
+# half a minute even when Redis is cold.
+# ---------------------------------------------------------------------------
+
+_ATTENDANCE_CACHE_TTL = 30
+
+
+def _attendance_report_cache_key(restaurant_id, report_date_iso: str) -> str:
+    return f"agent:timeclock:attendance:v1:{restaurant_id}:{report_date_iso}"
+
+
+def invalidate_attendance_report(restaurant_id, report_date_iso: str | None = None) -> None:
+    """Wipe today's attendance cache (and an explicit date if given).
+    Exposed module-level so timeclock/signals.py and scheduling hooks
+    can bust the slice on the next write.
+    """
+    today_iso = timezone.now().date().isoformat()
+    safe_cache_delete(_attendance_report_cache_key(restaurant_id, today_iso))
+    if report_date_iso and report_date_iso != today_iso:
+        safe_cache_delete(_attendance_report_cache_key(restaurant_id, report_date_iso))
 
 
 def _notify_managers_of_location_mismatch(clock_event, user, branch):
@@ -1703,74 +1733,79 @@ def agent_attendance_report(request):
         except ValueError:
             return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 1. Get all scheduled shifts for today
-        shifts = AssignedShift.objects.filter(
-            schedule__restaurant_id=restaurant_id,
-            shift_date=report_date
-        ).select_related('staff')
+        cache_key = _attendance_report_cache_key(restaurant_id, report_date.isoformat())
 
-        # 2. Get all clock-in events for today via the canonical helper.
-        # Without this Miya would miss clock-ins from staff whose primary
-        # restaurant FK doesn't match the queried restaurant (i.e. anyone
-        # working a shift via StaffRestaurantLink, or anyone clocking in
-        # at a BusinessLocation owned by this restaurant while their
-        # ``CustomUser.restaurant`` points elsewhere).
-        from timeclock.services import clock_events_for_restaurant_qs
-        from accounts.models import Restaurant
-        _rest = Restaurant.objects.filter(id=restaurant_id).first()
-        clock_ins = clock_events_for_restaurant_qs(
-            _rest, event_type='in', date=report_date
-        )
+        def _compute_attendance_payload():
+            # 1. Get all scheduled shifts for today
+            shifts = AssignedShift.objects.filter(
+                schedule__restaurant_id=restaurant_id,
+                shift_date=report_date
+            ).select_related('staff')
 
-        # Map clock-ins by staff_id
-        staff_clock_ins = {str(c.staff_id): c.timestamp for c in clock_ins}
+            # 2. Get all clock-in events for today via the canonical helper.
+            # Without this Miya would miss clock-ins from staff whose primary
+            # restaurant FK doesn't match the queried restaurant (i.e. anyone
+            # working a shift via StaffRestaurantLink, or anyone clocking in
+            # at a BusinessLocation owned by this restaurant while their
+            # ``CustomUser.restaurant`` points elsewhere).
+            from timeclock.services import clock_events_for_restaurant_qs
+            from accounts.models import Restaurant
+            _rest = Restaurant.objects.filter(id=restaurant_id).first()
+            clock_ins = clock_events_for_restaurant_qs(
+                _rest, event_type='in', date=report_date
+            )
 
-        report = []
-        for shift in shifts:
-            staff = shift.staff
-            clock_in_time = staff_clock_ins.get(str(staff.id))
-            
-            status_text = "Scheduled"
-            lateness_minutes = 0
-            
-            if clock_in_time:
-                status_text = "Present"
-                if shift.start_time:
-                    if isinstance(shift.start_time, datetime):
-                        shift_start = shift.start_time if timezone.is_aware(shift.start_time) else timezone.make_aware(shift.start_time)
-                    else:
-                        shift_start = timezone.make_aware(datetime.combine(shift.shift_date, shift.start_time))
-                    if clock_in_time > shift_start:
-                        diff = clock_in_time - shift_start
-                        lateness_minutes = int(diff.total_seconds() / 60)
-                        if lateness_minutes > 5:
-                            status_text = "Late"
-            else:
-                now = timezone.now()
-                if shift.start_time:
-                    if isinstance(shift.start_time, datetime):
-                        shift_start = shift.start_time if timezone.is_aware(shift.start_time) else timezone.make_aware(shift.start_time)
-                    else:
-                        shift_start = timezone.make_aware(datetime.combine(shift.shift_date, shift.start_time))
-                    if now > shift_start:
-                        status_text = "Missing"
+            # Map clock-ins by staff_id
+            staff_clock_ins = {str(c.staff_id): c.timestamp for c in clock_ins}
 
-            report.append({
-                'staff_id': str(staff.id),
-                'staff_name': f"{staff.first_name} {staff.last_name}",
-                'role': shift.role or staff.role,
-                'shift_start': shift.start_time.strftime('%H:%M'),
-                'shift_end': shift.end_time.strftime('%H:%M'),
-                'clock_in': clock_in_time.strftime('%H:%M') if clock_in_time else None,
-                'status': status_text,
-                'lateness_minutes': lateness_minutes
-            })
+            report = []
+            for shift in shifts:
+                staff = shift.staff
+                clock_in_time = staff_clock_ins.get(str(staff.id))
 
-        return Response({
-            'date': date_str,
-            'restaurant_id': restaurant_id,
-            'summary': report
-        })
+                status_text = "Scheduled"
+                lateness_minutes = 0
+
+                if clock_in_time:
+                    status_text = "Present"
+                    if shift.start_time:
+                        if isinstance(shift.start_time, datetime):
+                            shift_start = shift.start_time if timezone.is_aware(shift.start_time) else timezone.make_aware(shift.start_time)
+                        else:
+                            shift_start = timezone.make_aware(datetime.combine(shift.shift_date, shift.start_time))
+                        if clock_in_time > shift_start:
+                            diff = clock_in_time - shift_start
+                            lateness_minutes = int(diff.total_seconds() / 60)
+                            if lateness_minutes > 5:
+                                status_text = "Late"
+                else:
+                    now = timezone.now()
+                    if shift.start_time:
+                        if isinstance(shift.start_time, datetime):
+                            shift_start = shift.start_time if timezone.is_aware(shift.start_time) else timezone.make_aware(shift.start_time)
+                        else:
+                            shift_start = timezone.make_aware(datetime.combine(shift.shift_date, shift.start_time))
+                        if now > shift_start:
+                            status_text = "Missing"
+
+                report.append({
+                    'staff_id': str(staff.id),
+                    'staff_name': f"{staff.first_name} {staff.last_name}",
+                    'role': shift.role or staff.role,
+                    'shift_start': shift.start_time.strftime('%H:%M'),
+                    'shift_end': shift.end_time.strftime('%H:%M'),
+                    'clock_in': clock_in_time.strftime('%H:%M') if clock_in_time else None,
+                    'status': status_text,
+                    'lateness_minutes': lateness_minutes
+                })
+
+            return {
+                'date': date_str,
+                'restaurant_id': restaurant_id,
+                'summary': report,
+            }
+
+        return Response(get_or_set(cache_key, _ATTENDANCE_CACHE_TTL, _compute_attendance_payload))
 
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -25,11 +25,36 @@ from rest_framework import permissions, status as http_status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.http_caching import json_response_with_cache
+from core.read_through_cache import get_or_set, safe_cache_delete
 from notifications.models import Notification, NotificationLog
 from notifications.services import NotificationService
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 50
+
+# Short Redis TTL on the "recent messages" feed, paired with an HTTP
+# ETag/Cache-Control response. The widget on the dashboard refetches
+# every 30s; matching the TTL to that cadence means the hot path
+# hits RDS at most once per polling-interval per tenant, and the
+# browser short-circuits repeated polls with a 304 when the payload
+# hasn't changed. Send-writes bust the slice immediately so the UI
+# feels instant after a manager hits "Send".
+_RECENT_CACHE_TTL = 25
+
+
+def _recent_cache_key(restaurant_id, limit: int) -> str:
+    return f"dashboard:staff_messages:recent:v1:{restaurant_id}:{int(limit)}"
+
+
+def _invalidate_recent_cache(restaurant_id) -> None:
+    """Wipe every limit-slice for this tenant. We only surface three
+    limits in practice (10 default, a 25/50 debug override), so an
+    exhaustive wipe is cheap and means we never have to propagate the
+    widget's current limit into the send handler.
+    """
+    for lim in (DEFAULT_LIMIT, 25, MAX_LIMIT):
+        safe_cache_delete(_recent_cache_key(restaurant_id, lim))
 
 # Priority decorator prefixes — kept short so the staff member sees
 # the urgency cue before WhatsApp truncates the bubble preview on the
@@ -181,42 +206,57 @@ class StaffMessagesRecentView(APIView):
             limit = DEFAULT_LIMIT
         limit = max(1, min(limit, MAX_LIMIT))
 
-        # Tenant scope flows through the recipient: every Notification
-        # row holds a recipient FK with a restaurant. We deliberately
-        # use the recipient's restaurant (not the sender's) because
-        # multi-restaurant managers may sit at HQ and broadcast to a
-        # specific branch — the message belongs to that branch's feed.
-        qs = (
-            NotificationLog.objects.filter(
-                channel="whatsapp",
-                notification__recipient__restaurant=restaurant,
-                notification__sender__isnull=False,
+        cache_key = _recent_cache_key(restaurant.id, limit)
+
+        def _compute_recent_payload():
+            # Tenant scope flows through the recipient: every Notification
+            # row holds a recipient FK with a restaurant. We deliberately
+            # use the recipient's restaurant (not the sender's) because
+            # multi-restaurant managers may sit at HQ and broadcast to a
+            # specific branch — the message belongs to that branch's feed.
+            qs = (
+                NotificationLog.objects.filter(
+                    channel="whatsapp",
+                    notification__recipient__restaurant=restaurant,
+                    notification__sender__isnull=False,
+                )
+                .select_related(
+                    "notification",
+                    "notification__recipient",
+                    "notification__sender",
+                )
+                .order_by("-sent_at")[:limit]
             )
-            .select_related(
-                "notification",
-                "notification__recipient",
-                "notification__sender",
-            )
-            .order_by("-sent_at")[:limit]
-        )
 
-        items = [_serialize_log(log) for log in qs]
+            items = [_serialize_log(log) for log in qs]
 
-        # Counts so the widget can render a tiny "12 sent · 3 read"
-        # summary without re-walking the list on the FE side.
-        counts = {"SENT": 0, "DELIVERED": 0, "READ": 0, "FAILED": 0}
-        for it in items:
-            s = it.get("status") or ""
-            if s in counts:
-                counts[s] += 1
+            # Counts so the widget can render a tiny "12 sent · 3 read"
+            # summary without re-walking the list on the FE side.
+            counts = {"SENT": 0, "DELIVERED": 0, "READ": 0, "FAILED": 0}
+            for it in items:
+                s = it.get("status") or ""
+                if s in counts:
+                    counts[s] += 1
 
-        return Response(
-            {
+            return {
                 "items": items,
                 "counts": counts,
                 "templates": TEMPLATE_CATALOG,
-                "generated_at": timezone.now().isoformat(),
             }
+
+        payload = get_or_set(cache_key, _RECENT_CACHE_TTL, _compute_recent_payload)
+        # generated_at is computed per-response (not cached) so the UI
+        # can still display a "last refreshed" timestamp even when the
+        # payload is served from Redis.
+        payload = dict(payload)
+        payload["generated_at"] = timezone.now().isoformat()
+
+        return json_response_with_cache(
+            request,
+            payload,
+            max_age=_RECENT_CACHE_TTL,
+            private=True,
+            stale_while_revalidate=10,
         )
 
 
@@ -340,6 +380,11 @@ class StaffMessagesSendView(APIView):
                 },
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
+
+        # Bust the "recent messages" feed for this tenant so the new row
+        # appears on the manager's next poll without waiting for the TTL.
+        # Use recipient's restaurant (the feed is keyed that way above).
+        _invalidate_recent_cache(recipient.restaurant_id or restaurant.id)
 
         whatsapp_sent = (details or {}).get("whatsapp_sent", 0)
         recipients_whatsapp_failed = (details or {}).get(

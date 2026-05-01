@@ -30,11 +30,91 @@ from rest_framework.decorators import api_view, authentication_classes, permissi
 from rest_framework.response import Response
 
 from accounts.models import BusinessLocation
+from core.read_through_cache import get_or_set, safe_cache_delete
 
 from .models import Invoice
 from .serializers import InvoiceSerializer
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Read-through cache for agent_list_invoices.
+#
+# Miya hits this every time a manager asks "any unpaid bills?" /
+# "show me what's overdue" — often several times per conversation as
+# she sanity-checks state before/after a record_invoice or
+# mark_invoice_paid call. A short (45s) cache keyed by the full filter
+# tuple (restaurant, status, vendor, overdue, due_within, limit) gives
+# us near-zero RDS traffic for repeated reads inside a single turn
+# without making the feed meaningfully stale. Writes invalidate every
+# slice for the tenant via a post_save signal (finance/signals.py).
+# ---------------------------------------------------------------------------
+
+_INVOICES_CACHE_TTL = 45
+_INVOICES_CACHE_NS = "agent:finance:invoices:v1"
+
+
+def _invoices_cache_key(restaurant_id, filters: tuple) -> str:
+    # filters is a small tuple of already-normalised primitives; hashing
+    # it keeps the key short and collision-safe across Python sessions.
+    import hashlib
+
+    payload = "|".join(str(x) for x in filters)
+    h = hashlib.sha1(payload.encode("utf-8")).hexdigest()[:32]
+    return f"{_INVOICES_CACHE_NS}:{restaurant_id}:{h}"
+
+
+def _invoices_cache_index_key(restaurant_id) -> str:
+    """Set of cache keys outstanding for this tenant. Used by the
+    invalidator so we can wipe every filter slice with one Redis call
+    (vs. iterating all possible combos).
+    """
+    return f"{_INVOICES_CACHE_NS}:idx:{restaurant_id}"
+
+
+def _remember_invoices_cache_key(restaurant_id, key: str) -> None:
+    """Best-effort: track which slices exist for this tenant so the
+    invalidator can bust them all on any write. Uses Django's cache
+    API (SET semantics via a dict-of-None-values so eviction works
+    cleanly on both Redis and local-memory backends).
+    """
+    from django.core.cache import cache
+
+    try:
+        current = cache.get(_invoices_cache_index_key(restaurant_id)) or {}
+        if not isinstance(current, dict):
+            current = {}
+        if key not in current:
+            current[key] = 1
+            # Index TTL slightly longer than slice TTL so the index
+            # doesn't expire before the slices it points to.
+            cache.set(
+                _invoices_cache_index_key(restaurant_id),
+                current,
+                _INVOICES_CACHE_TTL * 4,
+            )
+    except Exception:
+        # Cache is an optimisation — never propagate failures.
+        pass
+
+
+def invalidate_invoices_cache(restaurant_id) -> None:
+    """Wipe every cached slice of agent_list_invoices for this tenant.
+    Exposed as module-level so the post_save signal (and any future
+    admin save hook) can call it without importing private helpers.
+    """
+    from django.core.cache import cache
+
+    idx_key = _invoices_cache_index_key(restaurant_id)
+    try:
+        current = cache.get(idx_key) or {}
+    except Exception:
+        current = {}
+    if isinstance(current, dict):
+        for k in list(current.keys()):
+            safe_cache_delete(k)
+    safe_cache_delete(idx_key)
 
 
 def _get_first(data: dict, *keys: str):
@@ -351,64 +431,89 @@ def agent_list_invoices(request):
         request.data if isinstance(getattr(request, "data", None), dict) else {}
     )
     st = str(src.get("status") or "OPEN").upper()
-    qs = Invoice.objects.filter(restaurant=restaurant).select_related("location")
-
-    if st != "ALL":
-        if st in {Invoice.STATUS_OPEN, Invoice.STATUS_PAID, Invoice.STATUS_VOIDED, Invoice.STATUS_DRAFT}:
-            qs = qs.filter(status=st)
-
     vendor = str(src.get("vendor") or "").strip()
-    if vendor:
-        qs = qs.filter(vendor_name__icontains=vendor)
+    overdue_flag = str(src.get("overdue") or "").lower() in ("1", "true", "yes")
 
-    if str(src.get("overdue") or "").lower() in ("1", "true", "yes"):
-        qs = qs.filter(status=Invoice.STATUS_OPEN, due_date__lt=timezone.now().date())
-
-    due_within = src.get("due_within")
-    if due_within not in (None, ""):
+    due_within_raw = src.get("due_within")
+    due_within_n: int | None
+    if due_within_raw in (None, ""):
+        due_within_n = None
+    else:
         try:
-            n = int(due_within)
-            today = timezone.now().date()
-            qs = qs.filter(
-                status=Invoice.STATUS_OPEN,
-                due_date__gte=today,
-                due_date__lte=today + timedelta(days=n),
-            )
+            due_within_n = int(due_within_raw)
         except (TypeError, ValueError):
-            pass
+            due_within_n = None
 
     try:
         limit = max(1, min(int(src.get("limit") or 25), 100))
     except (TypeError, ValueError):
         limit = 25
 
-    rows = list(qs.order_by("due_date", "-created_at")[:limit])
+    # Key by today's date so "overdue" / "due within N days" slices stay
+    # correct across UTC rollover — otherwise a result cached at 23:59
+    # would stay visible at 00:05 with yesterday's definition of "today".
     today = timezone.now().date()
-    overdue_count = sum(1 for r in rows if r.status == Invoice.STATUS_OPEN and r.due_date and r.due_date < today)
+    cache_filters = (st, vendor.lower(), int(overdue_flag), due_within_n, limit, today.isoformat())
+    cache_key = _invoices_cache_key(restaurant.id, cache_filters)
 
-    if not rows:
-        message = "No invoices match those filters."
-    else:
-        bits = [f"{len(rows)} invoice{'s' if len(rows) != 1 else ''}"]
-        if overdue_count:
-            bits.append(f"{overdue_count} overdue")
-        message = ", ".join(bits) + ":\n" + "\n".join(
-            (
-                f"• {r.vendor_name}"
-                + (f" #{r.invoice_number}" if r.invoice_number else "")
-                + f" — {r.currency} {r.amount}, due {r.due_date.isoformat() if r.due_date else 'unscheduled'}"
-                + (" (OVERDUE)" if r.status == Invoice.STATUS_OPEN and r.due_date and r.due_date < today else "")
+    def _compute_invoices_payload():
+        qs = Invoice.objects.filter(restaurant=restaurant).select_related("location")
+
+        if st != "ALL":
+            if st in {
+                Invoice.STATUS_OPEN,
+                Invoice.STATUS_PAID,
+                Invoice.STATUS_VOIDED,
+                Invoice.STATUS_DRAFT,
+            }:
+                qs = qs.filter(status=st)
+
+        if vendor:
+            qs = qs.filter(vendor_name__icontains=vendor)
+
+        if overdue_flag:
+            qs = qs.filter(status=Invoice.STATUS_OPEN, due_date__lt=today)
+
+        if due_within_n is not None:
+            qs = qs.filter(
+                status=Invoice.STATUS_OPEN,
+                due_date__gte=today,
+                due_date__lte=today + timedelta(days=due_within_n),
             )
-            for r in rows[:10]
+
+        rows = list(qs.order_by("due_date", "-created_at")[:limit])
+        overdue_count = sum(
+            1 for r in rows if r.status == Invoice.STATUS_OPEN and r.due_date and r.due_date < today
         )
 
-    return Response(
-        {
+        if not rows:
+            message = "No invoices match those filters."
+        else:
+            bits = [f"{len(rows)} invoice{'s' if len(rows) != 1 else ''}"]
+            if overdue_count:
+                bits.append(f"{overdue_count} overdue")
+            message = ", ".join(bits) + ":\n" + "\n".join(
+                (
+                    f"• {r.vendor_name}"
+                    + (f" #{r.invoice_number}" if r.invoice_number else "")
+                    + f" — {r.currency} {r.amount}, due {r.due_date.isoformat() if r.due_date else 'unscheduled'}"
+                    + (
+                        " (OVERDUE)"
+                        if r.status == Invoice.STATUS_OPEN and r.due_date and r.due_date < today
+                        else ""
+                    )
+                )
+                for r in rows[:10]
+            )
+
+        return {
             "success": True,
             "count": len(rows),
             "overdue_count": overdue_count,
             "invoices": InvoiceSerializer(rows, many=True).data,
             "message_for_user": message,
-        },
-        status=status.HTTP_200_OK,
-    )
+        }
+
+    payload = get_or_set(cache_key, _INVOICES_CACHE_TTL, _compute_invoices_payload)
+    _remember_invoices_cache_key(restaurant.id, cache_key)
+    return Response(payload, status=status.HTTP_200_OK)

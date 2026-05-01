@@ -11,7 +11,47 @@ from django.utils import timezone
 import logging
 
 from accounts.models import CustomUser, Restaurant
+from core.read_through_cache import get_or_set, safe_cache_delete
 from core.utils import resolve_agent_restaurant_and_user
+
+
+# ---------------------------------------------------------------------------
+# Agent read-through caches (keeps Miya's polling off the DB).
+#
+# TTLs are short (30s / 45s) because these feeds drive manager UX
+# on WhatsApp — we want approvals/rejections/assignments to appear
+# quickly, and we bust the cache explicitly on every mutating call
+# below. The TTL is only the fallback for writes we don't invalidate
+# (e.g. admin console edits, migrations) and for crash-loop safety.
+# ---------------------------------------------------------------------------
+
+_REQUESTS_CACHE_TTL = 30
+_INCIDENTS_CACHE_TTL = 45
+
+
+def _staff_requests_cache_key(restaurant_id, status_filter: str) -> str:
+    return f"agent:staff:requests:v1:{restaurant_id}:{(status_filter or 'PENDING').upper()}"
+
+
+def _staff_incidents_cache_key(restaurant_id, status_filter: str) -> str:
+    return f"agent:staff:incidents:v1:{restaurant_id}:{(status_filter or 'OPEN').upper()}"
+
+
+def _invalidate_staff_requests_cache(restaurant_id) -> None:
+    """Bust every status-slice of the staff-requests feed for this tenant.
+
+    We don't know which status the caller was looking at (the list view
+    accepts ``?status=PENDING|APPROVED|REJECTED|ALL``), so we wipe all
+    slices. Each delete is best-effort so a Redis hiccup can never turn
+    a successful write into a 500.
+    """
+    for sf in ("PENDING", "APPROVED", "REJECTED", "ALL"):
+        safe_cache_delete(_staff_requests_cache_key(restaurant_id, sf))
+
+
+def _invalidate_staff_incidents_cache(restaurant_id) -> None:
+    for sf in ("OPEN", "RESOLVED", "UNDER_REVIEW", "ESCALATED"):
+        safe_cache_delete(_staff_incidents_cache_key(restaurant_id, sf))
 
 
 def _resolve_restaurant_and_staff_by_phone(phone_raw):
@@ -470,6 +510,7 @@ def agent_ingest_staff_request(request):
         external_id=external_id,
         metadata=inbox_metadata,
     )
+    _invalidate_staff_requests_cache(restaurant.id)
 
     StaffRequestComment.objects.create(
         request=req,
@@ -618,35 +659,40 @@ def agent_list_staff_requests(request):
     if err:
         return Response({'success': False, 'error': err['error']}, status=err['status'])
     status_filter = request.query_params.get('status', 'PENDING').upper()
-    qs = StaffRequest.objects.filter(restaurant=restaurant).order_by('-created_at')
-    if status_filter != 'ALL':
-        qs = qs.filter(status=status_filter)
-    qs = qs[:50].select_related('staff', 'assignee')
-    items = [
-        {
-            'id': str(r.id),
-            'subject': r.subject or '',
-            'description': (r.description or '')[:200],
-            'staff_name': r.staff_name or (r.staff.get_full_name() if r.staff else ''),
-            'staff_phone': r.staff_phone or '',
-            'category': r.category,
-            'priority': r.priority,
-            'status': r.status,
-            'created_at': r.created_at.isoformat() if r.created_at else None,
-            'assignee': (
-                {
-                    'id': str(r.assignee_id),
-                    'name': r.assignee.get_full_name() or r.assignee.email,
-                    'email': r.assignee.email,
-                }
-                if r.assignee_id
-                else None
-            ),
-            'has_voice': bool(r.voice_audio_url),
-        }
-        for r in qs
-    ]
-    return Response({'success': True, 'requests': items, 'restaurant_id': str(restaurant.id)})
+    cache_key = _staff_requests_cache_key(restaurant.id, status_filter)
+
+    def _compute_requests_payload():
+        qs = StaffRequest.objects.filter(restaurant=restaurant).order_by('-created_at')
+        if status_filter != 'ALL':
+            qs = qs.filter(status=status_filter)
+        qs = qs[:50].select_related('staff', 'assignee')
+        items = [
+            {
+                'id': str(r.id),
+                'subject': r.subject or '',
+                'description': (r.description or '')[:200],
+                'staff_name': r.staff_name or (r.staff.get_full_name() if r.staff else ''),
+                'staff_phone': r.staff_phone or '',
+                'category': r.category,
+                'priority': r.priority,
+                'status': r.status,
+                'created_at': r.created_at.isoformat() if r.created_at else None,
+                'assignee': (
+                    {
+                        'id': str(r.assignee_id),
+                        'name': r.assignee.get_full_name() or r.assignee.email,
+                        'email': r.assignee.email,
+                    }
+                    if r.assignee_id
+                    else None
+                ),
+                'has_voice': bool(r.voice_audio_url),
+            }
+            for r in qs
+        ]
+        return {'success': True, 'requests': items, 'restaurant_id': str(restaurant.id)}
+
+    return Response(get_or_set(cache_key, _REQUESTS_CACHE_TTL, _compute_requests_payload))
 
 
 @api_view(['POST'])
@@ -677,6 +723,7 @@ def agent_approve_staff_request(request):
     req.reviewed_by = None
     req.reviewed_at = timezone.now()
     req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
+    _invalidate_staff_requests_cache(restaurant.id)
     StaffRequestComment.objects.create(
         request=req, author=None, kind='status_change',
         body='Approved via Miya (WhatsApp)',
@@ -729,6 +776,7 @@ def agent_reject_staff_request(request):
     req.reviewed_by = None
     req.reviewed_at = timezone.now()
     req.save(update_fields=['status', 'reviewed_by', 'reviewed_at', 'updated_at'])
+    _invalidate_staff_requests_cache(restaurant.id)
     StaffRequestComment.objects.create(
         request=req, author=None, kind='status_change',
         body='Rejected via Miya (WhatsApp)' + (f': {reason}' if reason else ''),
@@ -805,6 +853,7 @@ def agent_assign_staff_request(request):
     previous_id = str(req.assignee_id) if req.assignee_id else None
     req.assignee = new_assignee
     req.save(update_fields=['assignee', 'updated_at'])
+    _invalidate_staff_requests_cache(restaurant.id)
 
     note = (data.get('note') or data.get('reason') or '').strip()
     StaffRequestComment.objects.create(
@@ -868,23 +917,33 @@ def agent_list_incidents(request):
     restaurant, err = _resolve_restaurant_for_staff_agent(request)
     if err:
         return Response({'success': False, 'error': err['error']}, status=err['status'])
-    status_filter = (request.query_params.get('status') or 'OPEN').strip().upper().split(',')
-    qs = SafetyConcernReport.objects.filter(
-        restaurant=restaurant,
-        status__in=[s.strip() for s in status_filter if s.strip()],
-    ).order_by('-created_at').select_related('reporter')[:30]
-    items = [
-        {
-            'id': str(i.id),
-            'title': i.title or '',
-            'description': (i.description or '')[:200],
-            'severity': i.severity,
-            'status': i.status,
-            'created_at': i.created_at.isoformat() if i.created_at else None,
-        }
-        for i in qs
-    ]
-    return Response({'success': True, 'incidents': items, 'restaurant_id': str(restaurant.id)})
+    raw_status = (request.query_params.get('status') or 'OPEN').strip().upper()
+    status_tokens = [s.strip() for s in raw_status.split(',') if s.strip()]
+    # Cache key uses the raw (sorted) status string so 'OPEN,UNDER_REVIEW'
+    # and 'UNDER_REVIEW,OPEN' share a slot. The invalidator below clears
+    # every common single-status slice — multi-status slices cost one
+    # extra DB hit once per TTL, which is fine.
+    cache_key = _staff_incidents_cache_key(restaurant.id, ",".join(sorted(status_tokens)))
+
+    def _compute_incidents_payload():
+        qs = SafetyConcernReport.objects.filter(
+            restaurant=restaurant,
+            status__in=status_tokens,
+        ).order_by('-created_at').select_related('reporter')[:30]
+        items = [
+            {
+                'id': str(i.id),
+                'title': i.title or '',
+                'description': (i.description or '')[:200],
+                'severity': i.severity,
+                'status': i.status,
+                'created_at': i.created_at.isoformat() if i.created_at else None,
+            }
+            for i in qs
+        ]
+        return {'success': True, 'incidents': items, 'restaurant_id': str(restaurant.id)}
+
+    return Response(get_or_set(cache_key, _INCIDENTS_CACHE_TTL, _compute_incidents_payload))
 
 
 @api_view(['POST'])
@@ -912,6 +971,7 @@ def agent_close_incident(request):
     inc.resolution_notes = notes or 'Closed via Miya'
     inc.resolved_by = None
     inc.save(update_fields=['status', 'resolved_at', 'resolution_notes', 'resolved_by', 'updated_at'])
+    _invalidate_staff_incidents_cache(restaurant.id)
     return Response({'success': True, 'message': 'Incident closed.', 'incident_id': str(inc.id)})
 
 
@@ -936,5 +996,6 @@ def agent_escalate_incident(request):
         return Response({'success': False, 'error': 'Incident not found'}, status=status.HTTP_404_NOT_FOUND)
     inc.status = 'OPEN'
     inc.save(update_fields=['status', 'updated_at'])
+    _invalidate_staff_incidents_cache(restaurant.id)
     return Response({'success': True, 'message': 'Incident escalated.', 'incident_id': str(inc.id)})
 
