@@ -104,22 +104,95 @@ def resolve_default_assignee_for_category(
     Return the CustomUser that should own a new StaffRequest in this
     category, or ``None`` if no owner is configured.
 
-    Reads ``restaurant.general_settings['category_owners']``.
+    Resolution order (first match wins):
+
+    1. ``restaurant.general_settings['category_owners']`` — the
+       onboarding-step-4 mapping. This is the explicit, manager-curated
+       answer; respect it when set.
+    2. **Tag-based fallback** — if no explicit owner is configured,
+       look up the canonical tag list for this category (see
+       :data:`accounts.staff_tags.CATEGORY_TAGS`) and return the first
+       active staff member who carries any of those tags. This means
+       a fresh tenant who has assigned tags to staff but hasn't yet
+       configured ``category_owners`` still gets requests routed
+       sensibly — e.g. ``PURCHASE_ORDER`` lands on someone tagged
+       ``PURCHASES``.
+
+    Returns ``None`` only when neither path produces a candidate.
     """
     if not restaurant:
         return None
 
+    # 1) Explicit ``category_owners`` mapping.
     gs = restaurant.general_settings or {}
     mapping = gs.get("category_owners") or {}
-    if not isinstance(mapping, dict) or not mapping:
+    if isinstance(mapping, dict) and mapping:
+        slugs = slugs_for_category(category)
+        if slugs:
+            uid = _first_uid(mapping, slugs)
+            if uid:
+                user = _lookup_user_by_id(restaurant, uid)
+                if user is not None:
+                    return user
+
+    # 2) Tag-based fallback.
+    return _resolve_assignee_by_tag(restaurant, category)
+
+
+def _resolve_assignee_by_tag(
+    restaurant: "Restaurant",
+    category: Optional[str],
+) -> Optional["CustomUser"]:
+    """Return the first active staff member tagged for this category.
+
+    Walks the tag list from
+    :data:`accounts.staff_tags.CATEGORY_TAGS` in declared order so the
+    "primary" tag for a bucket (e.g. ``PURCHASES`` for
+    ``PURCHASE_ORDER``) wins over secondary tags
+    (``CONTROL`` / ``MANAGEMENT``). Within a single tag we order by
+    ``role`` priority (Owner / Admin / Manager first) then alphabetic
+    name so the result is stable across calls.
+    """
+    if not category:
         return None
 
-    slugs = slugs_for_category(category)
-    if not slugs:
+    from accounts.staff_tags import tags_for_category  # local import: avoid cycles
+    from accounts.models import CustomUser
+
+    tags = tags_for_category(category)
+    if not tags:
         return None
 
-    uid = _first_uid(mapping, slugs)
-    if not uid:
+    # Authority tier order — high-authority owners get the bucket
+    # first, so newly-onboarded teams don't accidentally route
+    # PURCHASE_ORDER to a junior staff who happened to be tagged
+    # PURCHASES alongside the buyer.
+    role_priority = {"OWNER": 0, "ADMIN": 1, "MANAGER": 2}
+
+    rid = getattr(restaurant, "id", None)
+    if rid is None:
         return None
 
-    return _lookup_user_by_id(restaurant, uid)
+    for tag in tags:
+        candidates = list(
+            CustomUser.objects.filter(
+                restaurant_id=rid,
+                is_active=True,
+                profile__tags__contains=[tag],
+            )
+            .exclude(role="SUPER_ADMIN")
+            .select_related("profile")
+        )
+        if not candidates:
+            continue
+        candidates.sort(
+            key=lambda u: (
+                role_priority.get((u.role or "").upper(), 99),
+                (u.first_name or "").lower(),
+                (u.last_name or "").lower(),
+                str(u.id),
+            )
+        )
+        return candidates[0]
+
+    return None

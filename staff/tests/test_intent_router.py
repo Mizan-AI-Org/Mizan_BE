@@ -228,6 +228,126 @@ class MaintenanceBucketTests(SimpleTestCase):
         self.assertEqual(d.category, "MAINTENANCE")
 
 
+class PurchaseOrderBucketTests(SimpleTestCase):
+    """Procurement asks must land in PURCHASE_ORDER, not INVENTORY.
+
+    Reported issue: "Purchasing-related requests are being incorrectly
+    classified as Inventory instead of Purchases or Orders."
+    """
+
+    def test_we_need_to_buy_routes_to_purchase_order(self):
+        d = classify_request(description="We need to buy 6 bottles of vodka.")
+        self.assertEqual(d.destination, DEST_INBOX)
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+        self.assertEqual(d.confidence, "high")
+
+    def test_buy_with_arbitrary_quantity_routes_to_purchase_order(self):
+        # Previously only buy 1, 2, 3, 4, 5, 6, 10, 12, 20, 24, 50, 100
+        # were detected. The regex now catches any positive integer.
+        d = classify_request(description="Buy 30 napkins from the supplier.")
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_order_more_routes_to_purchase_order(self):
+        d = classify_request(description="Order more flour for the bakery.")
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_order_some_routes_to_purchase_order(self):
+        d = classify_request(description="Please order some olive oil.")
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_reorder_routes_to_purchase_order(self):
+        # "reorder" used to live in INVENTORY, which was wrong — a
+        # reorder is a buying action, not a stock observation.
+        d = classify_request(description="We should reorder the napkins this week.")
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_re_order_with_dash_routes_to_purchase_order(self):
+        d = classify_request(description="Need to re-order the tonic water.")
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_restock_routes_to_purchase_order(self):
+        d = classify_request(description="Please restock the bar with vodka.")
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_re_stock_with_dash_routes_to_purchase_order(self):
+        d = classify_request(description="Re-stock the dry goods this afternoon.")
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_stock_up_routes_to_purchase_order(self):
+        d = classify_request(description="Let's stock up on flour before the weekend.")
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_running_low_with_buy_verb_routes_to_purchase_order(self):
+        """Mixed observation + action: the action (buy) wins."""
+        d = classify_request(
+            description="We're running low on vodka — please order 6 bottles.",
+        )
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_place_a_po_routes_to_purchase_order(self):
+        d = classify_request(description="Place a PO with the butcher today.")
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_place_an_order_routes_to_purchase_order(self):
+        d = classify_request(description="Please place an order with our supplier.")
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_purchase_request_routes_to_purchase_order(self):
+        d = classify_request(description="Submit a purchase request for new gloves.")
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_french_acheter_routes_to_purchase_order(self):
+        d = classify_request(
+            description="Il faut acheter 50 kilos de farine ce matin.",
+        )
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_french_passer_une_commande_routes_to_purchase_order(self):
+        d = classify_request(
+            description="Peux-tu passer une commande chez le fournisseur ?",
+        )
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_french_bon_de_commande_routes_to_purchase_order(self):
+        d = classify_request(description="Préparer le bon de commande pour les boissons.")
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_pure_low_stock_observation_stays_in_inventory(self):
+        """Regression: an observation without buying intent stays in INVENTORY."""
+        d = classify_request(description="We are running out of olive oil and napkins.")
+        self.assertEqual(d.category, "INVENTORY")
+
+    def test_pure_inventory_count_stays_in_inventory(self):
+        d = classify_request(description="The stock count for last week looks off.")
+        self.assertEqual(d.category, "INVENTORY")
+
+    def test_purchase_intent_overrides_agent_label_inventory(self):
+        """If Miya mislabels a buy request as INVENTORY, we fix it."""
+        d = classify_request(
+            description="We need to buy 6 bottles of vodka.",
+            agent_category="INVENTORY",
+        )
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_purchase_intent_does_not_override_explicit_hr(self):
+        """Procurement verb in an HR-labelled row keeps HR (e.g. 'order
+        Karim's HR file') — we only override OTHER / INVENTORY / blank."""
+        d = classify_request(
+            description="Please order Karim's HR file from the cabinet.",
+            agent_category="HR",
+        )
+        self.assertEqual(d.category, "HR")
+
+    def test_purchase_intent_does_not_override_explicit_finance(self):
+        """A buying verb shouldn't steal from FINANCE either — vendor
+        invoices are paid, not purchased."""
+        d = classify_request(
+            description="Please buy back the credit on invoice 3445.",
+            agent_category="FINANCE",
+        )
+        self.assertEqual(d.category, "FINANCE")
+
+
 class MeetingBucketTests(SimpleTestCase):
     """The MEETING bucket powers the Meetings & Reminders widget for tasks."""
 

@@ -18,7 +18,16 @@ from .views_extended import (
 from .api.summary import DashboardSummaryView
 from .api.action_center import ActionCenterView
 from .api.portfolio import PortfolioSummaryView, LocationDetailView
-from .api.tasks_demands import TasksDemandsView, TaskStatusUpdateView
+from .api.tasks_demands import (
+    TasksDemandsView,
+    TaskStatusUpdateView,
+    TaskBucketUpdateView,
+    TaskAssigneeUpdateView,
+)
+from .api.staff_messages import (
+    StaffMessagesRecentView,
+    StaffMessagesSendView,
+)
 from .api.meetings_reminders import MeetingsRemindersView
 from .api.clock_ins import DashboardClockInsView
 from .api.category_tasks import CategoryTasksView
@@ -117,6 +126,36 @@ urlpatterns = [
         'tasks-demands/<uuid:pk>/status/',
         TaskStatusUpdateView.as_view(),
         name='dashboard-tasks-demands-status',
+    ),
+    # Drag-and-drop "move this row to another widget" endpoint. The
+    # FE calls it whenever a card is dropped on a different category
+    # widget, and the backend dispatches by source model.
+    path(
+        'tasks-demands/<uuid:pk>/bucket/',
+        TaskBucketUpdateView.as_view(),
+        name='dashboard-tasks-demands-bucket',
+    ),
+    # Reassign endpoint used by the row dropdown's "Reassign" entry.
+    # Same dispatcher pattern as bucket / status — one URL across
+    # StaffRequest / dashboard.Task / scheduling.Task / Invoice.
+    path(
+        'tasks-demands/<uuid:pk>/assignee/',
+        TaskAssigneeUpdateView.as_view(),
+        name='dashboard-tasks-demands-assignee',
+    ),
+    # Admin → Staff WhatsApp messaging surface for the dashboard.
+    # The recent feed powers the delivery / read receipts widget;
+    # the send endpoint is the structured composer alternative to
+    # talking to Miya in the chat panel.
+    path(
+        'staff-messages/recent/',
+        StaffMessagesRecentView.as_view(),
+        name='dashboard-staff-messages-recent',
+    ),
+    path(
+        'staff-messages/send/',
+        StaffMessagesSendView.as_view(),
+        name='dashboard-staff-messages-send',
     ),
     path(
         'meetings-reminders/',

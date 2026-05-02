@@ -4,6 +4,7 @@ from .views import (
     CustomTokenObtainPairView, CustomTokenRefreshView, RegisterView, VerifyEmailView, PasswordResetRequestView,
     PasswordResetConfirmView, RestaurantDetailView, RestaurantUpdateView, StaffInvitationListView, 
     StaffProfileUpdateView, ResendVerificationEmailView, StaffListAPIView, StaffMemberDetailView,
+    StaffTagsCatalogView,
     LoginView, LogoutView, MeView, InviteStaffView, AcceptInvitationView, StaffPinLoginView, StaffPhoneLoginView, pin_login,
     StaffListView, StaffPasswordResetView, InviteStaffBulkCsvView,
     StaffActivationUploadView, StaffActivationInviteLinkView, StaffActivationPendingListView,
@@ -75,6 +76,11 @@ urlpatterns = [
     path('staff/profile/<uuid:pk>/update/', StaffProfileUpdateView.as_view(), name='staff_profile_update'),
     path('staff/profile/<uuid:pk>/reset-password/', StaffPasswordResetView.as_view(), name='staff_password_reset'),
     path('staff/', StaffListAPIView.as_view(), name='staff_list'),
+    # Read-only catalog of canonical staff tags + the ``category →
+    # tags`` mapping used by smart filters and the tag-based routing
+    # fallback. Hit once on app boot — the payload is tiny and rarely
+    # changes.
+    path('staff/tags/', StaffTagsCatalogView.as_view(), name='staff_tags_catalog'),
     path('staff/<uuid:pk>/report/pdf/', staff_profile_report_pdf, name='staff_profile_report_pdf'),
     path('staff/<uuid:pk>/', StaffMemberDetailView.as_view(), name='staff_detail'),
     # path('staff/users/', StaffUsersListView.as_view(), name='staff_users_list'),

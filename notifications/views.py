@@ -1187,7 +1187,7 @@ def whatsapp_webhook(request):
                                 if not log.delivered_at:
                                     log.delivered_at = timezone.now()
                             log.save(update_fields=['status', 'delivered_at'])
-                            
+
                             # Also update the parent notification if needed
                             notif = log.notification
                             if notif:
@@ -1195,6 +1195,24 @@ def whatsapp_webhook(request):
                                     notif.read_at = timezone.now()
                                     notif.is_read = True
                                     notif.save(update_fields=['read_at', 'is_read'])
+
+                            # Bust the dashboard "Staff Messages" feed so
+                            # ✓✓ / 🅱 read-receipt transitions appear
+                            # immediately on the manager's next poll.
+                            # Best-effort — never raise from the webhook.
+                            try:
+                                rid = (
+                                    getattr(getattr(notif, 'recipient', None), 'restaurant_id', None)
+                                    if notif else None
+                                )
+                                if rid:
+                                    from dashboard.api.staff_messages import (
+                                        _invalidate_recent_cache,
+                                    )
+
+                                    _invalidate_recent_cache(rid)
+                            except Exception:
+                                pass
 
                 messages = value.get('messages', [])
 

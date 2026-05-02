@@ -294,16 +294,44 @@ class TasksDemandsView(APIView):
         )
 
 
+# StaffRequest uses a richer status vocabulary than the widget. We map
+# both directions so a manager who taps "Mark completed" on a WhatsApp-
+# captured request closes it; tapping "Mark in progress" flips PENDING /
+# ESCALATED rows to APPROVED ("manager has acknowledged & is on it").
+# WAITING_ON is preserved when the source row is already in that state
+# because the widget has no "waiting on" verb — managers set that via the
+# Inbox detail page.
+_WIDGET_STATUS_TO_STAFF_REQUEST = {
+    "PENDING": "PENDING",
+    "IN_PROGRESS": "APPROVED",
+    "COMPLETED": "CLOSED",
+    "CANCELLED": "REJECTED",
+}
+
+
 class TaskStatusUpdateView(APIView):
     """
     PATCH /api/dashboard/tasks-demands/<uuid>/status/
     Body: {"status": "PENDING" | "IN_PROGRESS" | "COMPLETED" | "CANCELLED"}
 
-    Inline action for the widget's row menu. Looks up the task in
-    `dashboard.Task` first, then `scheduling.Task` (mapping status into
-    the scheduling vocabulary). Any authenticated staff from the same
-    tenant can flip status because the whole point of the widget is
-    one-tap triage.
+    Inline action for the widget's row menu. Looks up the row across
+    every source the dashboard widgets surface — ``dashboard.Task``,
+    ``scheduling.Task``, ``staff.StaffRequest``, ``finance.Invoice`` —
+    and applies the status transition in whichever one owns the UUID.
+    Any authenticated staff from the same tenant can flip status because
+    the whole point of the widget is one-tap triage.
+
+    Status transitions per source:
+
+    - ``dashboard.Task`` / ``scheduling.Task``: pass-through (mapped to
+      the scheduling TODO vocabulary for the latter).
+    - ``staff.StaffRequest``: PENDING→PENDING, IN_PROGRESS→APPROVED,
+      COMPLETED→CLOSED, CANCELLED→REJECTED. We don't blow away an
+      existing WAITING_ON state when the manager is just trying to
+      mark something done — the close still flows through.
+    - ``finance.Invoice``: only COMPLETED (→PAID, via ``mark_paid``)
+      and CANCELLED (→VOIDED) are accepted. PENDING / IN_PROGRESS
+      have no meaning for an invoice and return 400.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -350,21 +378,526 @@ class TaskStatusUpdateView(APIView):
         except Exception:  # pragma: no cover - scheduling app missing
             sched = None
 
-        if sched is None:
+        if sched is not None:
+            sched_status = _WIDGET_STATUS_TO_SCHED[new_status]
+            update_fields = ["status", "updated_at"]
+            sched.status = sched_status
+            if sched_status == "COMPLETED":
+                sched.completed_at = timezone.now()
+                sched.completed_by = request.user
+                sched.progress = 100
+                update_fields += ["completed_at", "completed_by", "progress"]
+            elif sched_status == "IN_PROGRESS" and (sched.progress or 0) == 0:
+                sched.progress = 10
+                update_fields += ["progress"]
+            sched.save(update_fields=update_fields)
+            return Response(_serialize_scheduling_task(sched))
+
+        # 3) staff.StaffRequest — Miya / WhatsApp ingested rows. Without
+        #    this branch every staff-request row in the dashboard widgets
+        #    was effectively read-only: clicking "Mark completed" hit
+        #    this view, fell through both blocks above, and returned 404.
+        try:
+            from staff.models import StaffRequest
+
+            try:
+                sr = (
+                    StaffRequest.objects.select_related("staff", "assignee")
+                    .get(pk=pk, restaurant=restaurant)
+                )
+            except StaffRequest.DoesNotExist:
+                sr = None
+        except Exception:  # pragma: no cover - staff app missing
+            sr = None
+
+        if sr is not None:
+            target = _WIDGET_STATUS_TO_STAFF_REQUEST[new_status]
+            sr.status = target
+            sr.save(update_fields=["status", "updated_at"])
+            # Best-effort: drop a system-comment on the request timeline
+            # so /dashboard/staff-requests detail shows who closed it
+            # and when — otherwise the widget action is invisible to
+            # anyone reviewing the request's history.
+            try:
+                from staff.models import StaffRequestComment
+
+                StaffRequestComment.objects.create(
+                    request=sr,
+                    author=request.user,
+                    kind="status_change",
+                    body=f"Status changed to {target} from the dashboard widget.",
+                )
+            except Exception:
+                # Comment failure must never block the status flip.
+                pass
+            # Lazy import the granular serializer so older deployments
+            # without the field still respond cleanly.
+            from .category_tasks import _serialize_staff_request
+
+            return Response(_serialize_staff_request(sr))
+
+        # 4) finance.Invoice — manager flipping a Finance-widget row.
+        #    Only COMPLETED (→ PAID) and CANCELLED (→ VOIDED) are valid;
+        #    PENDING / IN_PROGRESS aren't meaningful for an invoice and
+        #    we reject them with a clear message so the UI doesn't show
+        #    a misleading "saved" toast.
+        try:
+            from finance.models import Invoice
+
+            try:
+                inv = Invoice.objects.select_related("created_by").get(
+                    pk=pk, restaurant=restaurant
+                )
+            except Invoice.DoesNotExist:
+                inv = None
+        except Exception:  # pragma: no cover - finance app missing
+            inv = None
+
+        if inv is not None:
+            if new_status == "COMPLETED":
+                # Idempotent — ``mark_paid`` no-ops if the invoice is
+                # already PAID, but bumping it again would overwrite
+                # ``paid_at`` so we guard explicitly.
+                if inv.status != Invoice.STATUS_PAID:
+                    inv.mark_paid(user=request.user)
+            elif new_status == "CANCELLED":
+                if inv.status != Invoice.STATUS_VOIDED:
+                    inv.status = Invoice.STATUS_VOIDED
+                    inv.save(update_fields=["status", "updated_at"])
+            else:
+                return Response(
+                    {
+                        "error": (
+                            "Invoices only accept COMPLETED (mark paid) or "
+                            "CANCELLED (mark voided)."
+                        )
+                    },
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            from .category_tasks import _serialize_invoice
+
+            return Response(_serialize_invoice(inv))
+
+        return Response(
+            {"error": "Task not found"}, status=http_status.HTTP_404_NOT_FOUND
+        )
+
+
+# Drag-and-drop endpoint vocabulary. The frontend uses a small set of
+# bucket slugs that mirror the dashboard widget grid; this map turns a
+# dropped-into bucket into the StaffRequest.category that should now
+# own the row. ``urgent`` is a priority bump (no category change) and
+# is handled separately.
+_BUCKET_TO_STAFF_REQUEST_CATEGORY = {
+    "human_resources": "HR",
+    "finance": "FINANCE",
+    "maintenance": "MAINTENANCE",
+    "purchase_orders": "PURCHASE_ORDER",
+    "miscellaneous": "OTHER",
+}
+
+ALLOWED_BUCKETS = frozenset({"urgent", *_BUCKET_TO_STAFF_REQUEST_CATEGORY.keys()})
+
+
+class TaskBucketUpdateView(APIView):
+    """
+    PATCH /api/dashboard/tasks-demands/<uuid>/bucket/
+    Body: ``{"bucket": "human_resources" | "finance" | "maintenance" |
+                       "purchase_orders" | "miscellaneous" | "urgent"}``
+
+    Drag-and-drop endpoint: when a manager drags a row from one
+    dashboard category widget onto another, the FE calls this with the
+    destination bucket. We dispatch by source model:
+
+    - ``staff.StaffRequest``: change ``category`` to match the bucket
+      (or bump ``priority`` to URGENT when dropped on the urgent
+      widget). A ``status_change`` comment captures the move on the
+      request timeline so it's auditable from the inbox detail page.
+      If the row had no manual assignee (auto-routed by the inbox or
+      tag-based fallback), we re-resolve the assignee against the new
+      category so the right person picks it up.
+    - ``finance.Invoice``: invoices live exclusively in the finance
+      widget; dropping them anywhere else returns a friendly 400 with
+      a hint to use Mark Paid / Mark Voided instead.
+    - ``dashboard.Task`` and ``scheduling.Task``: rejected with a 400
+      for now — these have their own category systems and need the
+      regular edit dialog. We can wire them up later if managers ask
+      for it; rejecting is safer than guessing the wrong target.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, pk=None):
+        restaurant = getattr(request.user, "restaurant", None)
+        if not restaurant:
             return Response(
-                {"error": "Task not found"}, status=http_status.HTTP_404_NOT_FOUND
+                {"error": "No workspace associated"},
+                status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        sched_status = _WIDGET_STATUS_TO_SCHED[new_status]
-        update_fields = ["status", "updated_at"]
-        sched.status = sched_status
-        if sched_status == "COMPLETED":
-            sched.completed_at = timezone.now()
-            sched.completed_by = request.user
-            sched.progress = 100
-            update_fields += ["completed_at", "completed_by", "progress"]
-        elif sched_status == "IN_PROGRESS" and (sched.progress or 0) == 0:
-            sched.progress = 10
-            update_fields += ["progress"]
-        sched.save(update_fields=update_fields)
-        return Response(_serialize_scheduling_task(sched))
+        bucket = str((request.data or {}).get("bucket") or "").lower().strip()
+        if bucket not in ALLOWED_BUCKETS:
+            return Response(
+                {"error": f"bucket must be one of {sorted(ALLOWED_BUCKETS)}"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 1) staff.StaffRequest — the bulk of dashboard widget rows.
+        try:
+            from staff.models import StaffRequest
+
+            try:
+                sr = (
+                    StaffRequest.objects.select_related("staff", "assignee")
+                    .get(pk=pk, restaurant=restaurant)
+                )
+            except StaffRequest.DoesNotExist:
+                sr = None
+        except Exception:  # pragma: no cover - staff app missing
+            sr = None
+
+        if sr is not None:
+            return self._move_staff_request(request, sr, bucket)
+
+        # 2) finance.Invoice — anchored to the finance widget. Allow a
+        #    no-op drop on finance, reject everything else.
+        try:
+            from finance.models import Invoice
+
+            try:
+                inv = Invoice.objects.select_related("created_by").get(
+                    pk=pk, restaurant=restaurant
+                )
+            except Invoice.DoesNotExist:
+                inv = None
+        except Exception:  # pragma: no cover - finance app missing
+            inv = None
+
+        if inv is not None:
+            if bucket == "finance":
+                from .category_tasks import _serialize_invoice
+
+                return Response(_serialize_invoice(inv))
+            return Response(
+                {
+                    "error": (
+                        "Invoices live in the Finance widget only. "
+                        "Use 'Mark as Paid' or 'Mark as Voided' to clear "
+                        "this row instead of moving it."
+                    )
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 3) dashboard.Task — rejected with a clear hint. These rows
+        #    have a TaskCategory FK that doesn't map cleanly to the
+        #    six widget buckets; the manager has to use the task edit
+        #    dialog for now.
+        try:
+            task = Task.objects.get(pk=pk, restaurant=restaurant)
+        except Task.DoesNotExist:
+            task = None
+
+        if task is not None:
+            return Response(
+                {
+                    "error": (
+                        "This task uses a custom category. Open it from "
+                        "the task list to change its category."
+                    )
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 4) scheduling.Task — also rejected; scheduled tasks have
+        #    their own list views.
+        try:
+            from scheduling.task_templates import Task as SchedulingTask
+
+            try:
+                sched = SchedulingTask.objects.get(pk=pk, restaurant=restaurant)
+            except SchedulingTask.DoesNotExist:
+                sched = None
+        except Exception:  # pragma: no cover - scheduling app missing
+            sched = None
+
+        if sched is not None:
+            return Response(
+                {
+                    "error": (
+                        "Scheduled tasks live in their own list and "
+                        "can't be re-bucketed from the dashboard."
+                    )
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {"error": "Item not found"}, status=http_status.HTTP_404_NOT_FOUND
+        )
+
+    # ------------------------------------------------------------------
+    # StaffRequest mover — split out so the dispatcher above stays a
+    # flat read; this method does the actual mutation + audit.
+    # ------------------------------------------------------------------
+    def _move_staff_request(self, request, sr, bucket):
+        update_fields: list[str] = []
+        comment_lines: list[str] = []
+
+        if bucket == "urgent":
+            # The urgent widget is a priority lane, not a category lane.
+            # Bump priority and leave category alone so the manager
+            # doesn't accidentally lose the original classification.
+            if (sr.priority or "").upper() != "URGENT":
+                old_priority = sr.priority or "MEDIUM"
+                sr.priority = "URGENT"
+                update_fields.append("priority")
+                comment_lines.append(
+                    f"Priority bumped from {old_priority} to URGENT via the dashboard."
+                )
+        else:
+            target_category = _BUCKET_TO_STAFF_REQUEST_CATEGORY[bucket]
+            if (sr.category or "").upper() != target_category:
+                old_category = sr.category or "OTHER"
+                sr.category = target_category
+                update_fields.append("category")
+                comment_lines.append(
+                    f"Moved from {old_category} to {target_category} via the dashboard."
+                )
+
+                # Re-resolve the auto-assignee for the new category if
+                # the row currently has no manual assignee. We only
+                # rewrite the assignee when there isn't one — never
+                # silently steal a row from a person the manager
+                # explicitly placed it on.
+                try:
+                    if sr.assignee_id is None:
+                        from staff.request_routing import (
+                            resolve_default_assignee_for_category,
+                        )
+
+                        new_owner = resolve_default_assignee_for_category(
+                            sr.restaurant, target_category
+                        )
+                        if new_owner is not None:
+                            sr.assignee = new_owner
+                            update_fields.append("assignee")
+                            comment_lines.append(
+                                f"Auto-assigned to {new_owner.first_name} {new_owner.last_name} "
+                                f"based on the new category."
+                            )
+                except Exception:
+                    # Routing must never block the bucket move itself.
+                    pass
+
+        if update_fields:
+            update_fields.append("updated_at")
+            sr.save(update_fields=update_fields)
+            try:
+                from staff.models import StaffRequestComment
+
+                StaffRequestComment.objects.create(
+                    request=sr,
+                    author=request.user,
+                    kind="status_change",
+                    body=" ".join(comment_lines) if comment_lines else "Row moved via the dashboard.",
+                )
+            except Exception:
+                pass
+
+        from .category_tasks import _serialize_staff_request
+
+        return Response(_serialize_staff_request(sr))
+
+
+class TaskAssigneeUpdateView(APIView):
+    """
+    PATCH /api/dashboard/tasks-demands/<uuid>/assignee/
+    Body: ``{"assignee_id": "<user-uuid>" | null, "note": "<optional>"}``
+
+    Unified reassign endpoint for the dashboard widget rows. Mirrors
+    ``TaskBucketUpdateView`` — dispatches across the four sources:
+
+    - ``staff.StaffRequest``: writes ``assignee`` + drops a
+      reassignment comment on the timeline (and a system entry when
+      ``assignee_id`` is null = unassign). Reuses the same audit
+      pattern the inbox detail page uses so the timeline stays the
+      single source of truth for who owns what.
+    - ``dashboard.Task``: writes ``assigned_to`` (single user; the
+      legacy field is a FK so we don't try to fan out).
+    - ``scheduling.Task``: replaces the M2M ``assigned_to`` set with
+      a single user — scheduling tasks support multiple owners but
+      the dashboard widget only renders one chip, so a reassign from
+      the widget is a "set primary owner" action.
+    - ``finance.Invoice``: invoices don't carry an assignee; we
+      politely 400 with a hint pointing to the request inbox.
+
+    Permissions match the rest of the widget endpoints: any
+    authenticated tenant member can reassign because the row is
+    already scoped to their restaurant by the dispatcher.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, pk=None):
+        restaurant = getattr(request.user, "restaurant", None)
+        if not restaurant:
+            return Response(
+                {"error": "No workspace associated"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        raw_assignee = (request.data or {}).get("assignee_id")
+        # ``null`` / empty string is a deliberate "unassign" — supported
+        # for StaffRequest and dashboard.Task. Scheduling.Task with
+        # empty list is also valid (= no owner).
+        new_user = None
+        if raw_assignee:
+            from accounts.models import CustomUser
+
+            try:
+                new_user = CustomUser.objects.get(
+                    pk=raw_assignee, is_active=True,
+                )
+            except CustomUser.DoesNotExist:
+                return Response(
+                    {"error": "Assignee not found or inactive."},
+                    status=http_status.HTTP_404_NOT_FOUND,
+                )
+
+            # Cross-tenant guard — never let a manager hand a row to
+            # someone who isn't on their team. The check mirrors the
+            # OR used by the staff list view (primary FK or active
+            # ``StaffRestaurantLink``) so multi-restaurant teammates
+            # remain valid targets.
+            from django.db.models import Q
+            from accounts.models import StaffRestaurantLink
+
+            same_tenant = (
+                new_user.restaurant_id == restaurant.id
+                or StaffRestaurantLink.objects.filter(
+                    user=new_user,
+                    restaurant=restaurant,
+                    is_active=True,
+                ).exists()
+            )
+            if not same_tenant:
+                return Response(
+                    {"error": "That person isn't part of your team."},
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+
+        note = str((request.data or {}).get("note") or "").strip()
+
+        # 1) staff.StaffRequest
+        try:
+            from staff.models import StaffRequest
+
+            try:
+                sr = (
+                    StaffRequest.objects.select_related("staff", "assignee")
+                    .get(pk=pk, restaurant=restaurant)
+                )
+            except StaffRequest.DoesNotExist:
+                sr = None
+        except Exception:  # pragma: no cover - staff app missing
+            sr = None
+
+        if sr is not None:
+            old = sr.assignee
+            sr.assignee = new_user
+            sr.save(update_fields=["assignee", "updated_at"])
+            try:
+                from staff.models import StaffRequestComment
+
+                if new_user is None:
+                    body = "Unassigned via the dashboard."
+                elif old is None:
+                    body = (
+                        f"Assigned to {new_user.first_name} {new_user.last_name} "
+                        f"via the dashboard."
+                    )
+                else:
+                    body = (
+                        f"Reassigned from {old.first_name} {old.last_name} "
+                        f"to {new_user.first_name} {new_user.last_name} "
+                        f"via the dashboard."
+                    )
+                if note:
+                    body = f"{body} Note: {note}"
+                StaffRequestComment.objects.create(
+                    request=sr,
+                    author=request.user,
+                    kind="reassignment",
+                    body=body,
+                )
+            except Exception:
+                pass
+
+            from .category_tasks import _serialize_staff_request
+
+            return Response(_serialize_staff_request(sr))
+
+        # 2) dashboard.Task
+        try:
+            task = Task.objects.select_related(
+                "assigned_to", "assigned_to__profile"
+            ).get(pk=pk, restaurant=restaurant)
+        except Task.DoesNotExist:
+            task = None
+
+        if task is not None:
+            task.assigned_to = new_user
+            task.save(update_fields=["assigned_to", "updated_at"])
+            return Response(_serialize_dashboard_task(task))
+
+        # 3) scheduling.Task — M2M; widget reassign means "make this
+        #    person the sole assignee" (the kanban can still fan it
+        #    out manually).
+        try:
+            from scheduling.task_templates import Task as SchedulingTask
+
+            try:
+                sched = (
+                    SchedulingTask.objects.prefetch_related("assigned_to")
+                    .get(pk=pk, restaurant=restaurant)
+                )
+            except SchedulingTask.DoesNotExist:
+                sched = None
+        except Exception:  # pragma: no cover - scheduling app missing
+            sched = None
+
+        if sched is not None:
+            if new_user is None:
+                sched.assigned_to.clear()
+            else:
+                sched.assigned_to.set([new_user])
+            sched.save(update_fields=["updated_at"])
+            return Response(_serialize_scheduling_task(sched))
+
+        # 4) finance.Invoice — no assignee field. Reject with a hint.
+        try:
+            from finance.models import Invoice
+
+            try:
+                inv = Invoice.objects.get(pk=pk, restaurant=restaurant)
+            except Invoice.DoesNotExist:
+                inv = None
+        except Exception:  # pragma: no cover - finance app missing
+            inv = None
+
+        if inv is not None:
+            return Response(
+                {
+                    "error": (
+                        "Invoices don't have an owner. Move the request "
+                        "into the inbox if you need to assign it to "
+                        "someone."
+                    )
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {"error": "Item not found"}, status=http_status.HTTP_404_NOT_FOUND
+        )

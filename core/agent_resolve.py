@@ -12,7 +12,7 @@ from typing import Any
 
 from core.read_through_cache import safe_cache_get, safe_cache_set
 
-_RESOLVE_TTL = 180
+_RESOLVE_TTL = 600
 
 
 def _merge_agent_request_data(request, payload: dict | None) -> tuple[dict, dict]:

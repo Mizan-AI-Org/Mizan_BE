@@ -1203,7 +1203,25 @@ class ResendVerificationEmailView(APIView):
 
 class StaffListAPIView(generics.ListAPIView):
     """
-    Lists all *active* staff members for the manager's restaurant.
+    Lists all *active* staff members for the manager's tenant.
+
+    Used by the escalate / reassign modal on the staff requests page, the
+    onboarding org chart, the schedule editor's assignee picker, and a
+    few other "pick somebody from my team" surfaces. The modal showed
+    only a short list of names because two issues stacked:
+
+    - DRF's default pagination kicks in at PAGE_SIZE=10, so the modal
+      saw only the first 10 names unless the caller asked for more.
+    - The queryset filtered on ``restaurant=user.restaurant`` only,
+      which excluded staff whose PRIMARY restaurant is elsewhere but
+      who are linked to this tenant via ``StaffRestaurantLink`` (multi-
+      restaurant chains, branch-shared staff, etc.).
+
+    This view now mirrors the clock-in scoping helper: a user belongs
+    to the manager's restaurant when their primary FK matches OR they
+    have an active ``StaffRestaurantLink`` to it. The frontend can
+    bypass the page-size cap with ``?page_size=500`` (matches
+    ``MAX_PAGE_SIZE`` in settings).
     """
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
     serializer_class = StaffSerializer
@@ -1213,27 +1231,50 @@ class StaffListAPIView(generics.ListAPIView):
         This method is automatically called to get the list of objects.
         """
         user = self.request.user
+        from django.db.models import Q
+
+        rid = getattr(user, 'restaurant_id', None)
 
         # StaffSerializer embeds `profile` via StaffProfileSerializer, which
         # otherwise triggers +1 query per staff member on a restaurant with 30+
         # staff. select_related keeps it to a single JOIN.
+        # We OR the primary FK and the ``StaffRestaurantLink`` membership
+        # so multi-restaurant teammates show up in the picker. Without
+        # this OR the escalate modal silently dropped them.
         qs = (
             CustomUser.objects
-            .filter(restaurant=user.restaurant, is_active=True)
+            .filter(
+                Q(restaurant_id=rid)
+                | Q(restaurant_links__restaurant_id=rid, restaurant_links__is_active=True),
+                is_active=True,
+            )
             .exclude(role='SUPER_ADMIN')
             .select_related('profile', 'primary_location')
             .prefetch_related('allowed_locations', 'managed_locations')
             .order_by('first_name', 'last_name')
+            .distinct()
         )
+
+        # ``?all_branches=1`` is an explicit opt-out for the escalate /
+        # reassign modal. Branch scope is the right default for the
+        # schedule editor (you don't want to assign a barista from
+        # another city to today's lunch shift), but the escalate flow
+        # needs to reach anyone in the whole tenant — the manager who
+        # signs off on a Finance ask might sit at HQ, not at the
+        # branch where the row was raised. Truthy values: ``1``,
+        # ``true``, ``yes`` (case-insensitive). Anything else falls
+        # through to the legacy branch-scoped behaviour.
+        all_branches = (
+            self.request.query_params.get('all_branches') or ''
+        ).strip().lower() in ('1', 'true', 'yes')
 
         # Branch-scoped managers: if the caller is a MANAGER with a
         # non-empty ``managed_locations`` set, only surface staff whose
         # primary or allowed locations overlap with those branches.
         # ADMIN/SUPER_ADMIN/OWNER always see the whole tenant.
-        if user.role == 'MANAGER':
+        if user.role == 'MANAGER' and not all_branches:
             managed_ids = list(user.managed_locations.values_list('id', flat=True))
             if managed_ids:
-                from django.db.models import Q
                 qs = qs.filter(
                     Q(primary_location_id__in=managed_ids)
                     | Q(allowed_locations__id__in=managed_ids)
@@ -1242,13 +1283,77 @@ class StaffListAPIView(generics.ListAPIView):
         # Optional explicit branch filter via query param (?location=<uuid>).
         requested_loc = self.request.query_params.get('location')
         if requested_loc:
-            from django.db.models import Q
             qs = qs.filter(
                 Q(primary_location_id=requested_loc)
                 | Q(allowed_locations__id=requested_loc)
             ).distinct()
 
+        # Free-text search over the human-friendly fields. The escalate
+        # modal types into a search box and we filter server-side so
+        # tenants with hundreds of staff don't have to ship the whole
+        # list to the client just to find one person. Empty / missing
+        # query is a no-op.
+        search = (self.request.query_params.get('search') or '').strip()
+        if search:
+            qs = qs.filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(email__icontains=search)
+                | Q(phone__icontains=search)
+            ).distinct()
+
+        # Optional comma-separated role filter so callers can ask for
+        # e.g. "managers + owners only" when escalating something
+        # sensitive. ``role`` is canonicalised to upper-case.
+        role_filter = (self.request.query_params.get('role') or '').strip()
+        if role_filter:
+            roles = [r.strip().upper() for r in role_filter.split(',') if r.strip()]
+            if roles:
+                qs = qs.filter(role__in=roles)
+
+        # Optional comma-separated tag filter — each tag must be a
+        # canonical UPPER_SNAKE staff-tag identifier. We use a JSON
+        # ``__contains`` lookup on the related profile so the query
+        # stays a single SQL expression. Multiple tags are ANDed (a
+        # row must carry every tag the caller asked for) so callers
+        # can drill down ("KITCHEN AND PURCHASES" = chefs who also
+        # buy stock) rather than getting a noisy union.
+        tags_filter = (self.request.query_params.get('tags') or '').strip()
+        if tags_filter:
+            from .staff_tags import normalize_tags
+
+            wanted = normalize_tags(tags_filter.split(','))
+            for tag in wanted:
+                qs = qs.filter(profile__tags__contains=[tag])
+            qs = qs.distinct()
+
         return qs
+
+
+class StaffTagsCatalogView(APIView):
+    """Expose the canonical staff-tag vocabulary + category mapping.
+
+    The frontend hits this once on app boot to render localised tag
+    chips and to know which tag is the "default" for each
+    ``StaffRequest.category`` (used by smart filters in the escalate
+    modal).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from .staff_tags import (
+            CANONICAL_STAFF_TAGS,
+            CATEGORY_TAGS,
+            STAFF_TAG_LABELS_EN,
+        )
+
+        return Response({
+            "tags": [
+                {"id": t, "label_en": STAFF_TAG_LABELS_EN.get(t, t.title())}
+                for t in CANONICAL_STAFF_TAGS
+            ],
+            "category_to_tags": {k: list(v) for k, v in CATEGORY_TAGS.items()},
+        })
 
 
 class StaffMemberDetailView(APIView):

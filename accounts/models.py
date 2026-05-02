@@ -836,7 +836,15 @@ class StaffProfile(models.Model):
     geofence_alerts_enabled = models.BooleanField(default=True)
     # Optional department info captured during onboarding
     department = models.CharField(max_length=100, blank=True, null=True)
-    
+    # Operational tags — see ``accounts.staff_tags`` for the canonical
+    # vocabulary. Stored as a JSON array of UPPER_SNAKE strings so it
+    # round-trips through DRF without an extra table; multi-tag is the
+    # common case (a chef can be both KITCHEN and BACK_OFFICE), and
+    # tag-based lookups stay cheap for restaurants with <500 staff via
+    # the ``__contains`` JSON operator. The serializer validates each
+    # entry against the canonical set on write.
+    tags = models.JSONField(default=list, blank=True)
+
     def __str__(self):
         return f"Profile - {self.user.email}"
 
