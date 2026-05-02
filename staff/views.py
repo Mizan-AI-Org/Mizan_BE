@@ -70,9 +70,21 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
         # Category filter — supports the intelligent-inbox's category tabs
         # (HR / Maintenance / Reservations / etc.) without client-side
         # post-filtering.
+        #
+        # Also accepts a comma-separated list (``?category=FINANCE,PAYROLL``)
+        # so the dashboard "bucket" widgets — which aggregate multiple inbox
+        # categories under one card (see ``dashboard.api.category_tasks
+        # .BUCKET_TO_CATEGORIES``) — can deep-link into the inbox and still
+        # show every row they counted. Without this, clicking the Finance
+        # widget would land on ``?category=FINANCE`` and hide any PAYROLL
+        # rows that were counted in the widget.
         category_q = self.request.query_params.get('category')
         if category_q:
-            qs = qs.filter(category=str(category_q).upper())
+            parts = [p.strip().upper() for p in str(category_q).split(',') if p.strip()]
+            if len(parts) == 1:
+                qs = qs.filter(category=parts[0])
+            elif parts:
+                qs = qs.filter(category__in=parts)
 
         # Priority filter — used by the dashboard "Urgent TOP 5" widget's
         # deep-link (?priority=URGENT). Server-side so the response is
@@ -209,8 +221,19 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
             qs = qs.filter(assignee=user)
         elif request.query_params.get('assignee'):
             qs = qs.filter(assignee_id=request.query_params.get('assignee'))
+        # Comma-separated ``category`` support — mirrors the list endpoint
+        # so the counts chips on the frontend stay consistent with a
+        # multi-category bucket deep-link from the dashboard widgets.
         if request.query_params.get('category'):
-            qs = qs.filter(category=str(request.query_params.get('category')).upper())
+            parts = [
+                p.strip().upper()
+                for p in str(request.query_params.get('category')).split(',')
+                if p.strip()
+            ]
+            if len(parts) == 1:
+                qs = qs.filter(category=parts[0])
+            elif parts:
+                qs = qs.filter(category__in=parts)
 
         if not _is_manager(user):
             qs = qs.filter(Q(staff=user) | Q(staff_phone__icontains=''.join(filter(str.isdigit, str(getattr(user, 'phone', '') or '')))))

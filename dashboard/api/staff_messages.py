@@ -322,6 +322,23 @@ class StaffMessagesSendView(APIView):
                 status=http_status.HTTP_404_NOT_FOUND,
             )
 
+        # Guard against "manager accidentally sent a message to themselves"
+        # — the recipient picker can land on the current user and the
+        # audience helper would silently exclude them and return
+        # "No recipients", which surfaces as a confusing generic error.
+        # Catching it here lets us return an honest explanation.
+        if str(recipient.id) == str(request.user.id):
+            return Response(
+                {
+                    "error": (
+                        "You can't message yourself. Pick a teammate from "
+                        "the list to send the WhatsApp."
+                    ),
+                    "code": "self_send",
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
         same_tenant = (
             recipient.restaurant_id == restaurant.id
             or StaffRestaurantLink.objects.filter(
@@ -343,7 +360,30 @@ class StaffMessagesSendView(APIView):
                         f"{recipient.first_name or 'This person'} doesn't "
                         "have a WhatsApp number on file. Add one in their "
                         "staff profile, then try again."
-                    )
+                    ),
+                    "code": "no_phone",
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Pre-flight: validate that the phone normalises to something WhatsApp
+        # can actually accept. This catches local-format numbers (e.g. "0784476751"
+        # without a country code) BEFORE Meta rejects them with an opaque
+        # "(#100) Invalid parameter". The manager gets a clear, fixable error
+        # instead of a generic toast.
+        from notifications.services import normalize_whatsapp_phone
+        _, phone_err = normalize_whatsapp_phone(recipient.phone)
+        if phone_err:
+            return Response(
+                {
+                    "error": (
+                        f"{recipient.first_name or 'This person'}'s phone "
+                        f"number ({recipient.phone}) isn't in a WhatsApp-"
+                        "ready format. Open their staff profile and save it "
+                        "with the country code (e.g. +212 661 234 567)."
+                    ),
+                    "code": "invalid_phone_format",
+                    "phone_error": phone_err,
                 },
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
@@ -410,11 +450,29 @@ class StaffMessagesSendView(APIView):
             .first()
         )
 
+        # Pull a user-readable failure reason off the NotificationLog when
+        # the Meta API rejected the send. Without this the UI can only say
+        # "delivery failed", which forces the manager to guess.
+        failure_reason = None
+        if log and log.status == "FAILED":
+            raw = (log.error_message or "").strip()
+            if raw:
+                # Typical Meta error envelope starts with ``{"error":{"message":"…"}}``.
+                try:
+                    import json as _json
+                    parsed = _json.loads(raw)
+                    failure_reason = (
+                        (parsed.get("error") or {}).get("message") or raw[:200]
+                    )
+                except Exception:
+                    failure_reason = raw[:200]
+
         return Response(
             {
                 "success": True,
                 "whatsapp_sent": whatsapp_sent,
                 "whatsapp_failed": bool(recipients_whatsapp_failed),
+                "failure_reason": failure_reason,
                 "log": _serialize_log(log) if log else None,
                 "template_id": template_id,
             }
