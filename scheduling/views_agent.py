@@ -174,6 +174,51 @@ def agent_list_staff(request):
                 role_str = role_map.get(role_str, role_str)
                 queryset = queryset.filter(role=role_str)
 
+        # Optional tag filter — matches ``StaffProfile.tags`` (canonical
+        # vocabulary defined in ``accounts.staff_tags``). Accepts either
+        # a list (preferred) or a comma-separated string. Any-of
+        # semantics: a user with one of the requested tags is included.
+        #
+        # This is what powers "tell the kitchen", "message all service
+        # staff", "let housekeeping know" — Miya normalises the spoken
+        # phrase to canonical tags (KITCHEN, SERVICE, HOUSEKEEPING, …)
+        # and calls us with ``tags=[...]``.
+        tags_val = payload.get('tags') or payload.get('tag')
+        if tags_val is not None:
+            raw_list: list[str] = []
+            if isinstance(tags_val, (list, tuple)):
+                raw_list = [str(x) for x in tags_val if x is not None]
+            else:
+                raw_list = [p for p in str(tags_val).split(',')]
+            from accounts.staff_tags import normalize_tags  # local import — optional dep
+            wanted_tags = normalize_tags(raw_list)
+            if wanted_tags:
+                from django.db.models import Q as _Q  # shadow-safe alias
+                tag_q = _Q()
+                for t in wanted_tags:
+                    # JSONField ``contains`` requires a list of the values
+                    # the target array must contain. Per-tag Q + OR gives
+                    # "any-of" semantics without needing jsonb ``?|``.
+                    tag_q |= _Q(profile__tags__contains=[t])
+                queryset = queryset.filter(tag_q).distinct()
+
+        # Optional department filter — matches ``StaffProfile.department``
+        # (free-text, typically populated during onboarding). Case-insensitive
+        # exact match by default so Miya can pass "Kitchen" or "kitchen"
+        # and still hit rows saved as "Kitchen". Accepts list or string.
+        dept_val = payload.get('department') or payload.get('departments')
+        if dept_val is not None:
+            if isinstance(dept_val, (list, tuple)):
+                dept_list = [str(x).strip() for x in dept_val if str(x).strip()]
+            else:
+                dept_list = [p.strip() for p in str(dept_val).split(',') if p.strip()]
+            if dept_list:
+                from django.db.models import Q as _Q
+                dept_q = _Q()
+                for d in dept_list:
+                    dept_q |= _Q(profile__department__iexact=d)
+                queryset = queryset.filter(dept_q).distinct()
+
         # If only count is requested (e.g. "how many staff?"), return count + breakdown so one tool can serve both list and count
         _co = payload.get('count_only') or payload.get('countOnly')
         count_only_val = _co[0] if isinstance(_co, (list, tuple)) and _co else _co
@@ -314,7 +359,23 @@ def agent_list_staff(request):
 
         staff_list = []
         iterable = ranked if ranked is not None else queryset
+        # Prefetch profile fields so the ``tags`` / ``department`` read
+        # below doesn't issue one query per row. Cheap because lists max
+        # out at 25 (ranked) / 200 (all) rows.
+        if hasattr(iterable, 'select_related'):
+            iterable = iterable.select_related('profile')
         for staff in iterable:
+            profile = getattr(staff, 'profile', None)
+            staff_tags_list: list[str] = []
+            dept_value: str = ''
+            if profile is not None:
+                try:
+                    raw_tags = getattr(profile, 'tags', None) or []
+                    if isinstance(raw_tags, (list, tuple)):
+                        staff_tags_list = [str(t) for t in raw_tags if t]
+                except Exception:
+                    staff_tags_list = []
+                dept_value = (getattr(profile, 'department', '') or '').strip()
             staff_list.append({
                 'id': str(staff.id),
                 'first_name': staff.first_name,
@@ -323,12 +384,34 @@ def agent_list_staff(request):
                 'email': staff.email,
                 'role': staff.role,
                 'phone': staff.phone or '',
+                # Operational tags (KITCHEN / SERVICE / HOUSEKEEPING / …)
+                # and free-text department — exposed so Miya can reason
+                # about "tell the kitchen" / "let housekeeping know"
+                # without a second round-trip.
+                'tags': staff_tags_list,
+                'department': dept_value,
                 'match_mode': 'fuzzy' if fuzzy_mode else 'exact',
             })
 
         if not name_filter and not fuzzy_mode:
             role_key = str((payload.get('role') or payload.get('roleName') or '')).strip().upper()[:40] or 'all'
-            ck = f"agent:sched:staff_list:{restaurant.id}:{role_key}"
+            # Include tag/department filters in the cache key so two
+            # different filter calls don't collide on the same cached
+            # payload (e.g. tags=KITCHEN vs tags=SERVICE).
+            def _norm_key(value) -> str:
+                if value is None:
+                    return ''
+                if isinstance(value, (list, tuple)):
+                    parts = [str(v).strip().upper() for v in value if str(v).strip()]
+                else:
+                    parts = [p.strip().upper() for p in str(value).split(',') if p.strip()]
+                return ','.join(sorted(parts))[:80]
+            tags_key = _norm_key(payload.get('tags') or payload.get('tag'))
+            dept_key = _norm_key(payload.get('department') or payload.get('departments'))
+            ck = (
+                f"agent:sched:staff_list:{restaurant.id}"
+                f":{role_key}:tg={tags_key}:dp={dept_key}"
+            )
             return Response(get_or_set(ck, 60, lambda: list(staff_list)))
         return Response(staff_list)
         

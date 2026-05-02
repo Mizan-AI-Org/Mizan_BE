@@ -72,11 +72,17 @@ def agent_send_announcement(request):
     staff_ids = None
     roles = None
     departments = None
+    tags = None
     if isinstance(audience, dict):
         staff_ids = audience.get("staff_ids") or None
         roles = audience.get("roles") or None
         departments = audience.get("departments") or None
-    # "all" or missing audience => no filters (staff_ids, roles, departments stay None)
+        # ``tags`` is the canonical operational tag vocabulary — see
+        # accounts.staff_tags. Enables "send to the kitchen", "message
+        # all housekeeping staff", etc.
+        tags = audience.get("tags") or None
+    # "all" or missing audience => no filters (staff_ids, roles,
+    # departments, tags stay None)
 
     try:
         success, count, err, details = notification_service.send_announcement_to_audience(
@@ -87,6 +93,7 @@ def agent_send_announcement(request):
             staff_ids=staff_ids,
             roles=roles,
             departments=departments,
+            tags=tags,
             channels=["app", "whatsapp"],
         )
         if not success:

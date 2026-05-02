@@ -1094,6 +1094,7 @@ class NotificationService:
         staff_ids=None,
         roles=None,
         departments=None,
+        tags=None,
         channels=None,
     ):
         """
@@ -1106,6 +1107,10 @@ class NotificationService:
         - staff_ids: Optional list of UUIDs to target specific staff.
         - roles: Optional list of role names (CustomUser.role), e.g. ["CHEF", "WAITER"].
         - departments: Optional list of department names (StaffProfile.department).
+        - tags: Optional list of canonical staff tags (see
+          ``accounts.staff_tags.CANONICAL_STAFF_TAGS``) — matches
+          ``StaffProfile.tags`` with any-of semantics. Enables
+          "message the kitchen", "let housekeeping know", etc.
         - channels: List of channels; default ["app", "whatsapp"].
         Returns (success: bool, notification_count: int, error_message: str|None).
         """
@@ -1117,6 +1122,17 @@ class NotificationService:
         staff_ids = staff_ids or []
         roles = roles or []
         departments = departments or []
+        # Normalise tag strings against the canonical vocabulary so
+        # "kitchen" / "Kitchen" / "KITCHEN" all collapse to "KITCHEN"
+        # before we hit the database. Invalid tags are silently dropped
+        # — serializer/view layer surfaces user-facing validation.
+        normalised_tags: list[str] = []
+        if tags:
+            try:
+                from accounts.staff_tags import normalize_tags as _normalize_tags
+                normalised_tags = _normalize_tags(tags) or []
+            except Exception:
+                normalised_tags = [str(t).strip().upper().replace(' ', '_') for t in tags if str(t).strip()]
 
         try:
             qs = CustomUser.objects.filter(
@@ -1129,14 +1145,35 @@ class NotificationService:
             if sender:
                 qs = qs.exclude(id=sender.id)
 
-            if staff_ids or roles or departments:
+            if staff_ids or roles or departments or normalised_tags:
                 filters = Q()
                 if staff_ids:
                     filters |= Q(id__in=staff_ids)
                 if roles:
                     filters |= Q(role__in=roles)
                 if departments:
-                    filters |= Q(profile__department__in=departments)
+                    # Case-insensitive match — managers type "Kitchen"
+                    # while the onboarding form may store "kitchen" or
+                    # "Kitchen". ``iexact`` handled per value via OR so
+                    # mixed-case lists still match.
+                    dept_filter = Q()
+                    for d in departments:
+                        d_clean = str(d).strip()
+                        if d_clean:
+                            dept_filter |= Q(profile__department__iexact=d_clean)
+                    if dept_filter:
+                        filters |= dept_filter
+                if normalised_tags:
+                    # Any-of semantics: a person carrying any one of the
+                    # requested tags is in scope. PostgreSQL JSONField
+                    # ``__contains`` takes a list of values the target
+                    # array must contain, so OR-joining single-element
+                    # queries is the portable way to get "any".
+                    tag_filter = Q()
+                    for t in normalised_tags:
+                        tag_filter |= Q(profile__tags__contains=[t])
+                    if tag_filter:
+                        filters |= tag_filter
                 qs = qs.filter(filters)
 
             recipients = list(qs.distinct())
