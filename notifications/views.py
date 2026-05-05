@@ -2185,19 +2185,69 @@ def whatsapp_webhook(request):
                             )
                             continue
 
-                        # Duplicate clock-in protection (idempotency)
+                        # Duplicate clock-in protection (idempotency).
+                        #
+                        # If last_event is 'in' AND from TODAY: the staff is
+                        # genuinely already clocked in. Stay idempotent and
+                        # don't double-log.
+                        #
+                        # If last_event is 'in' but from a PRIOR day: the
+                        # staff forgot to clock out. Without auto-closing
+                        # that stale open event, every subsequent clock-in
+                        # via WhatsApp would hit this guard FOREVER and
+                        # today's row would never appear on the manager
+                        # dashboard (the widget filters by date). Mirrors
+                        # the same fix already in
+                        # ``timeclock.views.agent_clock_in_by_phone``.
+                        from datetime import timedelta as _td_cl
                         last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
                         if last_event and last_event.event_type == 'in':
-                            notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
-                            session.state = 'idle'
-                            session.save(update_fields=['state'])
-                            continue
+                            now_local = timezone.localtime(timezone.now()).date()
+                            if timezone.localtime(last_event.timestamp).date() == now_local:
+                                notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
+                                session.state = 'idle'
+                                session.save(update_fields=['state'])
+                                continue
+                            try:
+                                eight_hours_later = last_event.timestamp + _td_cl(hours=8)
+                                end_of_that_day = last_event.timestamp.replace(
+                                    hour=23, minute=59, second=59, microsecond=0
+                                )
+                                auto_out_at = min(eight_hours_later, end_of_that_day)
+                                auto_out = ClockEvent.objects.create(
+                                    staff=user,
+                                    event_type='out',
+                                    latitude=None,
+                                    longitude=None,
+                                    device_id="whatsapp (auto)",
+                                    notes=(
+                                        "Auto clock-out: previous clock-in was left open "
+                                        "across days. Closed so today's clock-in can be "
+                                        "recorded on the manager dashboard."
+                                    ),
+                                    location=getattr(last_event, 'location', None),
+                                    location_mismatch=False,
+                                )
+                                ClockEvent.objects.filter(pk=auto_out.pk).update(
+                                    timestamp=auto_out_at
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "whatsapp clock-in: auto clock-out for stale event "
+                                    "%s failed; continuing to record today's clock-in.",
+                                    getattr(last_event, 'id', None),
+                                )
 
                         # Atomic: create clock-in and update shift status (idempotent: recheck inside transaction)
                         try:
                             with transaction.atomic():
                                 last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
-                                if last_event and last_event.event_type == 'in':
+                                if (
+                                    last_event
+                                    and last_event.event_type == 'in'
+                                    and timezone.localtime(last_event.timestamp).date()
+                                    == timezone.localtime(timezone.now()).date()
+                                ):
                                     notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
                                     session.state = 'idle'
                                     session.save(update_fields=['state'])
