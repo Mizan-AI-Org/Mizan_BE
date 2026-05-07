@@ -1421,6 +1421,8 @@ def agent_clock_in_by_phone(request):
 
         latitude = request.data.get('latitude')
         longitude = request.data.get('longitude')
+        if latitude in (None, '') or longitude in (None, ''):
+            latitude, longitude = None, None
         rest = getattr(user, 'restaurant', None)
         # Mandatory location: staff cannot clock in without live location (no bypass)
         if latitude is None or longitude is None:
