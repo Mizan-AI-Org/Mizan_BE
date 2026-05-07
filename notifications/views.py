@@ -136,6 +136,254 @@ def _is_likely_shared_static_location(loc, rest, lat, lon):
     return False, None
 
 
+def _parse_lat_lon_from_clock_in_text(text):
+    """
+    Extract (lat, lon) from plain-text clock-in replies. Some clients send
+    coordinates as text (e.g. "Shared a location at coordinates: X, Y" or
+    a maps link) instead of a WhatsApp ``location`` message — parse those so
+    staff can still clock in while ``awaiting_clock_in_location``.
+    """
+    if not text or not isinstance(text, str):
+        return None
+    patterns = (
+        re.compile(r"coordinates?:\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)", re.I),
+        re.compile(r"[?&]q=\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\b"),
+        re.compile(r"@\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\b"),
+        re.compile(r"\b(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)\b"),
+    )
+    for rx in patterns:
+        m = rx.search(text)
+        if not m:
+            continue
+        try:
+            lat = float(m.group(1))
+            lon = float(m.group(2))
+            if -90 <= lat <= 90 and -180 <= lon <= 180:
+                return lat, lon
+        except (ValueError, IndexError):
+            continue
+    return None
+
+
+def _coerce_whatsapp_location_lat_lon(lat, lon):
+    """Return (float, float) or (None, None). Treats 0 as valid."""
+    try:
+        if lat is None or lon is None:
+            return None, None
+        if lat == "" or lon == "":
+            return None, None
+        return float(lat), float(lon)
+    except (TypeError, ValueError):
+        return None, None
+
+
+def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, loc, R):
+    """
+    Run geofence validation, create :class:`~timeclock.models.ClockEvent`,
+    notify staff. ``loc`` is the WhatsApp ``location`` dict for pin/live
+    heuristics; use ``{}`` for text-parsed coordinates.
+    Returns True when this turn is fully handled (caller should ``continue``).
+    """
+    rest = getattr(user, "restaurant", None)
+    if not rest:
+        notification_service.send_whatsapp_text(
+            phone_digits,
+            "Your account isn't linked to a restaurant yet. Please contact your manager.",
+        )
+        return True
+
+    if not getattr(rest, "latitude", None) or not getattr(rest, "longitude", None) or not getattr(rest, "radius", None):
+        try:
+            from accounts.models import AuditLog
+
+            AuditLog.create_log(
+                restaurant=rest,
+                user=user,
+                action_type="OTHER",
+                entity_type="CLOCK_EVENT",
+                description="Clock-in attempt rejected: restaurant geofence not configured",
+                new_values={"phone": phone_digits},
+            )
+        except Exception:
+            pass
+        notification_service.send_whatsapp_text(
+            phone_digits,
+            "Location check is not set up for your restaurant. Please contact your manager to clock in.",
+        )
+        return True
+
+    # Optional: tie to today's shift when one exists in the clock-in window.
+    # Staff may clock in without a scheduled shift (unplanned / extra cover).
+    active_shift = _get_shift_for_clock_in(user)
+
+    is_shared, reject_msg = _is_likely_shared_static_location(loc, rest, lat, lon)
+    if is_shared and reject_msg:
+        try:
+            from accounts.models import AuditLog
+
+            AuditLog.create_log(
+                restaurant=rest,
+                user=user,
+                action_type="OTHER",
+                entity_type="CLOCK_EVENT",
+                description="Clock-in attempt rejected: shared/pinned location (not live)",
+                new_values={
+                    "phone": phone_digits,
+                    "lat": lat,
+                    "lon": lon,
+                    "has_name": bool(loc.get("name")),
+                    "has_address": bool(loc.get("address")),
+                },
+            )
+        except Exception:
+            pass
+        notification_service.send_whatsapp_text(phone_digits, reject_msg)
+        return True
+
+    try:
+        dist = calculate_distance(float(lat), float(lon), float(rest.latitude or 0), float(rest.longitude or 0))
+    except (TypeError, ValueError):
+        dist = float("inf")
+    radius = float(getattr(rest, "radius", None) or 100)
+    if dist > radius:
+        try:
+            from accounts.models import AuditLog
+
+            AuditLog.create_log(
+                restaurant=rest,
+                user=user,
+                action_type="OTHER",
+                entity_type="CLOCK_EVENT",
+                description="Clock-in attempt rejected: outside geofence",
+                new_values={"phone": phone_digits, "distance_m": round(dist), "radius_m": radius},
+            )
+        except Exception:
+            pass
+        notification_service.send_whatsapp_text(
+            phone_digits,
+            "You are not within the restaurant's approved location zone. Please move closer and try again.",
+        )
+        return True
+
+    from datetime import timedelta as _td_cl
+
+    last_event = ClockEvent.objects.filter(staff=user).order_by("-timestamp").first()
+    if last_event and last_event.event_type == "in":
+        now_local = timezone.localtime(timezone.now()).date()
+        if timezone.localtime(last_event.timestamp).date() == now_local:
+            notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
+            session.state = "idle"
+            session.save(update_fields=["state"])
+            return True
+        try:
+            eight_hours_later = last_event.timestamp + _td_cl(hours=8)
+            end_of_that_day = last_event.timestamp.replace(hour=23, minute=59, second=59, microsecond=0)
+            auto_out_at = min(eight_hours_later, end_of_that_day)
+            auto_out = ClockEvent.objects.create(
+                staff=user,
+                event_type="out",
+                latitude=None,
+                longitude=None,
+                device_id="whatsapp (auto)",
+                notes=(
+                    "Auto clock-out: previous clock-in was left open "
+                    "across days. Closed so today's clock-in can be "
+                    "recorded on the manager dashboard."
+                ),
+                location=getattr(last_event, "location", None),
+                location_mismatch=False,
+            )
+            ClockEvent.objects.filter(pk=auto_out.pk).update(timestamp=auto_out_at)
+        except Exception:
+            logger.warning(
+                "whatsapp clock-in: auto clock-out for stale event %s failed; continuing to record today's clock-in.",
+                getattr(last_event, "id", None),
+            )
+
+    try:
+        with transaction.atomic():
+            last_event = ClockEvent.objects.filter(staff=user).order_by("-timestamp").first()
+            if (
+                last_event
+                and last_event.event_type == "in"
+                and timezone.localtime(last_event.timestamp).date() == timezone.localtime(timezone.now()).date()
+            ):
+                notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
+                session.state = "idle"
+                session.save(update_fields=["state"])
+                return True
+            clock_event = ClockEvent.objects.create(
+                staff=user,
+                event_type="in",
+                latitude=float(lat),
+                longitude=float(lon),
+                device_id="whatsapp",
+                notes=f"Clock-in via WhatsApp (location verified, distance={round(dist)}m)",
+                location_encrypted=f"{lat},{lon}",
+            )
+            if active_shift:
+                active_shift.status = "IN_PROGRESS"
+                active_shift.save(update_fields=["status"])
+        from accounts.models import AuditLog
+
+        _audit_new = {"distance_m": round(dist)}
+        if active_shift:
+            _audit_new["shift_id"] = str(active_shift.id)
+        AuditLog.create_log(
+            restaurant=rest,
+            user=user,
+            action_type="CREATE",
+            entity_type="CLOCK_EVENT",
+            entity_id=str(clock_event.id),
+            description="Clock-in successful (WhatsApp, location verified)",
+            new_values=_audit_new,
+        )
+    except Exception as e:
+        logger.exception("Clock-in create failed: %s", e)
+        notification_service.send_whatsapp_text(phone_digits, "Something went wrong. Please try again.")
+        return True
+
+    clock_in_template = getattr(dj_settings, "WHATSAPP_TEMPLATE_CLOCK_IN_SUCCESSFUL", "clock_in_success")
+    if active_shift and getattr(active_shift, "start_time", None) and getattr(active_shift, "end_time", None):
+        try:
+            st = timezone.localtime(active_shift.start_time).strftime("%H:%M")
+            et = timezone.localtime(active_shift.end_time).strftime("%H:%M")
+            shift_summary = f"Today {st}–{et}"
+        except Exception:
+            shift_summary = "Today " + timezone.now().strftime("%H:%M")
+    else:
+        shift_summary = "Today " + timezone.now().strftime("%H:%M")
+    try:
+        notification_service.send_whatsapp_template(
+            phone_digits,
+            template_name=clock_in_template,
+            language_code="en_US",
+            components=[
+                {
+                    "type": "body",
+                    "parameters": [
+                        {"type": "text", "text": shift_summary[:100]},
+                        {"type": "text", "text": "Location verified"},
+                    ],
+                }
+            ],
+        )
+    except Exception:
+        notification_service.send_whatsapp_text(phone_digits, R(user, "clockin_ok", time=timezone.now().strftime("%H:%M")))
+
+    if active_shift:
+        checklist_started = notification_service.start_conversational_checklist_after_clock_in(
+            user, active_shift, phone_digits=phone_digits
+        )
+        if not checklist_started:
+            session.state = "idle"
+            session.save(update_fields=["state"])
+    else:
+        session.state = "idle"
+        session.save(update_fields=["state"])
+    return True
+
+
 def _normalize_clock_in_intent(body):
     """
     Detect clock-in intent: case-insensitive, ignore minor punctuation, handle variations.
@@ -205,9 +453,12 @@ def _get_shift_for_checklist(user):
 
 def _get_shift_for_clock_in(user):
     """
-    Return an AssignedShift for today that is within the allowed clock-in window
-    (from CLOCK_IN_WINDOW_MINUTES_BEFORE before shift start to CLOCK_IN_WINDOW_MINUTES_AFTER after).
-    Considers staff and staff_members. Returns None if no valid shift.
+    When staff has a scheduled shift today, return the AssignedShift that falls
+    within the allowed clock-in window (CLOCK_IN_WINDOW_MINUTES_BEFORE /
+    CLOCK_IN_WINDOW_MINUTES_AFTER around shift start).
+
+    Returns None if there is no matching shift — staff may still clock in
+    (unplanned attendance); GPS and duplicate same-day rules still apply.
     """
     if not user:
         return None
@@ -1299,9 +1550,6 @@ def whatsapp_webhook(request):
                                 if last_event and last_event.event_type == 'in':
                                     notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
                                     continue
-                                if not _get_shift_for_clock_in(user):
-                                    notification_service.send_whatsapp_text(phone_digits, "You do not have a scheduled shift at this time.")
-                                    continue
                                 rest = getattr(user, 'restaurant', None)
                                 if rest and (not getattr(rest, 'latitude', None) or not getattr(rest, 'longitude', None) or not getattr(rest, 'radius', None)):
                                     notification_service.send_whatsapp_text(
@@ -2067,229 +2315,20 @@ def whatsapp_webhook(request):
                     # ------------------------------------------------------------------
                     if msg_type == 'location':
                         loc = msg.get('location') or {}
-                        lat = loc.get('latitude')
-                        lon = loc.get('longitude')
+                        lat_raw = loc.get('latitude')
+                        lon_raw = loc.get('longitude')
 
                         if not user:
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                             continue
-                        if not lat or not lon:
+                        lat_c, lon_c = _coerce_whatsapp_location_lat_lon(lat_raw, lon_raw)
+                        if lat_c is None or lon_c is None:
                             notification_service.send_whatsapp_location_request_interactive(
                                 phone_digits,
                                 "Share your location to clock in."
                             )
                             continue
-
-                        rest = getattr(user, 'restaurant', None)
-                        if not rest:
-                            notification_service.send_whatsapp_text(phone_digits, "You do not have a scheduled shift at this time.")
-                            continue
-
-                        # Geofence must be configured: strict location enforcement
-                        if not getattr(rest, 'latitude', None) or not getattr(rest, 'longitude', None) or not getattr(rest, 'radius', None):
-                            try:
-                                from accounts.models import AuditLog
-                                AuditLog.create_log(
-                                    restaurant=rest,
-                                    user=user,
-                                    action_type='OTHER',
-                                    entity_type='CLOCK_EVENT',
-                                    description='Clock-in attempt rejected: restaurant geofence not configured',
-                                    new_values={'phone': phone_digits},
-                                )
-                            except Exception:
-                                pass
-                            notification_service.send_whatsapp_text(
-                                phone_digits,
-                                "Location check is not set up for your restaurant. Please contact your manager to clock in."
-                            )
-                            continue
-
-                        # Shift validation: must have a shift within clock-in window
-                        active_shift = _get_shift_for_clock_in(user)
-                        if not active_shift:
-                            try:
-                                from accounts.models import AuditLog
-                                AuditLog.create_log(
-                                    restaurant=rest,
-                                    user=user,
-                                    action_type='OTHER',
-                                    entity_type='CLOCK_EVENT',
-                                    description='Clock-in attempt rejected: no shift within window',
-                                    new_values={'phone': phone_digits, 'lat': lat, 'lon': lon, 'reason': 'no_shift_in_window'},
-                                )
-                            except Exception:
-                                pass
-                            notification_service.send_whatsapp_text(phone_digits, "You do not have a scheduled shift at this time.")
-                            session.state = 'idle'
-                            session.save(update_fields=['state'])
-                            continue
-
-                        # Live location validation: reject shared/pinned locations (bypass prevention)
-                        is_shared, reject_msg = _is_likely_shared_static_location(loc, rest, lat, lon)
-                        if is_shared and reject_msg:
-                            try:
-                                from accounts.models import AuditLog
-                                AuditLog.create_log(
-                                    restaurant=rest,
-                                    user=user,
-                                    action_type='OTHER',
-                                    entity_type='CLOCK_EVENT',
-                                    description='Clock-in attempt rejected: shared/pinned location (not live)',
-                                    new_values={'phone': phone_digits, 'lat': lat, 'lon': lon, 'has_name': bool(loc.get('name')), 'has_address': bool(loc.get('address'))},
-                                )
-                            except Exception:
-                                pass
-                            notification_service.send_whatsapp_text(phone_digits, reject_msg)
-                            continue
-
-                        # Geofence validation (Haversine via calculate_distance)
-                        try:
-                            dist = calculate_distance(float(lat), float(lon), float(rest.latitude or 0), float(rest.longitude or 0))
-                        except (TypeError, ValueError):
-                            dist = float('inf')
-                        radius = float(getattr(rest, 'radius', None) or 100)
-                        if dist > radius:
-                            try:
-                                from accounts.models import AuditLog
-                                AuditLog.create_log(
-                                    restaurant=rest,
-                                    user=user,
-                                    action_type='OTHER',
-                                    entity_type='CLOCK_EVENT',
-                                    description='Clock-in attempt rejected: outside geofence',
-                                    new_values={'phone': phone_digits, 'distance_m': round(dist), 'radius_m': radius},
-                                )
-                            except Exception:
-                                pass
-                            notification_service.send_whatsapp_text(
-                                phone_digits,
-                                "You are not within the restaurant's approved location zone. Please move closer and try again."
-                            )
-                            continue
-
-                        # Duplicate clock-in protection (idempotency).
-                        #
-                        # If last_event is 'in' AND from TODAY: the staff is
-                        # genuinely already clocked in. Stay idempotent and
-                        # don't double-log.
-                        #
-                        # If last_event is 'in' but from a PRIOR day: the
-                        # staff forgot to clock out. Without auto-closing
-                        # that stale open event, every subsequent clock-in
-                        # via WhatsApp would hit this guard FOREVER and
-                        # today's row would never appear on the manager
-                        # dashboard (the widget filters by date). Mirrors
-                        # the same fix already in
-                        # ``timeclock.views.agent_clock_in_by_phone``.
-                        from datetime import timedelta as _td_cl
-                        last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
-                        if last_event and last_event.event_type == 'in':
-                            now_local = timezone.localtime(timezone.now()).date()
-                            if timezone.localtime(last_event.timestamp).date() == now_local:
-                                notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
-                                session.state = 'idle'
-                                session.save(update_fields=['state'])
-                                continue
-                            try:
-                                eight_hours_later = last_event.timestamp + _td_cl(hours=8)
-                                end_of_that_day = last_event.timestamp.replace(
-                                    hour=23, minute=59, second=59, microsecond=0
-                                )
-                                auto_out_at = min(eight_hours_later, end_of_that_day)
-                                auto_out = ClockEvent.objects.create(
-                                    staff=user,
-                                    event_type='out',
-                                    latitude=None,
-                                    longitude=None,
-                                    device_id="whatsapp (auto)",
-                                    notes=(
-                                        "Auto clock-out: previous clock-in was left open "
-                                        "across days. Closed so today's clock-in can be "
-                                        "recorded on the manager dashboard."
-                                    ),
-                                    location=getattr(last_event, 'location', None),
-                                    location_mismatch=False,
-                                )
-                                ClockEvent.objects.filter(pk=auto_out.pk).update(
-                                    timestamp=auto_out_at
-                                )
-                            except Exception:
-                                logger.warning(
-                                    "whatsapp clock-in: auto clock-out for stale event "
-                                    "%s failed; continuing to record today's clock-in.",
-                                    getattr(last_event, 'id', None),
-                                )
-
-                        # Atomic: create clock-in and update shift status (idempotent: recheck inside transaction)
-                        try:
-                            with transaction.atomic():
-                                last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
-                                if (
-                                    last_event
-                                    and last_event.event_type == 'in'
-                                    and timezone.localtime(last_event.timestamp).date()
-                                    == timezone.localtime(timezone.now()).date()
-                                ):
-                                    notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
-                                    session.state = 'idle'
-                                    session.save(update_fields=['state'])
-                                    continue
-                                clock_event = ClockEvent.objects.create(
-                                    staff=user,
-                                    event_type='in',
-                                    latitude=float(lat),
-                                    longitude=float(lon),
-                                    device_id='whatsapp',
-                                    notes=f'Clock-in via WhatsApp (location verified, distance={round(dist)}m)',
-                                    location_encrypted=f"{lat},{lon}",
-                                )
-                                active_shift.status = 'IN_PROGRESS'
-                                active_shift.save(update_fields=['status'])
-                            from accounts.models import AuditLog
-                            AuditLog.create_log(
-                                restaurant=rest,
-                                user=user,
-                                action_type='CREATE',
-                                entity_type='CLOCK_EVENT',
-                                entity_id=str(clock_event.id),
-                                description='Clock-in successful (WhatsApp, location verified)',
-                                new_values={'shift_id': str(active_shift.id), 'distance_m': round(dist)},
-                            )
-                        except Exception as e:
-                            logger.exception("Clock-in create failed: %s", e)
-                            notification_service.send_whatsapp_text(phone_digits, "Something went wrong. Please try again.")
-                            continue
-
-                        # Send clock_in_success template (Shift: {{1}}, Location verified)
-                        clock_in_template = getattr(dj_settings, 'WHATSAPP_TEMPLATE_CLOCK_IN_SUCCESSFUL', 'clock_in_success')
-                        if active_shift and getattr(active_shift, 'start_time', None) and getattr(active_shift, 'end_time', None):
-                            try:
-                                st = timezone.localtime(active_shift.start_time).strftime('%H:%M')
-                                et = timezone.localtime(active_shift.end_time).strftime('%H:%M')
-                                shift_summary = f"Today {st}–{et}"
-                            except Exception:
-                                shift_summary = "Today " + timezone.now().strftime('%H:%M')
-                        else:
-                            shift_summary = "Today " + timezone.now().strftime('%H:%M')
-                        try:
-                            notification_service.send_whatsapp_template(
-                                phone_digits,
-                                template_name=clock_in_template,
-                                language_code='en_US',
-                                components=[{"type": "body", "parameters": [{"type": "text", "text": shift_summary[:100]}, {"type": "text", "text": "Location verified"}]}]
-                            )
-                        except Exception:
-                            notification_service.send_whatsapp_text(phone_digits, R(user, 'clockin_ok', time=timezone.now().strftime('%H:%M')))
-
-                        if active_shift:
-                            checklist_started = notification_service.start_conversational_checklist_after_clock_in(user, active_shift, phone_digits=phone_digits)
-                            if not checklist_started:
-                                session.state = 'idle'
-                                session.save(update_fields=['state'])
-                        else:
-                            session.state = 'idle'
-                            session.save(update_fields=['state'])
+                        _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat_c, lon_c, loc, R)
                         continue
 
                     # ------------------------------------------------------------------
@@ -2297,7 +2336,14 @@ def whatsapp_webhook(request):
                     # ------------------------------------------------------------------
                     raw_body = (text_body or '').strip() if text_body else ''
                     body = raw_body.lower() if raw_body else ''
-                    
+
+                    if msg_type == 'text' and session and session.state == 'awaiting_clock_in_location':
+                        coord_pair = _parse_lat_lon_from_clock_in_text(raw_body)
+                        if coord_pair and user:
+                            lat_g, lon_g = coord_pair
+                            _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat_g, lon_g, {}, R)
+                            continue
+
                     if not body:
                         continue
 
@@ -2605,9 +2651,6 @@ def whatsapp_webhook(request):
                         last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
                         if last_event and last_event.event_type == 'in':
                             notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
-                            continue
-                        if not _get_shift_for_clock_in(user):
-                            notification_service.send_whatsapp_text(phone_digits, "You do not have a scheduled shift at this time.")
                             continue
                         rest = getattr(user, 'restaurant', None)
                         if rest and (not getattr(rest, 'latitude', None) or not getattr(rest, 'longitude', None) or not getattr(rest, 'radius', None)):

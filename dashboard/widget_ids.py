@@ -33,11 +33,18 @@ DASHBOARD_WIDGET_IDS = frozenset(
         "human_resources",
         "finance",
         "maintenance",
+        # Procurement asks ("buy 6 bottles of vodka") — lives behind
+        # /api/dashboard/category-tasks/?bucket=purchase_orders so it
+        # already shows real PURCHASE_ORDER staff requests + tasks.
+        "purchase_orders",
         # Catch-all lane for general / uncategorised requests Miya couldn't
         # slot into a named category. Lives behind the same endpoint as the
         # named lanes (bucket=miscellaneous) and is allow-listed here so
         # /api/dashboard/widget-order/ doesn't strip it on PATCH.
         "miscellaneous",
+        # Admin → Staff WhatsApp composer + delivery feed. Same
+        # NotificationService Miya's `inform_staff` tool uses.
+        "staff_messages",
     ]
 )
 
