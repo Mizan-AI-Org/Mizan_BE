@@ -468,11 +468,19 @@ def account_activation_from_agent(request):
                     status=status.HTTP_200_OK,
                 )
             from notifications.services import notification_service
-            notification_service.send_staff_activated_welcome(
-                phone=clean_phone,
-                first_name=user.first_name or "Staff",
-                restaurant_name=user.restaurant.name if getattr(user, 'restaurant', None) else "",
-            )
+            # Welcome template must not fail the HTTP response — user is already active in DB.
+            try:
+                notification_service.send_staff_activated_welcome(
+                    phone=clean_phone,
+                    first_name=user.first_name or "Staff",
+                    restaurant_name=user.restaurant.name if getattr(user, 'restaurant', None) else "",
+                )
+            except Exception as welcome_err:
+                logger.warning(
+                    "send_staff_activated_welcome failed after activation (non-fatal): %s",
+                    welcome_err,
+                    exc_info=True,
+                )
             return Response(
                 {
                     'success': True,
