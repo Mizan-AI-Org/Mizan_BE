@@ -116,21 +116,23 @@ def _create_staff_captured_order_parsed(restaurant, user, text, channel):
 
 def _is_likely_shared_static_location(loc, rest, lat, lon):
     """
-    Detect if the location is a shared/pinned location (e.g. restaurant from map) rather than live GPS.
-    Staff can bypass by sharing the restaurant's location; we reject:
-    1. Locations with name/address - map pins have these, live location typically does not
-    2. Locations suspiciously close to restaurant (< 5m) - real GPS has 5-20m variance
+    Detect if the location is almost certainly a pinned map place (same coords as
+    the venue marker) rather than real GPS.
+
+    WhatsApp's Cloud API often includes ``name`` / ``address`` on *live* shares
+    too, so we no longer treat those fields as proof of a static pin — that
+    heuristic caused widespread false rejections.
+
+    We only flag when the reported point is unrealistically close (< 2 m) to
+    the restaurant's configured coordinates (typical when someone picks the
+    business from the map instead of GPS).
     """
     if not loc or not rest:
         return False, None
-    name = (loc.get('name') or '').strip()
-    address = (loc.get('address') or '').strip()
-    if name or address:
-        return True, "Please share your *live location* (tap Share Location, then choose 'Share live location' or send your current position). Do not share a pinned location from the map."
     try:
         dist = calculate_distance(float(lat), float(lon), float(rest.latitude or 0), float(rest.longitude or 0))
         if dist < 2:
-            return True, "Your location appears to match the restaurant address exactly. Please share your *live location* from your current position—not a location from the map."
+            return True, "Your location appears to match the restaurant pin exactly. Please share your *live location* from where you are standing (current position), not a place picked from the map."
     except (TypeError, ValueError):
         pass
     return False, None
@@ -329,15 +331,19 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
         _audit_new = {"distance_m": round(dist)}
         if active_shift:
             _audit_new["shift_id"] = str(active_shift.id)
-        AuditLog.create_log(
-            restaurant=rest,
-            user=user,
-            action_type="CREATE",
-            entity_type="CLOCK_EVENT",
-            entity_id=str(clock_event.id),
-            description="Clock-in successful (WhatsApp, location verified)",
-            new_values=_audit_new,
-        )
+        try:
+            AuditLog.create_log(
+                restaurant=rest,
+                user=user,
+                action_type="CREATE",
+                entity_type="CLOCK_EVENT",
+                entity_id=str(clock_event.id),
+                description="Clock-in successful (WhatsApp, location verified)",
+                new_values=_audit_new,
+            )
+        except Exception as audit_err:
+            # Clock-in already committed — never make the staff retry because audit failed.
+            logger.warning("Clock-in audit log failed (non-fatal): %s", audit_err)
     except Exception as e:
         logger.exception("Clock-in create failed: %s", e)
         notification_service.send_whatsapp_text(phone_digits, "Something went wrong. Please try again.")

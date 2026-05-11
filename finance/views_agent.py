@@ -425,7 +425,11 @@ def agent_list_invoices(request):
 
     restaurant, _, err = _resolve_restaurant_for_agent(request)
     if err:
-        return Response({"success": False, "error": err["error"]}, status=err["status"])
+        msg = err["error"]
+        return Response(
+            {"success": False, "error": msg, "message_for_user": msg},
+            status=err["status"],
+        )
 
     src = request.query_params if request.method == "GET" else (
         request.data if isinstance(getattr(request, "data", None), dict) else {}

@@ -358,6 +358,8 @@ class AgentDashboardWidgetCreateView(APIView):
 
         data = request.data or {}
         title = (data.get("title") or "").strip()
+        if len(title) > 255:
+            title = title[:255].rstrip()
         if not title:
             return Response({"success": False, "error": "title is required"}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -701,6 +703,56 @@ class AgentDashboardWidgetListView(APIView):
                 "allowed_builtin_ids": sorted(DASHBOARD_WIDGET_IDS),
                 "default_builtin_order": list(DEFAULT_DASHBOARD_WIDGET_ORDER),
                 "allowed_custom_icons": sorted(ALLOWED_CUSTOM_WIDGET_ICONS),
+            }
+        )
+
+
+class AgentTenantBootstrapView(APIView):
+    """
+    Miya/Lua: resolve ``restaurant_id`` (and confirm ``user_id``) when the
+    conversation metadata is missing ``restaurantId`` but we still have
+    ``user_id``, ``email``, or ``phone`` from the WhatsApp / dashboard bridge.
+
+    Auth: Bearer LUA_WEBHOOK_API_KEY
+    Body: user_id | email | phone (at least one, same semantics as other
+    dashboard agent endpoints).
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        ok, err = _validate_agent_key(request)
+        if not ok:
+            return Response({"success": False, "error": err}, status=status.HTTP_401_UNAUTHORIZED)
+
+        data = request.data or {}
+        user = _resolve_user_from_agent_payload(data)
+        if user is None:
+            return Response(
+                {
+                    "success": False,
+                    "error": "Could not resolve user; pass user_id, email, or phone",
+                    "message_for_user": "We couldn't link this chat to your Mizan account yet.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not getattr(user, "restaurant_id", None):
+            return Response(
+                {
+                    "success": False,
+                    "error": "User has no restaurant",
+                    "message_for_user": "Your account isn't linked to a workspace yet.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                "success": True,
+                "restaurant_id": str(user.restaurant_id),
+                "user_id": str(user.id),
+                "email": (user.email or "")[:320],
             }
         )
 

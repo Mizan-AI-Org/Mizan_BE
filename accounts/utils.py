@@ -102,7 +102,13 @@ def find_matching_location(restaurant, user_lat, user_lon):
             radius = radius
             geofence_enabled = bool(restaurant.geofence_enabled)
         nearest = _LegacySite()
-        if dist <= radius and nearest.geofence_enabled:
+        # When geofence enforcement is off, still record distance but do not
+        # block clock-in — legacy tenants often disable monitoring while keeping
+        # lat/lon for display. Previously we never returned a match here, so
+        # every WhatsApp / Miya clock-in looked "outside geofence".
+        if not nearest.geofence_enabled:
+            return nearest, dist, nearest
+        if dist <= radius:
             return nearest, dist, nearest
         return None, dist, nearest
 
