@@ -25,6 +25,7 @@ intent extraction belongs in the persona, not here.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Iterable
 
@@ -171,6 +172,14 @@ _ALIASES: dict[str, str] = {
     "inbox": "staff_inbox",
     "staff inbox": "staff_inbox",
     "staff requests": "staff_inbox",
+    "group": "staff_inbox",
+    "groups": "staff_inbox",
+    "groupe": "staff_inbox",
+    "groupes": "staff_inbox",
+    "group request": "staff_inbox",
+    "group requests": "staff_inbox",
+    "demandes de groupe": "staff_inbox",
+    "demande de groupe": "staff_inbox",
     "demandes du personnel": "staff_inbox",
     "boite de reception": "staff_inbox",
     "bandeja de entrada": "staff_inbox",
@@ -293,6 +302,24 @@ def resolve_widget_alias(*candidates: str | None) -> str | None:
         # that doesn't require duplicating every entry.
         if key.endswith("s") and key[:-1] in _ALIASES:
             return _ALIASES[key[:-1]]
+        # Phrase / keyword match: managers often paste a full sentence as the
+        # tile title ("Créé un widget pour les groupes…"). Exact-key lookup
+        # misses those; scan for known multi-word aliases (longest wins).
+        relaxed = re.sub(r"[^\w\s]+", " ", key, flags=re.UNICODE)
+        relaxed = " ".join(relaxed.split())
+        padded_variants = {f" {key} ", f" {relaxed} "}
+        _SHORT_OK = frozenset({"hr", "rh", "po"})
+        best_len = 0
+        best_wid: str | None = None
+        for pad in padded_variants:
+            for alias_key, wid in _ALIASES.items():
+                if len(alias_key) < 3 and alias_key not in _SHORT_OK:
+                    continue
+                if f" {alias_key} " in pad and len(alias_key) > best_len:
+                    best_len = len(alias_key)
+                    best_wid = wid
+        if best_wid:
+            return best_wid
     return None
 
 

@@ -40,6 +40,7 @@ from .views_widget_layout import (
     AgentDashboardWidgetsAddView,
     AgentDashboardWidgetsRemoveView,
     AgentDashboardWidgetsReorderView,
+    AgentTenantBootstrapView,
     DashboardCustomWidgetListView,
     DashboardWidgetOrderView,
 )
@@ -101,6 +102,11 @@ urlpatterns = [
         'agent/parse-document/',
         agent_parse_document,
         name='dashboard-agent-parse-document',
+    ),
+    path(
+        'agent/widgets/resolve-tenant/',
+        AgentTenantBootstrapView.as_view(),
+        name='dashboard-agent-widgets-resolve-tenant',
     ),
     path('agent/widgets/list/', AgentDashboardWidgetListView.as_view(), name='dashboard-agent-widgets-list'),
     path('agent/widgets/add/', AgentDashboardWidgetsAddView.as_view(), name='dashboard-agent-widgets-add'),
