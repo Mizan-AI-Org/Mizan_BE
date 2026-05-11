@@ -46,8 +46,12 @@ ONBOARDING_STEPS: tuple[str, ...] = (
     'google_calendar',
 )
 
-# Subset of ONBOARDING_STEPS whose completion is MANDATORY for the wizard
-# to be considered done. google_calendar is optional.
+# Subset of ONBOARDING_STEPS that must be true before we auto-set
+# ``onboarding_completed_at`` when the user advances through the wizard
+# normally (upload/save each step). ``google_calendar`` stays out of this
+# set. Steps are never *blocking*: owners can also POST
+# ``{"complete_onboarding": true}`` to dismiss the wizard and unlock the
+# dashboard without finishing each step.
 REQUIRED_STEPS: frozenset[str] = frozenset({
     'staff_csv',
     'widgets',
@@ -131,6 +135,11 @@ class OnboardingStatusView(APIView):
                 {'detail': 'No restaurant associated with user.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        if bool(request.data.get('complete_onboarding')):
+            restaurant.onboarding_completed_at = timezone.now()
+            restaurant.save(update_fields=['onboarding_completed_at'])
+            return Response(self._payload(restaurant))
 
         step = str(request.data.get('step') or '').strip().lower()
         reset = bool(request.data.get('reset'))
