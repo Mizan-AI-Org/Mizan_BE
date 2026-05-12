@@ -189,6 +189,12 @@ When a manager tells you to **create a task/demand and assign it to a staff memb
 * Never invent a task title, priority, or assignee name — if the manager didn't give enough info, ask a single, specific clarifying question before calling the tool.
 
 ---
+16. OPS REMINDERS & DASHBOARD "RUBRIQUES" (MANAGER — LUA / MIYA)
+* **Private time-based nudge for the manager** ("remind me at 3pm", "rappelle-moi demain de…", "ذكرني"): use the **`create_reminder`** tool (Google Calendar — no attendees). If they also want a **dashboard section** to group shortcuts (FR **rubrique** / **section**, e.g. "EVENT SOPHIE KASABAH"): call **`dashboard_widgets`** with **`action='create_category'`** and **`category_name`** (tenant-wide, idempotent — safe to call even if it already exists). Then pass **`group_label`** on **`create_reminder`** with the **same** name so the calendar event title is prefixed `[EVENT SOPHIE KASABAH] …` for scanning. Optionally add a **shortcut tile** under that section with **`dashboard_widgets`** `create_custom` + **`category_name`** (backend attaches the tile to the category).
+* **Remind or assign a specific staff member with WhatsApp** ("dis à Sophie d'apporter les verres", "task Omar to…"): use **`create_dashboard_task`**, NOT `create_reminder`. Pass assignee + `due_date`, optional `whatsapp_message`, and for event prep / reminder-style ops use **`category`:** `"MEETING"` so the item lands in the **Meeting / Reminder** lane on **Tasks & Demands**.
+* **Never** tell the manager you "cannot create a rubrique" — **`dashboard_widgets`** **`create_category`** exists for that exact workflow.
+
+---
 FINAL DIRECTIVE
 Behave like a super-intelligent, database-connected **multi-vertical operations platform** for this workspace: answer correctly every time; execute safely; recommend intelligently; respect **business_vertical**; protect tenant isolation; never contradict system data; never hallucinate. You are mission-critical infrastructure."""
 
@@ -417,8 +423,14 @@ def account_activation_from_agent(request):
     Payload: { "phone": "212600959067" }. Returns { "success", "template_sent?", "user?", "message_for_user" }.
     """
     try:
-        auth_header = request.headers.get('Authorization')
-        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        from .services import (
+            get_activation_status_by_phone,
+            try_activate_staff_on_inbound_message,
+            normalize_activation_phone_inbound,
+        )
+
+        auth_header = (request.headers.get('Authorization') or '').strip()
+        expected_key = (getattr(settings, 'LUA_WEBHOOK_API_KEY', None) or '').strip()
         if not expected_key:
             return Response({
                 'success': False,
@@ -429,15 +441,14 @@ def account_activation_from_agent(request):
             return Response({'success': False, 'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
 
         phone = request.data.get('phone') or ''
-        clean_phone = ''.join(filter(str.isdigit, str(phone)))
+        raw_digits = ''.join(filter(str.isdigit, str(phone)))
+        clean_phone = normalize_activation_phone_inbound(raw_digits)
         if not clean_phone or len(clean_phone) < 6:
             return Response({
                 'success': False,
                 'error': 'Invalid or missing phone number',
                 'message_for_user': "We couldn't find your account. Please contact your manager to be added to your restaurant.",
             }, status=status.HTTP_400_BAD_REQUEST)
-
-        from .services import get_activation_status_by_phone, try_activate_staff_on_inbound_message
 
         # 1. Always check database first
         status_result = get_activation_status_by_phone(clean_phone)

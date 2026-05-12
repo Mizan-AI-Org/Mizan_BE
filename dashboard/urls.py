@@ -50,7 +50,7 @@ from .views_categories import (
     DashboardCustomWidgetCreateView,
     DashboardCustomWidgetDetailView,
 )
-from .views_agent import agent_create_dashboard_task
+from .views_agent import agent_create_dashboard_task, agent_reassign_dashboard_task
 from .api.cross_location_report import agent_cross_location_report
 from .api.calendar_write import agent_create_calendar_event
 from .api.photo_router import agent_parse_photo
@@ -83,6 +83,11 @@ urlpatterns = [
         name='dashboard-categories-detail',
     ),
     path('agent/tasks/create/', agent_create_dashboard_task, name='dashboard-agent-tasks-create'),
+    path(
+        'agent/tasks/reassign/',
+        agent_reassign_dashboard_task,
+        name='dashboard-agent-tasks-reassign',
+    ),
     path(
         'agent/cross-location-report/',
         agent_cross_location_report,
