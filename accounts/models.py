@@ -314,7 +314,7 @@ class CustomUser(AbstractUser):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
-    # Security / audit fields (failed attempt counter; account lockout is disabled)
+    # Security fields for account lockout
     failed_login_attempts = models.IntegerField(default=0)
     account_locked_until = models.DateTimeField(null=True, blank=True)
     last_failed_login = models.DateTimeField(null=True, blank=True)
@@ -396,7 +396,10 @@ class CustomUser(AbstractUser):
         self.pin_code = make_password(str(raw_pin))
         
     def check_pin(self, raw_pin):
-        """Check PIN; records failed attempts for auditing (no account lockout)."""
+        """Check PIN with account lockout protection."""
+        if self.is_account_locked():
+            return False
+            
         if not self.pin_code:
             return False
             
@@ -422,21 +425,22 @@ class CustomUser(AbstractUser):
         return self.role in admin_roles
     
     def is_account_locked(self):
-        """Account lockout is disabled; clear any legacy lock timestamp from the DB."""
-        if self.account_locked_until is not None:
-            self.account_locked_until = None
-            self.save(update_fields=['account_locked_until'])
-        return False
-
-    def lockout_seconds_remaining(self):
-        """Always zero — account lockout is disabled."""
-        return 0
-
+        """Check if account is currently locked."""
+        if not self.account_locked_until:
+            return False
+        return timezone.now() < self.account_locked_until
+    
     def increment_failed_attempts(self):
-        """Record a failed login attempt (no lockout)."""
+        """Increment failed login attempts and lock account if necessary."""
         self.failed_login_attempts += 1
         self.last_failed_login = timezone.now()
-        self.save(update_fields=['failed_login_attempts', 'last_failed_login'])
+        
+        # Lock account after 5 failed attempts
+        if self.failed_login_attempts >= 5:
+            # Lock for 30 minutes
+            self.account_locked_until = timezone.now() + timedelta(minutes=30)
+            
+        self.save(update_fields=['failed_login_attempts', 'last_failed_login', 'account_locked_until'])
     
     def reset_failed_attempts(self):
         """Reset failed login attempts after successful login."""

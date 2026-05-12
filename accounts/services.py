@@ -261,17 +261,6 @@ def _phone_to_e164_morocco(digits):
     return d
 
 
-def normalize_activation_phone_inbound(phone):
-    """
-    Digits-only, then Morocco national → E.164 so WhatsApp inbound IDs match CSV-uploaded records.
-    Safe for non-MA numbers (returns digits unchanged when rules do not apply).
-    """
-    d = _normalize_phone_digits(phone or "")
-    if not d:
-        return ""
-    return _phone_to_e164_morocco(d) or d
-
-
 def _find_staff_activation_record_by_phone(phone_digits):
     """
     Find a NOT_ACTIVATED StaffActivationRecord by phone using robust suffix matching.
@@ -281,9 +270,7 @@ def _find_staff_activation_record_by_phone(phone_digits):
     """
     if not phone_digits or len(phone_digits) < 6:
         return None
-    normalized = normalize_activation_phone_inbound(phone_digits)
-    if not normalized or len(normalized) < 6:
-        return None
+    normalized = _normalize_phone_digits(phone_digits)
     suffix = _phone_suffix(normalized, 9)
     # Fast path: exact digit match (stored normalized)
     record = StaffActivationRecord.objects.filter(
@@ -322,9 +309,7 @@ def _find_active_user_by_phone(phone_digits):
     """
     if not phone_digits or len(phone_digits) < 6:
         return None
-    normalized = normalize_activation_phone_inbound(phone_digits)
-    if not normalized or len(normalized) < 6:
-        return None
+    normalized = _normalize_phone_digits(phone_digits)
     suffix = _phone_suffix(normalized, 9)
     # ONE-TAP activation users
     email = f"wa_{normalized}@mizan.activation"
@@ -355,16 +340,16 @@ def get_activation_status_by_phone(phone_digits):
     - user: CustomUser if active (or after activation)
     - record: StaffActivationRecord if pending_activation
     """
-    normalized = normalize_activation_phone_inbound(phone_digits or "")
-    if not normalized or len(normalized) < 6:
+    if not phone_digits or len(phone_digits) < 6:
         return {'status': 'not_found', 'user': None, 'record': None}
-    pending = _find_staff_activation_record_by_phone(normalized)
+    pending = _find_staff_activation_record_by_phone(phone_digits)
     if pending:
         return {'status': 'pending_activation', 'user': None, 'record': pending}
-    user = _find_active_user_by_phone(normalized)
+    user = _find_active_user_by_phone(phone_digits)
     if user:
         return {'status': 'active', 'user': user, 'record': None}
     # Any activation record for this phone but already activated (orphan or no user match)
+    normalized = _normalize_phone_digits(phone_digits)
     suffix = _phone_suffix(normalized, 9)
     activated_record = StaffActivationRecord.objects.filter(
         status=StaffActivationRecord.STATUS_ACTIVATED
@@ -374,9 +359,6 @@ def get_activation_status_by_phone(phone_digits):
             status=StaffActivationRecord.STATUS_ACTIVATED
         ).filter(phone__endswith=suffix).first()
     if activated_record:
-        linked = getattr(activated_record, "user", None)
-        if linked and getattr(linked, "is_active", True):
-            return {'status': 'active', 'user': linked, 'record': activated_record}
         return {'status': 'no_pending', 'user': None, 'record': activated_record}
     return {'status': 'not_found', 'user': None, 'record': None}
 
@@ -387,13 +369,10 @@ def try_activate_staff_on_inbound_message(phone_digits):
     Phone number is the ONLY identity; no tokens. Creates CustomUser, links session, hands off to Lua.
     Returns CustomUser if activated, else None.
     """
-    phone_canon = normalize_activation_phone_inbound(phone_digits or "")
-    record = _find_staff_activation_record_by_phone(phone_canon)
+    record = _find_staff_activation_record_by_phone(phone_digits)
     if not record:
         return None
-    full_phone = normalize_activation_phone_inbound(record.phone) or phone_canon
-    pin_code = None
-    user = None
+    full_phone = _normalize_phone_digits(record.phone) or phone_digits
     with transaction.atomic():
         record = StaffActivationRecord.objects.select_for_update().filter(
             id=record.id, status=StaffActivationRecord.STATUS_NOT_ACTIVATED
@@ -472,29 +451,18 @@ def try_activate_staff_on_inbound_message(phone_digits):
             )
         except Exception:
             pass
-
-    # Outside the transaction: Lua handoff must never roll back a successful signup.
-    try:
+        # Hand off to Lua for welcome message (no outbound from Django before this)
         from notifications.services import notification_service
-
         notification_service.send_lua_staff_activated(
             phone=full_phone,
             first_name=user.first_name or record.first_name or "Staff",
             restaurant_name=record.restaurant.name,
             user_id=str(user.id),
             pin_code=pin_code,
-            batch_id=getattr(record, "batch_id", "") or "",
+            batch_id=getattr(record, 'batch_id', '') or '',
         )
-    except Exception as notify_err:
-        logger.warning(
-            "send_lua_staff_activated failed after ONE-TAP signup (non-fatal): %s",
-            notify_err,
-            exc_info=True,
-        )
-    logger.info(
-        f"[ONE-TAP] Activated staff {user.id} for phone {full_phone} batch={getattr(record, 'batch_id', '')} ({record.restaurant.name})"
-    )
-    return user
+        logger.info(f"[ONE-TAP] Activated staff {user.id} for phone {full_phone} batch={getattr(record, 'batch_id', '')} ({record.restaurant.name})")
+        return user
 
 
 class UserManagementService:
