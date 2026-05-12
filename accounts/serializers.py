@@ -224,11 +224,8 @@ class PinLoginSerializer(serializers.Serializer):
         if email:
             try:
                 user = CustomUser.objects.get(email=email, is_active=True)
-                
-                # Check if account is locked
-                if user.is_account_locked():
-                    raise serializers.ValidationError("Account is temporarily locked due to multiple failed attempts. Please try again later.")
-                
+                user.is_account_locked()  # clears legacy account_locked_until if present
+
                 # Check if user is staff (should have PIN)
                 if not user.is_staff_role():
                     raise serializers.ValidationError("PIN authentication is only available for staff members.")
@@ -252,9 +249,7 @@ class PinLoginSerializer(serializers.Serializer):
             
             authenticated_user = None
             for user in users_with_pin:
-                if user.is_account_locked():
-                    continue  # Skip locked accounts
-                    
+                user.is_account_locked()  # clears legacy account_locked_until if present
                 if user.check_pin(pin_code):
                     authenticated_user = user
                     break
@@ -262,7 +257,7 @@ class PinLoginSerializer(serializers.Serializer):
             if authenticated_user:
                 data['user'] = authenticated_user
             else:
-                raise serializers.ValidationError("Invalid PIN code or account locked.")
+                raise serializers.ValidationError("Invalid PIN code.")
 
         return data
 
