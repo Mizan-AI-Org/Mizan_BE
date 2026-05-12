@@ -133,9 +133,10 @@ def _find_shift_for_clock_in(user):
     """
     from datetime import timedelta
     now = timezone.now()
+    today = timezone.localdate()
     qs = AssignedShift.objects.filter(
         Q(staff=user) | Q(staff_members=user),
-        shift_date=now.date(),
+        shift_date=today,
         status__in=['SCHEDULED', 'CONFIRMED'],
     ).distinct().order_by('start_time')
 
@@ -169,7 +170,7 @@ def _find_shift_for_clock_in(user):
     # 4. Already IN_PROGRESS shift (someone clocked in via another channel)
     return AssignedShift.objects.filter(
         Q(staff=user) | Q(staff_members=user),
-        shift_date=now.date(),
+        shift_date=today,
         status='IN_PROGRESS',
     ).distinct().order_by('start_time').first()
 
@@ -1558,9 +1559,10 @@ def agent_clock_in_by_phone(request):
         success_message = f"Clock-in recorded. Have a great shift {first_name}!"
         try:
             now_today = timezone.now()
+            today_local = timezone.localdate()
             active_qs = AssignedShift.objects.filter(
                 Q(staff=user) | Q(staff_members=user),
-                shift_date=now_today.date(),
+                shift_date=today_local,
                 status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
             ).distinct()
             # Prefer current or next shift (hasn't ended yet) so staff with multiple shifts get the right checklist

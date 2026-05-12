@@ -444,16 +444,32 @@ def _get_shift_for_checklist(user):
     if not user:
         return None
     now = timezone.now()
+    today = timezone.localdate()
     qs = AssignedShift.objects.filter(
         Q(staff=user) | Q(staff_members=user),
-        shift_date=now.date(),
+        shift_date=today,
         status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
     ).distinct().select_related('staff').order_by('start_time')
-    # Prefer a shift that hasn't ended yet (current or upcoming)
+
+    total = qs.count()
+    if total == 0:
+        all_today = AssignedShift.objects.filter(shift_date=today).filter(
+            Q(staff=user) | Q(staff_members=user)
+        ).values_list('id', 'status', named=True)
+        logger.warning(
+            "_get_shift_for_checklist: 0 active shifts for user %s on %s. "
+            "All shifts for this user today (any status): %s",
+            user.id, today, list(all_today),
+        )
+        return None
+
     current_or_next = qs.filter(end_time__gt=now).order_by('start_time').first()
     if current_or_next:
         return current_or_next
-    # Fallback: first shift of the day (e.g. for reporting or late checklist)
+    # Also try shifts with null end_time
+    null_end = qs.filter(end_time__isnull=True).order_by('start_time').first()
+    if null_end:
+        return null_end
     return qs.first()
 
 
@@ -470,11 +486,12 @@ def _get_shift_for_clock_in(user):
         return None
     from datetime import timedelta
     now = timezone.now()
+    today = timezone.localdate()
     window_before = timedelta(minutes=getattr(dj_settings, 'CLOCK_IN_WINDOW_MINUTES_BEFORE', 30))
     window_after = timedelta(minutes=getattr(dj_settings, 'CLOCK_IN_WINDOW_MINUTES_AFTER', 15))
     qs = AssignedShift.objects.filter(
         Q(staff=user) | Q(staff_members=user),
-        shift_date=now.date(),
+        shift_date=today,
         status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
     ).distinct().select_related('staff')
     for shift in qs.order_by('start_time'):
