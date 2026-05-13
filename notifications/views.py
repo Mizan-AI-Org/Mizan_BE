@@ -294,9 +294,13 @@ def _gps_clock_in_applies_to_whatsapp_message(msg, session) -> bool:
         return True
     if t == "interactive" and inter.get("type") == "location_reply":
         return True
-    if t == "text" and session and getattr(session, "state", None) == "awaiting_clock_in_location":
+    if t == "text":
         tb = ((msg.get("text") or {}).get("body") or "").strip()
-        if _parse_lat_lon_from_clock_in_text(tb):
+        pair = _parse_lat_lon_from_clock_in_text(tb)
+        if pair and (
+            (session and getattr(session, "state", None) == "awaiting_clock_in_location")
+            or _text_looks_like_shared_gps_clock_in(tb)
+        ):
             return True
     loc, _lat, _lon = _extract_whatsapp_inbound_location(msg)
     lat_c, lon_c = _coerce_whatsapp_location_lat_lon(_lat, _lon)
@@ -312,6 +316,19 @@ def _gps_clock_in_applies_to_whatsapp_message(msg, session) -> bool:
     return False
 
 
+def _safe_whatsapp_text_send(phone_digits, body, *, log_ctx: str) -> bool:
+    """Best-effort WhatsApp text. Returns False on Graph/network failure (never raises)."""
+    if not phone_digits or body is None:
+        return False
+    try:
+        notification_service.send_whatsapp_text(phone_digits, body)
+        return True
+    except Exception:
+        tail = str(phone_digits)[-6:] if phone_digits else ""
+        logger.warning("%s: WhatsApp send failed …%s", log_ctx, tail, exc_info=True)
+        return False
+
+
 def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, loc, R):
     """
     Run geofence validation, create :class:`~timeclock.models.ClockEvent`,
@@ -321,9 +338,10 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
     """
     rest = getattr(user, "restaurant", None)
     if not rest:
-        notification_service.send_whatsapp_text(
+        _safe_whatsapp_text_send(
             phone_digits,
             "Your account isn't linked to a restaurant yet. Please contact your manager.",
+            log_ctx="whatsapp_clock_in_gps",
         )
         return True
 
@@ -332,7 +350,24 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
     # Restaurant.* inside ``find_matching_location``. The old path only
     # compared the user to ``Restaurant.latitude`` — wrong branch / empty
     # legacy coords caused false "outside zone" or DB errors on save.
-    matched_location, dist_m, nearest = find_matching_location(rest, float(lat), float(lon))
+    try:
+        matched_location, dist_m, nearest = find_matching_location(rest, float(lat), float(lon))
+    except (TypeError, ValueError):
+        logger.warning("WhatsApp clock-in: invalid lat/lon lat=%r lon=%r", lat, lon)
+        _safe_whatsapp_text_send(
+            phone_digits,
+            "We couldn't read your location from this message. Please tap Share Location / Current Location and try again.",
+            log_ctx="whatsapp_clock_in_gps",
+        )
+        return True
+    except Exception:
+        logger.exception("WhatsApp clock-in: find_matching_location failed")
+        _safe_whatsapp_text_send(
+            phone_digits,
+            "Something went wrong checking your location. Please try again in a moment.",
+            log_ctx="whatsapp_clock_in_gps",
+        )
+        return True
     if nearest is None:
         try:
             from accounts.models import AuditLog
@@ -347,9 +382,10 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
             )
         except Exception:
             pass
-        notification_service.send_whatsapp_text(
+        _safe_whatsapp_text_send(
             phone_digits,
             "Location check is not set up for your restaurant. Please contact your manager to clock in.",
+            log_ctx="whatsapp_clock_in_gps",
         )
         return True
 
@@ -371,9 +407,10 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
             )
         except Exception:
             pass
-        notification_service.send_whatsapp_text(
+        _safe_whatsapp_text_send(
             phone_digits,
             "You are not within any approved location zone. Please move closer and try again.",
+            log_ctx="whatsapp_clock_in_gps",
         )
         return True
 
@@ -406,7 +443,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
             )
         except Exception:
             pass
-        notification_service.send_whatsapp_text(phone_digits, reject_msg)
+        _safe_whatsapp_text_send(phone_digits, reject_msg, log_ctx="whatsapp_clock_in_gps")
         return True
 
     from datetime import timedelta as _td_cl
@@ -415,7 +452,11 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
     if last_event and last_event.event_type == "in":
         now_local = timezone.localtime(timezone.now()).date()
         if timezone.localtime(last_event.timestamp).date() == now_local:
-            notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
+            _safe_whatsapp_text_send(
+                phone_digits,
+                "You are already clocked in for this shift.",
+                log_ctx="whatsapp_clock_in_gps",
+            )
             session.state = "idle"
             session.save(update_fields=["state"])
             return True
@@ -465,7 +506,11 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
                 and last_event.event_type == "in"
                 and timezone.localtime(last_event.timestamp).date() == timezone.localtime(timezone.now()).date()
             ):
-                notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
+                _safe_whatsapp_text_send(
+                    phone_digits,
+                    "You are already clocked in for this shift.",
+                    log_ctx="whatsapp_clock_in_gps",
+                )
                 session.state = "idle"
                 session.save(update_fields=["state"])
                 return True
@@ -521,19 +566,23 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
                 logger.warning("WhatsApp clock-in: location mismatch notify skipped", exc_info=True)
     except Exception as e:
         logger.exception("Clock-in create failed: %s", e)
-        notification_service.send_whatsapp_text(phone_digits, "Something went wrong. Please try again.")
+        _safe_whatsapp_text_send(
+            phone_digits,
+            "Something went wrong. Please try again.",
+            log_ctx="whatsapp_clock_in_gps",
+        )
         return True
 
     # Match ``timeclock.views.agent_clock_in_by_phone`` / Miya relay of ``message_for_user``
     # so WhatsApp-direct GPS clock-in reads the same as the Lua tool path.
     first_name = getattr(user, "first_name", None) or "Team Member"
     success_body = f"Clock-in recorded. Have a great shift {first_name}!"
-    try:
-        notification_service.send_whatsapp_text(phone_digits, success_body)
-    except Exception:
-        logger.warning("WhatsApp clock-in success send failed; falling back to localized copy", exc_info=True)
-        notification_service.send_whatsapp_text(
-            phone_digits, R(user, "clockin_ok", time=timezone.now().strftime("%H:%M"))
+    if not _safe_whatsapp_text_send(phone_digits, success_body, log_ctx="whatsapp_clock_in_gps_success"):
+        logger.warning("WhatsApp clock-in success send failed; trying localized copy")
+        _safe_whatsapp_text_send(
+            phone_digits,
+            R(user, "clockin_ok", time=timezone.now().strftime("%H:%M")),
+            log_ctx="whatsapp_clock_in_gps_success_fallback",
         )
 
     try:
@@ -2531,9 +2580,10 @@ def whatsapp_webhook(request):
                                 phone_digits,
                                 msg.get("type"),
                             )
-                            notification_service.send_whatsapp_text(
+                            _safe_whatsapp_text_send(
                                 phone_digits,
                                 "Something went wrong. Please try again in a moment.",
+                                log_ctx="whatsapp_clock_in_gps_outer_err",
                             )
                         continue
 
