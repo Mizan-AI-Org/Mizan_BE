@@ -68,6 +68,25 @@ def _looks_like_voice_ui_placeholder(body: str) -> bool:
     return False
 
 
+def _text_looks_like_shared_gps_clock_in(body: str) -> bool:
+    """True when plain text is almost certainly a WhatsApp-style location share, not random numbers."""
+    if not body or not isinstance(body, str):
+        return False
+    bl = body.lower()
+    needles = (
+        "coordinates:",
+        "coordinate:",
+        "shared a location",
+        "maps.google.com",
+        "google.com/maps",
+        "g.co/",
+        "?q=",
+        "live location",
+        "current location",
+    )
+    return any(n in bl for n in needles)
+
+
 def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> bool:
     """True if Django should process this message and Lua must not see the webhook.
 
@@ -97,6 +116,8 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
     if t == "text":
         body = ((msg.get("text") or {}).get("body") or "").strip()
         if _looks_like_voice_ui_placeholder(body):
+            return True
+        if _parse_lat_lon_from_clock_in_text(body) and _text_looks_like_shared_gps_clock_in(body):
             return True
     return False
 
@@ -181,9 +202,15 @@ def _parse_lat_lon_from_clock_in_text(text):
     coordinates as text (e.g. "Shared a location at coordinates: X, Y" or
     a maps link) instead of a WhatsApp ``location`` message — parse those so
     staff can still clock in while ``awaiting_clock_in_location``.
+
+    WhatsApp often wraps numbers in markdown bold (``**32.…**``), which would
+    break naive ``coordinates?:`` patterns — strip ``*`` / ``_`` noise first.
     """
     if not text or not isinstance(text, str):
         return None
+    # Bold/italic markers from WhatsApp web/mobile (not real markdown, but breaks digit-adjacent regexes).
+    t = re.sub(r"[*_`]+", " ", text)
+    t = re.sub(r"\s+", " ", t).strip()
     patterns = (
         re.compile(r"coordinates?:\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)", re.I),
         re.compile(r"[?&]q=\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\b"),
@@ -191,12 +218,12 @@ def _parse_lat_lon_from_clock_in_text(text):
         re.compile(r"\b(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)\b"),
     )
     for rx in patterns:
-        m = rx.search(text)
+        m = rx.search(t)
         if not m:
             continue
         try:
-            lat = float(m.group(1))
-            lon = float(m.group(2))
+            lat = float(m.group(1).replace("\u2212", "-").replace("−", "-"))
+            lon = float(m.group(2).replace("\u2212", "-").replace("−", "-"))
             if -90 <= lat <= 90 and -180 <= lon <= 180:
                 return lat, lon
         except (ValueError, IndexError):
@@ -267,6 +294,10 @@ def _gps_clock_in_applies_to_whatsapp_message(msg, session) -> bool:
         return True
     if t == "interactive" and inter.get("type") == "location_reply":
         return True
+    if t == "text" and session and getattr(session, "state", None) == "awaiting_clock_in_location":
+        tb = ((msg.get("text") or {}).get("body") or "").strip()
+        if _parse_lat_lon_from_clock_in_text(tb):
+            return True
     loc, _lat, _lon = _extract_whatsapp_inbound_location(msg)
     lat_c, lon_c = _coerce_whatsapp_location_lat_lon(_lat, _lon)
     if lat_c is None or lon_c is None:
@@ -2481,6 +2512,11 @@ def whatsapp_webhook(request):
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                             continue
                         lat_c, lon_c = _coerce_whatsapp_location_lat_lon(lat_raw, lon_raw)
+                        if (lat_c is None or lon_c is None) and msg_type == "text" and text_body:
+                            tb_pair = _parse_lat_lon_from_clock_in_text(text_body.strip())
+                            if tb_pair:
+                                lat_c, lon_c = tb_pair[0], tb_pair[1]
+                                loc = {}
                         if lat_c is None or lon_c is None:
                             notification_service.send_whatsapp_location_request_interactive(
                                 phone_digits,
@@ -2511,7 +2547,17 @@ def whatsapp_webhook(request):
                         coord_pair = _parse_lat_lon_from_clock_in_text(raw_body)
                         if coord_pair and user:
                             lat_g, lon_g = coord_pair
-                            _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat_g, lon_g, {}, R)
+                            try:
+                                _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat_g, lon_g, {}, R)
+                            except Exception:
+                                logger.exception(
+                                    "WhatsApp text GPS clock-in failed phone=%s",
+                                    phone_digits,
+                                )
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    "Something went wrong. Please try again in a moment.",
+                                )
                             continue
 
                     if not body:
@@ -2805,8 +2851,23 @@ def whatsapp_webhook(request):
                         notification_service.send_whatsapp_text(phone_digits, R(user, 'help'))
                         continue
 
-                    # Re-prompt: send Share Location button again (no extra text—just the button)
+                    # Re-prompt only when we still have no parseable coordinates in this text turn.
                     if session.state == 'awaiting_clock_in_location':
+                        coord_again = _parse_lat_lon_from_clock_in_text(raw_body or "")
+                        if coord_again and user:
+                            lat_g, lon_g = coord_again
+                            try:
+                                _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat_g, lon_g, {}, R)
+                            except Exception:
+                                logger.exception(
+                                    "WhatsApp awaiting_clock_in re-prompt path GPS failed phone=%s",
+                                    phone_digits,
+                                )
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    "Something went wrong. Please try again in a moment.",
+                                )
+                            continue
                         notification_service.send_whatsapp_location_request_interactive(
                             phone_digits,
                             "Share your location to clock in."
