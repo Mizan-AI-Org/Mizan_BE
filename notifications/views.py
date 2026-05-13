@@ -117,8 +117,20 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
         body = ((msg.get("text") or {}).get("body") or "").strip()
         if _looks_like_voice_ui_placeholder(body):
             return True
-        if _parse_lat_lon_from_clock_in_text(body) and _text_looks_like_shared_gps_clock_in(body):
-            return True
+        pair = _parse_lat_lon_from_clock_in_text(body)
+        if pair:
+            if _text_looks_like_shared_gps_clock_in(body):
+                return True
+            # Bare coordinates while we've asked for GPS — Django owns this turn; do not
+            # forward to Lua or Miya races staff_clock_in without coords / wrong args.
+            from_phone = msg.get("from")
+            phone_digits = "".join(filter(str.isdigit, str(from_phone or "")))
+            phone_digits = normalize_activation_phone_inbound(phone_digits) or phone_digits
+            if phone_digits:
+                sess = WhatsAppSession.objects.filter(phone=phone_digits).first()
+                if sess and getattr(sess, "state", None) == "awaiting_clock_in_location":
+                    return True
+        return False
     return False
 
 
