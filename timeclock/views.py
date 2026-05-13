@@ -1408,7 +1408,8 @@ def agent_clock_in_by_phone(request):
                 'message_for_user': "We couldn't find your account. Please contact your manager to be added.",
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        from accounts.services import _find_active_user_by_phone
+        from accounts.services import _find_active_user_by_phone, normalize_activation_phone_inbound
+        clean_phone = normalize_activation_phone_inbound(clean_phone) or clean_phone
         user = _find_active_user_by_phone(clean_phone)
         if not user:
             return Response({
@@ -1627,7 +1628,8 @@ def agent_clock_out_by_phone(request):
                 'message_for_user': "We couldn't find your account. Please contact your manager.",
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        from accounts.services import _find_active_user_by_phone
+        from accounts.services import _find_active_user_by_phone, normalize_activation_phone_inbound
+        clean_phone = normalize_activation_phone_inbound(clean_phone) or clean_phone
         user = _find_active_user_by_phone(clean_phone)
         if not user:
             return Response({

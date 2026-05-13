@@ -20,6 +20,7 @@ from .widget_ids import (
     CUSTOM_WIDGET_PREFIX,
     DASHBOARD_WIDGET_IDS,
     DEFAULT_DASHBOARD_WIDGET_ORDER,
+    normalize_agent_widget_id,
 )
 from .widget_alias_resolver import (
     DATA_BOUND_BUILTIN_IDS,
@@ -90,6 +91,15 @@ def _resolve_user_from_agent_payload(data: dict) -> CustomUser | None:
         from staff.views_agent import _resolve_restaurant_and_staff_by_phone
 
         _rest, staff = _resolve_restaurant_and_staff_by_phone(data.get("phone"))
+        user = staff
+    if user is None and data.get("phone"):
+        # WhatsApp-oriented helper skips SUPER_ADMIN so tenant staff win;
+        # dashboard Miya still needs platform admins matched by phone alone.
+        from staff.views_agent import _resolve_restaurant_and_staff_by_phone
+
+        _rest, staff = _resolve_restaurant_and_staff_by_phone(
+            data.get("phone"), exclude_super_admin=False
+        )
         user = staff
     return user
 
@@ -284,6 +294,8 @@ class AgentDashboardWidgetsAddView(APIView):
                 {"success": False, "error": "widgets must be a non-empty list of widget ids"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        widgets = [normalize_agent_widget_id(w) if isinstance(w, str) else w for w in widgets]
 
         unknown = [w for w in widgets if not isinstance(w, str) or w not in DASHBOARD_WIDGET_IDS]
         if unknown:
@@ -576,12 +588,36 @@ class AgentDashboardWidgetCreateView(APIView):
                 exc_info=True,
             )
 
-        message = (
-            f'Added the "{requested_title}" lane to your dashboard — it shows the live list of '
-            f"matching items from the inbox. Open or refresh the dashboard to see them."
-            if not already_present
-            else f'The "{requested_title}" lane is already on your dashboard — it shows the live list of matching items.'
-        )
+        inbox_style_lanes = {
+            "urgent_top",
+            "human_resources",
+            "finance",
+            "maintenance",
+            "purchase_orders",
+            "miscellaneous",
+            "staff_inbox",
+        }
+        if builtin_id in inbox_style_lanes:
+            message = (
+                f'Added the "{requested_title}" lane to your dashboard — it shows the live list of '
+                f"matching items from the inbox. Open or refresh the dashboard to see them."
+                if not already_present
+                else f'The "{requested_title}" lane is already on your dashboard — it shows the live list of matching items.'
+            )
+        elif builtin_id in ("clock_ins", "live_attendance"):
+            message = (
+                f'Added the "{requested_title}" card to your dashboard — it shows live attendance data. '
+                f"Open or refresh the dashboard to see it."
+                if not already_present
+                else f'The "{requested_title}" card is already on your dashboard.'
+            )
+        else:
+            message = (
+                f'Added the "{requested_title}" card to your dashboard — it shows live operational data. '
+                f"Open or refresh the dashboard to see it."
+                if not already_present
+                else f'The "{requested_title}" card is already on your dashboard.'
+            )
 
         return Response(
             {
@@ -785,6 +821,8 @@ class AgentDashboardWidgetsRemoveView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        widgets = [normalize_agent_widget_id(w) if isinstance(w, str) else w for w in widgets]
+
         user = _resolve_user_from_agent_payload(data)
         if user is None:
             return Response(
@@ -851,6 +889,8 @@ class AgentDashboardWidgetsReorderView(APIView):
                 {"success": False, "error": "order must be a non-empty list of widget ids"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        order = [normalize_agent_widget_id(w) if isinstance(w, str) else w for w in order]
 
         user = _resolve_user_from_agent_payload(data)
         if user is None:

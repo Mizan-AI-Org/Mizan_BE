@@ -83,6 +83,16 @@ class ResolveWidgetAliasTests(SimpleTestCase):
     def test_clock_in_resolves(self):
         self.assertEqual(resolve_widget_alias("Clock-in"), "clock_ins")
 
+    def test_attendance_word_resolves_to_clock_ins(self):
+        self.assertEqual(resolve_widget_alias("Attendance"), "clock_ins")
+
+    def test_attendance_widget_phrase_prefers_live_attendance(self):
+        self.assertEqual(
+            resolve_widget_alias("Please create an attendance widget"),
+            "live_attendance",
+        )
+        self.assertEqual(resolve_widget_alias("Attendance widget"), "live_attendance")
+
     def test_inventory_resolves(self):
         self.assertEqual(resolve_widget_alias("Inventory"), "inventory_delivery")
 
@@ -162,6 +172,20 @@ class KnownAliasesForTests(SimpleTestCase):
                     "the manager will only ever match it by the canonical "
                     "snake_case id, which they will not type.",
                 )
+
+
+class NormalizeAgentWidgetIdTests(SimpleTestCase):
+    def test_attendance_maps_to_clock_ins(self):
+        from dashboard.widget_ids import normalize_agent_widget_id
+
+        self.assertEqual(normalize_agent_widget_id("Attendance"), "clock_ins")
+        self.assertEqual(normalize_agent_widget_id("live attendance"), "live_attendance")
+
+    def test_custom_slot_preserves_hyphens(self):
+        from dashboard.widget_ids import normalize_agent_widget_id
+
+        slot = "custom:8f4e9b2e-1234-5678-9012-abcdef123456"
+        self.assertEqual(normalize_agent_widget_id(slot), slot)
 
 
 class CrossModuleSyncTests(SimpleTestCase):

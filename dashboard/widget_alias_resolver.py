@@ -241,6 +241,10 @@ _ALIASES: dict[str, str] = {
     # ---- live_attendance --------------------------------------------------
     "live attendance": "live_attendance",
     "presence en direct": "live_attendance",
+    "attendance widget": "live_attendance",
+    "widget attendance": "live_attendance",
+    "who is here": "live_attendance",
+    "presence board": "live_attendance",
     # ---- ops_reports ------------------------------------------------------
     "reports": "ops_reports",
     "ops reports": "ops_reports",
