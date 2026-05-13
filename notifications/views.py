@@ -188,6 +188,26 @@ def _coerce_whatsapp_location_lat_lon(lat, lon):
         return None, None
 
 
+def _extract_whatsapp_inbound_location(msg):
+    """Return ``(loc_dict, lat_raw, lon_raw)`` for Cloud API and minor payload variants.
+
+    Meta normally sends ``messages[].location.{latitude,longitude}``. Some
+    clients or bridges use ``degreesLatitude`` / ``degreesLongitude`` (On-Prem
+    style names). We accept both so GPS clock-in does not fall through with
+    empty coordinates.
+    """
+    if not isinstance(msg, dict):
+        return {}, None, None
+    raw = msg.get("location")
+    loc = raw if isinstance(raw, dict) else {}
+    lat_raw = loc.get("latitude")
+    lon_raw = loc.get("longitude")
+    if lat_raw is None and lon_raw is None:
+        lat_raw = loc.get("degreesLatitude") or loc.get("degrees_latitude")
+        lon_raw = loc.get("degreesLongitude") or loc.get("degrees_longitude")
+    return loc, lat_raw, lon_raw
+
+
 def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, loc, R):
     """
     Run geofence validation, create :class:`~timeclock.models.ClockEvent`,
@@ -320,10 +340,16 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
                 getattr(last_event, "id", None),
             )
 
-    matched_loc_fk = matched_location if getattr(matched_location, "pk", None) else None
+    matched_loc_fk = matched_location if (
+        getattr(matched_location, "pk", None) or getattr(matched_location, "id", None)
+    ) else None
     location_mismatch = bool(matched_loc_fk and not user.can_work_at(matched_loc_fk))
 
     try:
+        try:
+            dist_note = int(round(float(dist))) if dist is not None else 0
+        except (TypeError, ValueError):
+            dist_note = 0
         with transaction.atomic():
             last_event = ClockEvent.objects.filter(staff=user).order_by("-timestamp").first()
             if (
@@ -341,17 +367,28 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
                 latitude=float(lat),
                 longitude=float(lon),
                 device_id="whatsapp",
-                notes=f"Clock-in via WhatsApp (location verified, distance={round(dist)}m)",
+                notes=f"Clock-in via WhatsApp (location verified, distance={dist_note}m)",
                 location_encrypted=f"{lat},{lon}",
                 location=matched_loc_fk,
                 location_mismatch=location_mismatch,
             )
-            if active_shift:
+        # Shift status is best-effort: a validation or DB issue on AssignedShift
+        # must not roll back an otherwise valid ClockEvent (staff saw a generic
+        # error even though geofence passed).
+        if active_shift:
+            try:
                 active_shift.status = "IN_PROGRESS"
                 active_shift.save(update_fields=["status"])
+            except Exception as shift_err:
+                logger.warning(
+                    "WhatsApp clock-in: shift IN_PROGRESS update failed (non-fatal) shift=%s: %s",
+                    getattr(active_shift, "id", None),
+                    shift_err,
+                    exc_info=True,
+                )
         from accounts.models import AuditLog
 
-        _audit_new = {"distance_m": round(dist)}
+        _audit_new = {"distance_m": dist_note}
         if active_shift:
             _audit_new["shift_id"] = str(active_shift.id)
         try:
@@ -2368,9 +2405,7 @@ def whatsapp_webhook(request):
                     # 4. HANDLE LOCATION (Clock In)
                     # ------------------------------------------------------------------
                     if msg_type == 'location':
-                        loc = msg.get('location') or {}
-                        lat_raw = loc.get('latitude')
-                        lon_raw = loc.get('longitude')
+                        loc, lat_raw, lon_raw = _extract_whatsapp_inbound_location(msg)
 
                         if not user:
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))

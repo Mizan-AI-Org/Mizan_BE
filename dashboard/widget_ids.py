@@ -48,6 +48,37 @@ DASHBOARD_WIDGET_IDS = frozenset(
     ]
 )
 
+# Natural-language / typo ids the agent may send instead of snake_case.
+_AGENT_WIDGET_SYNONYMS: dict[str, str] = {
+    "attendance": "clock_ins",
+    "attendances": "clock_ins",
+    "clock_in": "clock_ins",
+    "clockin": "clock_ins",
+    "clockins": "clock_ins",
+    "clocking": "clock_ins",
+    "pointage": "clock_ins",
+    "pointages": "clock_ins",
+    "liveattendance": "live_attendance",
+    "live_attendance": "live_attendance",
+}
+
+
+def normalize_agent_widget_id(raw: str | None) -> str:
+    """Map common LLM/user synonyms to a canonical id from ``DASHBOARD_WIDGET_IDS``."""
+    if not isinstance(raw, str):
+        return ""
+    st = raw.strip()
+    if not st:
+        return ""
+    if st.lower().startswith("custom:"):
+        return st
+    key = st.lower().replace("-", "_")
+    key = "_".join(p for p in key.replace(" ", "_").split("_") if p)
+    if not key:
+        return ""
+    return _AGENT_WIDGET_SYNONYMS.get(key, key)
+
+
 # Icons allowed for Miya-created dashboard tiles (frontend maps to Lucide).
 ALLOWED_CUSTOM_WIDGET_ICONS = frozenset(
     [

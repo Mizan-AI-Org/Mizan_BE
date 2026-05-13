@@ -54,8 +54,14 @@ def _invalidate_staff_incidents_cache(restaurant_id) -> None:
         safe_cache_delete(_staff_incidents_cache_key(restaurant_id, sf))
 
 
-def _resolve_restaurant_and_staff_by_phone(phone_raw):
-    """Resolve (restaurant, staff) from phone when agent sends phone but not restaurant_id."""
+def _resolve_restaurant_and_staff_by_phone(phone_raw, *, exclude_super_admin=True):
+    """Resolve (restaurant, staff) from phone when agent sends phone but not restaurant_id.
+
+    By default SUPER_ADMIN rows are skipped so WhatsApp-style resolution
+    prefers tenant staff. Dashboard agent flows call again with
+    ``exclude_super_admin=False`` when no staff match so platform admins
+    with only a phone on file can still be resolved.
+    """
     if not phone_raw:
         return None, None
     phone_digits = ''.join(filter(str.isdigit, str(phone_raw)))
@@ -77,10 +83,13 @@ def _resolve_restaurant_and_staff_by_phone(phone_raw):
     possible_patterns = [p for p in possible_patterns if p and not (p in seen or seen.add(p))]
     for pattern in possible_patterns:
         try:
-            staff = CustomUser.objects.filter(
+            qs = CustomUser.objects.filter(
                 phone__icontains=pattern,
-                is_active=True
-            ).exclude(role='SUPER_ADMIN').select_related('restaurant').first()
+                is_active=True,
+            ).select_related("restaurant")
+            if exclude_super_admin:
+                qs = qs.exclude(role="SUPER_ADMIN")
+            staff = qs.first()
             if staff and getattr(staff, 'restaurant_id', None):
                 return staff.restaurant, staff
         except Exception:
