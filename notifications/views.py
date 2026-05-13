@@ -37,7 +37,7 @@ from core.utils import build_tenant_context
 from .models import WhatsAppSession
 from accounts.models import CustomUser
 from accounts.utils import calculate_distance
-from accounts.services import UserManagementService, try_activate_staff_on_inbound_message
+from accounts.services import UserManagementService, try_activate_staff_on_inbound_message, normalize_activation_phone_inbound
 from timeclock.models import ClockEvent
 from scheduling.models import ShiftTask, AssignedShift, ShiftChecklistProgress
 from django.conf import settings as dj_settings
@@ -1486,8 +1486,9 @@ def whatsapp_webhook(request):
                     msg_type = msg.get('type')
                     text_body = (msg.get('text') or {}).get('body') if msg_type == 'text' else None
                     
-                    # Normalize phone
+                    # Normalize phone (Meta sends digits; Morocco national → 212… for DB/session consistency)
                     phone_digits = ''.join(filter(str.isdigit, str(from_phone or '')))
+                    phone_digits = normalize_activation_phone_inbound(phone_digits) or phone_digits
                     # ONE-TAP activation: on first inbound message, match NOT_ACTIVATED staff by phone and activate
                     activated_user = try_activate_staff_on_inbound_message(phone_digits)
                     if activated_user:
