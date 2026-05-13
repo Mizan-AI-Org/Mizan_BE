@@ -77,6 +77,9 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
     those must never be forwarded to Lua while Django skips its handlers after the
     early defer guard.
 
+    Own ``location_reply`` even when coordinates are in a non-standard shape so Lua
+    never races ahead with a generic error before Django parses coords.
+
     Coordinate extraction mirrors `_extract_whatsapp_inbound_location` (runs later
     in module load — OK at call time).
     """
@@ -84,6 +87,8 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
         return False
     t = msg.get("type")
     if t in lua_skip_types:
+        return True
+    if t == "interactive" and (msg.get("interactive") or {}).get("type") == "location_reply":
         return True
     _, lat_raw, lon_raw = _extract_whatsapp_inbound_location(msg)
     lat_c, lon_c = _coerce_whatsapp_location_lat_lon(lat_raw, lon_raw)
@@ -237,6 +242,15 @@ def _extract_whatsapp_inbound_location(msg):
             loc = lr if lr else loc
             lat_raw = lr.get("latitude") or lr.get("degreesLatitude")
             lon_raw = lr.get("longitude") or lr.get("degreesLongitude")
+            # Meta / some BSPs send coordinates on ``interactive`` when ``location_reply`` is empty.
+            if lat_raw is None and lon_raw is None:
+                lat_raw = inter.get("latitude") or inter.get("degreesLatitude")
+                lon_raw = inter.get("longitude") or inter.get("degreesLongitude")
+            iloc = inter.get("location")
+            if (lat_raw is None or lon_raw is None) and isinstance(iloc, dict):
+                loc = iloc if iloc else loc
+                lat_raw = lat_raw or iloc.get("latitude") or iloc.get("degreesLatitude")
+                lon_raw = lon_raw or iloc.get("longitude") or iloc.get("degreesLongitude")
     return loc, lat_raw, lon_raw
 
 
@@ -245,15 +259,18 @@ def _gps_clock_in_applies_to_whatsapp_message(msg, session) -> bool:
     if not isinstance(msg, dict):
         return False
     t = msg.get("type")
-    loc, _lat, _lon = _extract_whatsapp_inbound_location(msg)
-    lat_c, lon_c = _coerce_whatsapp_location_lat_lon(_lat, _lon)
-    if lat_c is None or lon_c is None:
-        return False
     inter = msg.get("interactive") or {}
+    # Always handle native location pins and replies to "share location" in Django — even if
+    # coords are missing/malformed (handler re-prompts). Otherwise ``interactive`` falls through
+    # the defer guard while idle and Lua answers with a useless generic error.
     if t == "location":
         return True
     if t == "interactive" and inter.get("type") == "location_reply":
         return True
+    loc, _lat, _lon = _extract_whatsapp_inbound_location(msg)
+    lat_c, lon_c = _coerce_whatsapp_location_lat_lon(_lat, _lon)
+    if lat_c is None or lon_c is None:
+        return False
     if session and getattr(session, "state", None) == "awaiting_clock_in_location":
         return True
     # BSP / echo payloads with coordinates but missing ``type`` — still a map pin.
@@ -399,7 +416,11 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
     matched_loc_fk = matched_location if (
         getattr(matched_location, "pk", None) or getattr(matched_location, "id", None)
     ) else None
-    location_mismatch = bool(matched_loc_fk and not user.can_work_at(matched_loc_fk))
+    try:
+        location_mismatch = bool(matched_loc_fk and not user.can_work_at(matched_loc_fk))
+    except Exception:
+        logger.warning("WhatsApp clock-in: can_work_at check failed (non-fatal)", exc_info=True)
+        location_mismatch = False
 
     try:
         try:
