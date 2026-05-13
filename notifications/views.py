@@ -68,6 +68,34 @@ def _looks_like_voice_ui_placeholder(body: str) -> bool:
     return False
 
 
+def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> bool:
+    """True if Django should process this message and Lua must not see the webhook.
+
+    Shared GPS replies occasionally omit ``type: \"location\"`` or echo ``type: null``
+    while still including a ``location`` object. Replies to the Location Request
+    interactive often arrive as ``type: interactive`` / ``location_reply`` —
+    those must never be forwarded to Lua while Django skips its handlers after the
+    early defer guard.
+
+    Coordinate extraction mirrors `_extract_whatsapp_inbound_location` (runs later
+    in module load — OK at call time).
+    """
+    if not isinstance(msg, dict):
+        return False
+    t = msg.get("type")
+    if t in lua_skip_types:
+        return True
+    _, lat_raw, lon_raw = _extract_whatsapp_inbound_location(msg)
+    lat_c, lon_c = _coerce_whatsapp_location_lat_lon(lat_raw, lon_raw)
+    if lat_c is not None and lon_c is not None:
+        return True
+    if t == "text":
+        body = ((msg.get("text") or {}).get("body") or "").strip()
+        if _looks_like_voice_ui_placeholder(body):
+            return True
+    return False
+
+
 def _payload_should_skip_lua_forward(payload: dict, lua_skip_types: set) -> bool:
     """
     Forward WhatsApp webhooks to Lua only when at least one message needs Miya.
@@ -82,13 +110,8 @@ def _payload_should_skip_lua_forward(payload: dict, lua_skip_types: set) -> bool
         if not msgs:
             return False
         for msg in msgs:
-            t = msg.get('type')
-            if t in lua_skip_types:
+            if _django_owns_whatsapp_inbound_message(msg, lua_skip_types):
                 continue
-            if t == 'text':
-                body = ((msg.get('text') or {}).get('body') or '').strip()
-                if _looks_like_voice_ui_placeholder(body):
-                    continue
             return False
         return True
     except Exception:
@@ -191,10 +214,12 @@ def _coerce_whatsapp_location_lat_lon(lat, lon):
 def _extract_whatsapp_inbound_location(msg):
     """Return ``(loc_dict, lat_raw, lon_raw)`` for Cloud API and minor payload variants.
 
-    Meta normally sends ``messages[].location.{latitude,longitude}``. Some
-    clients or bridges use ``degreesLatitude`` / ``degreesLongitude`` (On-Prem
-    style names). We accept both so GPS clock-in does not fall through with
-    empty coordinates.
+    Meta normally sends ``messages[].location.{latitude,longitude}``. Some clients or
+    bridges use ``degreesLatitude`` / ``degreesLongitude`` (On-Prem-style names), or
+    an ``interactive`` wrapper with ``type: location_reply`` when replying to a
+    Location Request message.
+
+    ``loc_dict`` is best-effort metadata for static-pin heuristics (may be ``{}``).
     """
     if not isinstance(msg, dict):
         return {}, None, None
@@ -205,7 +230,38 @@ def _extract_whatsapp_inbound_location(msg):
     if lat_raw is None and lon_raw is None:
         lat_raw = loc.get("degreesLatitude") or loc.get("degrees_latitude")
         lon_raw = loc.get("degreesLongitude") or loc.get("degrees_longitude")
+    if lat_raw is None and lon_raw is None and msg.get("type") == "interactive":
+        inter = msg.get("interactive") or {}
+        if inter.get("type") == "location_reply":
+            lr = inter.get("location_reply") or {}
+            loc = lr if lr else loc
+            lat_raw = lr.get("latitude") or lr.get("degreesLatitude")
+            lon_raw = lr.get("longitude") or lr.get("degreesLongitude")
     return loc, lat_raw, lon_raw
+
+
+def _gps_clock_in_applies_to_whatsapp_message(msg, session) -> bool:
+    """Whether this inbound webhook message should run GPS clock-in (not text/incident flows)."""
+    if not isinstance(msg, dict):
+        return False
+    t = msg.get("type")
+    loc, _lat, _lon = _extract_whatsapp_inbound_location(msg)
+    lat_c, lon_c = _coerce_whatsapp_location_lat_lon(_lat, _lon)
+    if lat_c is None or lon_c is None:
+        return False
+    inter = msg.get("interactive") or {}
+    if t == "location":
+        return True
+    if t == "interactive" and inter.get("type") == "location_reply":
+        return True
+    if session and getattr(session, "state", None) == "awaiting_clock_in_location":
+        return True
+    # BSP / echo payloads with coordinates but missing ``type`` — still a map pin.
+    if isinstance(msg.get("location"), dict) and (t in (None, "") or t not in (
+        "text", "image", "audio", "voice", "document", "button", "contacts"
+    )):
+        return True
+    return False
 
 
 def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, loc, R):
@@ -416,44 +472,36 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
         notification_service.send_whatsapp_text(phone_digits, "Something went wrong. Please try again.")
         return True
 
-    clock_in_template = getattr(dj_settings, "WHATSAPP_TEMPLATE_CLOCK_IN_SUCCESSFUL", "clock_in_success")
-    if active_shift and getattr(active_shift, "start_time", None) and getattr(active_shift, "end_time", None):
-        try:
-            st = timezone.localtime(active_shift.start_time).strftime("%H:%M")
-            et = timezone.localtime(active_shift.end_time).strftime("%H:%M")
-            shift_summary = f"Today {st}–{et}"
-        except Exception:
-            shift_summary = "Today " + timezone.now().strftime("%H:%M")
-    else:
-        shift_summary = "Today " + timezone.now().strftime("%H:%M")
+    # Match ``timeclock.views.agent_clock_in_by_phone`` / Miya relay of ``message_for_user``
+    # so WhatsApp-direct GPS clock-in reads the same as the Lua tool path.
+    first_name = getattr(user, "first_name", None) or "Team Member"
+    success_body = f"Clock-in recorded. Have a great shift {first_name}!"
     try:
-        notification_service.send_whatsapp_template(
-            phone_digits,
-            template_name=clock_in_template,
-            language_code="en_US",
-            components=[
-                {
-                    "type": "body",
-                    "parameters": [
-                        {"type": "text", "text": shift_summary[:100]},
-                        {"type": "text", "text": "Location verified"},
-                    ],
-                }
-            ],
-        )
+        notification_service.send_whatsapp_text(phone_digits, success_body)
     except Exception:
-        notification_service.send_whatsapp_text(phone_digits, R(user, "clockin_ok", time=timezone.now().strftime("%H:%M")))
-
-    if active_shift:
-        checklist_started = notification_service.start_conversational_checklist_after_clock_in(
-            user, active_shift, phone_digits=phone_digits
+        logger.warning("WhatsApp clock-in success send failed; falling back to localized copy", exc_info=True)
+        notification_service.send_whatsapp_text(
+            phone_digits, R(user, "clockin_ok", time=timezone.now().strftime("%H:%M"))
         )
-        if not checklist_started:
+
+    try:
+        if active_shift:
+            checklist_started = notification_service.start_conversational_checklist_after_clock_in(
+                user, active_shift, phone_digits=phone_digits
+            )
+            if not checklist_started:
+                session.state = "idle"
+                session.save(update_fields=["state"])
+        else:
             session.state = "idle"
             session.save(update_fields=["state"])
-    else:
-        session.state = "idle"
-        session.save(update_fields=["state"])
+    except Exception:
+        logger.exception("WhatsApp clock-in: checklist or session cleanup failed (non-fatal)")
+        try:
+            session.state = "idle"
+            session.save(update_fields=["state"])
+        except Exception:
+            pass
     return True
 
 
@@ -1616,6 +1664,7 @@ def whatsapp_webhook(request):
                         and session
                         and session.state not in _active_django_states
                         and msg_type not in _django_only_msg_types
+                        and not _gps_clock_in_applies_to_whatsapp_message(msg, session)
                         and not _text_is_voice_placeholder
                     ):
                         logger.info("Session state '%s' for %s — deferring to Lua/Miya.", session.state, phone_digits)
@@ -2402,9 +2451,9 @@ def whatsapp_webhook(request):
                         continue
 
                     # ------------------------------------------------------------------
-                    # 4. HANDLE LOCATION (Clock In)
+                    # 4. GPS CLOCK-IN (location message, location_reply interactive, BSP quirks)
                     # ------------------------------------------------------------------
-                    if msg_type == 'location':
+                    if _gps_clock_in_applies_to_whatsapp_message(msg, session):
                         loc, lat_raw, lon_raw = _extract_whatsapp_inbound_location(msg)
 
                         if not user:
@@ -2417,7 +2466,18 @@ def whatsapp_webhook(request):
                                 "Share your location to clock in."
                             )
                             continue
-                        _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat_c, lon_c, loc, R)
+                        try:
+                            _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat_c, lon_c, loc, R)
+                        except Exception:
+                            logger.exception(
+                                "WhatsApp GPS clock-in failed phone=%s msg_type=%s",
+                                phone_digits,
+                                msg.get("type"),
+                            )
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                "Something went wrong. Please try again in a moment.",
+                            )
                         continue
 
                     # ------------------------------------------------------------------
