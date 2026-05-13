@@ -36,7 +36,7 @@ from scheduling.audit import AuditTrailService, AuditActionType, AuditSeverity
 from core.utils import build_tenant_context
 from .models import WhatsAppSession
 from accounts.models import CustomUser
-from accounts.utils import calculate_distance
+from accounts.utils import calculate_distance, find_matching_location
 from accounts.services import UserManagementService, try_activate_staff_on_inbound_message, normalize_activation_phone_inbound
 from timeclock.models import ClockEvent
 from scheduling.models import ShiftTask, AssignedShift, ShiftChecklistProgress
@@ -114,7 +114,7 @@ def _create_staff_captured_order_parsed(restaurant, user, text, channel):
     return order
 
 
-def _is_likely_shared_static_location(loc, rest, lat, lon):
+def _is_likely_shared_static_location(loc, rest, lat, lon, ref_lat=None, ref_lon=None):
     """
     Detect if the location is almost certainly a pinned map place (same coords as
     the venue marker) rather than real GPS.
@@ -124,13 +124,22 @@ def _is_likely_shared_static_location(loc, rest, lat, lon):
     heuristic caused widespread false rejections.
 
     We only flag when the reported point is unrealistically close (< 2 m) to
-    the restaurant's configured coordinates (typical when someone picks the
-    business from the map instead of GPS).
+    the reference coordinates (restaurant legacy lat/lon, or the matched branch).
+
+    ``ref_lat`` / ``ref_lon`` override the restaurant centroid when the tenant
+    uses BusinessLocation geofences (multi-site).
     """
-    if not loc or not rest:
+    if not loc or (ref_lat is None and ref_lon is None and not rest):
         return False, None
     try:
-        dist = calculate_distance(float(lat), float(lon), float(rest.latitude or 0), float(rest.longitude or 0))
+        if ref_lat is not None and ref_lon is not None:
+            rlat, rlon = float(ref_lat), float(ref_lon)
+        elif rest:
+            rlat = float(rest.latitude or 0)
+            rlon = float(rest.longitude or 0)
+        else:
+            return False, None
+        dist = calculate_distance(float(lat), float(lon), rlat, rlon)
         if dist < 2:
             return True, "Your location appears to match the restaurant pin exactly. Please share your *live location* from where you are standing (current position), not a place picked from the map."
     except (TypeError, ValueError):
@@ -194,7 +203,13 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
         )
         return True
 
-    if not getattr(rest, "latitude", None) or not getattr(rest, "longitude", None) or not getattr(rest, "radius", None):
+    # Align with ``timeclock.views.agent_clock_in_by_phone``: evaluate every
+    # BusinessLocation (multi-site). Legacy-only tenants still resolve via
+    # Restaurant.* inside ``find_matching_location``. The old path only
+    # compared the user to ``Restaurant.latitude`` — wrong branch / empty
+    # legacy coords caused false "outside zone" or DB errors on save.
+    matched_location, dist_m, nearest = find_matching_location(rest, float(lat), float(lon))
+    if nearest is None:
         try:
             from accounts.models import AuditLog
 
@@ -203,7 +218,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
                 user=user,
                 action_type="OTHER",
                 entity_type="CLOCK_EVENT",
-                description="Clock-in attempt rejected: restaurant geofence not configured",
+                description="Clock-in attempt rejected: no geofence configured for tenant",
                 new_values={"phone": phone_digits},
             )
         except Exception:
@@ -214,11 +229,39 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
         )
         return True
 
+    if matched_location is None:
+        try:
+            from accounts.models import AuditLog
+
+            AuditLog.create_log(
+                restaurant=rest,
+                user=user,
+                action_type="OTHER",
+                entity_type="CLOCK_EVENT",
+                description="Clock-in attempt rejected: outside geofence (WhatsApp)",
+                new_values={
+                    "phone": phone_digits,
+                    "distance_m": int(round(float(dist_m))) if dist_m is not None else None,
+                    "nearest_site": getattr(nearest, "name", None),
+                },
+            )
+        except Exception:
+            pass
+        notification_service.send_whatsapp_text(
+            phone_digits,
+            "You are not within any approved location zone. Please move closer and try again.",
+        )
+        return True
+
+    dist = float(dist_m) if dist_m is not None else 0.0
+
     # Optional: tie to today's shift when one exists in the clock-in window.
     # Staff may clock in without a scheduled shift (unplanned / extra cover).
     active_shift = _get_shift_for_clock_in(user)
 
-    is_shared, reject_msg = _is_likely_shared_static_location(loc, rest, lat, lon)
+    ref_lat = getattr(matched_location, "latitude", None)
+    ref_lon = getattr(matched_location, "longitude", None)
+    is_shared, reject_msg = _is_likely_shared_static_location(loc, rest, lat, lon, ref_lat=ref_lat, ref_lon=ref_lon)
     if is_shared and reject_msg:
         try:
             from accounts.models import AuditLog
@@ -233,38 +276,13 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
                     "phone": phone_digits,
                     "lat": lat,
                     "lon": lon,
-                    "has_name": bool(loc.get("name")),
-                    "has_address": bool(loc.get("address")),
+                    "has_name": bool((loc or {}).get("name")),
+                    "has_address": bool((loc or {}).get("address")),
                 },
             )
         except Exception:
             pass
         notification_service.send_whatsapp_text(phone_digits, reject_msg)
-        return True
-
-    try:
-        dist = calculate_distance(float(lat), float(lon), float(rest.latitude or 0), float(rest.longitude or 0))
-    except (TypeError, ValueError):
-        dist = float("inf")
-    radius = float(getattr(rest, "radius", None) or 100)
-    if dist > radius:
-        try:
-            from accounts.models import AuditLog
-
-            AuditLog.create_log(
-                restaurant=rest,
-                user=user,
-                action_type="OTHER",
-                entity_type="CLOCK_EVENT",
-                description="Clock-in attempt rejected: outside geofence",
-                new_values={"phone": phone_digits, "distance_m": round(dist), "radius_m": radius},
-            )
-        except Exception:
-            pass
-        notification_service.send_whatsapp_text(
-            phone_digits,
-            "You are not within the restaurant's approved location zone. Please move closer and try again.",
-        )
         return True
 
     from datetime import timedelta as _td_cl
@@ -302,6 +320,9 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
                 getattr(last_event, "id", None),
             )
 
+    matched_loc_fk = matched_location if getattr(matched_location, "pk", None) else None
+    location_mismatch = bool(matched_loc_fk and not user.can_work_at(matched_loc_fk))
+
     try:
         with transaction.atomic():
             last_event = ClockEvent.objects.filter(staff=user).order_by("-timestamp").first()
@@ -322,6 +343,8 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
                 device_id="whatsapp",
                 notes=f"Clock-in via WhatsApp (location verified, distance={round(dist)}m)",
                 location_encrypted=f"{lat},{lon}",
+                location=matched_loc_fk,
+                location_mismatch=location_mismatch,
             )
             if active_shift:
                 active_shift.status = "IN_PROGRESS"
@@ -344,6 +367,13 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
         except Exception as audit_err:
             # Clock-in already committed — never make the staff retry because audit failed.
             logger.warning("Clock-in audit log failed (non-fatal): %s", audit_err)
+        if location_mismatch and matched_loc_fk:
+            try:
+                from timeclock.views import _notify_managers_of_location_mismatch
+
+                _notify_managers_of_location_mismatch(clock_event, user, matched_loc_fk)
+            except Exception:
+                logger.warning("WhatsApp clock-in: location mismatch notify skipped", exc_info=True)
     except Exception as e:
         logger.exception("Clock-in create failed: %s", e)
         notification_service.send_whatsapp_text(phone_digits, "Something went wrong. Please try again.")
