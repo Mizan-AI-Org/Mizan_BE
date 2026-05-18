@@ -127,6 +127,9 @@ def find_matching_location(restaurant, user_lat, user_lon):
         if nearest is None or dist < nearest_dist:
             nearest, nearest_dist = loc, dist
         if not loc.geofence_enabled:
+            # Geofence enforcement off — allow clock-in regardless of distance
+            if best_match_dist is None or dist < best_match_dist:
+                best_match, best_match_dist = loc, dist
             continue
         radius = float(loc.radius) if loc.radius else 100
         radius = max(5.0, min(100.0, radius))

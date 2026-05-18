@@ -8,6 +8,9 @@ from django.http import Http404
 from core.read_through_cache import get_or_set, safe_cache_delete
 from notifications.utils import send_realtime_notification
 from notifications.services import notification_service
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -585,6 +588,8 @@ def current_session(request):
         session_data = {
             'id': str(last_event.id),
             'clock_in': last_event.timestamp.isoformat(),
+            'clock_in_time': last_event.timestamp.isoformat(),
+            'clock_out_time': None,
             'duration_hours': round(current_hours, 2),
             'location': {
                 'latitude': last_event.latitude,
@@ -1250,6 +1255,7 @@ def manager_clock_out(request, staff_id):
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
+@authentication_classes([])
 def agent_clock_in(request):
     """
     Clock-in for Lua Agent on behalf of staff.
@@ -1308,7 +1314,7 @@ def agent_clock_in(request):
             if timezone.localtime(last_event.timestamp).date() == timezone.localtime(now_ts).date():
                 return Response({
                     'error': 'Already clocked in',
-                    'last_clock_in': last_event.timestamp
+                    'last_clock_in': last_event.timestamp.isoformat()
                 }, status=status.HTTP_400_BAD_REQUEST)
             # Stale prior-day open clock-in — auto-close so today's "in"
             # event reaches the manager's dashboard. Mirrors the by-phone
