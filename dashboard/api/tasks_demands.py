@@ -25,7 +25,6 @@ Design notes:
 
 from __future__ import annotations
 
-import logging
 from datetime import timedelta
 from typing import Any
 
@@ -39,8 +38,6 @@ from core.http_caching import json_response_with_cache
 
 from ..models import Task
 from ..serializers import DashboardTaskCompactSerializer
-
-logger = logging.getLogger(__name__)
 
 
 # Alphabetical ordering on priority would put HIGH before URGENT (wrong).
@@ -132,105 +129,6 @@ def _serialize_dashboard_task(task) -> dict[str, Any]:
     data = DashboardTaskCompactSerializer(task).data
     data["kind"] = "dashboard"
     return data
-
-
-def _notify_dashboard_task_new_assignee(
-    *,
-    task: Task,
-    new_assignee,
-    acting_user,
-    note: str,
-    had_previous_assignee: bool,
-    whatsapp_override: str | None = None,
-    send_whatsapp: bool = True,
-) -> dict[str, Any]:
-    """
-    In-app bell + WhatsApp for a dashboard.Task assignee change (initial assign
-    from nobody, or reassignment). Best-effort; never raises.
-    """
-    wa_result: dict[str, Any] = {
-        "sent": False,
-        "skipped_reason": None,
-        "error": None,
-        "provider_status": None,
-    }
-    try:
-        from notifications.services import notification_service
-
-        if acting_user is not None:
-            mgr = acting_user
-            sender_display = (
-                f"{(mgr.first_name or '').strip()} {(mgr.last_name or '').strip()}".strip()
-                or getattr(mgr, "email", None)
-                or "Your manager"
-            )
-        else:
-            sender_display = "Miya"
-
-        try:
-            notification_service.send_custom_notification(
-                recipient=new_assignee,
-                message=(
-                    ("Task reassigned to you: " if had_previous_assignee else "New task: ")
-                    + task.title
-                    + (
-                        f" (due {task.due_date.isoformat()})"
-                        if task.due_date
-                        else ""
-                    )
-                ),
-                title="Task reassigned to you" if had_previous_assignee else "New task assigned",
-                notification_type="TASK_ASSIGNED",
-                channels=["app", "push"],
-                sender=acting_user,
-            )
-        except Exception:
-            logger.exception(
-                "tasks_demands: in-app notify failed for task=%s assignee=%s",
-                task.id,
-                getattr(new_assignee, "id", None),
-            )
-
-        if not send_whatsapp:
-            wa_result["skipped_reason"] = "disabled"
-            return wa_result
-
-        phone = (getattr(new_assignee, "phone", None) or "").strip()
-        if not phone:
-            wa_result["skipped_reason"] = "no_phone"
-            wa_result["error"] = (
-                f"{new_assignee.first_name or 'Staff member'} has no phone number on file."
-            )
-            return wa_result
-
-        if whatsapp_override and str(whatsapp_override).strip():
-            body = str(whatsapp_override).strip()
-            if note:
-                body = f"{body}\n\nNote: {note}"
-        else:
-            from dashboard.views_agent import _build_whatsapp_body
-
-            body = _build_whatsapp_body(
-                task=task,
-                sender_name=sender_display,
-                assignee_first_name=(new_assignee.first_name or "").strip(),
-                override=None,
-            )
-            if had_previous_assignee:
-                body = body.replace("New task from", "Task reassigned to you from", 1)
-            if note:
-                body = f"{body}\n\nNote from manager: {note}"
-
-        ok, resp = notification_service.send_whatsapp_text(phone, body)
-        wa_result["sent"] = bool(ok)
-        if isinstance(resp, dict):
-            wa_result["provider_status"] = resp.get("status_code")
-            if not ok:
-                wa_result["error"] = (resp.get("error") or "WhatsApp send failed")[:300]
-    except Exception as exc:
-        logger.exception("tasks_demands: WhatsApp notify failed for task=%s", task.id)
-        wa_result["error"] = str(exc)[:200]
-    return wa_result
 
 
 def _sort_key(item: dict[str, Any]) -> tuple:
@@ -949,23 +847,9 @@ class TaskAssigneeUpdateView(APIView):
             task = None
 
         if task is not None:
-            old_assignee = task.assigned_to
             task.assigned_to = new_user
             task.save(update_fields=["assigned_to", "updated_at"])
-
-            payload = _serialize_dashboard_task(task)
-            if (
-                new_user is not None
-                and (old_assignee is None or new_user.id != old_assignee.id)
-            ):
-                payload["whatsapp"] = _notify_dashboard_task_new_assignee(
-                    task=task,
-                    new_assignee=new_user,
-                    acting_user=request.user,
-                    note=note,
-                    had_previous_assignee=old_assignee is not None,
-                )
-            return Response(payload)
+            return Response(_serialize_dashboard_task(task))
 
         # 3) scheduling.Task — M2M; widget reassign means "make this
         #    person the sole assignee" (the kanban can still fan it

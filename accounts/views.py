@@ -298,8 +298,24 @@ class LoginView(APIView):
 
         try:
             user = CustomUser.objects.get(email=email, is_active=True)
-            user.is_account_locked()  # clears legacy account_locked_until if present
-
+            
+            # Check if account is locked
+            if user.is_account_locked():
+                AuditLog.create_log(
+                    restaurant=user.restaurant,
+                    user=user,
+                    action_type='LOGIN_FAILED',
+                    entity_type='USER',
+                    entity_id=user.id,
+                    description=f'Login attempt on locked account for {email}',
+                    ip_address=ip_address,
+                    user_agent=user_agent
+                )
+                return Response(
+                    {'error': 'Account is temporarily locked due to multiple failed attempts. Please try again later.'},
+                    status=status.HTTP_423_LOCKED
+                )
+            
             # Check if user is admin (should use password, not PIN)
             if not user.is_admin_role():
                 AuditLog.create_log(
@@ -1394,7 +1410,7 @@ class StaffPinLoginView(APIView):
 
         if not user.check_pin(pin_code):
             return Response(
-                {'error': 'Invalid credentials.'},
+                {'error': 'Invalid credentials.'}, 
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
@@ -1432,7 +1448,11 @@ class StaffPhoneLoginView(APIView):
                 {'error': 'No active account found for this number. Activate via the WhatsApp link from your manager first.'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
-        user.is_account_locked()  # clears legacy account_locked_until if present
+        if user.is_account_locked():
+            return Response(
+                {'error': 'Account is temporarily locked. Try again later.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         refresh = RefreshToken.for_user(user)
         try:
             sync_user_to_lua_agent(user, str(refresh.access_token))
