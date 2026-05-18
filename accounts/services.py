@@ -458,9 +458,9 @@ def try_activate_staff_on_inbound_message(phone_digits):
         if not record:
             return None  # Already activated by another process
         email = f"wa_{full_phone}@mizan.activation"
-        if CustomUser.objects.filter(email=email).exists():
+        existing = CustomUser.objects.filter(email=email).first()
+        if existing:
             # Already activated (e.g. race or duplicate record)
-            existing = CustomUser.objects.get(email=email)
             record.status = StaffActivationRecord.STATUS_ACTIVATED
             record.user = existing
             record.activated_at = timezone.now()

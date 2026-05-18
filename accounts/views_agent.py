@@ -284,7 +284,7 @@ def send_whatsapp(phone, message, template_name, language_code="en_US"):
     phone_id = settings.WHATSAPP_PHONE_NUMBER_ID
     verision = settings.WHATSAPP_API_VERSION
 
-    url = f"https://graph.facebook.com/v20.0/{phone_id}/messages"
+    url = f"https://graph.facebook.com/{verision}/{phone_id}/messages"
     
     headers = {
         "Authorization": f"Bearer {token}",
@@ -596,8 +596,16 @@ def accept_invitation_from_agent(request):
                 record_id = str(invitation_token).replace('ACTIVATION:', '', 1)
                 record = StaffActivationRecord.objects.get(id=record_id, status=StaffActivationRecord.STATUS_NOT_ACTIVATED)
                 clean_phone = ''.join(filter(str.isdigit, record.phone))
-            except (StaffActivationRecord.DoesNotExist, ValueError):
-                pass
+            except StaffActivationRecord.DoesNotExist:
+                return Response({
+                    'success': False,
+                    'error': 'Activation record not found or already activated'
+                }, status=status.HTTP_404_NOT_FOUND)
+            except ValueError:
+                return Response({
+                    'success': False,
+                    'error': 'Invalid activation token format'
+                }, status=status.HTTP_400_BAD_REQUEST)
             if not clean_phone and phone:
                 clean_phone = ''.join(filter(str.isdigit, phone))
             if not clean_phone:

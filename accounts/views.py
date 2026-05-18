@@ -809,8 +809,8 @@ class AcceptInvitationView(APIView):
             errors['last_name'] = 'This field is required.'
         if not pin_code:
             errors['pin_code'] = 'This field is required.' # <-- Changed from 'password'
-        if pin_code and (len(pin_code) < 4 or len(pin_code) > 8 or not pin_code.isdigit()):
-            errors['pin_code'] = 'PIN code must be 4 to 8 digits long.'
+        if pin_code and (len(pin_code) != 4 or not pin_code.isdigit()):
+            errors['pin_code'] = 'PIN code must be exactly 4 digits.'
         if errors:
             return Response(errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -827,74 +827,83 @@ class AcceptInvitationView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        from django.db import transaction as db_transaction
+        from django.utils import timezone as dj_tz
         try:
-            invitation = UserInvitation.objects.get(
-                invitation_token=token,
-                is_accepted=False,
-                expires_at__gt=timezone.now()
-            )
-            final_email = invitation.email
-            if not final_email:
-                if not provided_email:
-                    return Response({'email': 'Email is required to complete setup.'}, status=status.HTTP_400_BAD_REQUEST)
-                # Basic validation and uniqueness check
-                if CustomUser.objects.filter(email=provided_email).exists():
-                    return Response({'email': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
-                final_email = provided_email
-            else:
-                if CustomUser.objects.filter(email=final_email).exists():
-                    return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
-            
-            # 1. Generate a secure, random password the user will never see
-           # Creates a random 12-character string to use as the password
-            random_password = get_random_string(12)
+            with db_transaction.atomic():
+                invitation = UserInvitation.objects.select_for_update().filter(
+                    invitation_token=token,
+                    is_accepted=False,
+                    expires_at__gt=timezone.now()
+                ).first()
+                if invitation is None:
+                    raise UserInvitation.DoesNotExist
 
-            # 2. Create the user with the random password
-            user = CustomUser.objects.create_user(
-                email=final_email,
-                password=random_password,  # <-- Use the random password
-                first_name=first_name,
-                last_name=last_name,
-                role=invitation.role,
-                restaurant=invitation.restaurant,
-                is_verified=True
-            )
-            
-            # 3. Set the PIN
-            user.set_pin(pin_code)  # We know pin_code exists because we checked it
-            user.save()
+                final_email = invitation.email
+                if not final_email:
+                    if not provided_email:
+                        return Response({'email': 'Email is required to complete setup.'}, status=status.HTTP_400_BAD_REQUEST)
+                    # Basic validation and uniqueness check
+                    if CustomUser.objects.filter(email=provided_email).exists():
+                        return Response({'email': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
+                    final_email = provided_email
+                else:
+                    if CustomUser.objects.filter(email=final_email).exists():
+                        return Response({'error': 'User with this email already exists'}, status=status.HTTP_400_BAD_REQUEST)
 
-            # 4. Apply multi-location assignments from the invitation, if present
-            apply_invitation_locations(user, invitation)
+                random_password = get_random_string(12)
 
-            from django.utils import timezone as dj_tz
-            invitation.is_accepted = True
-            invitation.status = 'ACCEPTED'
-            invitation.accepted_at = dj_tz.now()
-            if not invitation.email:
-                invitation.email = final_email
-            invitation.save(update_fields=['is_accepted', 'status', 'accepted_at'])
+                user = CustomUser.objects.create_user(
+                    email=final_email,
+                    password=random_password,
+                    first_name=first_name,
+                    last_name=last_name,
+                    role=invitation.role,
+                    restaurant=invitation.restaurant,
+                    is_verified=True
+                )
 
-            # Close any other pending invitations for the same email within this restaurant
-            UserInvitation.objects.filter(
-                restaurant=invitation.restaurant,
-                email=invitation.email,
-                is_accepted=False,
-            ).update(status='EXPIRED', expires_at=dj_tz.now())
+                user.set_pin(pin_code)
+                user.save()
 
-            refresh = RefreshToken.for_user(user)
+                apply_invitation_locations(user, invitation)
 
-            return Response({
-                'user': UserSerializer(user).data,
-                'tokens': {
-                    'refresh': str(refresh),
-                    'access': str(refresh.access_token),
-                }
-            }, status=status.HTTP_201_CREATED)
+                invitation.is_accepted = True
+                invitation.status = 'ACCEPTED'
+                invitation.accepted_at = dj_tz.now()
+                if not invitation.email:
+                    invitation.email = final_email
+                invitation.save(update_fields=['is_accepted', 'status', 'accepted_at', 'email'])
+
+                UserInvitation.objects.filter(
+                    restaurant=invitation.restaurant,
+                    email=invitation.email,
+                    is_accepted=False,
+                ).update(status='EXPIRED', expires_at=dj_tz.now())
+
+                refresh = RefreshToken.for_user(user)
+
+                return Response({
+                    'user': UserSerializer(user).data,
+                    'tokens': {
+                        'refresh': str(refresh),
+                        'access': str(refresh.access_token),
+                    }
+                }, status=status.HTTP_201_CREATED)
 
         except UserInvitation.DoesNotExist:
             return Response(
                 {'error': 'Invalid or expired invitation'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except ValidationError as exc:
+            return Response(
+                {'error': exc.message if hasattr(exc, 'message') else str(exc)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except IntegrityError:
+            return Response(
+                {'error': 'Account could not be created. The email may already be in use.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -1374,17 +1383,15 @@ class StaffPinLoginView(APIView):
             )
 
         try:
-            # 1. Find the user by email
-            user = CustomUser.objects.get(email=email)
+            user = CustomUser.objects.get(email=email, is_active=True)
         except CustomUser.DoesNotExist:
             return Response(
-                {'error': 'Invalid credentials.'}, 
+                {'error': 'Invalid credentials.'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
         user.is_account_locked()  # clears legacy account_locked_until if present
 
-        # 2. Check the PIN
         if not user.check_pin(pin_code):
             return Response(
                 {'error': 'Invalid credentials.'},
