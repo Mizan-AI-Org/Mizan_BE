@@ -431,9 +431,19 @@ class AgentPathCsrfExemptMiddleware(MiddlewareMixin):
     no Referer header is sent, causing Django's CSRF to reject with 403.
     Must run before CsrfViewMiddleware.
     """
-    AGENT_PATHS = ('/api/scheduling/agent/', '/api/reporting/agent/', '/api/checklists/agent/',
-                   '/api/notifications/agent/', '/api/timeclock/agent/', '/api/pos/agent/',
-                   '/api/staff/agent/', '/api/inventory/agent/', '/api/accounts/agent/')
+    AGENT_PATHS = (
+        '/api/agent/',  # account activation, reservations, activity log, …
+        '/api/dashboard/agent/',
+        '/api/scheduling/agent/',
+        '/api/reporting/agent/',
+        '/api/checklists/agent/',
+        '/api/notifications/agent/',
+        '/api/timeclock/agent/',
+        '/api/pos/agent/',
+        '/api/staff/agent/',
+        '/api/inventory/agent/',
+        '/api/accounts/agent/',
+    )
 
     def process_view(self, request, view_func, view_args, view_kwargs):
         if request.path.startswith(self.AGENT_PATHS):

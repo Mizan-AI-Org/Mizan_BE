@@ -347,6 +347,63 @@ def _find_active_user_by_phone(phone_digits):
     return None
 
 
+def resolve_restaurant_and_staff_by_phone(phone_raw, *, exclude_super_admin=True):
+    """
+    Resolve (restaurant, staff) for Miya / agent ingest using the same phone
+    rules as ONE-TAP activation (Morocco E.164, wa_{phone}@mizan.activation users).
+
+    Falls back to legacy ``phone__icontains`` patterns, then to a pending
+    StaffActivationRecord (restaurant only, staff=None) so ingest can succeed
+    before the user's first activation message is processed.
+    """
+    if not phone_raw:
+        return None, None
+    phone_digits = _normalize_phone_digits(phone_raw)
+    if not phone_digits or len(phone_digits) < 6:
+        return None, None
+    normalized = normalize_activation_phone_inbound(phone_digits) or phone_digits
+
+    user = _find_active_user_by_phone(normalized)
+    if user and getattr(user, 'restaurant_id', None):
+        if not (exclude_super_admin and getattr(user, 'role', None) == 'SUPER_ADMIN'):
+            return user.restaurant, user
+
+    pending = _find_staff_activation_record_by_phone(normalized)
+    if pending and getattr(pending, 'restaurant_id', None):
+        return pending.restaurant, None
+
+    default_cc = ''.join(
+        filter(str.isdigit, str(getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '') or ''))
+    )
+    possible_patterns = [normalized, phone_digits, f"+{normalized}"]
+    if len(normalized) > 10:
+        possible_patterns.extend([normalized[-10:], f"+{normalized[-10:]}"])
+    if default_cc and normalized.startswith(default_cc):
+        local = normalized[len(default_cc):]
+        if local:
+            possible_patterns.extend([local, f"0{local}", f"+{default_cc}{local}"])
+    if normalized.startswith('0') and len(normalized) > 1:
+        possible_patterns.append(normalized.lstrip('0'))
+        if default_cc:
+            possible_patterns.append(f"{default_cc}{normalized.lstrip('0')}")
+    seen = set()
+    possible_patterns = [p for p in possible_patterns if p and not (p in seen or seen.add(p))]
+    for pattern in possible_patterns:
+        try:
+            qs = CustomUser.objects.filter(
+                phone__icontains=pattern,
+                is_active=True,
+            ).select_related('restaurant')
+            if exclude_super_admin:
+                qs = qs.exclude(role='SUPER_ADMIN')
+            staff = qs.first()
+            if staff and getattr(staff, 'restaurant_id', None):
+                return staff.restaurant, staff
+        except Exception:
+            continue
+    return None, None
+
+
 def get_activation_status_by_phone(phone_digits):
     """
     Determine account status by phone for Miya activation flow.

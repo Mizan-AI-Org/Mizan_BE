@@ -1738,6 +1738,9 @@ def whatsapp_webhook(request):
                     session = WhatsAppSession.objects.filter(phone=phone_digits).first()
                     user = session.user if (session and session.user_id) else None
                     if not user:
+                        from accounts.services import _find_active_user_by_phone
+                        user = _find_active_user_by_phone(phone_digits)
+                    if not user:
                         qs = CustomUser.objects.filter(phone__isnull=False).filter(phone__regex=r'\d')
                         if session and session.user_id and getattr(session.user, 'restaurant_id', None):
                             qs = qs.filter(restaurant_id=session.user.restaurant_id)
