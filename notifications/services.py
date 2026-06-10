@@ -1115,7 +1115,7 @@ class NotificationService:
         Returns (success: bool, notification_count: int, error_message: str|None).
         """
         from django.db.models import Q
-        from accounts.models import CustomUser
+        from accounts.models import CustomUser, StaffRestaurantLink
 
         if channels is None:
             channels = ["app", "whatsapp"]
@@ -1135,10 +1135,19 @@ class NotificationService:
                 normalised_tags = [str(t).strip().upper().replace(' ', '_') for t in tags if str(t).strip()]
 
         try:
-            qs = CustomUser.objects.filter(
-                restaurant_id=restaurant_id,
-                is_active=True,
+            # Tenant scope must match StaffMessagesSendView + StaffListAPIView:
+            # primary ``restaurant_id`` OR an active ``StaffRestaurantLink``
+            # to this workspace. Without the link side, HQ managers see staff
+            # in the picker (all_branches=1) but ``send_announcement`` looked
+            # only at ``restaurant_id`` — those rows disappeared from the
+            # queryset → "No recipients" and nothing reached WhatsApp.
+            tenant_scope = Q(restaurant_id=restaurant_id) | Q(
+                id__in=StaffRestaurantLink.objects.filter(
+                    restaurant_id=restaurant_id,
+                    is_active=True,
+                ).values_list("user_id", flat=True)
             )
+            qs = CustomUser.objects.filter(is_active=True).filter(tenant_scope)
             # When targeting specific staff_ids (e.g. Miya "inform Salima"), include them even if no phone — we still send in-app.
             if not staff_ids:
                 qs = qs.exclude(Q(phone__isnull=True) | Q(phone=""))

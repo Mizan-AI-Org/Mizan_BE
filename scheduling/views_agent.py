@@ -2505,45 +2505,10 @@ def agent_staff_by_phone(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Normalize phone number (remove common prefixes)
-        phone_digits = ''.join(filter(str.isdigit, phone))
-        default_cc = ''.join(filter(str.isdigit, str(getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '') or '')))
-        
-        # Try to find staff by phone - check multiple phone formats
-        staff = None
-        possible_patterns = []
-        if phone_digits:
-            possible_patterns.extend([phone_digits, f"+{phone_digits}"])
-            # Try last 10 digits (common DB storage pattern)
-            if len(phone_digits) > 10:
-                possible_patterns.append(phone_digits[-10:])
-                possible_patterns.append(f"+{phone_digits[-10:]}")
-            # If we have a default country code, try stripping it and/or adding local leading zero
-            if default_cc and phone_digits.startswith(default_cc):
-                local = phone_digits[len(default_cc):]
-                if local:
-                    possible_patterns.extend([local, f"0{local}", f"+{default_cc}{local}"])
-            # If starts with 0, try without 0
-            if phone_digits.startswith('0') and len(phone_digits) > 1:
-                possible_patterns.append(phone_digits.lstrip('0'))
-                if default_cc:
-                    possible_patterns.append(f"{default_cc}{phone_digits.lstrip('0')}")
-        
-        # Deduplicate while preserving order
-        seen = set()
-        possible_patterns = [p for p in possible_patterns if p and not (p in seen or seen.add(p))]
+        from accounts.services import resolve_restaurant_and_staff_by_phone
 
-        for pattern in possible_patterns:
-            try:
-                staff = CustomUser.objects.filter(
-                    phone__icontains=pattern,
-                    is_active=True
-                ).exclude(role='SUPER_ADMIN').first()
-                if staff:
-                    break
-            except Exception:
-                continue
-        
+        _restaurant, staff = resolve_restaurant_and_staff_by_phone(phone, exclude_super_admin=True)
+
         if not staff:
             return Response({
                 'success': False,

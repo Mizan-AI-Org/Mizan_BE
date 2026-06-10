@@ -54,38 +54,19 @@ def _invalidate_staff_incidents_cache(restaurant_id) -> None:
         safe_cache_delete(_staff_incidents_cache_key(restaurant_id, sf))
 
 
-def _resolve_restaurant_and_staff_by_phone(phone_raw):
-    """Resolve (restaurant, staff) from phone when agent sends phone but not restaurant_id."""
-    if not phone_raw:
-        return None, None
-    phone_digits = ''.join(filter(str.isdigit, str(phone_raw)))
-    if not phone_digits:
-        return None, None
-    default_cc = ''.join(filter(str.isdigit, str(getattr(settings, 'WHATSAPP_DEFAULT_COUNTRY_CODE', '') or '')))
-    possible_patterns = [phone_digits, f"+{phone_digits}"]
-    if len(phone_digits) > 10:
-        possible_patterns.extend([phone_digits[-10:], f"+{phone_digits[-10:]}"])
-    if default_cc and phone_digits.startswith(default_cc):
-        local = phone_digits[len(default_cc):]
-        if local:
-            possible_patterns.extend([local, f"0{local}", f"+{default_cc}{local}"])
-    if phone_digits.startswith('0') and len(phone_digits) > 1:
-        possible_patterns.append(phone_digits.lstrip('0'))
-        if default_cc:
-            possible_patterns.append(f"{default_cc}{phone_digits.lstrip('0')}")
-    seen = set()
-    possible_patterns = [p for p in possible_patterns if p and not (p in seen or seen.add(p))]
-    for pattern in possible_patterns:
-        try:
-            staff = CustomUser.objects.filter(
-                phone__icontains=pattern,
-                is_active=True
-            ).exclude(role='SUPER_ADMIN').select_related('restaurant').first()
-            if staff and getattr(staff, 'restaurant_id', None):
-                return staff.restaurant, staff
-        except Exception:
-            continue
-    return None, None
+def _resolve_restaurant_and_staff_by_phone(phone_raw, *, exclude_super_admin=True):
+    """Resolve (restaurant, staff) from phone when agent sends phone but not restaurant_id.
+
+    By default SUPER_ADMIN rows are skipped so WhatsApp-style resolution
+    prefers tenant staff. Dashboard agent flows call again with
+    ``exclude_super_admin=False`` when no staff match so platform admins
+    with only a phone on file can still be resolved.
+    """
+    from accounts.services import resolve_restaurant_and_staff_by_phone
+
+    return resolve_restaurant_and_staff_by_phone(
+        phone_raw, exclude_super_admin=exclude_super_admin
+    )
 from notifications.services import notification_service
 from notifications.models import Notification
 
