@@ -1,0 +1,74 @@
+{
+  "lastHash": "d731a83830e88569b16a87ab4fc2db378021b1dbddcafb087d43935003632552",
+  "lastPushedAt": "2026-06-10T07:39:41.446Z",
+  "files": [
+    {
+      "relativePath": "env.example",
+      "hash": "52b0d24e562573b9"
+    },
+    {
+      "relativePath": "lua.skill.yaml",
+      "hash": "57bc3bb58e4747cc"
+    },
+    {
+      "relativePath": "package.json",
+      "hash": "92fc097d89213fd4"
+    },
+    {
+      "relativePath": "QUICKSTART.md",
+      "hash": "31e631fd64512cd1"
+    },
+    {
+      "relativePath": "README.md",
+      "hash": "2ca2d2b3168e75e5"
+    },
+    {
+      "relativePath": "src/index.ts",
+      "hash": "ca5cb6460bba0eba"
+    },
+    {
+      "relativePath": "src/services/agentContext.ts",
+      "hash": "b562bc58de80ae93"
+    },
+    {
+      "relativePath": "src/services/ApiService.ts",
+      "hash": "d5a99f55366cb312"
+    },
+    {
+      "relativePath": "src/skills/intelligence.skill.ts",
+      "hash": "f4809cabb0fc52d2"
+    },
+    {
+      "relativePath": "src/skills/tools/_common/errors.ts",
+      "hash": "f46c101e1a895d61"
+    },
+    {
+      "relativePath": "src/skills/tools/AIAnalysisTool.ts",
+      "hash": "1037444f672fd8c4"
+    },
+    {
+      "relativePath": "src/skills/tools/DemandForecastTool.ts",
+      "hash": "189d64b2da08f725"
+    },
+    {
+      "relativePath": "src/skills/tools/EventHistoryTool.ts",
+      "hash": "2014c8d47f242c03"
+    },
+    {
+      "relativePath": "src/skills/tools/OperationalKnowledgeTool.ts",
+      "hash": "28a76913600c23ac"
+    },
+    {
+      "relativePath": "src/skills/tools/ProactiveInsightsTool.ts",
+      "hash": "dd9523a206e0cc38"
+    },
+    {
+      "relativePath": "src/utils/resolveStaffPhoneFromLuaUser.ts",
+      "hash": "7940e06883afdab6"
+    },
+    {
+      "relativePath": "tsconfig.json",
+      "hash": "748d6fffca1cc9ce"
+    }
+  ]
+}

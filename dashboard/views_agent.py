@@ -628,6 +628,13 @@ def agent_create_dashboard_task(request):
             description=description,
         )
 
+        follow_up_enabled = _coerce_bool(
+            _get_first(data, "follow_up_enabled", "followUpEnabled"),
+            default=True,
+        )
+        follow_up_max = int(_get_first(data, "follow_up_max", "followUpMax") or 2)
+        follow_up_max = max(0, min(3, follow_up_max))
+
         # Create the task atomically.
         with transaction.atomic():
             task = Task.objects.create(
@@ -642,6 +649,8 @@ def agent_create_dashboard_task(request):
                 source_label=source_label[:120],
                 ai_summary=ai_summary,
                 category=task_category,
+                follow_up_enabled=follow_up_enabled,
+                follow_up_max=follow_up_max,
             )
 
         logger.info(
@@ -708,6 +717,9 @@ def agent_create_dashboard_task(request):
                                 else None
                             )
                         wa_result["error"] = err_msg or "WhatsApp send failed"
+                if ok:
+                    task.whatsapp_notified_at = timezone.now()
+                    task.save(update_fields=["whatsapp_notified_at"])
             except Exception as exc:  # pragma: no cover - defensive
                 logger.exception("Miya create_task: WhatsApp send crashed for task %s", task.id)
                 wa_result["error"] = str(exc)[:200]

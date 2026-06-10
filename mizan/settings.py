@@ -525,6 +525,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "staff.tasks.compliance_renewal_sweep",
         "schedule": crontab(minute=30, hour=6),
     },
+    "task_follow_up_sweep": {
+        "task": "dashboard.tasks.task_follow_up_sweep",
+        "schedule": crontab(minute='*/15'),
+    },
 }
 
 # Shrink Celery's chatty defaults — each idle worker still logs heartbeats and

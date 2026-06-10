@@ -1,0 +1,16 @@
+agent:
+  agentId: baseAgent_agent_1781075621944_klkkg3unz
+  orgId: c1234bab-fcdf-4a0f-966e-d09d1971e04f
+skills:
+  - name: operations
+    skillId: ac9f814c-6765-47e5-9fe9-d12c07c218d3
+    version: 1.0.1
+webhooks: []
+jobs: []
+preprocessors: []
+postprocessors: []
+mcpServers: []
+backup:
+  activeVersion: 2
+  lastHash: 5454440c202e36237e25b75251ca157e779dfb38cd39035f7211787bdc9eb391
+  lastPushedAt: '2026-06-10T07:38:43.011Z'

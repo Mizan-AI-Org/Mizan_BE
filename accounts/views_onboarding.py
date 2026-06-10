@@ -16,7 +16,7 @@ other tenants' rows.
 
 from __future__ import annotations
 
-from datetime import time as dt_time
+from datetime import time as dt_time, timedelta
 
 from django.db import transaction
 from django.utils import timezone
@@ -104,7 +104,10 @@ class OnboardingStatusView(APIView):
             ),
             'config': {
                 'widget_role_visibility': gs.get('widget_role_visibility') or {},
-                'category_owners': gs.get('category_owners') or {},
+                'category_owners': {
+                    k: (v if isinstance(v, list) else [v] if v else [])
+                    for k, v in (gs.get('category_owners') or {}).items()
+                },
                 'google_calendar': gs.get('google_calendar') or {
                     'connected': False,
                     'email': None,
@@ -339,6 +342,44 @@ class OnboardingSeedView(APIView):
         )
 
 
+class OnboardingSkipAllView(APIView):
+    """Skip the entire onboarding wizard and go straight to the dashboard.
+
+    Marks all REQUIRED steps as complete and sets ``onboarding_completed_at``
+    so ``OnboardingGate`` on the frontend no longer redirects to ``/onboarding``.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        if not _is_owner_like(request.user):
+            return Response(
+                {'detail': 'Only owners/admins can skip onboarding.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        restaurant = getattr(request.user, 'restaurant', None)
+        if not restaurant:
+            return Response(
+                {'detail': 'No restaurant associated with user.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        state = _merge_state(restaurant.onboarding_state)
+        for step in REQUIRED_STEPS:
+            state[step] = True
+        restaurant.onboarding_state = state
+        if not restaurant.onboarding_completed_at:
+            restaurant.onboarding_completed_at = timezone.now()
+        restaurant.save(
+            update_fields=['onboarding_state', 'onboarding_completed_at']
+        )
+        return Response({
+            'skipped': True,
+            'completed': True,
+            'completed_at': restaurant.onboarding_completed_at.isoformat(),
+        })
+
+
 def _mark_step(restaurant: Restaurant, step: str) -> None:
     """Mark a single onboarding step complete and set the completion timestamp
     when all REQUIRED steps are done. Safe to call from multiple endpoints."""
@@ -512,39 +553,42 @@ class OnboardingCategoryOwnersView(APIView):
         payload = request.data.get('owners')
         if not isinstance(payload, dict):
             return Response(
-                {'detail': 'Body must be {"owners": {category: user_uuid}}.'},
+                {'detail': 'Body must be {"owners": {category: user_uuid_or_array}}.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Validate each user_uuid belongs to this tenant.
         from accounts.models import CustomUser
 
-        clean: dict[str, str] = {}
-        for cat, uid in payload.items():
+        tenant_user_ids = set(
+            str(uid) for uid in
+            CustomUser.objects.filter(restaurant=restaurant)
+            .values_list('id', flat=True)
+        )
+
+        clean: dict[str, list[str]] = {}
+        for cat, value in payload.items():
             if not isinstance(cat, str) or not cat.strip():
                 continue
-            if not uid:
+            if not value:
                 continue
-            try:
-                user = CustomUser.objects.only('id', 'restaurant_id').get(id=str(uid))
-            except (CustomUser.DoesNotExist, ValueError):
-                continue
-            if user.restaurant_id != restaurant.id:
-                continue
-            clean[cat.strip()] = str(user.id)
+            uids = value if isinstance(value, list) else [value]
+            validated = [
+                str(u) for u in uids
+                if str(u) in tenant_user_ids
+            ]
+            if validated:
+                clean[cat.strip()] = validated
 
         gs = dict(restaurant.general_settings or {})
         gs['category_owners'] = clean
 
-        # Also mirror into the legacy incident_category_assignees map so the
-        # existing incident router keeps working.
         legacy_incident: dict[str, str] = dict(
             gs.get('incident_category_assignees') or {}
         )
-        for slug, uid in clean.items():
+        for slug, uids in clean.items():
             label = self._INCIDENT_LABELS.get(slug)
-            if label:
-                legacy_incident[label] = uid
+            if label and uids:
+                legacy_incident[label] = uids[0]
         gs['incident_category_assignees'] = legacy_incident
 
         restaurant.general_settings = gs
@@ -892,7 +936,7 @@ class GoogleCalendarOAuthCallbackView(APIView):
             'access_token': access_token,
             'refresh_token': refresh_token,
             'token_expires_at': (
-                timezone.now() + timezone.timedelta(seconds=expires_in)
+                timezone.now() + timedelta(seconds=expires_in)
             ).isoformat(),
         }
         gs['google_calendar'] = gcal

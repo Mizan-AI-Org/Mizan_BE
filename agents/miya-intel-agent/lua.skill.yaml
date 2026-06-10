@@ -1,0 +1,16 @@
+agent:
+  agentId: baseAgent_agent_1781075799546_e9fswrktj
+  orgId: c1234bab-fcdf-4a0f-966e-d09d1971e04f
+skills:
+  - name: intelligence
+    skillId: 6e3f945a-d8d1-4067-b669-731e1e70fcc9
+    version: 1.0.1
+webhooks: []
+jobs: []
+preprocessors: []
+postprocessors: []
+mcpServers: []
+backup:
+  activeVersion: 2
+  lastHash: d731a83830e88569b16a87ab4fc2db378021b1dbddcafb087d43935003632552
+  lastPushedAt: '2026-06-10T07:39:41.446Z'

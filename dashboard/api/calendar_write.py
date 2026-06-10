@@ -199,7 +199,7 @@ def agent_create_calendar_event(request):
                 "success": False,
                 "error": "calendar_not_connected",
                 "connected": False,
-                "connect_url": "/dashboard/settings?tab=integrations",
+                "connect_url": "/dashboard/settings?tab=integrations#google-calendar",
                 "message_for_user": (
                     "I can't create that yet — Google Calendar isn't connected for "
                     f"{restaurant.name}. Connect it from Settings → Integrations and "

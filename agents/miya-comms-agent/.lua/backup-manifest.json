@@ -1,0 +1,74 @@
+{
+  "lastHash": "d8256f50063a52e9430fe293a79ba6577e19222a8224a156516f467029e003ab",
+  "lastPushedAt": "2026-06-10T07:39:28.281Z",
+  "files": [
+    {
+      "relativePath": "env.example",
+      "hash": "52b0d24e562573b9"
+    },
+    {
+      "relativePath": "lua.skill.yaml",
+      "hash": "7e61fc6730ca4c90"
+    },
+    {
+      "relativePath": "package.json",
+      "hash": "92fc097d89213fd4"
+    },
+    {
+      "relativePath": "QUICKSTART.md",
+      "hash": "31e631fd64512cd1"
+    },
+    {
+      "relativePath": "README.md",
+      "hash": "2ca2d2b3168e75e5"
+    },
+    {
+      "relativePath": "src/index.ts",
+      "hash": "3b7bf2e500940e65"
+    },
+    {
+      "relativePath": "src/services/agentContext.ts",
+      "hash": "b562bc58de80ae93"
+    },
+    {
+      "relativePath": "src/services/ApiService.ts",
+      "hash": "d5a99f55366cb312"
+    },
+    {
+      "relativePath": "src/skills/communications.skill.ts",
+      "hash": "5e4ca9f26de723fe"
+    },
+    {
+      "relativePath": "src/skills/tools/_common/errors.ts",
+      "hash": "f46c101e1a895d61"
+    },
+    {
+      "relativePath": "src/skills/tools/FormalAnnouncementTool.ts",
+      "hash": "237844b2f0667c5d"
+    },
+    {
+      "relativePath": "src/skills/tools/StaffCommunicationTool.ts",
+      "hash": "5c561120641afd5d"
+    },
+    {
+      "relativePath": "src/skills/tools/VoiceReplyTool.ts",
+      "hash": "18bbabbc9b0c828e"
+    },
+    {
+      "relativePath": "src/skills/tools/WhatsAppFlowsTool.ts",
+      "hash": "8b1858142c533081"
+    },
+    {
+      "relativePath": "src/skills/tools/WhatsAppTemplateTool.ts",
+      "hash": "5b8cf2b096f7dd67"
+    },
+    {
+      "relativePath": "src/utils/resolveStaffPhoneFromLuaUser.ts",
+      "hash": "7940e06883afdab6"
+    },
+    {
+      "relativePath": "tsconfig.json",
+      "hash": "748d6fffca1cc9ce"
+    }
+  ]
+}

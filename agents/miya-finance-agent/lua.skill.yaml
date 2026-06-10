@@ -1,0 +1,16 @@
+agent:
+  agentId: baseAgent_agent_1781075663883_e6sb1o4mu
+  orgId: c1234bab-fcdf-4a0f-966e-d09d1971e04f
+skills:
+  - name: finance
+    skillId: bd44d3c0-0cde-473a-b424-1d5b282b3c8a
+    version: 1.0.1
+webhooks: []
+jobs: []
+preprocessors: []
+postprocessors: []
+mcpServers: []
+backup:
+  activeVersion: 2
+  lastHash: de322a71838570703609a15e3e35bf0f7481242f6d0114d0d7db21e91e7ffae0
+  lastPushedAt: '2026-06-10T07:38:59.496Z'
