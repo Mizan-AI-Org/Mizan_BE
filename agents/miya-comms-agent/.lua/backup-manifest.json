@@ -1,6 +1,6 @@
 {
-  "lastHash": "d8256f50063a52e9430fe293a79ba6577e19222a8224a156516f467029e003ab",
-  "lastPushedAt": "2026-06-10T07:39:28.281Z",
+  "lastHash": "1c218cd063136980adaab50c770452085c998ecb4670a217978a0f1e36ea0ab8",
+  "lastPushedAt": "2026-06-10T16:01:45.951Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "7e61fc6730ca4c90"
+      "hash": "445dc73dde996c3b"
     },
     {
       "relativePath": "package.json",
@@ -56,7 +56,7 @@
     },
     {
       "relativePath": "src/skills/tools/WhatsAppFlowsTool.ts",
-      "hash": "8b1858142c533081"
+      "hash": "b577f61a81925af1"
     },
     {
       "relativePath": "src/skills/tools/WhatsAppTemplateTool.ts",

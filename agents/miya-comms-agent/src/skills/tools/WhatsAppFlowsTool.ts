@@ -9,9 +9,33 @@
  * the CTA button. When the user submits the flow, Lua delivers the
  * submitted data back as a conversation message.
  */
-import { LuaTool, User, Data } from "lua-cli";
+import { LuaTool, User, Data, env } from "lua-cli";
 import { z } from "zod";
 import { noContextError, validationError } from "./_common/errors";
+
+/** Published Meta Flow IDs (WhatsApp Manager → Flows). Override via Lua env if needed. */
+const FLOW_ENV_KEYS: Record<string, string> = {
+  leave_request: "LEAVE_REQUEST_FLOW_ID",
+  incident_report: "INCIDENT_REPORT_FLOW_ID",
+  clock_in: "CLOCK_IN_FLOW_ID",
+};
+
+const FLOW_ID_DEFAULTS: Record<string, string> = {
+  leave_request: "151961231845018",
+  incident_report: "1322819756651058",
+};
+
+function resolveFlowId(key: string, placeholder: string): string {
+  const envKey = FLOW_ENV_KEYS[key];
+  const fromEnv = envKey ? env(envKey) : undefined;
+  if (fromEnv && String(fromEnv).trim()) {
+    return String(fromEnv).trim();
+  }
+  if (FLOW_ID_DEFAULTS[key]) {
+    return FLOW_ID_DEFAULTS[key];
+  }
+  return placeholder;
+}
 
 interface FlowTemplate {
   key: string;
@@ -30,7 +54,7 @@ const DEFAULT_FLOWS: FlowTemplate[] = [
     key: "leave_request",
     name: "Leave / Time-Off Request",
     description: "Staff submits a structured leave/vacation request with dates, type, and reason.",
-    flow_id: "LEAVE_REQUEST_FLOW_ID",
+    flow_id: resolveFlowId("leave_request", "LEAVE_REQUEST_FLOW_ID"),
     flow_cta: "Request Leave",
     body: "Tap below to submit your leave request. Fill in the dates and reason.",
     header: "Leave Request",
@@ -40,11 +64,22 @@ const DEFAULT_FLOWS: FlowTemplate[] = [
     key: "incident_report",
     name: "Incident Report",
     description: "Staff reports a safety incident, equipment issue, or workplace event with structured fields.",
-    flow_id: "INCIDENT_REPORT_FLOW_ID",
+    flow_id: resolveFlowId("incident_report", "INCIDENT_REPORT_FLOW_ID"),
     flow_cta: "Report Incident",
     body: "Tap below to report an incident. Include as much detail as possible.",
     header: "Incident Report",
     footer: "Your report will be reviewed by management",
+  },
+  {
+    key: "clock_in",
+    name: "Staff Clock In / Out",
+    description:
+      "Staff clock in or clock out. Clock-in uses WhatsApp Share Location after submit (Flows have no map picker).",
+    flow_id: resolveFlowId("clock_in", "CLOCK_IN_FLOW_ID"),
+    flow_cta: "Clock In / Out",
+    body: "Tap below to clock in or out. Clock-in will ask for your live location next.",
+    header: "Attendance",
+    footer: "Location check uses WhatsApp Share Location",
   },
   {
     key: "staff_onboarding",
@@ -115,7 +150,7 @@ export default class WhatsAppFlowsTool implements LuaTool {
       .string()
       .optional()
       .describe(
-        "For 'send'/'configure': which flow template — leave_request, incident_report, staff_onboarding, shift_swap, feedback, daily_checkin, expense_claim, or a custom key."
+        "For 'send'/'configure': which flow template — leave_request, incident_report, clock_in, staff_onboarding, shift_swap, feedback, daily_checkin, expense_claim, or a custom key."
       ),
     custom_body: z
       .string()
@@ -171,13 +206,16 @@ export default class WhatsAppFlowsTool implements LuaTool {
           }
         }
 
-        const flows = DEFAULT_FLOWS.map((f) => ({
-          key: f.key,
-          name: f.name,
-          description: f.description,
-          configured: !!configuredFlows[f.key],
-          flow_id: configuredFlows[f.key] || "Not configured",
-        }));
+        const flows = DEFAULT_FLOWS.map((f) => {
+          const resolvedId = configuredFlows[f.key] || resolveFlowId(f.key, f.flow_id);
+          return {
+            key: f.key,
+            name: f.name,
+            description: f.description,
+            configured: !!configuredFlows[f.key] || !resolvedId.endsWith("_FLOW_ID"),
+            flow_id: resolvedId,
+          };
+        });
 
         return {
           status: "success",
@@ -241,7 +279,7 @@ export default class WhatsAppFlowsTool implements LuaTool {
           };
         }
 
-        let actualFlowId = template.flow_id;
+        let actualFlowId = resolveFlowId(input.flow_key, template.flow_id);
         if (restaurantId) {
           try {
             const results = await Data.search(
@@ -254,7 +292,7 @@ export default class WhatsAppFlowsTool implements LuaTool {
               actualFlowId = results[0].flow_id;
             }
           } catch {
-            // Use default
+            // Use env/default
           }
         }
 

@@ -1,6 +1,6 @@
 {
-  "lastHash": "02896e11ee40684464e7daee5ed7459fb42b24d6cf8c5f5689f5c574b72b76a5",
-  "lastPushedAt": "2026-06-10T07:39:14.287Z",
+  "lastHash": "3d45fa1899192e25e976e908f878c5b9e957c08012b0009f865a2f7125a2c242",
+  "lastPushedAt": "2026-06-10T15:33:13.124Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "173371720c1a5d6e"
+      "hash": "1a4ad3cb0b20c2d7"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "a1beaac7c27dd040"
+      "hash": "d7cd5d430190ab40"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -36,7 +36,7 @@
     },
     {
       "relativePath": "src/skills/hr.skill.ts",
-      "hash": "8a730b5539bffe0e"
+      "hash": "6cb93f6ed41762e6"
     },
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
@@ -57,6 +57,14 @@
     {
       "relativePath": "src/skills/tools/RoleGrantTool.ts",
       "hash": "40aa3ffbae0670d0"
+    },
+    {
+      "relativePath": "src/skills/tools/StaffClockInTool.ts",
+      "hash": "07cd7c99548fc863"
+    },
+    {
+      "relativePath": "src/skills/tools/StaffClockOutTool.ts",
+      "hash": "006ec330bd26fe63"
     },
     {
       "relativePath": "src/skills/tools/StaffDocumentTool.ts",

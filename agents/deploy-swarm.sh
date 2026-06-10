@@ -68,6 +68,43 @@ copy_env() {
   fi
 }
 
+sync_production_env() {
+  local agent_dir="$1"
+  local label="$2"
+
+  if [[ ! -f "$MAIN_AGENT/.env" ]]; then
+    err "Missing $MAIN_AGENT/.env — cannot sync production env to $label"
+    return 1
+  fi
+
+  # shellcheck disable=SC1091
+  set -a
+  source "$MAIN_AGENT/.env" 2>/dev/null || true
+  set +a
+
+  local api_url="${API_BASE_URL:-https://api.heymizan.ai}"
+  if [[ "$api_url" == http://localhost* ]]; then
+    api_url="https://api.heymizan.ai"
+  fi
+
+  local webhook_key="${LUA_WEBHOOK_API_KEY:-${WEBHOOK_API_KEY:-}}"
+  local service_token="${MIZAN_SERVICE_TOKEN:-}"
+
+  if [[ -z "$webhook_key" ]]; then
+    err "LUA_WEBHOOK_API_KEY not set — skip production env sync for $label"
+    return 1
+  fi
+
+  log "Syncing production env → $label"
+  (cd "$agent_dir" && npx lua env production -k API_BASE_URL -v "$api_url")
+  (cd "$agent_dir" && npx lua env production -k LUA_WEBHOOK_API_KEY -v "$webhook_key")
+  (cd "$agent_dir" && npx lua env production -k WEBHOOK_API_KEY -v "$webhook_key")
+  if [[ -n "$service_token" ]]; then
+    (cd "$agent_dir" && npx lua env production -k MIZAN_SERVICE_TOKEN -v "$service_token")
+  fi
+  ok "Production env synced for $label"
+}
+
 init_agent_if_needed() {
   local agent_dir="$1"
   local agent_name="$2"
@@ -129,6 +166,7 @@ deploy_specialists() {
 
     copy_env "$agent_dir"
     init_agent_if_needed "$agent_dir" "$agent_name"
+    sync_production_env "$agent_dir" "$agent_name" || true
     deploy_project "$agent_dir" "$agent_name"
   done
 
@@ -158,6 +196,7 @@ deploy_specialists() {
 
 deploy_supervisor() {
   log "Deploying main Miya supervisor (my-agent)..."
+  sync_production_env "$MAIN_AGENT" "Miya" || true
   deploy_project "$MAIN_AGENT" "Miya"
   ok "Supervisor deployed: baseAgent_agent_1762796132079_ob3ln5fkl"
 }

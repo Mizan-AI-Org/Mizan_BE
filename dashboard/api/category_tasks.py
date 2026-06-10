@@ -46,7 +46,7 @@ from ..serializers import DashboardTaskCompactSerializer
 # Human Resources widget because the screenshots-mockup ("Print & sign
 # contracts", "Pictures of staff") mixes them in everyday usage.
 BUCKET_TO_CATEGORIES: dict[str, tuple[str, ...]] = {
-    "human_resources": ("HR", "DOCUMENT"),
+    "human_resources": ("HR", "DOCUMENT", "SCHEDULING"),
     "finance": ("FINANCE", "PAYROLL"),
     "maintenance": ("MAINTENANCE",),
     "meetings": ("MEETING",),
@@ -57,6 +57,9 @@ BUCKET_TO_CATEGORIES: dict[str, tuple[str, ...]] = {
     # Miya creates one, so the manager who said "we need to buy X"
     # gets confirmation that the right person was notified.
     "purchase_orders": ("PURCHASE_ORDER",),
+    # General ops follow-ups / personal reminders the manager files for
+    # themselves ("follow up with Lucille on the artists budget").
+    "operations": ("OPERATIONS",),
     # Catch-all lane for anything Miya couldn't confidently route into a
     # named category (intent_router returned ``OTHER``). Surfacing these
     # on the dashboard means general / one-off requests still get seen

@@ -33,6 +33,7 @@ DASHBOARD_WIDGET_IDS = frozenset(
         "human_resources",
         "finance",
         "maintenance",
+        "operations_tasks",
         "purchase_orders",
         "miscellaneous",
         "staff_messages",

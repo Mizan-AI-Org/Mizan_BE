@@ -4,13 +4,13 @@ agent:
 skills:
   - name: human-resources
     skillId: 19023895-636a-4e8e-8c9b-bac978fe3393
-    version: 1.0.1
+    version: 1.0.3
 webhooks: []
 jobs: []
 preprocessors: []
 postprocessors: []
 mcpServers: []
 backup:
-  activeVersion: 2
-  lastHash: 02896e11ee40684464e7daee5ed7459fb42b24d6cf8c5f5689f5c574b72b76a5
-  lastPushedAt: '2026-06-10T07:39:14.286Z'
+  activeVersion: 4
+  lastHash: 3d45fa1899192e25e976e908f878c5b9e957c08012b0009f865a2f7125a2c242
+  lastPushedAt: '2026-06-10T15:33:13.122Z'
