@@ -48,6 +48,7 @@ from .views_onboarding import (
     OnboardingCategoryOwnersView,
     OnboardingGoogleCalendarView,
     OnboardingSeedView,
+    OnboardingSkipAllView,
     OnboardingStatusView,
     OnboardingWidgetVisibilityView,
     audit_log_list,
@@ -121,6 +122,7 @@ urlpatterns = [
     # Onboarding (first-run wizard) + Activity log
     path('onboarding/', OnboardingStatusView.as_view(), name='onboarding_status'),
     path('onboarding/seed/', OnboardingSeedView.as_view(), name='onboarding_seed'),
+    path('onboarding/skip-all/', OnboardingSkipAllView.as_view(), name='onboarding_skip_all'),
     path(
         'onboarding/widget-visibility/',
         OnboardingWidgetVisibilityView.as_view(),

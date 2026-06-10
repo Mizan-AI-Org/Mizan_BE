@@ -51,6 +51,10 @@ class DashboardTaskCompactSerializer(serializers.ModelSerializer):
             'assignee',
             'created_at',
             'updated_at',
+            'follow_up_enabled',
+            'follow_up_count',
+            'follow_up_max',
+            'last_follow_up_at',
         )
         read_only_fields = fields
 

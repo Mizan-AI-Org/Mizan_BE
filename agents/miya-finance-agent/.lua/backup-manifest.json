@@ -1,0 +1,70 @@
+{
+  "lastHash": "de322a71838570703609a15e3e35bf0f7481242f6d0114d0d7db21e91e7ffae0",
+  "lastPushedAt": "2026-06-10T07:38:59.497Z",
+  "files": [
+    {
+      "relativePath": "env.example",
+      "hash": "52b0d24e562573b9"
+    },
+    {
+      "relativePath": "lua.skill.yaml",
+      "hash": "77952de77b8688d0"
+    },
+    {
+      "relativePath": "package.json",
+      "hash": "92fc097d89213fd4"
+    },
+    {
+      "relativePath": "QUICKSTART.md",
+      "hash": "31e631fd64512cd1"
+    },
+    {
+      "relativePath": "README.md",
+      "hash": "2ca2d2b3168e75e5"
+    },
+    {
+      "relativePath": "src/index.ts",
+      "hash": "c5337dc747916514"
+    },
+    {
+      "relativePath": "src/services/agentContext.ts",
+      "hash": "b562bc58de80ae93"
+    },
+    {
+      "relativePath": "src/services/ApiService.ts",
+      "hash": "d5a99f55366cb312"
+    },
+    {
+      "relativePath": "src/skills/finance.skill.ts",
+      "hash": "6e983fbf5c4489f4"
+    },
+    {
+      "relativePath": "src/skills/tools/_common/errors.ts",
+      "hash": "f46c101e1a895d61"
+    },
+    {
+      "relativePath": "src/skills/tools/CashReconciliationTool.ts",
+      "hash": "23c53c10e67d2942"
+    },
+    {
+      "relativePath": "src/skills/tools/InvoiceTools.ts",
+      "hash": "1dcb5380aa3d5368"
+    },
+    {
+      "relativePath": "src/skills/tools/SalesReportTool.ts",
+      "hash": "e53fe8ce30e14371"
+    },
+    {
+      "relativePath": "src/skills/tools/SquarePosTool.ts",
+      "hash": "9c89254c20dc661f"
+    },
+    {
+      "relativePath": "src/skills/tools/SupplierOrderTool.ts",
+      "hash": "1613ca074eb80ed7"
+    },
+    {
+      "relativePath": "tsconfig.json",
+      "hash": "748d6fffca1cc9ce"
+    }
+  ]
+}

@@ -211,6 +211,19 @@ class Task(models.Model):
     category = models.CharField(
         max_length=20, choices=TASK_CATEGORY, blank=True, null=True, db_index=True,
     )
+
+    # Auto follow-up fields — Miya follows up with the assignee on WhatsApp
+    # on behalf of the manager if the task stays PENDING. All follow-ups must
+    # land within Meta's 24-hour messaging window from the last user message.
+    follow_up_enabled = models.BooleanField(default=True)
+    follow_up_count = models.PositiveSmallIntegerField(default=0)
+    follow_up_max = models.PositiveSmallIntegerField(default=2)
+    last_follow_up_at = models.DateTimeField(null=True, blank=True)
+    whatsapp_notified_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='When the initial WhatsApp notification was sent to the assignee.',
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

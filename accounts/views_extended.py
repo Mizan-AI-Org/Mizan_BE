@@ -93,6 +93,10 @@ class RestaurantSettingsViewSet(viewsets.ViewSet):
             data['business_vertical'] = (gs.get('business_vertical') or 'RESTAURANT')
             data['custom_staff_roles'] = gs.get('custom_staff_roles') or []
 
+            gcal = gs.get('google_calendar') or {}
+            data['google_calendar_connected'] = bool(gcal.get('connected'))
+            data['google_calendar_email'] = gcal.get('email') or ''
+
             return Response(data)
 
         # PUT

@@ -1,0 +1,78 @@
+{
+  "lastHash": "02896e11ee40684464e7daee5ed7459fb42b24d6cf8c5f5689f5c574b72b76a5",
+  "lastPushedAt": "2026-06-10T07:39:14.287Z",
+  "files": [
+    {
+      "relativePath": "env.example",
+      "hash": "52b0d24e562573b9"
+    },
+    {
+      "relativePath": "lua.skill.yaml",
+      "hash": "173371720c1a5d6e"
+    },
+    {
+      "relativePath": "package.json",
+      "hash": "92fc097d89213fd4"
+    },
+    {
+      "relativePath": "QUICKSTART.md",
+      "hash": "31e631fd64512cd1"
+    },
+    {
+      "relativePath": "README.md",
+      "hash": "2ca2d2b3168e75e5"
+    },
+    {
+      "relativePath": "src/index.ts",
+      "hash": "a1beaac7c27dd040"
+    },
+    {
+      "relativePath": "src/services/agentContext.ts",
+      "hash": "b562bc58de80ae93"
+    },
+    {
+      "relativePath": "src/services/ApiService.ts",
+      "hash": "d5a99f55366cb312"
+    },
+    {
+      "relativePath": "src/skills/hr.skill.ts",
+      "hash": "8a730b5539bffe0e"
+    },
+    {
+      "relativePath": "src/skills/tools/_common/errors.ts",
+      "hash": "f46c101e1a895d61"
+    },
+    {
+      "relativePath": "src/skills/tools/AccountActivationTool.ts",
+      "hash": "a86729fb2521b168"
+    },
+    {
+      "relativePath": "src/skills/tools/HrLifecycleTool.ts",
+      "hash": "0480db731f130f88"
+    },
+    {
+      "relativePath": "src/skills/tools/RecognitionTool.ts",
+      "hash": "caa6a83160fbba68"
+    },
+    {
+      "relativePath": "src/skills/tools/RoleGrantTool.ts",
+      "hash": "40aa3ffbae0670d0"
+    },
+    {
+      "relativePath": "src/skills/tools/StaffDocumentTool.ts",
+      "hash": "f4b5ff9c64f89d25"
+    },
+    {
+      "relativePath": "src/skills/tools/StaffReportPdfTool.ts",
+      "hash": "ad93f3cf9b153957"
+    },
+    {
+      "relativePath": "src/utils/resolveStaffPhoneFromLuaUser.ts",
+      "hash": "7940e06883afdab6"
+    },
+    {
+      "relativePath": "tsconfig.json",
+      "hash": "748d6fffca1cc9ce"
+    }
+  ]
+}

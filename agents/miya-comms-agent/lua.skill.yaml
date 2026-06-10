@@ -1,0 +1,16 @@
+agent:
+  agentId: baseAgent_agent_1781075758055_b2neqjdm5
+  orgId: c1234bab-fcdf-4a0f-966e-d09d1971e04f
+skills:
+  - name: communications
+    skillId: bbb1f04e-32a1-46d5-927e-84461527ac73
+    version: 1.0.1
+webhooks: []
+jobs: []
+preprocessors: []
+postprocessors: []
+mcpServers: []
+backup:
+  activeVersion: 2
+  lastHash: d8256f50063a52e9430fe293a79ba6577e19222a8224a156516f467029e003ab
+  lastPushedAt: '2026-06-10T07:39:28.280Z'

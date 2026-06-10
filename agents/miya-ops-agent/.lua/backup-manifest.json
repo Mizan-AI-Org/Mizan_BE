@@ -1,0 +1,98 @@
+{
+  "lastHash": "5454440c202e36237e25b75251ca157e779dfb38cd39035f7211787bdc9eb391",
+  "lastPushedAt": "2026-06-10T07:38:43.011Z",
+  "files": [
+    {
+      "relativePath": "env.example",
+      "hash": "52b0d24e562573b9"
+    },
+    {
+      "relativePath": "lua.skill.yaml",
+      "hash": "52eab6f12710bfd4"
+    },
+    {
+      "relativePath": "package.json",
+      "hash": "92fc097d89213fd4"
+    },
+    {
+      "relativePath": "QUICKSTART.md",
+      "hash": "31e631fd64512cd1"
+    },
+    {
+      "relativePath": "README.md",
+      "hash": "2ca2d2b3168e75e5"
+    },
+    {
+      "relativePath": "src/index.ts",
+      "hash": "a511555b294c0aa1"
+    },
+    {
+      "relativePath": "src/services/agentContext.ts",
+      "hash": "b562bc58de80ae93"
+    },
+    {
+      "relativePath": "src/services/ApiService.ts",
+      "hash": "d5a99f55366cb312"
+    },
+    {
+      "relativePath": "src/skills/operations.skill.ts",
+      "hash": "94c033895223db26"
+    },
+    {
+      "relativePath": "src/skills/tools/_common/errors.ts",
+      "hash": "f46c101e1a895d61"
+    },
+    {
+      "relativePath": "src/skills/tools/AttendanceTool.ts",
+      "hash": "d5b1314d0888068e"
+    },
+    {
+      "relativePath": "src/skills/tools/ChecklistRespondTool.ts",
+      "hash": "91b8c941cdedc22f"
+    },
+    {
+      "relativePath": "src/skills/tools/ChecklistStarterTool.ts",
+      "hash": "6f59b444cc23fe3d"
+    },
+    {
+      "relativePath": "src/skills/tools/LaborReportExportTool.ts",
+      "hash": "c79d1d1b0e4cb5e9"
+    },
+    {
+      "relativePath": "src/skills/tools/OptimalStaffingTool.ts",
+      "hash": "1c59c7ee4cdc0b62"
+    },
+    {
+      "relativePath": "src/skills/tools/ScheduleImportTool.ts",
+      "hash": "fbc21392b68c0865"
+    },
+    {
+      "relativePath": "src/skills/tools/ScheduleOptimizerTool.ts",
+      "hash": "5bfe8901496348a3"
+    },
+    {
+      "relativePath": "src/skills/tools/StaffClockInTool.ts",
+      "hash": "07cd7c99548fc863"
+    },
+    {
+      "relativePath": "src/skills/tools/StaffClockOutTool.ts",
+      "hash": "006ec330bd26fe63"
+    },
+    {
+      "relativePath": "src/skills/tools/StaffSchedulerTool.ts",
+      "hash": "2bcee37c6f3679ac"
+    },
+    {
+      "relativePath": "src/skills/tools/StandaloneTasksTool.ts",
+      "hash": "eef0c3f077f2bfdf"
+    },
+    {
+      "relativePath": "src/utils/resolveStaffPhoneFromLuaUser.ts",
+      "hash": "7940e06883afdab6"
+    },
+    {
+      "relativePath": "tsconfig.json",
+      "hash": "748d6fffca1cc9ce"
+    }
+  ]
+}
