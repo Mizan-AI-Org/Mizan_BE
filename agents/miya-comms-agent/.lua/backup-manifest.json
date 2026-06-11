@@ -1,6 +1,6 @@
 {
-  "lastHash": "1c218cd063136980adaab50c770452085c998ecb4670a217978a0f1e36ea0ab8",
-  "lastPushedAt": "2026-06-10T16:01:45.951Z",
+  "lastHash": "7c60bb90e422e7f410800f88e72d684feaae8c99e611ebe31a727a42b322b51d",
+  "lastPushedAt": "2026-06-11T00:44:00.073Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "445dc73dde996c3b"
+      "hash": "3c412c4b53a9786e"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "3b7bf2e500940e65"
+      "hash": "252e788983c28da0"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -36,7 +36,7 @@
     },
     {
       "relativePath": "src/skills/communications.skill.ts",
-      "hash": "5e4ca9f26de723fe"
+      "hash": "9c7b46f38ce88f8e"
     },
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
@@ -56,7 +56,7 @@
     },
     {
       "relativePath": "src/skills/tools/WhatsAppFlowsTool.ts",
-      "hash": "b577f61a81925af1"
+      "hash": "230478e8c42fb83f"
     },
     {
       "relativePath": "src/skills/tools/WhatsAppTemplateTool.ts",

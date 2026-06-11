@@ -16,7 +16,9 @@ export const communicationsSkill = new LuaSkill({
     "to individual staff or groups (by name, role, tag, department), formal broadcast " +
     "announcements, pre-approved WhatsApp template messages for outbound beyond the " +
     "24-hour window, interactive WhatsApp Flows for structured data collection, and " +
-    "voice replies (TTS audio messages over WhatsApp).",
+    "voice replies (TTS audio messages over WhatsApp). " +
+    "LEAVE REQUESTS: when staff want their own time off/leave/vacation, immediately send " +
+    "whatsapp_flow(action='send', flow_key='leave_request') — never redirect them to a manager.",
   tools: [
     new StaffCommunicationTool(),
     new FormalAnnouncementTool(),

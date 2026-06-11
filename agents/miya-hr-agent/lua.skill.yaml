@@ -4,13 +4,16 @@ agent:
 skills:
   - name: human-resources
     skillId: 19023895-636a-4e8e-8c9b-bac978fe3393
-    version: 1.0.3
+    version: 1.0.10
 webhooks: []
 jobs: []
-preprocessors: []
+preprocessors:
+  - name: account-activation-router
+    preprocessorId: preprocessor_277f6aea-61c2-4142-95b9-8bd59317a57b
+    version: 1.0.3
 postprocessors: []
 mcpServers: []
 backup:
-  activeVersion: 4
-  lastHash: 3d45fa1899192e25e976e908f878c5b9e957c08012b0009f865a2f7125a2c242
-  lastPushedAt: '2026-06-10T15:33:13.122Z'
+  activeVersion: 11
+  lastHash: f73478ecccc6efb8a2eaefa161e35deca0df95e788795898427f38c89bb6f4b9
+  lastPushedAt: '2026-06-11T00:55:44.542Z'

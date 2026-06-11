@@ -16,7 +16,11 @@ function toolResultJsonClone(value: unknown): unknown {
 
 export default class AccountActivationTool implements LuaTool {
     name = "account_activation";
-    description = "Activate a staff account when they send their first message. Call this with the user's phone (from context). Backend activates by phone and returns a success message—reply to the user with that exact message. Use when staff says 'Hi Mizan AI, I am ready to activate my account!' or similar.";
+    description =
+        "Activate a staff account when they send their first WhatsApp message after receiving the invite link. " +
+        "Call IMMEDIATELY when staff says: 'Hi Mizan AI, I am ready to activate my account!', 'activate my account', " +
+        "'ready to activate', 'accept invite', or similar. Pass phone from WhatsApp context (optional if uid has phone). " +
+        "Reply with the tool's exact message field — success is: 'Congratulations! Your account has been successfully activated. Welcome to the team!'";
 
     inputSchema = z.object({
         phone: z
@@ -82,7 +86,7 @@ export default class AccountActivationTool implements LuaTool {
                 const raw = (result.error || result.message_for_user || "").toLowerCase();
                 const genericMessage = "Your account could not be activated. Please confirm you've received the activation link from your manager and that your phone number matches what they have on file, or contact support.";
                 const message = raw && (raw.includes("pin") || raw.includes("password")) ? genericMessage : (result.message_for_user || result.error || genericMessage);
-                return { status: "error", message };
+                return { status: "error", message, miya_directive: "Relay the message field VERBATIM. Do NOT say 'there was an issue' or invent your own apology." };
             }
 
             console.log(`[AccountActivationTool] ✅ Account activated for ${result.user?.email}`);
@@ -120,6 +124,9 @@ export default class AccountActivationTool implements LuaTool {
                 message:
                     result.message_for_user ||
                     "Congratulations! Your account has been successfully activated. Welcome to the team!",
+                miya_directive:
+                    "Relay the message field VERBATIM — character for character. Do NOT add a preface or paraphrase. " +
+                    "This is the official welcome text after activation.",
                 ...(userForAgent && Object.keys(userForAgent).length > 0 ? { user: userForAgent } : {}),
             };
         } catch (error: any) {

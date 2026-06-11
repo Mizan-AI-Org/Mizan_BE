@@ -1773,7 +1773,7 @@ export default class ApiService {
             const response = await this.axiosInstance.post(
                 "/api/timeclock/agent/clock-in-by-phone/",
                 payload,
-                { headers, timeout: 30000 }
+                { headers, timeout: 30000, validateStatus: () => true },
             );
             return response.data;
         } catch (error: any) {
@@ -2209,6 +2209,7 @@ export default class ApiService {
                 {
                     headers: { Authorization: auth.Authorization },
                     timeout: 30000,
+                    validateStatus: () => true,
                 }
             );
             return response.data;

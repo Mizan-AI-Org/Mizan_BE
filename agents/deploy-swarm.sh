@@ -102,6 +102,14 @@ sync_production_env() {
   if [[ -n "$service_token" ]]; then
     (cd "$agent_dir" && npx lua env production -k MIZAN_SERVICE_TOKEN -v "$service_token")
   fi
+  # WhatsApp Meta Flow IDs (defaults match WhatsAppFlowsTool.ts)
+  local leave_flow="${LEAVE_REQUEST_FLOW_ID:-151961231845018}"
+  local incident_flow="${INCIDENT_REPORT_FLOW_ID:-1322819756651058}"
+  (cd "$agent_dir" && npx lua env production -k LEAVE_REQUEST_FLOW_ID -v "$leave_flow")
+  (cd "$agent_dir" && npx lua env production -k INCIDENT_REPORT_FLOW_ID -v "$incident_flow")
+  if [[ -n "${CLOCK_IN_FLOW_ID:-}" ]]; then
+    (cd "$agent_dir" && npx lua env production -k CLOCK_IN_FLOW_ID -v "$CLOCK_IN_FLOW_ID")
+  fi
   ok "Production env synced for $label"
 }
 

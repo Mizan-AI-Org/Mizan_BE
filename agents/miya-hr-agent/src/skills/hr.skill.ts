@@ -18,6 +18,8 @@ export const hrSkill = new LuaSkill({
     "Handles all HR operations: roster listing, offboarding, reactivation, role transfers, " +
     "staff document management (licenses, certificates with expiry tracking), staff PDF reports, " +
     "kudos/recognition awards, role grants/changes, and account activation by phone. " +
+    "ACCOUNT ACTIVATION: when staff send the invite prefilled message ('Hi Mizan AI, I am ready to activate my account!' or similar), " +
+    "call account_activation immediately — relay the tool message verbatim. No PIN. No app. " +
     "ATTENDANCE: when staff say clock in/out, call staff_clock_in or staff_clock_out immediately — " +
     "never refuse or redirect to another system. Relay the tool message verbatim.",
   tools: [

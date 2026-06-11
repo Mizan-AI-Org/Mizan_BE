@@ -1,6 +1,6 @@
 {
-  "lastHash": "3d45fa1899192e25e976e908f878c5b9e957c08012b0009f865a2f7125a2c242",
-  "lastPushedAt": "2026-06-10T15:33:13.124Z",
+  "lastHash": "f73478ecccc6efb8a2eaefa161e35deca0df95e788795898427f38c89bb6f4b9",
+  "lastPushedAt": "2026-06-11T00:55:44.544Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "1a4ad3cb0b20c2d7"
+      "hash": "9908bf2ccc0113f2"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,11 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "d7cd5d430190ab40"
+      "hash": "8752ea8397d8a75c"
+    },
+    {
+      "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
+      "hash": "6735ab8c8e15ec79"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -32,11 +36,11 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "d5a99f55366cb312"
+      "hash": "83906fe3222a8194"
     },
     {
       "relativePath": "src/skills/hr.skill.ts",
-      "hash": "6cb93f6ed41762e6"
+      "hash": "47ecbb223b02a5c5"
     },
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
@@ -44,7 +48,7 @@
     },
     {
       "relativePath": "src/skills/tools/AccountActivationTool.ts",
-      "hash": "a86729fb2521b168"
+      "hash": "a23623e4ae9994d0"
     },
     {
       "relativePath": "src/skills/tools/HrLifecycleTool.ts",
@@ -60,7 +64,7 @@
     },
     {
       "relativePath": "src/skills/tools/StaffClockInTool.ts",
-      "hash": "07cd7c99548fc863"
+      "hash": "041a93c9a1121302"
     },
     {
       "relativePath": "src/skills/tools/StaffClockOutTool.ts",

@@ -201,19 +201,35 @@ export default class StaffClockInTool implements LuaTool {
                     status: "success",
                     code: (result as any).already_clocked_in ? "already_clocked_in" : "clocked_in",
                     message: result.message_for_user || "You're clocked in! Have a great shift.",
+                    miya_directive: "Relay the message field VERBATIM. Do NOT paraphrase or apologize.",
+                };
+            }
+
+            const code = this.mapErrorToCode(result.error);
+            const message =
+                result.message_for_user ||
+                result.error ||
+                "We couldn't record your clock-in. Please contact your manager.";
+
+            // Normal WhatsApp flow: backend sends Share-Location button — not a failure.
+            if (code === "location_required") {
+                return {
+                    status: "success",
+                    code: "location_required",
+                    message,
+                    miya_directive:
+                        "This is the expected next step — NOT an error. Relay the message field VERBATIM. " +
+                        "Do NOT say 'there was an error' or 'try again later'. The Share Location button was sent.",
                 };
             }
 
             return {
                 status: "error",
-                code: this.mapErrorToCode(result.error),
-                // Pass the backend message through unchanged. The backend
-                // owns the wording; the persona is told to relay this
-                // verbatim. NEVER replace it with a generic apology.
-                message:
-                    result.message_for_user ||
-                    result.error ||
-                    "We couldn't record your clock-in. Please contact your manager.",
+                code,
+                message,
+                miya_directive:
+                    "Relay the message field VERBATIM to the staff. Do NOT substitute a generic apology " +
+                    "like 'there was an error when trying to clock you in'.",
             };
         } catch (error: any) {
             const em = String(error?.message || error || "");

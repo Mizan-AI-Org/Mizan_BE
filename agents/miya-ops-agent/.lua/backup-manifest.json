@@ -1,6 +1,6 @@
 {
-  "lastHash": "5454440c202e36237e25b75251ca157e779dfb38cd39035f7211787bdc9eb391",
-  "lastPushedAt": "2026-06-10T07:38:43.011Z",
+  "lastHash": "d256b8e139320186dcb85ccdf43594705d59b549020b609cb4cd06b248911c07",
+  "lastPushedAt": "2026-06-11T00:54:49.879Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "52eab6f12710bfd4"
+      "hash": "f91b47e668ea51dc"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,11 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "a511555b294c0aa1"
+      "hash": "d3622d4baafa8a4e"
+    },
+    {
+      "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
+      "hash": "d4f6813d000e4999"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -32,11 +36,11 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "d5a99f55366cb312"
+      "hash": "b1a0bed2cc4bc12a"
     },
     {
       "relativePath": "src/skills/operations.skill.ts",
-      "hash": "94c033895223db26"
+      "hash": "10fb6b6bc7ebec3d"
     },
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
@@ -72,7 +76,7 @@
     },
     {
       "relativePath": "src/skills/tools/StaffClockInTool.ts",
-      "hash": "07cd7c99548fc863"
+      "hash": "041a93c9a1121302"
     },
     {
       "relativePath": "src/skills/tools/StaffClockOutTool.ts",

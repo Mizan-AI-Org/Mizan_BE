@@ -1458,13 +1458,13 @@ def agent_clock_in_by_phone(request):
                 logger.warning("agent_clock_in_by_phone: could not set awaiting_clock_in_location session", exc_info=True)
             ok, _ = notification_service.send_whatsapp_location_request(
                 clean_phone,
-                "Please share your live location to clock in.",
+                "Share your location to clock in.",
             )
             return Response({
                 'success': False,
                 'error': 'Location required',
                 'location_request_sent': ok,
-                'message_for_user': "Tap Share Location above to clock in." if ok else "Share your location to clock in.",
+                'message_for_user': "Share your location to clock in.",
             }, status=status.HTTP_400_BAD_REQUEST)
         if not rest:
             return Response({

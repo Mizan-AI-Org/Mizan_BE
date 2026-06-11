@@ -4,13 +4,13 @@ agent:
 skills:
   - name: finance
     skillId: bd44d3c0-0cde-473a-b424-1d5b282b3c8a
-    version: 1.0.1
+    version: 1.0.5
 webhooks: []
 jobs: []
 preprocessors: []
 postprocessors: []
 mcpServers: []
 backup:
-  activeVersion: 2
-  lastHash: de322a71838570703609a15e3e35bf0f7481242f6d0114d0d7db21e91e7ffae0
-  lastPushedAt: '2026-06-10T07:38:59.496Z'
+  activeVersion: 6
+  lastHash: 4f649d46c27c05c4b34f899436e37f80352989b4533d26dd10181c8e98b17251
+  lastPushedAt: '2026-06-11T00:42:57.563Z'
