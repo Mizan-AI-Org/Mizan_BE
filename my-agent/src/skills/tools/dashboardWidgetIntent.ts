@@ -21,6 +21,11 @@ const PHRASE_TO_WIDGET: Array<{ match: RegExp; widget: string; label: string }> 
         widget: "team_travel",
         label: "Team Travel",
     },
+    {
+        match: /\b(team\s+retreat|retreats?|offsite|team\s+offsite)/i,
+        widget: "team_travel",
+        label: "Team Travel",
+    },
     { match: /\b(purchases?|procurement|achats?|po\b|bons?\s+de\s+commande)/i, widget: "purchase_orders", label: "Purchases" },
     { match: /\b(human\s+resources?|\bhr\b|\brh\b|ressources?\s+humaines?)/i, widget: "human_resources", label: "HR" },
     { match: /\b(finance|invoices?|factures?|billing|payroll|paie)/i, widget: "finance", label: "Finance" },
@@ -55,11 +60,26 @@ export function extractWidgetTitlePhrase(text: string): string {
     if (forMatch?.[1]) {
         return forMatch[1].trim().replace(/\s+widget\s*$/i, "").trim();
     }
-    const stripped = t
-        .replace(WIDGET_REQUEST_RE, "")
-        .replace(/^\s*(a|an|the|un|une|le|la|my|on|to|for|pour)\s+/i, "")
+    let stripped = t
+        .replace(
+            /^\s*(create|add|make|put|show|display|cr[eé]e|cr[eé]er|ajoute|ajouter|zid|agrega)\s+(?:a|an|the|un|une|my|le|la|to|for|pour)?\s*/i,
+            "",
+        )
+        .replace(/\s+widget\s*$/i, "")
         .trim();
-    return stripped || t;
+    return (stripped || t).slice(0, 255);
+}
+
+export function resolveOperationalWidgetFromPhrase(text: string): DashboardWidgetIntent | null {
+    const t = text.trim();
+    if (!t) return null;
+    const phrase = extractWidgetTitlePhrase(t);
+    for (const { match, widget, label } of PHRASE_TO_WIDGET) {
+        if (match.test(phrase) || match.test(t)) {
+            return { action: "add", widgets: [widget], label, sourceText: t };
+        }
+    }
+    return null;
 }
 
 export function resolveDashboardWidgetIntent(text: string): DashboardWidgetIntent | null {

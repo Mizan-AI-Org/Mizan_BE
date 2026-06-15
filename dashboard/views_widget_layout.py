@@ -172,9 +172,10 @@ class DashboardWidgetOrderView(APIView):
 class DashboardCustomWidgetListView(APIView):
     """List Miya-created custom widgets for the current user (for rendering).
 
-    Side-effect on read: any *placeholder* custom widget (no link_url)
-    whose title is an alias for a data-bound built-in widget
-    (e.g. "Purchases" → ``purchase_orders``) is silently migrated:
+    Side-effect on read: any custom widget whose title/subtitle is an
+    alias for a data-bound built-in widget (e.g. "Purchases" →
+    ``purchase_orders``, "Create a Team retreat widget" → ``team_travel``)
+    is silently migrated:
 
       - the placeholder ``DashboardCustomWidget`` is deleted,
       - the data-bound built-in is appended to the user's layout if
@@ -183,9 +184,8 @@ class DashboardCustomWidgetListView(APIView):
 
     This is the *render-time* counterpart to the agent-side redirect in
     ``AgentDashboardWidgetCreateView``: tenants who already created a
-    "Purchases" / "Finance" / "HR" placeholder before the fix shipped
-    don't need manual cleanup — the next dashboard load fixes itself.
-    Real shortcut tiles (link_url set) are never touched.
+    "Purchases" / "Team Travel" placeholder before the fix shipped don't
+    need manual cleanup — the next dashboard load fixes itself.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -206,8 +206,6 @@ class DashboardCustomWidgetListView(APIView):
         builtins_to_add: list[str] = []
         rows_to_delete: list[DashboardCustomWidget] = []
         for w in qs:
-            if w.link_url:
-                continue
             target = resolve_widget_alias(w.title, w.subtitle)
             if target and target in DATA_BOUND_BUILTIN_IDS:
                 rows_to_delete.append(w)
@@ -434,6 +432,7 @@ class AgentDashboardWidgetCreateView(APIView):
             aliased_id = resolve_widget_alias(
                 title,
                 data.get("subtitle"),
+                data.get("source_text") or data.get("sourceText"),
                 data.get("category_name") or data.get("categoryName"),
             )
             if aliased_id and aliased_id not in DATA_BOUND_BUILTIN_IDS:
@@ -668,11 +667,12 @@ class AgentDashboardWidgetCreateView(APIView):
 
     @staticmethod
     def _cleanup_aliased_custom_widgets(user: CustomUser, builtin_id: str) -> None:
-        """Remove any placeholder custom widget whose title is a known
-        alias for ``builtin_id`` from this user's tenant + layout.
+        """Remove any custom widget whose title is a known alias for
+        ``builtin_id`` from this user's tenant + layout.
 
-        Only runs against placeholder tiles (no link_url) so we never
-        delete a real shortcut a user crafted to point at a specific page.
+        Includes tiles that got an auto-resolved ``link_url`` (e.g. "team"
+        → ``/dashboard/staff-app``) before alias redirect shipped — those
+        are still Miya placeholders, not deliberate shortcuts.
         """
         if not getattr(user, "restaurant_id", None):
             return
@@ -680,7 +680,6 @@ class AgentDashboardWidgetCreateView(APIView):
             DashboardCustomWidget.objects.filter(
                 user=user,
                 restaurant_id=user.restaurant_id,
-                link_url="",
             )
         )
         if not candidates:

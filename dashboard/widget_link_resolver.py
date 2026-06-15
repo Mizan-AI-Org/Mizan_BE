@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import re
 
+from .widget_alias_resolver import DATA_BOUND_BUILTIN_IDS, resolve_widget_alias
+
 # Order matters as a tie-breaker. Put more specific mappings BEFORE generic ones.
 #
 # Keywords are compared via case-insensitive substring match, so "chats"
@@ -108,6 +110,11 @@ def resolve_link_from_title(title: str | None) -> str:
     matches with confidence.
     """
     if not title:
+        return ""
+    # Operational lanes (Team Travel, Purchases, HR, …) must stay link-less so
+    # the alias redirect + data-bound widget path wins — never a generic shortcut.
+    aliased = resolve_widget_alias(title)
+    if aliased and aliased in DATA_BOUND_BUILTIN_IDS:
         return ""
     lowered = title.lower()
     best_route = ""

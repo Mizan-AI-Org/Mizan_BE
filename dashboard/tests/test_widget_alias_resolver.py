@@ -117,6 +117,21 @@ class ResolveWidgetAliasTests(SimpleTestCase):
     def test_team_travel_widget_title_resolves_to_team_travel(self):
         self.assertEqual(resolve_widget_alias("Team Travel"), "team_travel")
 
+    def test_team_retreat_widget_phrase_resolves_to_team_travel(self):
+        self.assertEqual(
+            resolve_widget_alias("Create a Team retreat widget"),
+            "team_travel",
+        )
+
+    def test_team_retreat_title_resolves_to_team_travel(self):
+        self.assertEqual(resolve_widget_alias("Team retreat"), "team_travel")
+
+    def test_retreat_substring_in_sentence_resolves_to_team_travel(self):
+        self.assertEqual(
+            resolve_widget_alias("Plan the team retreat logistics"),
+            "team_travel",
+        )
+
     def test_random_shortcut_does_not_resolve(self):
         self.assertIsNone(resolve_widget_alias("Daily PDF report"))
 
