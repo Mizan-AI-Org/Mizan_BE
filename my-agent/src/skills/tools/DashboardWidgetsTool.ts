@@ -148,6 +148,7 @@ export default class DashboardWidgetsTool implements LuaTool {
         "staff_inbox, staff_messages, meetings_reminders, clock_ins, incidents, urgent_top, human_resources, finance, maintenance, purchase_orders, miscellaneous, team_travel, team_medical_service. " +
         "*** CRITICAL — operational lanes vs shortcuts ***. " +
         "If the manager asks for a widget that maps to a known operational lane, you MUST use action='add' with the matching built-in id (NEVER create_custom). " +
+        "Adding a command-centre widget also creates the matching All Requests inbox tab for that manager (tabs are widget-driven, not global). " +
         "These built-ins are already wired to the live request/task stream and show real data; create_custom would just put a 'Ask Miya' placeholder over them. " +
         "Required title→builtin map: 'Purchases'/'PO'/'Procurement'/'Achats'/'مشتريات' → purchase_orders; " +
         "'HR'/'Human Resources'/'RH'/'Ressources humaines'/'موارد بشرية' → human_resources; " +
