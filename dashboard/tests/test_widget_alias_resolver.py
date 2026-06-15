@@ -126,6 +126,18 @@ class ResolveWidgetAliasTests(SimpleTestCase):
     def test_team_retreat_title_resolves_to_team_travel(self):
         self.assertEqual(resolve_widget_alias("Team retreat"), "team_travel")
 
+    def test_team_medical_service_widget_phrase_resolves(self):
+        self.assertEqual(
+            resolve_widget_alias("Create a Team Medical Service widget"),
+            "team_medical_service",
+        )
+
+    def test_team_medical_service_title_resolves(self):
+        self.assertEqual(
+            resolve_widget_alias("Team Medical Service"),
+            "team_medical_service",
+        )
+
     def test_retreat_substring_in_sentence_resolves_to_team_travel(self):
         self.assertEqual(
             resolve_widget_alias("Plan the team retreat logistics"),

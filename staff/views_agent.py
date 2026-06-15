@@ -88,7 +88,7 @@ logger = logging.getLogger(__name__)
 # list. Must match ``StaffRequest.CATEGORY_CHOICES``.
 STAFF_REQUEST_CATEGORIES = (
     'DOCUMENT', 'HR', 'SCHEDULING', 'PAYROLL', 'FINANCE', 'OPERATIONS',
-    'MAINTENANCE', 'RESERVATIONS', 'INVENTORY', 'OTHER',
+    'MAINTENANCE', 'RESERVATIONS', 'INVENTORY', 'PURCHASE_ORDER', 'MEDICAL', 'OTHER',
 )
 
 
@@ -116,6 +116,9 @@ def _normalize_category(raw) -> str:
         'ACCOUNTING': 'FINANCE',
         'ACCOUNTS': 'FINANCE',
         'FINANCES': 'FINANCE',
+        'MEDICAL_SERVICE': 'MEDICAL',
+        'MEDICAL_SERVICES': 'MEDICAL',
+        'HEALTH': 'MEDICAL',
     }
     cat = aliases.get(cat, cat)
     return cat if cat in STAFF_REQUEST_CATEGORIES else 'OTHER'

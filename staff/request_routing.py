@@ -41,6 +41,7 @@ _CATEGORY_TO_SLUGS: dict[str, tuple[str, ...]] = {
     # that way existing tenants get sensible routing without having
     # to revisit onboarding.
     "PURCHASE_ORDER": ("request.purchase_order", "request.inventory"),
+    "MEDICAL": ("request.medical", "request.hr"),
     "OTHER": (),
 }
 

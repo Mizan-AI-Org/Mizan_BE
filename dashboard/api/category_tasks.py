@@ -51,6 +51,7 @@ BUCKET_TO_CATEGORIES: dict[str, tuple[str, ...]] = {
     # voice). Powers the "Team Travel" dashboard lane — distinct from
     # the general staff_inbox (all categories) and HR (people/docs).
     "team_travel": ("SCHEDULING",),
+    "team_medical_service": ("MEDICAL",),
     "finance": ("FINANCE", "PAYROLL"),
     "maintenance": ("MAINTENANCE",),
     "meetings": ("MEETING",),

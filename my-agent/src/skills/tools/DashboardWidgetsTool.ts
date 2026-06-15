@@ -145,7 +145,7 @@ export default class DashboardWidgetsTool implements LuaTool {
         "full order), 'create_custom' (create a new shortcut tile with title + optional subtitle + optional link + optional icon), 'delete_custom' " +
         "(permanently delete a shortcut tile), or 'create_category' (tenant-wide dashboard section for grouping tiles — FR **rubrique**). Built-in widget ids: insights, tasks_demands, staffing, sales_or_tasks, operations, wellbeing, " +
         "live_attendance, compliance_risk, inventory_delivery, task_execution, take_orders, reservations, retail_store_ops, jobsite_crew, ops_reports, " +
-        "staff_inbox, staff_messages, meetings_reminders, clock_ins, incidents, urgent_top, human_resources, finance, maintenance, purchase_orders, miscellaneous, team_travel. " +
+        "staff_inbox, staff_messages, meetings_reminders, clock_ins, incidents, urgent_top, human_resources, finance, maintenance, purchase_orders, miscellaneous, team_travel, team_medical_service. " +
         "*** CRITICAL — operational lanes vs shortcuts ***. " +
         "If the manager asks for a widget that maps to a known operational lane, you MUST use action='add' with the matching built-in id (NEVER create_custom). " +
         "These built-ins are already wired to the live request/task stream and show real data; create_custom would just put a 'Ask Miya' placeholder over them. " +
@@ -162,6 +162,7 @@ export default class DashboardWidgetsTool implements LuaTool {
         "'Incidents' → incidents; 'Inventory'/'Stock'/'Deliveries'/'Inventaire'/'مخزون' → inventory_delivery; " +
         "'Tasks'/'To-do'/'Tâches'/'مهام' → tasks_demands; 'Misc'/'Other'/'Divers'/'متفرقات' → miscellaneous. " +
         "'Leave requests'/'Team leave'/'Time off'/'Team travel'/'Team retreat'/'Congé' → team_travel (scheduling command centre). " +
+        "'Team Medical Service'/'Medical service'/'Occupational health' → team_medical_service (medical command centre). " +
         "Only fall back to create_custom for genuine shortcut tiles that have no built-in equivalent (e.g. 'shortcut to a Google Sheet I keep' or 'shortcut to /reports/sales'). " +
         "If you accidentally call create_custom with one of the operational titles above, the backend will auto-redirect to the matching `add` and respond with `resolved_from_alias: true` — relay the returned message_for_user verbatim. " +
         "The 'incidents' widget shows the top 5 most-recent reported incidents and links to the Reported Incidents page. Custom tiles use a 'custom:<uuid>' slot id — 'list' returns both the slot id and the tile's title so " +

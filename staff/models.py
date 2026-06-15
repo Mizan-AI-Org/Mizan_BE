@@ -357,6 +357,11 @@ class StaffRequest(models.Model):
         # "we need to buy X" sees that request next to other open POs
         # instead of buried in the generic inbox.
         ('PURCHASE_ORDER', 'Purchase order'),
+        # Team medical / occupational-health asks (clinic visit, medical
+        # certificate, health screening). Powers the dashboard's Team
+        # Medical Service widget — distinct from HR (people policy) and
+        # SCHEDULING (leave / travel).
+        ('MEDICAL', 'Medical'),
         ('OTHER', 'Other'),
     )
 

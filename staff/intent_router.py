@@ -57,6 +57,7 @@ INBOX_CATEGORIES = (
     # has already been issued). Powers the dashboard's Purchase Orders
     # widget.
     "PURCHASE_ORDER",
+    "MEDICAL",
     "MEETING",
     "OTHER",
 )
@@ -242,6 +243,23 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "holiday", "annual leave", "time off", "time-off",
             "sick leave", "sick day", "absent tomorrow",
             "can't come", "cant come", "won't be in",
+        ),
+    ),
+    (
+        "MEDICAL",
+        (
+            "medical service", "medical services",
+            "team medical", "occupational health",
+            "health screening", "health check", "health checkup",
+            "medical checkup", "medical check", "medical exam",
+            "medical examination", "medical appointment",
+            "doctor appointment", "clinic appointment", "clinic visit",
+            "see a doctor", "see the doctor", "visit the doctor",
+            "medical certificate", "med cert", "sick note",
+            "fitness for work", "return to work medical",
+            "vaccination", "vaccine", "immunization", "immunisation",
+            "blood test", "lab test", "x-ray", "xray",
+            "service medical", "visite medicale", "certificat medical",
         ),
     ),
     (

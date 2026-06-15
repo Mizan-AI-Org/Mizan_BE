@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 WIDGET_CANONICAL_LABELS: dict[str, str] = {
     "staff_inbox": "Team inbox",
     "team_travel": "Team Travel",
+    "team_medical_service": "Team Medical Service",
     "purchase_orders": "Purchases",
     "human_resources": "HR",
     "finance": "Finance",
@@ -362,7 +363,7 @@ class AgentDashboardWidgetsAddView(APIView):
                 "message_for_user": (
                     f'Added the "{added_labels[0]}" lane to your dashboard — it shows live request snippets. '
                     f"Click it to open the full command centre. Refresh the dashboard to see it."
-                    if len(added) == 1 and added[0] in ("staff_inbox", "team_travel")
+                    if len(added) == 1 and added[0] in ("staff_inbox", "team_travel", "team_medical_service")
                     else (
                         f"Added {len(added)} widget(s) to your dashboard: {', '.join(added_labels)}. "
                         "Open or refresh the dashboard to see them."
@@ -627,6 +628,7 @@ class AgentDashboardWidgetCreateView(APIView):
             "miscellaneous",
             "staff_inbox",
             "team_travel",
+            "team_medical_service",
         }
         display_title = _widget_label(builtin_id, requested_title)
         if builtin_id in inbox_style_lanes:

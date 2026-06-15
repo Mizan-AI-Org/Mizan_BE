@@ -26,6 +26,11 @@ const PHRASE_TO_WIDGET: Array<{ match: RegExp; widget: string; label: string }> 
         widget: "team_travel",
         label: "Team Travel",
     },
+    {
+        match: /\b(team\s+medical(\s+service(s)?)?|medical\s+service(s)?|occupational\s+health|health\s+service|clinic\s+visit|doctor\s+appointment|visite\s+m[eé]dicale|service\s+m[eé]dical)/i,
+        widget: "team_medical_service",
+        label: "Team Medical Service",
+    },
     { match: /\b(purchases?|procurement|achats?|po\b|bons?\s+de\s+commande)/i, widget: "purchase_orders", label: "Purchases" },
     { match: /\b(human\s+resources?|\bhr\b|\brh\b|ressources?\s+humaines?)/i, widget: "human_resources", label: "HR" },
     { match: /\b(finance|invoices?|factures?|billing|payroll|paie)/i, widget: "finance", label: "Finance" },
