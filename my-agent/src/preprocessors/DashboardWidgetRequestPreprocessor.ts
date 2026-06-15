@@ -3,9 +3,9 @@
  * Blocks with the backend message so the LLM cannot invent "temporary technical issue" apologies.
  */
 import { ChatMessage, PreProcessor, UserDataInstance } from "lua-cli";
-import { resolveAgentContext } from "../services/agentContext";
 import DashboardWidgetsTool from "../skills/tools/DashboardWidgetsTool";
 import { resolveDashboardWidgetIntent } from "../skills/tools/dashboardWidgetIntent";
+import { resolveTenantForUser } from "../utils/resolveTenantForUser";
 
 const dashboardWidgetsTool = new DashboardWidgetsTool();
 
@@ -24,15 +24,10 @@ export const dashboardWidgetRequestPreprocessor = new PreProcessor({
             return { action: "proceed" as const };
         }
 
-        const ctx = await resolveAgentContext(
-            (user as { data?: Record<string, unknown> }).data?.restaurantId as string | undefined,
-        );
-        const restaurantId = ctx.restaurantId;
-        if (restaurantId && user.data?.restaurantId !== restaurantId) {
-            user.data = { ...(user.data || {}), restaurantId };
-        }
+        const tenant = await resolveTenantForUser(user);
+        const restaurantId = tenant.restaurantId;
         console.log(
-            `[DashboardWidgetPreprocessor] Widget request detected action=${intent.action} channel=${channel} restaurant=${restaurantId || "?"}`,
+            `[DashboardWidgetPreprocessor] Widget request detected action=${intent.action} channel=${channel} restaurant=${restaurantId || "?"} user=${tenant.userId || "?"} email=${tenant.email || "?"}`,
         );
 
         let toolResult: Record<string, unknown> = {};
@@ -42,9 +37,9 @@ export const dashboardWidgetRequestPreprocessor = new PreProcessor({
                     action: "add",
                     widgets: intent.widgets,
                     restaurantId,
-                    user_id: ctx.userId,
-                    email: ctx.email,
-                    phone: ctx.phone,
+                    user_id: tenant.userId,
+                    email: tenant.email,
+                    phone: tenant.phone,
                 })) as Record<string, unknown>;
             } else {
                 toolResult = (await dashboardWidgetsTool.execute({
@@ -52,9 +47,9 @@ export const dashboardWidgetRequestPreprocessor = new PreProcessor({
                     title: intent.title,
                     restaurantId,
                     add_to_dashboard: true,
-                    user_id: ctx.userId,
-                    email: ctx.email,
-                    phone: ctx.phone,
+                    user_id: tenant.userId,
+                    email: tenant.email,
+                    phone: tenant.phone,
                 })) as Record<string, unknown>;
             }
         } catch (err: unknown) {

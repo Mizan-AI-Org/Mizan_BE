@@ -832,10 +832,16 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
         if user.role not in ['SUPER_ADMIN', 'ADMIN']:
             queryset = queryset.filter(Q(reporter=user) | Q(is_anonymous=True))
             
-        # Filter by status
+        # Filter by status — supports a single value or comma-separated list
+        # (e.g. status=OPEN or status=OPEN,UNDER_REVIEW). Dashboard widgets
+        # request status=OPEN so resolved incidents never appear in the live lane.
         status_param = self.request.query_params.get('status')
         if status_param:
-            queryset = queryset.filter(status=status_param)
+            tokens = [s.strip().upper() for s in status_param.split(',') if s.strip()]
+            if len(tokens) == 1:
+                queryset = queryset.filter(status=tokens[0])
+            else:
+                queryset = queryset.filter(status__in=tokens)
             
         # Filter by severity
         severity = self.request.query_params.get('severity')

@@ -6,6 +6,7 @@ import {
     extractRestaurantIdFromLuaBridgeId,
 } from "../utils/extractLuaBridgeContext";
 import { resolveStaffPhoneForByPhoneTools } from "../utils/resolveStaffPhoneFromLuaUser";
+import { resolveTenantForUser } from "../utils/resolveTenantForUser";
 
 /** Bearer/header-safe string — rejects placeholders axios might choke on as Buffer.from(undefined). */
 function coerceBearerLike(v: unknown): string | null {
@@ -111,19 +112,20 @@ export const tenantContextPreprocessor = new PreProcessor({
                 console.log(`[TenantContext] 🏢 Restaurant from Lua bridge uid: ${fromUid}`);
             }
         }
-        if (!user.data?.userId) {
+        const metaUserId = (metadata as any).userId || (metadata as any).user_id;
+        if (metaUserId) {
+            const mid = String(metaUserId).trim();
+            user.data = { ...user.data, userId: mid, mizanUserId: mid };
+            console.log(`[TenantContext] 👤 Mizan user id from widget metadata: ${mid}`);
+        } else if (!user.data?.mizanUserId) {
             const bridgeUserId =
                 extractMizanUserIdFromLuaBridgeId(user.uid) ||
-                extractMizanUserIdFromLuaBridgeId(profile.sessionId);
+                extractMizanUserIdFromLuaBridgeId(profile.sessionId) ||
+                extractMizanUserIdFromLuaBridgeId((metadata as any).sessionId);
             if (bridgeUserId) {
                 user.data = { ...user.data, userId: bridgeUserId, mizanUserId: bridgeUserId };
                 console.log(`[TenantContext] 👤 Mizan user id from Lua bridge uid: ${bridgeUserId}`);
             }
-        }
-        const metaUserId = (metadata as any).userId || (metadata as any).user_id;
-        if (metaUserId && !user.data?.userId) {
-            user.data = { ...user.data, userId: String(metaUserId).trim() };
-            console.log(`[TenantContext] 👤 User ID from widget metadata: ${metaUserId}`);
         }
         const metaEmail =
             (metadata as any).email ||
@@ -233,7 +235,25 @@ export const tenantContextPreprocessor = new PreProcessor({
         );
 
         // WhatsApp staff often have no persisted restaurantId until after activation.
-        // Resolve tenant from phone so staff_request / clock-in tools have restaurant_id.
+        // Resolve tenant from phone / email / Mizan user id / Lua bridge session ids.
+        if (!detectedRestaurantId) {
+            try {
+                const resolved = await resolveTenantForUser(user);
+                if (resolved.restaurantId) {
+                    detectedRestaurantId = resolved.restaurantId;
+                    detectedRestaurantName =
+                        resolved.restaurantName || detectedRestaurantName;
+                    console.log(
+                        `[TenantContext] 🏢 Restaurant resolved via resolveTenantForUser: ${detectedRestaurantName || ""} (${detectedRestaurantId})`,
+                    );
+                }
+            } catch (e: unknown) {
+                const em = e instanceof Error ? e.message : String(e);
+                console.warn(`[TenantContext] resolveTenantForUser failed (non-fatal): ${em}`);
+            }
+        }
+
+        // Legacy phone-only path (kept for explicit staff WhatsApp uids)
         if (!detectedRestaurantId && phone) {
             try {
                 const lookup = await new ApiService().getStaffByPhoneForAgent(phone);
@@ -277,7 +297,7 @@ export const tenantContextPreprocessor = new PreProcessor({
                 `Restaurant: ${detectedRestaurantName}`,
                 `Restaurant ID: ${detectedRestaurantId}`,
                 `User: ${user.data?.userName || user._luaProfile?.fullName || "Manager"} (Role: ${user.data?.role || "Owner"})`,
-                user.data?.userId ? `Mizan User ID: ${user.data.userId}` : null,
+                user.data?.userId ? `Mizan User ID: ${user.data.mizanUserId || user.data.userId}` : null,
                 user.data?.email ? `User Email: ${user.data.email}` : null,
                 phone ? `User Phone: ${phone}` : null,
                 `Today is ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,

@@ -30,6 +30,29 @@ from .widget_link_resolver import ensure_link
 
 logger = logging.getLogger(__name__)
 
+# Short labels Miya should use in user-facing messages (not raw intent text).
+WIDGET_CANONICAL_LABELS: dict[str, str] = {
+    "staff_inbox": "Team inbox",
+    "team_travel": "Team Travel",
+    "purchase_orders": "Purchases",
+    "human_resources": "HR",
+    "finance": "Finance",
+    "maintenance": "Maintenance",
+    "urgent_top": "Urgent",
+    "meetings_reminders": "Meetings & reminders",
+    "clock_ins": "Clock-ins",
+    "live_attendance": "Live attendance",
+    "incidents": "Incidents",
+    "inventory_delivery": "Inventory",
+    "tasks_demands": "Tasks & demands",
+    "miscellaneous": "Miscellaneous",
+    "operations_tasks": "Operations tasks",
+}
+
+
+def _widget_label(widget_id: str, fallback: str | None = None) -> str:
+    return WIDGET_CANONICAL_LABELS.get(widget_id, fallback or widget_id.replace("_", " ").title())
+
 
 def _validate_agent_key(request):
     expected = getattr(settings, "LUA_WEBHOOK_API_KEY", None)
@@ -329,23 +352,8 @@ class AgentDashboardWidgetsAddView(APIView):
         user.dashboard_widget_order = current
         user.save(update_fields=["dashboard_widget_order"])
 
-        widget_labels = {
-            "staff_inbox": "Team leave requests & staff inbox",
-            "purchase_orders": "Purchases",
-            "human_resources": "HR",
-            "finance": "Finance",
-            "maintenance": "Maintenance",
-            "urgent_top": "Urgent",
-            "meetings_reminders": "Meetings & reminders",
-            "clock_ins": "Clock-ins",
-            "live_attendance": "Live attendance",
-            "incidents": "Incidents",
-            "inventory_delivery": "Inventory",
-            "tasks_demands": "Tasks & demands",
-            "miscellaneous": "Miscellaneous",
-            "operations_tasks": "Operations tasks",
-        }
-        added_labels = [widget_labels.get(w, w) for w in added]
+        widget_labels = WIDGET_CANONICAL_LABELS
+        added_labels = [_widget_label(w) for w in added]
 
         return Response(
             {
@@ -354,8 +362,9 @@ class AgentDashboardWidgetsAddView(APIView):
                 "order": current,
                 "added": added,
                 "message_for_user": (
-                    f'Added the "{added_labels[0]}" lane to your dashboard — it shows the live list of matching items from the inbox. Open or refresh the dashboard to see them.'
-                    if len(added) == 1 and added[0] == "staff_inbox"
+                    f'Added the "{added_labels[0]}" lane to your dashboard — it shows live request snippets. '
+                    f"Click it to open the full command centre. Refresh the dashboard to see it."
+                    if len(added) == 1 and added[0] in ("staff_inbox", "team_travel")
                     else (
                         f"Added {len(added)} widget(s) to your dashboard: {', '.join(added_labels)}. "
                         "Open or refresh the dashboard to see them."
@@ -618,27 +627,29 @@ class AgentDashboardWidgetCreateView(APIView):
             "purchase_orders",
             "miscellaneous",
             "staff_inbox",
+            "team_travel",
         }
+        display_title = _widget_label(builtin_id, requested_title)
         if builtin_id in inbox_style_lanes:
             message = (
-                f'Added the "{requested_title}" lane to your dashboard — it shows the live list of '
-                f"matching items from the inbox. Open or refresh the dashboard to see them."
+                f'Added the "{display_title}" lane to your dashboard — it shows live request snippets. '
+                f"Click it to open the full command centre. Refresh the dashboard to see it."
                 if not already_present
-                else f'The "{requested_title}" lane is already on your dashboard — it shows the live list of matching items.'
+                else f'The "{display_title}" lane is already on your dashboard.'
             )
         elif builtin_id in ("clock_ins", "live_attendance"):
             message = (
-                f'Added the "{requested_title}" card to your dashboard — it shows live attendance data. '
+                f'Added the "{display_title}" card to your dashboard — it shows live attendance data. '
                 f"Open or refresh the dashboard to see it."
                 if not already_present
-                else f'The "{requested_title}" card is already on your dashboard.'
+                else f'The "{display_title}" card is already on your dashboard.'
             )
         else:
             message = (
-                f'Added the "{requested_title}" card to your dashboard — it shows live operational data. '
+                f'Added the "{display_title}" card to your dashboard — it shows live operational data. '
                 f"Open or refresh the dashboard to see it."
                 if not already_present
-                else f'The "{requested_title}" card is already on your dashboard.'
+                else f'The "{display_title}" card is already on your dashboard.'
             )
 
         return Response(

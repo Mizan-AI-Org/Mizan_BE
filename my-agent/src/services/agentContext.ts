@@ -1,47 +1,15 @@
 import { User, env } from "lua-cli";
+import type { UserDataInstance } from "lua-cli";
 import {
     extractMizanUserIdFromLuaBridgeId,
     extractRestaurantIdFromLuaBridgeId,
 } from "../utils/extractLuaBridgeContext";
+import { resolveMizanUserIdFromLuaUser } from "../utils/resolveTenantForUser";
 
 /** Mizan `CustomUser` id — UUID string from webhooks, runtimeContext, or Lua profile (never Lua's own opaque user id unless it is already a UUID). */
 export function resolveMizanUserIdFromUser(user: any): string | undefined {
     if (!user) return undefined;
-    const userData = user.data || {};
-    const profile = user._luaProfile || {};
-    const metadata = profile.metadata && typeof profile.metadata === "object" ? profile.metadata : {};
-    const asStr = (v: unknown): string | undefined =>
-        typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
-    const ordered: Array<string | undefined> = [
-        asStr(userData.mizanUserId),
-        asStr(userData.backendUserId),
-        asStr(userData.userId),
-        asStr(userData.user_id),
-        asStr(profile.mizanUserId),
-        asStr(profile.userId),
-        asStr((metadata as any).mizanUserId),
-        asStr((metadata as any).userId),
-        asStr((metadata as any).backendUserId),
-    ];
-    for (const id of ordered) {
-        if (id) return id;
-    }
-    const sessionId: unknown =
-        (metadata as any).sessionId ||
-        profile.sessionId ||
-        userData.sessionId ||
-        user.sessionId;
-    if (typeof sessionId === "string") {
-        const su = sessionId.match(
-            /(?:^|[-_])user-([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})/i
-        );
-        if (su?.[1]) return su[1];
-    }
-    const luaId = user.id;
-    if (typeof luaId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(luaId)) {
-        return luaId;
-    }
-    return undefined;
+    return resolveMizanUserIdFromLuaUser(user as UserDataInstance);
 }
 
 export interface AgentContext {

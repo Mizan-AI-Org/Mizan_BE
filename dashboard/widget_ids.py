@@ -25,6 +25,7 @@ DASHBOARD_WIDGET_IDS = frozenset(
         "jobsite_crew",
         "ops_reports",
         "staff_inbox",
+        "team_travel",
         "meetings_reminders",
         "clock_ins",
         "incidents",
