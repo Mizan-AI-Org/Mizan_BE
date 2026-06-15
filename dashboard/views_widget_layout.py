@@ -329,6 +329,24 @@ class AgentDashboardWidgetsAddView(APIView):
         user.dashboard_widget_order = current
         user.save(update_fields=["dashboard_widget_order"])
 
+        widget_labels = {
+            "staff_inbox": "Team leave requests & staff inbox",
+            "purchase_orders": "Purchases",
+            "human_resources": "HR",
+            "finance": "Finance",
+            "maintenance": "Maintenance",
+            "urgent_top": "Urgent",
+            "meetings_reminders": "Meetings & reminders",
+            "clock_ins": "Clock-ins",
+            "live_attendance": "Live attendance",
+            "incidents": "Incidents",
+            "inventory_delivery": "Inventory",
+            "tasks_demands": "Tasks & demands",
+            "miscellaneous": "Miscellaneous",
+            "operations_tasks": "Operations tasks",
+        }
+        added_labels = [widget_labels.get(w, w) for w in added]
+
         return Response(
             {
                 "success": True,
@@ -336,10 +354,14 @@ class AgentDashboardWidgetsAddView(APIView):
                 "order": current,
                 "added": added,
                 "message_for_user": (
-                    f"Added {len(added)} widget(s) to your dashboard: {', '.join(added)}. "
-                    "Open or refresh the dashboard to see them."
-                    if added
-                    else "Those widgets are already on your dashboard."
+                    f'Added the "{added_labels[0]}" lane to your dashboard — it shows the live list of matching items from the inbox. Open or refresh the dashboard to see them.'
+                    if len(added) == 1 and added[0] == "staff_inbox"
+                    else (
+                        f"Added {len(added)} widget(s) to your dashboard: {', '.join(added_labels)}. "
+                        "Open or refresh the dashboard to see them."
+                        if added
+                        else "Those widgets are already on your dashboard."
+                    )
                 ),
             }
         )

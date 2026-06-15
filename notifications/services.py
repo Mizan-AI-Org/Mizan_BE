@@ -1833,7 +1833,7 @@ class NotificationService:
             phone, phone_err = normalize_whatsapp_phone(phone)
             if phone_err:
                 return False, {"error": phone_err}
-            text = (body_text or "Please share your location to clock in.").strip()[:4096]
+            text = (body_text or "Share your location to clock in.").strip()[:4096]
             url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
             payload = {
                 "messaging_product": "whatsapp",

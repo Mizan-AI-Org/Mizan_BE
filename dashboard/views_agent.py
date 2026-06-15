@@ -305,6 +305,25 @@ def _resolve_assignee(data: dict, restaurant) -> tuple[CustomUser | None, str | 
     return None, "Could not identify the staff member. Provide user_id, email, phone, or full name."
 
 
+def _short_record_ref(record_id) -> str:
+    """Human-friendly tail of a UUID for WhatsApp confirmations."""
+    digits = str(record_id or "").replace("-", "")
+    return (digits[-8:] if len(digits) >= 8 else digits).upper()
+
+
+def _dashboard_widget_hint(category: str | None) -> str:
+    """Tell Miya where the manager should look on the dashboard."""
+    cat = (category or "").upper()
+    if cat == "OPERATIONS":
+        return (
+            " Look in the Operations tasks widget (or Tasks & Demands) "
+            "after refreshing the dashboard."
+        )
+    if cat == "MEETING":
+        return " Look in Tasks & Demands after refreshing the dashboard."
+    return " Refresh the dashboard — it appears under Tasks & Demands."
+
+
 def _parse_due_date(raw: Any) -> tuple[date | None, str | None]:
     """
     Parse `due_date`. Accepts:
@@ -589,8 +608,82 @@ def agent_create_dashboard_task(request):
 
         ai_summary = str(_get_first(data, "ai_summary", "aiSummary", "summary") or "").strip()
 
+        # Acting user (for assign_to_self + audit trail). May already be set
+        # by _resolve_restaurant_for_agent via JWT/session; if not, try JWT.
+        if not acting_user:
+            try:
+                _, acting_user = _try_jwt_restaurant_and_user(request)
+            except Exception:
+                acting_user = None
+
+        assign_to_self = _coerce_bool(
+            _get_first(
+                data,
+                "assign_to_self",
+                "assignToSelf",
+                "assign_to_sender",
+                "personal_reminder",
+            ),
+            default=False,
+        )
+
         # Resolve assignee.
-        assignee, assignee_err = _resolve_assignee(data, restaurant)
+        assignee = None
+        assignee_err = None
+        if assign_to_self:
+            if acting_user and getattr(acting_user, "restaurant_id", None) == getattr(
+                restaurant, "id", None
+            ):
+                assignee = acting_user
+            else:
+                # Dashboard chat often sends only the agent key — resolve the
+                # manager from explicit user_id / email in the payload.
+                sender_user_id = _get_first(
+                    data,
+                    "user_id",
+                    "sender_user_id",
+                    "senderUserId",
+                    "acting_user_id",
+                    "actingUserId",
+                )
+                sender_email = _get_first(
+                    data,
+                    "email",
+                    "sender_email",
+                    "senderEmail",
+                    "acting_user_email",
+                )
+                if sender_user_id or sender_email:
+                    assignee, assignee_err = _resolve_assignee(
+                        {
+                            "user_id": sender_user_id,
+                            "email": sender_email,
+                        },
+                        restaurant,
+                    )
+                else:
+                    sender_phone = _get_first(
+                        data,
+                        "sender_phone",
+                        "senderPhone",
+                        "reporter_phone",
+                        "reporterPhone",
+                    )
+                    if sender_phone:
+                        assignee, assignee_err = _resolve_assignee(
+                            {"phone": sender_phone}, restaurant
+                        )
+                    elif acting_user:
+                        assignee = acting_user
+                    else:
+                        assignee_err = (
+                            "I couldn't identify you as a workspace member for this "
+                            "personal reminder. Open Miya from your Mizan dashboard while logged in, "
+                            "or message from your registered WhatsApp number."
+                        )
+        else:
+            assignee, assignee_err = _resolve_assignee(data, restaurant)
+
         if assignee_err or not assignee:
             return Response(
                 {
@@ -602,15 +695,8 @@ def agent_create_dashboard_task(request):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Acting user (for the `sender` on the notification + audit trail).
-        # May already be set by _resolve_restaurant_for_agent via JWT; if
-        # not, try a JWT-only pass.
-        if not acting_user:
-            try:
-                _, acting_user = _try_jwt_restaurant_and_user(request)
-            except Exception:
-                acting_user = None
-
+        # Acting user display for source_label (assignee block above may have
+        # already resolved acting_user from JWT/session).
         sender_display = "Your manager"
         if acting_user:
             nm = f"{(acting_user.first_name or '').strip()} {(acting_user.last_name or '').strip()}".strip()
@@ -630,7 +716,7 @@ def agent_create_dashboard_task(request):
 
         follow_up_enabled = _coerce_bool(
             _get_first(data, "follow_up_enabled", "followUpEnabled"),
-            default=True,
+            default=False if assign_to_self else True,
         )
         follow_up_max = int(_get_first(data, "follow_up_max", "followUpMax") or 2)
         follow_up_max = max(0, min(3, follow_up_max))
@@ -679,7 +765,7 @@ def agent_create_dashboard_task(request):
         # WhatsApp notification.
         notify_whatsapp = _coerce_bool(
             _get_first(data, "notify_whatsapp", "notifyWhatsapp", "send_whatsapp"),
-            default=True,
+            default=False if assign_to_self else True,
         )
         wa_override = _get_first(data, "whatsapp_message", "whatsappMessage", "message")
         wa_result: dict[str, Any] = {
@@ -755,15 +841,26 @@ def agent_create_dashboard_task(request):
                 )
         else:
             wa_phrase = ""
+        task_ref = _short_record_ref(task.id)
+        widget_hint = _dashboard_widget_hint(task_category)
         message_for_user = (
-            f"Created '{task.title}' for {assignee_display} "
-            f"({pretty_priority} priority, due {due_phrase}). {wa_phrase}"
+            f"Task #{task_ref} — Created '{task.title}' for {assignee_display} "
+            f"({pretty_priority} priority, due {due_phrase}).{widget_hint} {wa_phrase}"
         ).strip()
+
+        dashboard_widget = (
+            "operations_tasks"
+            if (task_category or "").upper() == "OPERATIONS"
+            else "tasks_demands"
+        )
 
         return Response(
             {
                 "success": True,
                 "task": DashboardTaskCompactSerializer(task).data,
+                "record_id": str(task.id),
+                "task_ref": task_ref,
+                "dashboard_widget": dashboard_widget,
                 "assignee": {
                     "id": str(assignee.id),
                     "name": assignee_display,

@@ -23,7 +23,10 @@ export const operationsSkill = new LuaSkill({
     "coverage assignment, checklist start/respond flows, standalone task templates from shifts, " +
     "schedule import from photos/documents, schedule optimization, optimal staffing recommendations, " +
     "and labor report exports. Always use staff_lookup from the supervisor before scheduling " +
-    "if a staff name is involved.",
+    "if a staff name is involved. " +
+    "ATTENDANCE: when staff say clock in/out, call staff_clock_in or staff_clock_out immediately — " +
+    "relay the tool message field verbatim; location_required → \"Share your location to clock in.\"; " +
+    "clocked_in → \"Clock-in recorded. Have a great shift {name}!\".",
   tools: [
     new StaffClockInTool(),
     new StaffClockOutTool(),

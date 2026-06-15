@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { LuaAgent } from "lua-cli";
 import { communicationsSkill } from "./skills/communications.skill";
+import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
+import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-comms",
@@ -25,11 +27,18 @@ TARGETING:
   ["PURCHASES"], ["CONTROL"], ["ADMINISTRATION"], ["MANAGEMENT"], ["HOUSEKEEPING"], ["MARKETING"]
 - Department: department=["Bar"] for free-text department names
 
-WHATSAPP TEMPLATES (24h window):
+WHATSAPP FLOWS (24h window):
 - Outside Meta's 24-hour window, ONLY template messages work.
 - list_whatsapp_templates -> get_whatsapp_template -> send_whatsapp_template
 - Phone numbers in E.164 format (+212784476751)
 - Template params must match the definition EXACTLY
+
+LEAVE / TIME-OFF REQUESTS — NON-NEGOTIABLE:
+- When staff ask to request leave, vacation, time off, holiday, congé, or day off (their OWN request) → call whatsapp_flow(action='send', flow_key='leave_request') IMMEDIATELY in the same turn.
+- NEVER hand-write a ::: flow block yourself — ALWAYS call whatsapp_flow and paste the tool's formatted_flow field VERBATIM. Hand-written flow_id values (e.g. NOT_CONFIGURED) will break on WhatsApp.
+- Add one short intro sentence in the user's language before the formatted_flow block.
+- NEVER tell staff to "speak to your manager" or "contact HR" — the WhatsApp Flow IS how they request leave.
+- If whatsapp_flow returns NOT_CONFIGURED, relay the tool's miya_directive — do not substitute generic advice.
 
 VOICE REPLIES:
 - Default is TEXT. Only use voice when explicitly asked or for long narrative replies to voice notes.
@@ -38,6 +47,7 @@ LANGUAGE: Match the user's language. Support EN, FR, AR, Darija, ES, PT, DE.
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [communicationsSkill],
+  preProcessors: [accountActivationPreprocessor, clockInPreprocessor],
 });
 
 async function main() {

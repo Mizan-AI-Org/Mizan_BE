@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { LuaAgent } from "lua-cli";
 import { hrSkill } from "./skills/hr.skill";
+import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
+import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-hr",
@@ -15,6 +17,22 @@ CORE CAPABILITIES:
 - Role Grants: grant or change staff roles (CHEF, WAITER, MANAGER, etc.)
 - Account Activation: activate staff accounts by phone (no PIN needed)
 
+ACCOUNT ACTIVATION — NON-NEGOTIABLE (WhatsApp one-tap invite flow):
+- Triggers: "Hi Mizan AI, I am ready to activate my account!", "activate my account", "ready to activate", "accept invite", or the prefilled text from the manager's invite link.
+- Call account_activation IMMEDIATELY in the same turn. Phone comes from WhatsApp context — pass it if available, otherwise the tool resolves from uid.
+- DO NOT refuse, DO NOT ask for a PIN, DO NOT tell them to open an app or contact support before trying the tool.
+- On success, relay the tool's message VERBATIM:
+  "Congratulations! Your account has been successfully activated. Welcome to the team!"
+- FORBIDDEN replies: "There was an issue activating your account", "Please try again", generic apologies when the tool returned a specific message.
+- Staff often have NO restaurant context yet — that is expected. account_activation looks up their pending record by phone and binds them to the correct restaurant.
+
+ATTENDANCE — NON-NEGOTIABLE (WhatsApp is the staff attendance channel):
+- When staff say "clock in", "clock-in", "pointer", "pointage", "I'm here", "start my shift", or share their location to clock in → call staff_clock_in IMMEDIATELY in the same turn.
+- When staff say "clock out", "clock-out", "fin de shift", "I'm leaving" → call staff_clock_out IMMEDIATELY.
+- NEVER say you cannot clock them in/out, NEVER send them to "another time-tracking system", and NEVER ask them to open an app. Mizan records attendance through these tools on WhatsApp.
+- If they shared a location attachment, pass latitude/longitude (or the location object) to staff_clock_in.
+- Relay the tool's \`message\` field verbatim — do not substitute your own apology or success text. This overrides the ERRORS rule below for clock-in/out.
+
 HR RULES:
 - For offboarding, verify with the manager before proceeding.
 - Document expiry tracking: flag certificates expiring within N days.
@@ -26,6 +44,7 @@ LANGUAGE: Match the user's language on every reply.
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [hrSkill],
+  preProcessors: [accountActivationPreprocessor, clockInPreprocessor],
 });
 
 async function main() {

@@ -261,6 +261,17 @@ def _phone_to_e164_morocco(digits):
     return d
 
 
+def normalize_activation_phone_inbound(phone):
+    """
+    Digits-only, then Morocco national → E.164 so WhatsApp inbound IDs match CSV-uploaded records.
+    Safe for non-MA numbers (returns digits unchanged when rules do not apply).
+    """
+    d = _normalize_phone_digits(phone or "")
+    if not d:
+        return ""
+    return _phone_to_e164_morocco(d) or d
+
+
 def _find_staff_activation_record_by_phone(phone_digits):
     """
     Find a NOT_ACTIVATED StaffActivationRecord by phone using robust suffix matching.
@@ -270,7 +281,9 @@ def _find_staff_activation_record_by_phone(phone_digits):
     """
     if not phone_digits or len(phone_digits) < 6:
         return None
-    normalized = _normalize_phone_digits(phone_digits)
+    normalized = normalize_activation_phone_inbound(phone_digits)
+    if not normalized or len(normalized) < 6:
+        return None
     suffix = _phone_suffix(normalized, 9)
     # Fast path: exact digit match (stored normalized)
     record = StaffActivationRecord.objects.filter(
@@ -309,7 +322,9 @@ def _find_active_user_by_phone(phone_digits):
     """
     if not phone_digits or len(phone_digits) < 6:
         return None
-    normalized = _normalize_phone_digits(phone_digits)
+    normalized = normalize_activation_phone_inbound(phone_digits)
+    if not normalized or len(normalized) < 6:
+        return None
     suffix = _phone_suffix(normalized, 9)
     # ONE-TAP activation users
     email = f"wa_{normalized}@mizan.activation"

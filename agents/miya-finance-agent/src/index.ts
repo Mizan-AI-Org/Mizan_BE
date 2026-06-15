@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { LuaAgent } from "lua-cli";
 import { financeSkill } from "./skills/finance.skill";
+import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
+import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-finance",
@@ -46,6 +48,7 @@ LANGUAGE: Match the user's language on every reply.
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [financeSkill],
+  preProcessors: [accountActivationPreprocessor, clockInPreprocessor],
 });
 
 async function main() {

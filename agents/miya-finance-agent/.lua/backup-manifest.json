@@ -1,6 +1,6 @@
 {
-  "lastHash": "de322a71838570703609a15e3e35bf0f7481242f6d0114d0d7db21e91e7ffae0",
-  "lastPushedAt": "2026-06-10T07:38:59.497Z",
+  "lastHash": "2cba2c3c989ef3eb8b076351214b071782ef3ba8afd997f9b71d85cc62e865a8",
+  "lastPushedAt": "2026-06-13T02:08:02.424Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "77952de77b8688d0"
+      "hash": "9e80611d32405dab"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,15 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "c5337dc747916514"
+      "hash": "ac46d84e7b43cc9c"
+    },
+    {
+      "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
+      "hash": "6735ab8c8e15ec79"
+    },
+    {
+      "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
+      "hash": "d4f6813d000e4999"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -43,6 +51,10 @@
       "hash": "f46c101e1a895d61"
     },
     {
+      "relativePath": "src/skills/tools/AccountActivationTool.ts",
+      "hash": "a23623e4ae9994d0"
+    },
+    {
       "relativePath": "src/skills/tools/CashReconciliationTool.ts",
       "hash": "23c53c10e67d2942"
     },
@@ -59,8 +71,16 @@
       "hash": "9c89254c20dc661f"
     },
     {
+      "relativePath": "src/skills/tools/StaffClockInTool.ts",
+      "hash": "041a93c9a1121302"
+    },
+    {
       "relativePath": "src/skills/tools/SupplierOrderTool.ts",
       "hash": "1613ca074eb80ed7"
+    },
+    {
+      "relativePath": "src/utils/resolveStaffPhoneFromLuaUser.ts",
+      "hash": "7940e06883afdab6"
     },
     {
       "relativePath": "tsconfig.json",

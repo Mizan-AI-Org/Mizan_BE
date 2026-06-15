@@ -1,6 +1,6 @@
 {
-  "lastHash": "d8256f50063a52e9430fe293a79ba6577e19222a8224a156516f467029e003ab",
-  "lastPushedAt": "2026-06-10T07:39:28.281Z",
+  "lastHash": "3ba0fdad1edf5cbddde6bfeb6219c61c442ad4d0f3c0ac96f5889bbfd26e9392",
+  "lastPushedAt": "2026-06-13T02:09:44.726Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "7e61fc6730ca4c90"
+      "hash": "aa1462221bf52725"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,15 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "3b7bf2e500940e65"
+      "hash": "c12caf9d4e43403c"
+    },
+    {
+      "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
+      "hash": "6735ab8c8e15ec79"
+    },
+    {
+      "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
+      "hash": "d4f6813d000e4999"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -36,15 +44,23 @@
     },
     {
       "relativePath": "src/skills/communications.skill.ts",
-      "hash": "5e4ca9f26de723fe"
+      "hash": "9c7b46f38ce88f8e"
     },
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
       "hash": "f46c101e1a895d61"
     },
     {
+      "relativePath": "src/skills/tools/AccountActivationTool.ts",
+      "hash": "a23623e4ae9994d0"
+    },
+    {
       "relativePath": "src/skills/tools/FormalAnnouncementTool.ts",
       "hash": "237844b2f0667c5d"
+    },
+    {
+      "relativePath": "src/skills/tools/StaffClockInTool.ts",
+      "hash": "041a93c9a1121302"
     },
     {
       "relativePath": "src/skills/tools/StaffCommunicationTool.ts",
@@ -56,7 +72,7 @@
     },
     {
       "relativePath": "src/skills/tools/WhatsAppFlowsTool.ts",
-      "hash": "8b1858142c533081"
+      "hash": "230478e8c42fb83f"
     },
     {
       "relativePath": "src/skills/tools/WhatsAppTemplateTool.ts",

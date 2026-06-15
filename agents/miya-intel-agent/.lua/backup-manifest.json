@@ -1,6 +1,6 @@
 {
-  "lastHash": "d731a83830e88569b16a87ab4fc2db378021b1dbddcafb087d43935003632552",
-  "lastPushedAt": "2026-06-10T07:39:41.446Z",
+  "lastHash": "4dcbd07166b2f561b0388eef40a1cee68d28c4e3b9a59f68c247d292a86e0d0b",
+  "lastPushedAt": "2026-06-13T02:10:32.442Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "57bc3bb58e4747cc"
+      "hash": "3f19cac4a4e4b874"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,15 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "ca5cb6460bba0eba"
+      "hash": "5635eee8ecf25467"
+    },
+    {
+      "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
+      "hash": "6735ab8c8e15ec79"
+    },
+    {
+      "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
+      "hash": "d4f6813d000e4999"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -41,6 +49,10 @@
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
       "hash": "f46c101e1a895d61"
+    },
+    {
+      "relativePath": "src/skills/tools/AccountActivationTool.ts",
+      "hash": "a23623e4ae9994d0"
     },
     {
       "relativePath": "src/skills/tools/AIAnalysisTool.ts",
@@ -61,6 +73,10 @@
     {
       "relativePath": "src/skills/tools/ProactiveInsightsTool.ts",
       "hash": "dd9523a206e0cc38"
+    },
+    {
+      "relativePath": "src/skills/tools/StaffClockInTool.ts",
+      "hash": "041a93c9a1121302"
     },
     {
       "relativePath": "src/utils/resolveStaffPhoneFromLuaUser.ts",

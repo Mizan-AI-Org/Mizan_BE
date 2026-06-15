@@ -102,6 +102,12 @@ class ResolveWidgetAliasTests(SimpleTestCase):
     def test_divers_resolves_to_miscellaneous(self):
         self.assertEqual(resolve_widget_alias("Divers"), "miscellaneous")
 
+    def test_team_leave_request_resolves_to_staff_inbox(self):
+        self.assertEqual(
+            resolve_widget_alias("create a widget for team leave request"),
+            "staff_inbox",
+        )
+
     def test_random_shortcut_does_not_resolve(self):
         self.assertIsNone(resolve_widget_alias("Daily PDF report"))
 

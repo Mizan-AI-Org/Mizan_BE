@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { LuaAgent } from "lua-cli";
 import { operationsSkill } from "./skills/operations.skill";
+import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
+import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-ops",
@@ -37,10 +39,17 @@ CONFLICT RESOLUTION:
 - Only use force=true when manager EXPLICITLY confirms.
 - Safety > labor law > manager preference.
 
-CLOCK IN/OUT:
-- Always pass phone from context. Pass lat/lng when user shared location.
-- Reply with the tool's 'message' field VERBATIM. Never paraphrase.
-- After successful clock-in -> auto-start checklist with checklist_starter mode="start".
+CLOCK IN/OUT — NON-NEGOTIABLE (WhatsApp is the staff attendance channel):
+- When staff say "clock in", "clock-in", "pointer", "I want to clock in", "start my shift" → call staff_clock_in IMMEDIATELY in the same turn.
+- Always pass phone from context. Pass latitude/longitude when the user just shared location.
+- staff_clock_in returns { status, code, message }. Reply with the exact 'message' field — character for character.
+- NEVER say "there was an error when trying to clock you in" or "please try again or contact support" — those are NOT backend messages.
+- code="location_required" is SUCCESS (normal flow): backend sent Share Location button. Relay message verbatim (e.g. "Share your location to clock in.").
+- code="clocked_in" → relay message (e.g. "Clock-in recorded. Have a great shift {name}!"), then checklist_starter mode="start".
+- code="already_clocked_in" → relay message only.
+- FORBIDDEN: generic apologies that hide what the tool returned.
+- FORBIDDEN: "I am processing your clock-in request", "I am unable to clock you in at this moment".
+- If [CLOCK-IN TOOL ALREADY EXECUTED] appears in context, your reply MUST be ONLY the message field — nothing else.
 
 CHECKLISTS:
 - Preview: checklist_starter mode="preview"
@@ -52,6 +61,7 @@ LANGUAGE: Match the user's language on every reply. Support EN, FR, AR, Darija, 
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [operationsSkill],
+  preProcessors: [accountActivationPreprocessor, clockInPreprocessor],
 });
 
 async function main() {

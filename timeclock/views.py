@@ -1435,15 +1435,36 @@ def agent_clock_in_by_phone(request):
         if latitude is None or longitude is None:
             # Send the official template or interactive message with Share Location button ourselves.
             # Miya must NOT send plain text—the user must get the button from this request.
+            # Set session state so the next GPS pin is handled by Django geofence logic.
+            try:
+                from notifications.models import WhatsAppSession
+
+                flow_note = (request.data.get("note") or "").strip()
+                session, _ = WhatsAppSession.objects.get_or_create(
+                    phone=clean_phone,
+                    defaults={"user": user, "state": "awaiting_clock_in_location"},
+                )
+                if session.user_id != user.id:
+                    session.user = user
+                ctx = dict(session.context or {})
+                if flow_note:
+                    ctx["clock_in_note"] = flow_note
+                else:
+                    ctx.pop("clock_in_note", None)
+                session.context = ctx
+                session.state = "awaiting_clock_in_location"
+                session.save(update_fields=["user", "state", "context"])
+            except Exception:
+                logger.warning("agent_clock_in_by_phone: could not set awaiting_clock_in_location session", exc_info=True)
             ok, _ = notification_service.send_whatsapp_location_request(
                 clean_phone,
-                "Please share your live location to clock in.",
+                "Share your location to clock in.",
             )
             return Response({
                 'success': False,
                 'error': 'Location required',
                 'location_request_sent': ok,
-                'message_for_user': "Tap Share Location above to clock in." if ok else "Share your location to clock in.",
+                'message_for_user': "Share your location to clock in.",
             }, status=status.HTTP_400_BAD_REQUEST)
         if not rest:
             return Response({
