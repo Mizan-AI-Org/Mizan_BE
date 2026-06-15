@@ -1,6 +1,8 @@
 import "dotenv/config";
 import { LuaAgent } from "lua-cli";
 import { facilitiesSkill } from "./skills/facilities.skill";
+import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
+import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-facilities",

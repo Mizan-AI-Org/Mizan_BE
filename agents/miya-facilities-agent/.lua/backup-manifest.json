@@ -1,6 +1,6 @@
 {
-  "lastHash": "d3c18d1dad63778b6ebae891544fd9d36a71d25dfc254f5bd0518b087ffd5507",
-  "lastPushedAt": "2026-06-11T00:45:25.260Z",
+  "lastHash": "a8ff6ce028372da386c3d442d81d18eff63db5c5997706dab7d3168df2ac24a7",
+  "lastPushedAt": "2026-06-13T02:11:19.350Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "de3cce9d47ae7747"
+      "hash": "e8d164847718ac0e"
     },
     {
       "relativePath": "package.json",
@@ -24,11 +24,19 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "090b26f78650042c"
+      "hash": "85397e234f8b7f32"
     },
     {
       "relativePath": "src/modules/incident-management.ts",
       "hash": "c22c3071b18658b6"
+    },
+    {
+      "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
+      "hash": "6735ab8c8e15ec79"
+    },
+    {
+      "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
+      "hash": "d4f6813d000e4999"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -45,6 +53,10 @@
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
       "hash": "f46c101e1a895d61"
+    },
+    {
+      "relativePath": "src/skills/tools/AccountActivationTool.ts",
+      "hash": "a23623e4ae9994d0"
     },
     {
       "relativePath": "src/skills/tools/DocumentRouterTool.ts",
@@ -65,6 +77,10 @@
     {
       "relativePath": "src/skills/tools/PhotoRouterTool.ts",
       "hash": "4ea92ccbf9a0c6e9"
+    },
+    {
+      "relativePath": "src/skills/tools/StaffClockInTool.ts",
+      "hash": "041a93c9a1121302"
     },
     {
       "relativePath": "src/skills/tools/WasteReportTool.ts",

@@ -1,6 +1,6 @@
 {
-  "lastHash": "d256b8e139320186dcb85ccdf43594705d59b549020b609cb4cd06b248911c07",
-  "lastPushedAt": "2026-06-11T00:54:49.879Z",
+  "lastHash": "65de71c676bde45a9b5a2c3bff73167392f0d85caf49e0b5133823d417da7b40",
+  "lastPushedAt": "2026-06-13T02:07:08.856Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "f91b47e668ea51dc"
+      "hash": "140220d5b05f18c4"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,11 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "d3622d4baafa8a4e"
+      "hash": "3c07e0e9b82a6c80"
+    },
+    {
+      "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
+      "hash": "6735ab8c8e15ec79"
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
@@ -45,6 +49,10 @@
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
       "hash": "f46c101e1a895d61"
+    },
+    {
+      "relativePath": "src/skills/tools/AccountActivationTool.ts",
+      "hash": "a23623e4ae9994d0"
     },
     {
       "relativePath": "src/skills/tools/AttendanceTool.ts",

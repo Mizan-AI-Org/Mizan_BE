@@ -2,6 +2,7 @@ import "dotenv/config";
 import { LuaAgent } from "lua-cli";
 import { operationsSkill } from "./skills/operations.skill";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
+import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-ops",
@@ -60,7 +61,7 @@ LANGUAGE: Match the user's language on every reply. Support EN, FR, AR, Darija, 
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [operationsSkill],
-  preProcessors: [clockInPreprocessor],
+  preProcessors: [accountActivationPreprocessor, clockInPreprocessor],
 });
 
 async function main() {
