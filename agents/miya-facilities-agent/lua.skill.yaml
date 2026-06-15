@@ -4,13 +4,13 @@ agent:
 skills:
   - name: facilities
     skillId: 86716e63-b05a-4936-8452-a435a5d5bdfb
-    version: 1.0.7
+    version: 1.0.8
 webhooks: []
 jobs: []
 preprocessors: []
 postprocessors: []
 mcpServers: []
 backup:
-  activeVersion: 8
-  lastHash: a8ff6ce028372da386c3d442d81d18eff63db5c5997706dab7d3168df2ac24a7
-  lastPushedAt: '2026-06-13T02:11:19.350Z'
+  activeVersion: 9
+  lastHash: 4446b8b4742b3ed8e03fb9d8c9cc83a6d425cf4522a6447139f47223e942b6a5
+  lastPushedAt: '2026-06-15T01:45:24.720Z'
