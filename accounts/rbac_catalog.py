@@ -61,6 +61,7 @@ WIDGETS: list[dict[str, str]] = [
     {"id": "jobsite_crew", "label": "Jobsite / crew"},
     {"id": "ops_reports", "label": "Ops reports"},
     {"id": "staff_inbox", "label": "Staff inbox"},
+    {"id": "team_travel", "label": "Team Travel"},
 ]
 
 ACTIONS: list[dict[str, str]] = [
@@ -134,7 +135,7 @@ DEFAULT_PERMISSIONS: dict[str, dict[str, list[str]]] = {
     },
     "SUPERVISOR": {
         "apps": ["staff", "scheduling", "supervisor", "staff_requests"],
-        "widgets": ["insights", "staffing", "operations", "wellbeing", "live_attendance", "staff_inbox"],
+        "widgets": ["insights", "staffing", "operations", "wellbeing", "live_attendance", "staff_inbox", "team_travel"],
         "actions": ["edit_schedule"],
     },
     "CHEF": {

@@ -46,7 +46,11 @@ from ..serializers import DashboardTaskCompactSerializer
 # Human Resources widget because the screenshots-mockup ("Print & sign
 # contracts", "Pictures of staff") mixes them in everyday usage.
 BUCKET_TO_CATEGORIES: dict[str, tuple[str, ...]] = {
-    "human_resources": ("HR", "DOCUMENT", "SCHEDULING"),
+    "human_resources": ("HR", "DOCUMENT"),
+    # Leave, travel, and other scheduling asks from staff (WhatsApp /
+    # voice). Powers the "Team Travel" dashboard lane — distinct from
+    # the general staff_inbox (all categories) and HR (people/docs).
+    "team_travel": ("SCHEDULING",),
     "finance": ("FINANCE", "PAYROLL"),
     "maintenance": ("MAINTENANCE",),
     "meetings": ("MEETING",),
