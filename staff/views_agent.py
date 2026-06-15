@@ -983,3 +983,181 @@ def agent_escalate_incident(request):
     _invalidate_staff_incidents_cache(restaurant.id)
     return Response({'success': True, 'message': 'Incident escalated.', 'incident_id': str(inc.id)})
 
+
+def _short_ref(record_id) -> str:
+    digits = str(record_id or '').replace('-', '')
+    return (digits[-8:] if len(digits) >= 8 else digits).upper()
+
+
+_CATEGORY_LANE_HINT = {
+    'OPERATIONS': 'Operations inbox (?lane=operations_tasks)',
+    'PURCHASE_ORDER': 'Purchases inbox (?lane=purchase_orders)',
+    'MAINTENANCE': 'Maintenance inbox (?lane=maintenance)',
+    'FINANCE': 'Finance inbox (?lane=finance)',
+    'PAYROLL': 'Finance inbox (?lane=finance)',
+    'HR': 'Human Resources inbox (?lane=human_resources)',
+    'DOCUMENT': 'Human Resources inbox (?lane=human_resources)',
+    'SCHEDULING': 'Team Travel inbox (?lane=team_travel)',
+    'MEDICAL': 'Team Medical Service inbox (?lane=team_medical_service)',
+    'INVENTORY': 'Inventory inbox (?lane=inventory_delivery)',
+    'RESERVATIONS': 'Reservations inbox (?lane=reservations)',
+    'OTHER': 'Miscellaneous inbox (?lane=miscellaneous)',
+}
+
+
+@api_view(['GET'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_search_operational_records(request):
+    """
+    Search staff requests, dashboard tasks, and invoices by ref tail, id fragment,
+    external_id, invoice number, or subject keywords.
+
+    GET /api/staff/agent/records/search/?restaurant_id=...&q=33931578
+    """
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    restaurant, err = _resolve_restaurant_for_staff_agent(request)
+    if err:
+        return Response({'success': False, 'error': err['error']}, status=err['status'])
+
+    raw_q = (request.query_params.get('q') or request.query_params.get('query') or '').strip()
+    if len(raw_q) < 2:
+        return Response(
+            {'success': False, 'error': 'Query too short', 'message_for_user': 'Tell me the reference number or a few keywords.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    q_lower = raw_q.lower()
+    q_hex = ''.join(ch for ch in raw_q.lower() if ch in '0123456789abcdef')
+    matches = []
+
+    # Staff requests
+    req_qs = StaffRequest.objects.filter(restaurant=restaurant).order_by('-created_at')[:200]
+    for req in req_qs:
+        rid = str(req.id)
+        ref = _short_ref(req.id)
+        hay = ' '.join(
+            filter(
+                None,
+                [
+                    rid,
+                    ref,
+                    req.external_id or '',
+                    req.subject or '',
+                    req.description or '',
+                    req.category or '',
+                ],
+            )
+        ).lower()
+        if (
+            q_lower in hay
+            or (len(q_hex) >= 6 and q_hex in rid.replace('-', ''))
+            or (q_lower and ref.lower() == q_lower)
+        ):
+            matches.append(
+                {
+                    'type': 'staff_request',
+                    'id': rid,
+                    'ref': ref,
+                    'subject': req.subject or '',
+                    'title': req.subject or '',
+                    'category': req.category,
+                    'status': req.status,
+                    'created_at': req.created_at.isoformat() if req.created_at else None,
+                    'dashboard_hint': _CATEGORY_LANE_HINT.get(req.category, 'All Requests'),
+                    'lane': req.category,
+                }
+            )
+
+    # Dashboard tasks (Tasks & Demands / Operations tasks)
+    try:
+        from dashboard.models import Task
+
+        task_qs = Task.objects.filter(restaurant=restaurant).order_by('-created_at')[:200]
+        for task in task_qs:
+            tid = str(task.id)
+            ref = _short_ref(task.id)
+            hay = ' '.join(
+                filter(None, [tid, ref, task.title or '', task.description or '', task.category or ''])
+            ).lower()
+            if (
+                q_lower in hay
+                or (len(q_hex) >= 6 and q_hex in tid.replace('-', ''))
+                or (q_lower and ref.lower() == q_lower)
+            ):
+                cat = (task.category or 'OTHER').upper()
+                hint = _CATEGORY_LANE_HINT.get(cat, 'Tasks & Demands widget')
+                if cat == 'OPERATIONS':
+                    hint = 'Operations tasks widget (?lane=operations_tasks) or Tasks & Demands'
+                matches.append(
+                    {
+                        'type': 'dashboard_task',
+                        'id': tid,
+                        'ref': ref,
+                        'title': task.title or '',
+                        'subject': task.title or '',
+                        'category': cat,
+                        'status': task.status,
+                        'due_date': task.due_date.isoformat() if task.due_date else None,
+                        'created_at': task.created_at.isoformat() if getattr(task, 'created_at', None) else None,
+                        'dashboard_hint': hint,
+                        'lane': cat,
+                    }
+                )
+    except Exception as exc:
+        logger.warning('agent_search_operational_records task search failed: %s', exc)
+
+    # Finance invoices (by invoice number)
+    try:
+        from finance.models import Invoice
+
+        inv_qs = Invoice.objects.filter(restaurant=restaurant).order_by('-created_at')[:100]
+        for inv in inv_qs:
+            if q_lower in (inv.invoice_number or '').lower() or q_lower in (inv.vendor_name or '').lower():
+                matches.append(
+                    {
+                        'type': 'invoice',
+                        'id': str(inv.id),
+                        'ref': (inv.invoice_number or _short_ref(inv.id)),
+                        'title': f'{inv.vendor_name} invoice #{inv.invoice_number or "?"}',
+                        'subject': inv.vendor_name or '',
+                        'category': 'FINANCE',
+                        'status': inv.status,
+                        'amount': str(inv.amount),
+                        'currency': inv.currency,
+                        'due_date': inv.due_date.isoformat() if inv.due_date else None,
+                        'dashboard_hint': 'Finance widget (?lane=finance)',
+                        'lane': 'FINANCE',
+                    }
+                )
+    except Exception as exc:
+        logger.warning('agent_search_operational_records invoice search failed: %s', exc)
+
+    # De-dupe and cap
+    seen = set()
+    deduped = []
+    for m in matches:
+        key = (m['type'], m['id'])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(m)
+        if len(deduped) >= 10:
+            break
+
+    return Response(
+        {
+            'success': True,
+            'query': raw_q,
+            'count': len(deduped),
+            'matches': deduped,
+            'message_for_user': (
+                f'Found {len(deduped)} match(es) for "{raw_q}".'
+                if deduped
+                else f'Nothing found for "{raw_q}".'
+            ),
+        }
+    )
+
