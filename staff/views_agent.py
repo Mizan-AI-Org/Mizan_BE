@@ -79,6 +79,12 @@ from .intent_router import (
     classify_request,
 )
 from .incident_routing import resolve_default_assignee_for_incident_type
+from dashboard.category_routing import (
+    category_lane_hint,
+    ensure_dashboard_widgets_for_managers,
+    primary_widget_for_category,
+    widget_lane_label,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +430,9 @@ def agent_ingest_staff_request(request):
             "(restaurant=%s, incident=%s, type=%s, terms=%s)",
             restaurant.id, concern.id, decision.category, decision.matched_terms,
         )
+        widget_pin = ensure_dashboard_widgets_for_managers(
+            restaurant, incident=True
+        )
         return Response({
             'success': True,
             'routed': True,
@@ -432,10 +441,17 @@ def agent_ingest_staff_request(request):
             'incident_type': decision.category,
             'priority': incident_priority,
             'matched_terms': list(decision.matched_terms),
+            'dashboard_widget': 'incidents',
+            'widget_label': widget_lane_label('incidents'),
+            'widgets_pinned': widget_pin.get('widgets', []),
             'message_for_user': (
                 f"This sounded like a {decision.category.lower()} incident "
                 f"({', '.join(decision.matched_terms[:3]) or 'safety signal'}), "
                 "so I logged it on the Reported Incidents board instead of the inbox."
+            ),
+            'message_for_staff': (
+                "I've reported this to management right away. "
+                "Someone will follow up with you as soon as possible."
             ),
             'assignee': (
                 {
@@ -586,12 +602,20 @@ def agent_ingest_staff_request(request):
 
     _notify_managers_of_staff_request(req)
 
+    widget_pin = ensure_dashboard_widgets_for_managers(restaurant, category=category)
+    primary_widget = primary_widget_for_category(category)
+    lane_label = widget_lane_label(primary_widget)
+
     ref = _short_ref(req.id)
     base_msg = (
-        f"Logged in the {req.category.title()} lane of the team inbox."
+        f"Logged in the {lane_label} lane (#{ref})."
         if req.category != 'OTHER'
-        else "Logged in the team inbox — I couldn't pin a specific category, "
-             "so a manager will triage it."
+        else f"Logged in Miscellaneous (#{ref}) — a manager will triage it."
+    )
+    staff_base_msg = (
+        "Thanks — I've logged your request and let the right person know."
+        if req.category != 'OTHER'
+        else "Thanks — I've logged your request. A manager will review it soon."
     )
     follow_phrase = ""
     if assignee and follow_up_enabled and whatsapp_sent_to_assignee:
@@ -610,7 +634,15 @@ def agent_ingest_staff_request(request):
         'category': req.category,
         'auto_categorised': inbox_metadata['intent_router']['auto_categorised'],
         'matched_terms': list(decision.matched_terms),
-        'message_for_user': f"✓ Request #{ref} — {base_msg}{follow_phrase}",
+        'dashboard_widget': primary_widget,
+        'widget_label': lane_label,
+        'inbox_lane': primary_widget,
+        'dashboard_hint': category_lane_hint(category),
+        'widgets_pinned': widget_pin.get('widgets', []),
+        'message_for_user': f"✓ {base_msg}{follow_phrase}",
+        'message_for_staff': (
+            f"✓ {staff_base_msg} They'll get back to you as soon as they can."
+        ),
         'follow_up_enabled': follow_up_enabled,
         'assignee': (
             {
@@ -1021,18 +1053,8 @@ def _short_ref(record_id) -> str:
 
 
 _CATEGORY_LANE_HINT = {
-    'OPERATIONS': 'Operations inbox (?lane=operations_tasks)',
-    'PURCHASE_ORDER': 'Purchases inbox (?lane=purchase_orders)',
-    'MAINTENANCE': 'Maintenance inbox (?lane=maintenance)',
-    'FINANCE': 'Finance inbox (?lane=finance)',
-    'PAYROLL': 'Finance inbox (?lane=finance)',
-    'HR': 'Human Resources inbox (?lane=human_resources)',
-    'DOCUMENT': 'Human Resources inbox (?lane=human_resources)',
-    'SCHEDULING': 'Team Travel inbox (?lane=team_travel)',
-    'MEDICAL': 'Team Medical Service inbox (?lane=team_medical_service)',
-    'INVENTORY': 'Inventory inbox (?lane=inventory_delivery)',
-    'RESERVATIONS': 'Reservations inbox (?lane=reservations)',
-    'OTHER': 'Miscellaneous inbox (?lane=miscellaneous)',
+    cat: category_lane_hint(cat)
+    for cat in STAFF_REQUEST_CATEGORIES
 }
 
 

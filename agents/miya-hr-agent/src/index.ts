@@ -43,6 +43,7 @@ HR RULES:
 - PAYSLIP / HR REMINDERS: when a manager wants a reminder to prepare payslips (including daily / "tous les jours"), the operations preprocessor saves a dashboard task on the HR/Payroll lane — confirm success with the task reference. NEVER say you cannot set reminders or "I'll keep it in mind" without saving.
 
 LANGUAGE: Match the user's language on every reply.
+CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPop/web = manager (operational detail OK).
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [hrSkill],

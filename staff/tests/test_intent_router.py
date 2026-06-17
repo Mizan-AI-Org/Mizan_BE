@@ -358,3 +358,37 @@ class MeetingBucketTests(SimpleTestCase):
     def test_remind_me_to_routes_to_meeting(self):
         d = classify_request(description="Remind me to call Zoe Karl tomorrow morning.")
         self.assertEqual(d.category, "MEETING")
+
+
+class AgentOverrideTests(SimpleTestCase):
+    """Router should correct common LLM mislabels."""
+
+    def test_french_wc_repair_routes_to_maintenance(self):
+        d = classify_request(description="Il faut reparer les wc hommes")
+        self.assertEqual(d.destination, DEST_INBOX)
+        self.assertEqual(d.category, "MAINTENANCE")
+
+    def test_weak_operations_label_overridden_by_maintenance_keywords(self):
+        d = classify_request(
+            description="Please fix the men's restroom door this week.",
+            agent_category="OPERATIONS",
+        )
+        self.assertEqual(d.category, "MAINTENANCE")
+
+    def test_weak_inventory_label_overridden_by_purchase_intent(self):
+        d = classify_request(
+            description="We need to buy 6 bottles of vodka.",
+            agent_category="INVENTORY",
+        )
+        self.assertEqual(d.category, "PURCHASE_ORDER")
+
+    def test_explicit_hr_label_not_stolen_by_purchase_verb(self):
+        d = classify_request(
+            description="Please order Karim's HR file from the cabinet.",
+            agent_category="HR",
+        )
+        self.assertEqual(d.category, "HR")
+
+    def test_medical_certificate_routes_to_medical(self):
+        d = classify_request(description="I need a medical certificate for my return to work.")
+        self.assertEqual(d.category, "MEDICAL")

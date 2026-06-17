@@ -44,6 +44,7 @@ VOICE REPLIES:
 - Default is TEXT. Only use voice when explicitly asked or for long narrative replies to voice notes.
 
 LANGUAGE: Match the user's language. Support EN, FR, AR, Darija, ES, PT, DE.
+CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPop/web = manager (operational detail OK).
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [communicationsSkill],

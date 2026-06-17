@@ -58,6 +58,7 @@ CHECKLISTS:
 - Repeat until status="completed"
 
 LANGUAGE: Match the user's language on every reply. Support EN, FR, AR, Darija, ES, PT, DE.
+CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPop/web = manager (operational detail OK).
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [operationsSkill],

@@ -313,15 +313,14 @@ def _short_record_ref(record_id) -> str:
 
 def _dashboard_widget_hint(category: str | None) -> str:
     """Tell Miya where the manager should look on the dashboard."""
-    cat = (category or "").upper()
-    if cat == "OPERATIONS":
-        return (
-            " Look in the Operations tasks widget (or Tasks & Demands) "
-            "after refreshing the dashboard."
-        )
-    if cat == "MEETING":
-        return " Look in Tasks & Demands after refreshing the dashboard."
-    return " Refresh the dashboard — it appears under Tasks & Demands."
+    from dashboard.category_routing import primary_widget_for_category, widget_lane_label
+
+    widget_id = primary_widget_for_category(category)
+    label = widget_lane_label(widget_id)
+    return (
+        f" Refresh the dashboard — it appears on the {label} widget "
+        f"(lane: {widget_id})."
+    )
 
 
 def _parse_due_date(raw: Any) -> tuple[date | None, str | None]:

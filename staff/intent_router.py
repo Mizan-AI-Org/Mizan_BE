@@ -225,7 +225,7 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "contract", "id card", "passport", "visa", "work permit",
             "residency", "resident permit", "cnie", "cin",
-            "certificate", "diploma", "letter of employment",
+            "diploma", "letter of employment",
             "employment letter", "attestation", "bank letter",
             "loan letter", "tax certificate",
             # Documents that frequently come up on the HR widget:
@@ -243,6 +243,10 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "holiday", "annual leave", "time off", "time-off",
             "sick leave", "sick day", "absent tomorrow",
             "can't come", "cant come", "won't be in",
+            # French leave / absence
+            "conge", "conges", "demande de conge", "jour de conge",
+            "je suis malade", "malade demain", "absent demain",
+            "pas la demain", "pas disponible demain",
         ),
     ),
     (
@@ -337,6 +341,7 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             # Routine / preventive items (recharge extinguishers, oven
             # deepclean, annual sink service) live here too.
             "please fix", "needs repair", "needs maintenance",
+            "need repair", "need to repair", "need fixing",
             "service the", "tune up", "tune-up",
             "extinguisher", "fire extinguisher", "extinguishers recharge",
             "deep cleaning", "deepcleaning", "deep clean",
@@ -347,6 +352,12 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "fridge service", "compressor service",
             "bad smell", "weird smell", "strange smell",
             "pest control schedule", "pest control visit",
+            # French / Darija facility requests (non-emergency)
+            "reparer", "reparation", "a reparer", "besoin de reparer",
+            "il faut reparer", "faut reparer", "toilettes", "toilette",
+            "sanitaires", "lavabo", "urinoir", "wc hommes", "wc femmes",
+            "wc homme", "wc dames", "men restroom", "women restroom",
+            "douche", "chauffe eau", "chauffe-eau",
         ),
     ),
     (
@@ -580,9 +591,49 @@ def _infer_incident_priority(text: str) -> str:
     return "MEDIUM"
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+# Agent labels that are often wrong when the LLM didn't read the message.
+_WEAK_AGENT_CATEGORIES = frozenset({"OTHER", "OPERATIONS", "INVENTORY"})
+
+# When keyword inference is high-confidence, prefer it over weak agent labels.
+_STRONG_INBOX_CATEGORIES = frozenset(
+    {
+        "MAINTENANCE",
+        "PURCHASE_ORDER",
+        "PAYROLL",
+        "FINANCE",
+        "SCHEDULING",
+        "MEDICAL",
+        "DOCUMENT",
+        "HR",
+        "RESERVATIONS",
+    }
+)
+
+
+def _infer_inbox_from_keywords(normalised: str) -> IntentDecision | None:
+    for category, keywords in _INBOX_RULES:
+        hits = _matches_any(normalised, keywords)
+        if hits:
+            return IntentDecision(
+                destination=DEST_INBOX,
+                category=category,
+                confidence="high" if len(hits) >= 1 else "medium",
+                matched_terms=hits,
+            )
+    return None
+
+
+def _should_override_agent_category(
+    agent_cat: str,
+    keyword_decision: IntentDecision | None,
+) -> bool:
+    if not keyword_decision or keyword_decision.confidence != "high":
+        return False
+    if agent_cat in _WEAK_AGENT_CATEGORIES:
+        return keyword_decision.category != agent_cat
+    if keyword_decision.category in _STRONG_INBOX_CATEGORIES and agent_cat in _WEAK_AGENT_CATEGORIES:
+        return True
+    return False
 
 
 def classify_request(
@@ -654,12 +705,23 @@ def classify_request(
             if incident_type == INCIDENT_SAFETY and _matches_any(
                 normalised, _PREVENTIVE_HINTS,
             ):
-                return IntentDecision(
-                    destination=DEST_INBOX,
-                    category="MAINTENANCE",
-                    confidence="medium",
-                    matched_terms=hits,
+                active_emergency = any(
+                    phrase in normalised
+                    for phrase in (
+                        " went off ", " going off ", " triggered ",
+                        " activated ", " sounding ", " ringing ",
+                        " evacuate ", " evacuation ", " fire in ",
+                        " there is a fire ", " kitchen fire ",
+                        " smoke in ", " please send help ",
+                    )
                 )
+                if not active_emergency:
+                    return IntentDecision(
+                        destination=DEST_INBOX,
+                        category="MAINTENANCE",
+                        confidence="medium",
+                        matched_terms=hits,
+                    )
             return IntentDecision(
                 destination=DEST_INCIDENT,
                 category=incident_type,
@@ -685,10 +747,18 @@ def classify_request(
             matched_terms=purchase_hits,
         )
 
-    # 3. Honour an explicit, valid agent category (so Miya stays in
-    #    control when she did do her job). We still re-validate against
-    #    INBOX_CATEGORIES so typos / unknown labels fall through.
+    # 3. Keyword inference — used to override weak agent labels and as fallback.
+    keyword_decision = _infer_inbox_from_keywords(normalised)
+
     if agent_cat != "OTHER" and agent_cat in INBOX_CATEGORIES:
+        if _should_override_agent_category(agent_cat, keyword_decision):
+            assert keyword_decision is not None
+            return IntentDecision(
+                destination=DEST_INBOX,
+                category=keyword_decision.category,
+                confidence="high",
+                matched_terms=keyword_decision.matched_terms,
+            )
         return IntentDecision(
             destination=DEST_INBOX,
             category=agent_cat,
@@ -696,18 +766,10 @@ def classify_request(
             matched_terms=(f"agent:{agent_cat}",),
         )
 
-    # 4. Otherwise infer category from keywords.
-    for category, keywords in _INBOX_RULES:
-        hits = _matches_any(normalised, keywords)
-        if hits:
-            return IntentDecision(
-                destination=DEST_INBOX,
-                category=category,
-                confidence="medium" if len(hits) >= 1 else "low",
-                matched_terms=hits,
-            )
+    if keyword_decision:
+        return keyword_decision
 
-    # 5. Total miss — keep as OTHER but mark the confidence so callers
+    # 4. Total miss — keep as OTHER but mark the confidence so callers
     #    (and dashboards) can surface "uncategorised" rows for review.
     return IntentDecision(
         destination=DEST_INBOX,
