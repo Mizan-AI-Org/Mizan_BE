@@ -45,6 +45,7 @@ export const dashboardWidgetRequestPreprocessor = new PreProcessor({
                 toolResult = (await dashboardWidgetsTool.execute({
                     action: "create_custom",
                     title: intent.title,
+                    subtitle: intent.sourceText,
                     restaurantId,
                     add_to_dashboard: true,
                     user_id: tenant.userId,

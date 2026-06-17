@@ -3,6 +3,7 @@ import { LuaAgent } from "lua-cli";
 import { hrSkill } from "./skills/hr.skill";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
+import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-hr",
@@ -39,12 +40,13 @@ HR RULES:
 - Recognition: use recognize_staff action='award' with title and staff identifier.
 - Role grants require admin/manager permissions.
 - Account activation uses phone from context.
+- PAYSLIP / HR REMINDERS: when a manager wants a reminder to prepare payslips (including daily / "tous les jours"), the operations preprocessor saves a dashboard task on the HR/Payroll lane — confirm success with the task reference. NEVER say you cannot set reminders or "I'll keep it in mind" without saving.
 
 LANGUAGE: Match the user's language on every reply.
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [hrSkill],
-  preProcessors: [accountActivationPreprocessor, clockInPreprocessor],
+  preProcessors: [accountActivationPreprocessor, clockInPreprocessor, operationsCommandPreprocessor],
 });
 
 async function main() {

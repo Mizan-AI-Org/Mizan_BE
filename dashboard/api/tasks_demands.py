@@ -495,6 +495,7 @@ _BUCKET_TO_STAFF_REQUEST_CATEGORY = {
     "purchase_orders": "PURCHASE_ORDER",
     "miscellaneous": "OTHER",
     "team_travel": "SCHEDULING",
+    "team_medical_service": "MEDICAL",
 }
 
 ALLOWED_BUCKETS = frozenset({"urgent", *_BUCKET_TO_STAFF_REQUEST_CATEGORY.keys()})

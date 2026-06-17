@@ -847,6 +847,10 @@ def agent_create_dashboard_task(request):
             f"Task #{task_ref} — Created '{task.title}' for {assignee_display} "
             f"({pretty_priority} priority, due {due_phrase}).{widget_hint} {wa_phrase}"
         ).strip()
+        if follow_up_enabled and wa_result["sent"]:
+            message_for_user += " I'll follow up automatically on WhatsApp if they don't respond."
+        elif follow_up_enabled and assignee and not assign_to_self:
+            message_for_user += " Automatic WhatsApp follow-ups are enabled for this task."
 
         dashboard_widget = (
             "operations_tasks"

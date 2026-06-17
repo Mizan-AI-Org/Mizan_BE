@@ -75,7 +75,7 @@ def _refresh_access_token(gcal: dict[str, Any]) -> dict[str, Any] | None:
     Returns the updated ``gcal`` dict on success, or ``None`` if the
     refresh failed (e.g. user revoked access, creds misconfigured).
     """
-    import os
+    from django.conf import settings as dj_settings
 
     import requests
 
@@ -83,8 +83,8 @@ def _refresh_access_token(gcal: dict[str, Any]) -> dict[str, Any] | None:
     if not refresh_token:
         return None
 
-    client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
-    client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+    client_id = (getattr(dj_settings, "GOOGLE_OAUTH_CLIENT_ID", None) or "").strip()
+    client_secret = (getattr(dj_settings, "GOOGLE_OAUTH_CLIENT_SECRET", None) or "").strip()
     if not (client_id and client_secret):
         return None
 
@@ -393,10 +393,11 @@ class MeetingsRemindersView(APIView):
 
     @staticmethod
     def _server_configured() -> bool:
-        import os
+        from django.conf import settings as dj_settings
+
         return bool(
-            os.environ.get("GOOGLE_OAUTH_CLIENT_ID")
-            and os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET")
+            (getattr(dj_settings, "GOOGLE_OAUTH_CLIENT_ID", None) or "").strip()
+            and (getattr(dj_settings, "GOOGLE_OAUTH_CLIENT_SECRET", None) or "").strip()
         )
 
     def _fetch_events(

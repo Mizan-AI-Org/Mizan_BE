@@ -223,6 +223,7 @@ class Task(models.Model):
         null=True, blank=True,
         help_text='When the initial WhatsApp notification was sent to the assignee.',
     )
+    escalated_at = models.DateTimeField(null=True, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

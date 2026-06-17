@@ -391,6 +391,8 @@ def agent_mark_invoice_paid(request):
         amount=amount,
         user=acting_user,
     )
+    invoice.bank_payment_status = Invoice.BANK_PAYMENT_CLEARED
+    invoice.save(update_fields=["bank_payment_status", "updated_at"])
     msg = (
         f"Marked {invoice.vendor_name} invoice "
         f"({invoice.amount} {invoice.currency}) as paid"
@@ -521,3 +523,85 @@ def agent_list_invoices(request):
     payload = get_or_set(cache_key, _INVOICES_CACHE_TTL, _compute_invoices_payload)
     _remember_invoices_cache_key(restaurant.id, cache_key)
     return Response(payload, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_update_invoice_bank_payment_status(request):
+    """
+    POST /api/finance/agent/invoices/payment-status/
+
+    Update bank transfer / cheque lifecycle without marking fully paid.
+    Body: invoice_id OR vendor+invoice_number, bank_payment_status, bank_payment_note, reference
+    """
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+
+    restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+    if err:
+        return Response({"success": False, "error": err["error"]}, status=err["status"])
+
+    data = request.data if isinstance(getattr(request, "data", None), dict) else {}
+    invoice_id = _get_first(data, "invoice_id", "invoiceId", "id")
+    invoice = None
+    if invoice_id:
+        invoice = Invoice.objects.filter(restaurant=restaurant, id=invoice_id).first()
+    if invoice is None:
+        vendor = str(_get_first(data, "vendor", "vendor_name") or "").strip()
+        invoice_number = str(_get_first(data, "invoice_number", "invoiceNumber") or "").strip()
+        qs = Invoice.objects.filter(restaurant=restaurant).exclude(status=Invoice.STATUS_VOIDED)
+        if vendor:
+            qs = qs.filter(vendor_name__icontains=vendor)
+        if invoice_number:
+            qs = qs.filter(invoice_number__iexact=invoice_number)
+        invoice = qs.order_by("-due_date").first()
+
+    if invoice is None:
+        return Response(
+            {
+                "success": False,
+                "message_for_user": "I couldn't find that invoice to update payment status.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    raw_status = str(_get_first(data, "bank_payment_status", "bankPaymentStatus", "status") or "").upper()
+    valid = {c[0] for c in Invoice.BANK_PAYMENT_STATUS_CHOICES}
+    if raw_status not in valid:
+        if raw_status in ("SENT", "TRANSFERRED", "ORDERED"):
+            raw_status = Invoice.BANK_PAYMENT_INITIATED
+        elif raw_status in ("PAID", "CLEARED", "RECEIVED"):
+            raw_status = Invoice.BANK_PAYMENT_CLEARED
+        elif raw_status in ("BOUNCED", "REJECTED"):
+            raw_status = Invoice.BANK_PAYMENT_FAILED
+        else:
+            raw_status = Invoice.BANK_PAYMENT_INITIATED
+
+    note = str(_get_first(data, "bank_payment_note", "bankPaymentNote", "note") or "")[:255]
+    reference = str(_get_first(data, "reference", "payment_reference") or "")
+    invoice.bank_payment_status = raw_status
+    if note:
+        invoice.bank_payment_note = note
+    if reference:
+        invoice.payment_reference = reference[:120]
+    if raw_status == Invoice.BANK_PAYMENT_CLEARED and invoice.status == Invoice.STATUS_OPEN:
+        invoice.mark_paid(method=invoice.payment_method or "BANK_TRANSFER", reference=reference, user=acting_user)
+        invoice.refresh_from_db()
+        invoice.bank_payment_status = raw_status
+        if note:
+            invoice.bank_payment_note = note
+        invoice.save(update_fields=["bank_payment_status", "bank_payment_note", "updated_at"])
+    else:
+        invoice.save(update_fields=["bank_payment_status", "bank_payment_note", "payment_reference", "updated_at"])
+
+    labels = dict(Invoice.BANK_PAYMENT_STATUS_CHOICES)
+    return Response(
+        {
+            "success": True,
+            "invoice": InvoiceSerializer(invoice).data,
+            "message_for_user": (
+                f"✓ {invoice.vendor_name} invoice — bank payment status: "
+                f"{labels.get(invoice.bank_payment_status, invoice.bank_payment_status)}."
+            ),
+        }
+    )

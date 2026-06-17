@@ -260,6 +260,21 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
             'assigned_to_me_open': mine_count,
         })
 
+    @action(detail=False, methods=['get'], url_path='inbox-lanes')
+    def inbox_lanes(self, request):
+        """
+        Inbox filter tabs driven by the caller's dashboard widget layout.
+
+        Only widgets registered in ``dashboard.inbox_lanes.WIDGET_INBOX_LANES``
+        produce a tab — e.g. ``team_medical_service`` → "Team Medical Service".
+        Tenants / managers without that widget on their dashboard get no tab.
+        """
+        from dashboard.inbox_lanes import inbox_lanes_for_user
+
+        user = request.user
+        lanes = inbox_lanes_for_user(user)
+        return Response({'success': True, 'lanes': lanes})
+
     @action(detail=True, methods=['post'])
     def comment(self, request, pk=None):
         req = self.get_object()

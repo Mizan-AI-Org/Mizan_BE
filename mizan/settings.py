@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     'menu',
     'inventory',
     'finance',
+    'payroll',
 ]
 
 # ---------------------------
@@ -297,6 +298,13 @@ EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # ---------------------------
 # Default to local dev URL; can be overridden via environment
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:8080')
+
+# Google Calendar OAuth (onboarding + Meetings & Reminders widget + Miya calendar write).
+# Loaded via decouple so values in ``.env`` work without exporting to the shell.
+GOOGLE_OAUTH_CLIENT_ID = config('GOOGLE_OAUTH_CLIENT_ID', default='')
+GOOGLE_OAUTH_CLIENT_SECRET = config('GOOGLE_OAUTH_CLIENT_SECRET', default='')
+# Optional but recommended in production — must EXACTLY match a redirect URI in Google Cloud Console.
+GOOGLE_OAUTH_REDIRECT_URI = config('GOOGLE_OAUTH_REDIRECT_URI', default='')
 
 # ---------------------------
 # Security settings (production)
@@ -528,6 +536,18 @@ CELERY_BEAT_SCHEDULE = {
     "task_follow_up_sweep": {
         "task": "dashboard.tasks.task_follow_up_sweep",
         "schedule": crontab(minute='*/15'),
+    },
+    "staff_request_follow_up_sweep": {
+        "task": "staff.tasks.staff_request_follow_up_sweep",
+        "schedule": crontab(minute='*/15'),
+    },
+    "compliance_reminder_sweep_daily": {
+        "task": "payroll.tasks.compliance_reminder_sweep",
+        "schedule": crontab(minute=0, hour=7),
+    },
+    "invoice_overdue_reminder_daily": {
+        "task": "finance.tasks.invoice_overdue_reminder_sweep",
+        "schedule": crontab(minute=30, hour=8),
     },
 }
 

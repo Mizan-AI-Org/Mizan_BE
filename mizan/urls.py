@@ -38,6 +38,7 @@ urlpatterns = [
     path('', include('checklists.urls')),  # Checklist management URLs
     path('api/billing/', include('billing.urls')),
     path('api/finance/', include('finance.urls')),
+    path('api/payroll/', include('payroll.urls')),
 
     # SWAGGER URLS
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

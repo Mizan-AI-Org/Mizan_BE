@@ -44,6 +44,7 @@ DATA_BOUND_BUILTIN_IDS: frozenset[str] = frozenset(
         "meetings_reminders",
         "staff_inbox",
         "team_travel",
+        "team_medical_service",
         "staff_messages",
         "clock_ins",
         "incidents",
@@ -127,8 +128,31 @@ _ALIASES: dict[str, str] = {
     "voyages": "team_travel",
     "deplacement": "team_travel",
     "deplacements": "team_travel",
+    "team retreat": "team_travel",
+    "team retreats": "team_travel",
+    "retreat": "team_travel",
+    "retreats": "team_travel",
+    "offsite": "team_travel",
+    "team offsite": "team_travel",
     "اجازة": "team_travel",
     "اجازات": "team_travel",
+    # ---- team_medical_service (occupational health lane) ----------------
+    "team medical service": "team_medical_service",
+    "team medical services": "team_medical_service",
+    "medical service": "team_medical_service",
+    "medical services": "team_medical_service",
+    "team medical": "team_medical_service",
+    "team health service": "team_medical_service",
+    "health service": "team_medical_service",
+    "occupational health": "team_medical_service",
+    "medical care": "team_medical_service",
+    "clinic visit": "team_medical_service",
+    "doctor appointment": "team_medical_service",
+    "medical appointment": "team_medical_service",
+    "medical certificate": "team_medical_service",
+    "service medical": "team_medical_service",
+    "services medicaux": "team_medical_service",
+    "visite medicale": "team_medical_service",
     # ---- finance ---------------------------------------------------------
     "finance": "finance",
     "finances": "finance",
@@ -296,6 +320,23 @@ _ALIASES: dict[str, str] = {
 }
 
 
+_WIDGET_BOILERPLATE_START = re.compile(
+    r"^(?:create|add|make|put|show|display|cr[eé]e|cr[eé]er|ajoute|ajouter|zid|agrega)\s+"
+    r"(?:a|an|the|un|une|my|le|la|to|for|pour)?\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_widget_boilerplate(s: str) -> str:
+    """``Create a Team retreat widget`` → ``team retreat`` for alias lookup."""
+    key = _normalise(s)
+    if not key:
+        return ""
+    key = _WIDGET_BOILERPLATE_START.sub("", key)
+    key = re.sub(r"\s+widget\s*$", "", key, flags=re.IGNORECASE).strip()
+    return key
+
+
 def _normalise(s: str) -> str:
     """Lowercase, strip, accent-fold, collapse whitespace.
 
@@ -337,35 +378,38 @@ def resolve_widget_alias(*candidates: str | None) -> str | None:
     for raw in candidates:
         if not raw:
             continue
-        key = _normalise(raw)
-        if not key:
-            continue
-        hit = _ALIASES.get(key)
-        if hit:
-            return hit
-        # Also try the singular if the key looks plural and isn't
-        # already in the table — cheap "Purchases" -> "purchase" hop
-        # that doesn't require duplicating every entry.
-        if key.endswith("s") and key[:-1] in _ALIASES:
-            return _ALIASES[key[:-1]]
-        # Phrase / keyword match: managers often paste a full sentence as the
-        # tile title ("Créé un widget pour les groupes…"). Exact-key lookup
-        # misses those; scan for known multi-word aliases (longest wins).
-        relaxed = re.sub(r"[^\w\s]+", " ", key, flags=re.UNICODE)
-        relaxed = " ".join(relaxed.split())
-        padded_variants = {f" {key} ", f" {relaxed} "}
-        _SHORT_OK = frozenset({"hr", "rh", "po"})
-        best_len = 0
-        best_wid: str | None = None
-        for pad in padded_variants:
-            for alias_key, wid in _ALIASES.items():
-                if len(alias_key) < 3 and alias_key not in _SHORT_OK:
-                    continue
-                if f" {alias_key} " in pad and len(alias_key) > best_len:
-                    best_len = len(alias_key)
-                    best_wid = wid
-        if best_wid:
-            return best_wid
+        variant_keys: list[str] = []
+        for variant in (raw, _strip_widget_boilerplate(raw)):
+            key = _normalise(variant)
+            if key and key not in variant_keys:
+                variant_keys.append(key)
+        for key in variant_keys:
+            hit = _ALIASES.get(key)
+            if hit:
+                return hit
+            # Also try the singular if the key looks plural and isn't
+            # already in the table — cheap "Purchases" -> "purchase" hop
+            # that doesn't require duplicating every entry.
+            if key.endswith("s") and key[:-1] in _ALIASES:
+                return _ALIASES[key[:-1]]
+            # Phrase / keyword match: managers often paste a full sentence as the
+            # tile title ("Créé un widget pour les groupes…"). Exact-key lookup
+            # misses those; scan for known multi-word aliases (longest wins).
+            relaxed = re.sub(r"[^\w\s]+", " ", key, flags=re.UNICODE)
+            relaxed = " ".join(relaxed.split())
+            padded_variants = {f" {key} ", f" {relaxed} "}
+            _SHORT_OK = frozenset({"hr", "rh", "po"})
+            best_len = 0
+            best_wid: str | None = None
+            for pad in padded_variants:
+                for alias_key, wid in _ALIASES.items():
+                    if len(alias_key) < 3 and alias_key not in _SHORT_OK:
+                        continue
+                    if f" {alias_key} " in pad and len(alias_key) > best_len:
+                        best_len = len(alias_key)
+                        best_wid = wid
+            if best_wid:
+                return best_wid
     return None
 
 
