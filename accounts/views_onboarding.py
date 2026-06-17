@@ -634,19 +634,35 @@ class OnboardingGoogleCalendarView(APIView):
 
     @staticmethod
     def _creds() -> tuple[str | None, str | None]:
-        import os
-        return (
-            os.environ.get('GOOGLE_OAUTH_CLIENT_ID'),
-            os.environ.get('GOOGLE_OAUTH_CLIENT_SECRET'),
-        )
+        from django.conf import settings as dj_settings
+
+        client_id = (getattr(dj_settings, 'GOOGLE_OAUTH_CLIENT_ID', None) or '').strip()
+        client_secret = (getattr(dj_settings, 'GOOGLE_OAUTH_CLIENT_SECRET', None) or '').strip()
+        return (client_id or None, client_secret or None)
 
     @staticmethod
     def _redirect_uri(request) -> str:
+        from django.conf import settings as dj_settings
+
+        explicit = (getattr(dj_settings, 'GOOGLE_OAUTH_REDIRECT_URI', None) or '').strip()
+        if explicit:
+            return explicit.rstrip('/') + '/'
         # Use the BACKEND origin for the redirect — Google must hit our
         # callback view, which then 302s the browser back to the frontend.
-        return request.build_absolute_uri(
+        uri = request.build_absolute_uri(
             '/api/integrations/google-calendar/callback/'
         )
+        # Behind a TLS-terminating proxy ``build_absolute_uri`` may emit
+        # ``http://`` even though Google registered ``https://``. Force
+        # https for non-local hosts when not in DEBUG.
+        if (
+            not getattr(dj_settings, 'DEBUG', False)
+            and uri.startswith('http://')
+            and 'localhost' not in uri
+            and '127.0.0.1' not in uri
+        ):
+            uri = 'https://' + uri[len('http://'):]
+        return uri
 
     def post(self, request):
         if not _is_owner_like(request.user):
@@ -833,12 +849,13 @@ class GoogleCalendarOAuthCallbackView(APIView):
         if not code or not state:
             return http_redirect(self._wizard_url('error', 'missing_code'))
 
-        # Verify and unpack the state token (10-minute validity).
+        # Verify and unpack the state token (30-minute validity — users may
+        # spend time on Google's unverified-app warning screen).
         try:
             payload = signing.loads(
                 state,
                 salt='google-calendar-oauth',
-                max_age=600,
+                max_age=1800,
             )
         except signing.BadSignature:
             return http_redirect(self._wizard_url('error', 'bad_state'))

@@ -3,6 +3,7 @@ import { LuaAgent } from "lua-cli";
 import { facilitiesSkill } from "./skills/facilities.skill";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
+import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-facilities",
@@ -20,7 +21,8 @@ INCIDENT RULES:
 - ALWAYS call report_incident for safety concerns. Always pass phone from context.
 - Reply with the EXACT 'userMessage' from the tool output, verbatim.
 - NEVER add ticket IDs, severity tags, or technical jargon.
-- MAINTENANCE (broken equipment) vs INCIDENT (human safety risk) distinction is critical.
+- ROUTINE REPAIRS (wc, toilets, plumbing, equipment down, "réparer") are NOT incidents — the operations preprocessor logs them as MAINTENANCE staff requests. Do NOT call report_incident for those.
+- NEVER say "technical problem" / "try again later" for routine repairs without a successful staff_request.
 
 PHOTO ROUTER:
 - Business photos -> parse_photo FIRST. Never skip this for business photos.
@@ -44,6 +46,7 @@ LANGUAGE: Match the user's language.
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [facilitiesSkill],
+  preProcessors: [accountActivationPreprocessor, clockInPreprocessor, operationsCommandPreprocessor],
 });
 
 async function main() {

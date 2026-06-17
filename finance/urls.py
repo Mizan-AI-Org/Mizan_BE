@@ -6,6 +6,7 @@ from .views_agent import (
     agent_list_invoices,
     agent_mark_invoice_paid,
     agent_record_invoice,
+    agent_update_invoice_bank_payment_status,
 )
 
 router = DefaultRouter()
@@ -27,5 +28,10 @@ urlpatterns = [
         "agent/invoices/list/",
         agent_list_invoices,
         name="finance-agent-invoice-list",
+    ),
+    path(
+        "agent/invoices/payment-status/",
+        agent_update_invoice_bank_payment_status,
+        name="finance-agent-invoice-payment-status",
     ),
 ]

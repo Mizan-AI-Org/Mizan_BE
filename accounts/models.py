@@ -825,6 +825,12 @@ class StaffProfile(models.Model):
     health_card_expiry = models.DateField(null=True, blank=True)
     hourly_rate = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     salary_type = models.CharField(max_length=20, choices=[('HOURLY', 'Hourly'), ('MONTHLY', 'Monthly')], default='HOURLY')
+    monthly_salary = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text="Fixed monthly gross when salary_type is MONTHLY.",
+    )
     join_date = models.DateField(null=True, blank=True)
     promotion_history = models.JSONField(default=list, blank=True)
     emergency_contact_name = models.CharField(max_length=255, blank=True, null=True)

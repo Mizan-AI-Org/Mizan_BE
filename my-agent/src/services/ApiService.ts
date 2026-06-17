@@ -2676,6 +2676,163 @@ export default class ApiService {
         }
     }
 
+    async updateInvoiceBankPaymentStatusForAgent(
+        restaurantId: string,
+        payload: {
+            invoice_id?: string;
+            vendor?: string;
+            invoice_number?: string;
+            bank_payment_status?: string;
+            status?: string;
+            bank_payment_note?: string;
+            note?: string;
+            reference?: string;
+        },
+    ): Promise<{
+        success: boolean;
+        invoice?: Record<string, unknown>;
+        message_for_user?: string;
+        error?: string;
+    }> {
+        const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
+        if (!agentKey) return { success: false, error: "No agent key configured" };
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/finance/agent/invoices/payment-status/",
+                { restaurant_id: restaurantId, ...payload },
+                { headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId) },
+            );
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                error: error.response?.data?.error || error.message,
+                message_for_user: error.response?.data?.message_for_user,
+            };
+        }
+    }
+
+    async generatePayslipForAgent(
+        restaurantId: string,
+        payload: {
+            staff_name?: string;
+            staff_id?: string;
+            month?: number;
+            year?: number;
+            period_start?: string;
+            period_end?: string;
+        },
+    ): Promise<{
+        success: boolean;
+        count?: number;
+        payslips?: Array<Record<string, unknown>>;
+        message_for_user?: string;
+        error?: string;
+    }> {
+        const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
+        if (!agentKey) return { success: false, error: "No agent key configured" };
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/payroll/agent/payslips/generate/",
+                { restaurant_id: restaurantId, ...payload },
+                { headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId) },
+            );
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                error: error.response?.data?.error || error.message,
+                message_for_user: error.response?.data?.message_for_user,
+            };
+        }
+    }
+
+    async logTemperatureForAgent(
+        restaurantId: string,
+        payload: {
+            equipment?: string;
+            value_c?: number;
+            temperature?: number;
+            text?: string;
+            notes?: string;
+        },
+    ): Promise<{
+        success: boolean;
+        record_id?: string;
+        is_out_of_range?: boolean;
+        message_for_user?: string;
+        error?: string;
+    }> {
+        const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
+        if (!agentKey) return { success: false, error: "No agent key configured" };
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/payroll/agent/temperature-log/",
+                { restaurant_id: restaurantId, ...payload },
+                { headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId) },
+            );
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                error: error.response?.data?.error || error.message,
+                message_for_user: error.response?.data?.message_for_user,
+            };
+        }
+    }
+
+    async syncDeliveryMenuForAgent(
+        restaurantId: string,
+        payload: { provider?: string } = {},
+    ): Promise<{
+        success: boolean;
+        item_count?: number;
+        provider?: string;
+        message_for_user?: string;
+        error?: string;
+    }> {
+        const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
+        if (!agentKey) return { success: false, error: "No agent key configured" };
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/payroll/agent/delivery-menu/sync/",
+                { restaurant_id: restaurantId, ...payload },
+                { headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId) },
+            );
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                error: error.response?.data?.error || error.message,
+                message_for_user: error.response?.data?.message_for_user,
+            };
+        }
+    }
+
+    async seedComplianceRemindersForAgent(restaurantId: string): Promise<{
+        success: boolean;
+        created?: number;
+        message_for_user?: string;
+        error?: string;
+    }> {
+        const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
+        if (!agentKey) return { success: false, error: "No agent key configured" };
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/payroll/agent/compliance-reminders/seed/",
+                { restaurant_id: restaurantId },
+                { headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId) },
+            );
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                error: error.response?.data?.error || error.message,
+                message_for_user: error.response?.data?.message_for_user,
+            };
+        }
+    }
+
     async listInvoices(
         restaurantId: string,
         opts: {
@@ -2877,7 +3034,18 @@ export default class ApiService {
         target_user_id?: string;
         // Files sent by staff alongside the request on WhatsApp.
         attachments?: Array<{ url: string; filename?: string; mime_type?: string }>;
-    }): Promise<{ success: boolean; id?: string; status?: string; category?: string; assignee?: { id: string; name: string; email: string; auto_assigned: boolean } | null; error?: string }> {
+        follow_up_enabled?: boolean;
+        follow_up_max?: number;
+    }): Promise<{
+        success: boolean;
+        id?: string;
+        status?: string;
+        category?: string;
+        assignee?: { id: string; name: string; email: string; auto_assigned: boolean } | null;
+        whatsapp_sent?: boolean;
+        message_for_user?: string;
+        error?: string;
+    }> {
         const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
         if (!agentKey) {
             console.error("[ApiService] No agent key configured");
@@ -2942,6 +3110,37 @@ export default class ApiService {
                 headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId),
                 params: { restaurant_id: restaurantId, q: query },
             });
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                error: error.response?.data?.error || error.message,
+                message_for_user: error.response?.data?.message_for_user,
+            };
+        }
+    }
+
+    /** Send an immediate WhatsApp follow-up for a pending task or staff request. */
+    async chaseOperationalRecordForAgent(
+        restaurantId: string,
+        query: string,
+    ): Promise<{
+        success: boolean;
+        record_id?: string;
+        ref?: string;
+        whatsapp_sent?: boolean;
+        follow_up_count?: number;
+        message_for_user?: string;
+        error?: string;
+    }> {
+        const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
+        if (!agentKey) return { success: false, error: "No agent key configured" };
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/staff/agent/records/chase/",
+                { restaurant_id: restaurantId, q: query },
+                { headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId) },
+            );
             return response.data;
         } catch (error: any) {
             return {

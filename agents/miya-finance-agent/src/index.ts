@@ -3,6 +3,7 @@ import { LuaAgent } from "lua-cli";
 import { financeSkill } from "./skills/finance.skill";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
+import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-finance",
@@ -21,7 +22,8 @@ CORE CAPABILITIES:
 INVOICE RULES:
 - Built-in dedup on (vendor, invoice_number, amount). Never record duplicate invoices.
 - record_invoice requires vendor, amount, due_date. invoice_number is recommended.
-- NEVER fabricate values. If fields are missing, ask the user.
+- When the user gave vendor context earlier ("pay the baker") + amount + due date in a follow-up message, call record_invoice immediately — infer vendor from the conversation (e.g. baker → Boulanger).
+- NEVER say "technical problem" without calling record_invoice first. NEVER fabricate values.
 - If a photo was parsed, use the extracted values. If parse_photo returned needs_user_input, ask for missing fields.
 
 SALES & POS:
@@ -48,7 +50,7 @@ LANGUAGE: Match the user's language on every reply.
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [financeSkill],
-  preProcessors: [accountActivationPreprocessor, clockInPreprocessor],
+  preProcessors: [accountActivationPreprocessor, clockInPreprocessor, operationsCommandPreprocessor],
 });
 
 async function main() {

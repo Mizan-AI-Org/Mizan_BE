@@ -27,8 +27,15 @@ from datetime import date, timedelta
 from typing import Iterable
 
 from celery import shared_task
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
+
+from staff.follow_up_helpers import (
+    build_staff_request_follow_up_message,
+    escalate_staff_request_to_managers,
+    normalize_phone,
+    should_send_follow_up,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -217,4 +224,102 @@ def compliance_renewal_sweep() -> dict:
 
     if summary["opened"]:
         logger.info("compliance_renewal_sweep opened %d renewals", summary["opened"])
+    return summary
+
+
+@shared_task(name="staff.tasks.staff_request_follow_up_sweep")
+def staff_request_follow_up_sweep() -> dict:
+    """
+    WhatsApp follow-ups for pending staff requests with an assignee.
+
+    Mirrors ``dashboard.tasks.task_follow_up_sweep`` and escalates to
+    managers when follow-ups are exhausted.
+    """
+    from notifications.services import NotificationService
+    from staff.models import StaffRequest, StaffRequestComment
+
+    now = timezone.now()
+    ns = NotificationService()
+    summary = {
+        "checked": 0,
+        "followed_up": 0,
+        "escalated": 0,
+        "skipped_no_phone": 0,
+        "errors": 0,
+    }
+
+    candidates = (
+        StaffRequest.objects.filter(
+            follow_up_enabled=True,
+            status="PENDING",
+            whatsapp_notified_at__isnull=False,
+            assignee__isnull=False,
+            escalated_at__isnull=True,
+        )
+        .filter(follow_up_count__lt=F("follow_up_max"))
+        .select_related("assignee", "restaurant")
+    )
+
+    for req in candidates.iterator(chunk_size=100):
+        summary["checked"] += 1
+        phone = normalize_phone(getattr(req.assignee, "phone", None))
+        if not phone:
+            summary["skipped_no_phone"] += 1
+            continue
+
+        if should_send_follow_up(
+            notified_at=req.whatsapp_notified_at,
+            priority=req.priority or "MEDIUM",
+            follow_up_count=req.follow_up_count,
+            follow_up_max=req.follow_up_max,
+            last_follow_up_at=req.last_follow_up_at,
+            now=now,
+        ):
+            message = build_staff_request_follow_up_message(req, req.follow_up_count + 1)
+            try:
+                ok, _ = ns.send_whatsapp_text(phone, message)
+                if ok:
+                    req.follow_up_count += 1
+                    req.last_follow_up_at = now
+                    req.save(update_fields=["follow_up_count", "last_follow_up_at", "updated_at"])
+                    StaffRequestComment.objects.create(
+                        request=req,
+                        author=None,
+                        kind="system",
+                        body=f"📲 WhatsApp follow-up #{req.follow_up_count} sent to assignee.",
+                        metadata={"trigger": "follow_up_sweep", "follow_up_count": req.follow_up_count},
+                    )
+                    summary["followed_up"] += 1
+                else:
+                    summary["errors"] += 1
+            except Exception:
+                summary["errors"] += 1
+                logger.exception("Staff request follow-up failed for %s", req.pk)
+            continue
+
+        if (
+            req.follow_up_count >= req.follow_up_max
+            and req.whatsapp_notified_at
+            and (now - req.whatsapp_notified_at).total_seconds() / 3600 < 24
+        ):
+            try:
+                result = escalate_staff_request_to_managers(
+                    req,
+                    reason="Automatic follow-ups to the assignee did not resolve this.",
+                )
+                if result.get("escalated"):
+                    StaffRequestComment.objects.create(
+                        request=req,
+                        author=None,
+                        kind="system",
+                        body="⚠️ Escalated to managers — assignee follow-ups exhausted.",
+                        metadata={"trigger": "follow_up_sweep", "escalation": result},
+                    )
+                    summary["escalated"] += 1
+            except Exception:
+                summary["errors"] += 1
+                logger.exception("Staff request escalation failed for %s", req.pk)
+
+    if summary["followed_up"] or summary["escalated"]:
+        logger.info("staff_request_follow_up_sweep: %s", summary)
     return summary

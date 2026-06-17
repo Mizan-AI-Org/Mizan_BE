@@ -124,6 +124,26 @@ class Invoice(models.Model):
         help_text="Cheque number, transfer reference, or POS receipt id.",
     )
 
+    BANK_PAYMENT_PENDING = "PENDING"
+    BANK_PAYMENT_INITIATED = "INITIATED"
+    BANK_PAYMENT_CLEARED = "CLEARED"
+    BANK_PAYMENT_FAILED = "FAILED"
+    BANK_PAYMENT_NA = "NOT_APPLICABLE"
+    BANK_PAYMENT_STATUS_CHOICES = (
+        (BANK_PAYMENT_NA, "Not applicable"),
+        (BANK_PAYMENT_PENDING, "Pending"),
+        (BANK_PAYMENT_INITIATED, "Initiated"),
+        (BANK_PAYMENT_CLEARED, "Cleared"),
+        (BANK_PAYMENT_FAILED, "Failed"),
+    )
+    bank_payment_status = models.CharField(
+        max_length=20,
+        choices=BANK_PAYMENT_STATUS_CHOICES,
+        default=BANK_PAYMENT_PENDING,
+        help_text="Tracks bank transfer / cheque payment lifecycle before/after mark paid.",
+    )
+    bank_payment_note = models.CharField(max_length=255, blank=True, default="")
+
     created_by = models.ForeignKey(
         CustomUser,
         on_delete=models.SET_NULL,

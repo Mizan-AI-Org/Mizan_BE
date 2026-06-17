@@ -27,6 +27,7 @@ from rest_framework import permissions, status as http_status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.permissions import IsAdminOrManager
 from core.http_caching import json_response_with_cache
 from core.read_through_cache import get_or_set, safe_cache_delete
 from notifications.models import Notification, NotificationLog
@@ -194,6 +195,30 @@ def _resolve_send_audience(data: dict) -> tuple[str, dict] | Response:
     if modes[0] == "departments":
         return "departments", {"departments": departments}
     return "roles", {"roles": roles}
+
+
+def _no_recipients_message(kind: str, payload: dict) -> str:
+    """Human-readable error when audience resolution finds nobody to ping."""
+    if kind == "roles":
+        roles = payload.get("roles") or []
+        labels = ", ".join(str(r).replace("_", " ").title() for r in roles)
+        return (
+            f"No teammates with role(s) {labels} have a WhatsApp number on file. "
+            "Add phone numbers on their staff profiles, then try again."
+        )
+    if kind == "departments":
+        depts = payload.get("departments") or []
+        return (
+            f"No staff in {', '.join(depts)} with a WhatsApp number on file. "
+            "Check department names on staff profiles match what you typed."
+        )
+    if kind == "tags":
+        tags = payload.get("tags") or []
+        return (
+            f"No staff tagged {', '.join(tags)} have a WhatsApp number on file. "
+            "Assign tags on staff profiles or pick people by name."
+        )
+    return "No recipients found for the given audience."
 
 
 def _same_tenant(
@@ -415,7 +440,7 @@ class StaffMessagesRecentView(APIView):
     nudges, etc.).
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
 
     def get(self, request):
         restaurant = getattr(request.user, "restaurant", None)
@@ -509,7 +534,7 @@ class StaffMessagesSendView(APIView):
     ``send_announcement_to_audience`` pipeline as Miya's ``inform_staff``.
     """
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
 
     def post(self, request):
         restaurant = getattr(request.user, "restaurant", None)
@@ -649,14 +674,14 @@ class StaffMessagesSendView(APIView):
             roles=roles_kw,
             departments=departments_kw,
             tags=tags_kw,
-            channels=["whatsapp"],
+            channels=["app", "whatsapp"],
         )
 
         if not success or count == 0:
             return Response(
                 {
                     "success": False,
-                    "error": err or "Couldn't send the message.",
+                    "error": err or _no_recipients_message(kind, payload),
                     "details": details or {},
                 },
                 status=http_status.HTTP_400_BAD_REQUEST,

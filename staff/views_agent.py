@@ -134,6 +134,14 @@ def validate_agent_key(request):
     return True, None
 
 
+def _coerce_bool(val, default=True):
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    return str(val).lower() not in ('false', '0', 'no', 'off')
+
+
 def _create_incident_from_inbox_message(
     *,
     restaurant,
@@ -476,6 +484,13 @@ def agent_ingest_staff_request(request):
         'auto_categorised': decision.category != (data.get('category') or 'OTHER').upper(),
     }
 
+    follow_up_enabled = _coerce_bool(
+        data.get('follow_up_enabled') or data.get('followUpEnabled'),
+        default=True,
+    )
+    follow_up_max = int(data.get('follow_up_max') or data.get('followUpMax') or 2)
+    follow_up_max = max(0, min(3, follow_up_max))
+
     req = StaffRequest.objects.create(
         restaurant=restaurant,
         staff=staff,
@@ -493,6 +508,8 @@ def agent_ingest_staff_request(request):
         source=source,
         external_id=external_id,
         metadata=inbox_metadata,
+        follow_up_enabled=follow_up_enabled,
+        follow_up_max=follow_up_max,
     )
     _invalidate_staff_requests_cache(restaurant.id)
 
@@ -560,27 +577,41 @@ def agent_ingest_staff_request(request):
                     ),
                 )
                 whatsapp_sent_to_assignee = bool(wa_ok)
+                if wa_ok:
+                    req.whatsapp_notified_at = timezone.now()
+                    req.save(update_fields=['whatsapp_notified_at', 'updated_at'])
             except Exception as exc:
                 logger.warning("StaffRequest assignee WhatsApp ping failed: %s", exc)
                 whatsapp_sent_to_assignee = False
 
     _notify_managers_of_staff_request(req)
 
+    ref = _short_ref(req.id)
+    base_msg = (
+        f"Logged in the {req.category.title()} lane of the team inbox."
+        if req.category != 'OTHER'
+        else "Logged in the team inbox — I couldn't pin a specific category, "
+             "so a manager will triage it."
+    )
+    follow_phrase = ""
+    if assignee and follow_up_enabled and whatsapp_sent_to_assignee:
+        follow_phrase = " I'll follow up automatically on WhatsApp if they don't respond."
+    elif assignee and follow_up_enabled and not whatsapp_sent_to_assignee:
+        follow_phrase = " Automatic WhatsApp follow-ups are enabled once they're reachable on WhatsApp."
+
     return Response({
         'success': True,
         'routed': True,
         'destination': 'INBOX',
         'id': str(req.id),
+        'record_id': str(req.id),
+        'task_ref': ref,
         'status': req.status,
         'category': req.category,
         'auto_categorised': inbox_metadata['intent_router']['auto_categorised'],
         'matched_terms': list(decision.matched_terms),
-        'message_for_user': (
-            f"Logged in the {req.category.title()} lane of the team inbox."
-            if req.category != 'OTHER'
-            else "Logged in the team inbox — I couldn't pin a specific category, "
-                 "so a manager will triage it."
-        ),
+        'message_for_user': f"✓ Request #{ref} — {base_msg}{follow_phrase}",
+        'follow_up_enabled': follow_up_enabled,
         'assignee': (
             {
                 'id': str(assignee.id),
@@ -1157,6 +1188,225 @@ def agent_search_operational_records(request):
                 f'Found {len(deduped)} match(es) for "{raw_q}".'
                 if deduped
                 else f'Nothing found for "{raw_q}".'
+            ),
+        }
+    )
+
+
+def _find_operational_record(restaurant, *, record_id=None, record_type=None, query=None):
+    """Resolve a staff request or dashboard task for chase / follow-up."""
+    from dashboard.models import Task
+
+    rid = (record_id or '').strip()
+    rtype = (record_type or '').strip().lower()
+    q = (query or '').strip()
+
+    if rid:
+        if rtype in ('', 'staff_request', 'request'):
+            req = StaffRequest.objects.filter(restaurant=restaurant, id=rid).select_related('assignee').first()
+            if req:
+                return 'staff_request', req
+        if rtype in ('', 'dashboard_task', 'task'):
+            task = Task.objects.filter(restaurant=restaurant, id=rid).select_related('assigned_to').first()
+            if task:
+                return 'dashboard_task', task
+        req = StaffRequest.objects.filter(restaurant=restaurant, id=rid).select_related('assignee').first()
+        if req:
+            return 'staff_request', req
+        task = Task.objects.filter(restaurant=restaurant, id=rid).select_related('assigned_to').first()
+        if task:
+            return 'dashboard_task', task
+
+    if not q or len(q) < 2:
+        return None, None
+
+    q_lower = q.lower()
+    q_hex = ''.join(ch for ch in q.lower() if ch in '0123456789abcdef')
+
+    for req in StaffRequest.objects.filter(restaurant=restaurant).order_by('-created_at')[:100]:
+        hay = ' '.join(
+            filter(None, [str(req.id), _short_ref(req.id), req.subject or '', req.description or ''])
+        ).lower()
+        if q_lower in hay or (len(q_hex) >= 6 and q_hex in str(req.id).replace('-', '')):
+            return 'staff_request', req
+
+    for task in Task.objects.filter(restaurant=restaurant).order_by('-created_at')[:100]:
+        hay = ' '.join(filter(None, [str(task.id), _short_ref(task.id), task.title or ''])).lower()
+        if q_lower in hay or (len(q_hex) >= 6 and q_hex in str(task.id).replace('-', '')):
+            return 'dashboard_task', task
+
+    return None, None
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_chase_operational_record(request):
+    """
+    Send an immediate WhatsApp follow-up for a pending staff request or task.
+
+    POST /api/staff/agent/records/chase/
+    Body: restaurant_id, q | record_id, optional record_type
+    """
+    is_valid, error = validate_agent_key(request)
+    if not is_valid:
+        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+
+    restaurant, err = _resolve_restaurant_for_staff_agent(request)
+    if err:
+        return Response({'success': False, 'error': err['error']}, status=err['status'])
+
+    data = request.data or {}
+    record_type, record = _find_operational_record(
+        restaurant,
+        record_id=data.get('record_id') or data.get('recordId') or data.get('id'),
+        record_type=data.get('record_type') or data.get('recordType') or data.get('type'),
+        query=data.get('q') or data.get('query'),
+    )
+    if not record:
+        return Response(
+            {
+                'success': False,
+                'error': 'Record not found',
+                'message_for_user': "I couldn't find that request or task. Give me the reference number or a few keywords.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    from staff.follow_up_helpers import (
+        build_staff_request_follow_up_message,
+        build_task_follow_up_message,
+        normalize_phone,
+    )
+
+    now = timezone.now()
+    whatsapp_sent = False
+    assignee_name = ''
+    title = ''
+    ref = _short_ref(record.id)
+
+    if record_type == 'staff_request':
+        if record.status not in ('PENDING', 'ESCALATED'):
+            return Response(
+                {
+                    'success': False,
+                    'message_for_user': f"Request #{ref} is already {record.status.lower()} — no follow-up needed.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        assignee = record.assignee
+        if not assignee:
+            return Response(
+                {
+                    'success': False,
+                    'message_for_user': f"Request #{ref} has no assignee yet — assign someone first.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        phone = normalize_phone(getattr(assignee, 'phone', None))
+        if not phone:
+            return Response(
+                {
+                    'success': False,
+                    'message_for_user': f"{assignee.get_full_name() or 'The assignee'} has no phone on file.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        message = build_staff_request_follow_up_message(record, record.follow_up_count + 1)
+        ok, _ = notification_service.send_whatsapp_text(phone, message)
+        whatsapp_sent = bool(ok)
+        if ok:
+            record.follow_up_count += 1
+            record.last_follow_up_at = now
+            if not record.whatsapp_notified_at:
+                record.whatsapp_notified_at = now
+            record.follow_up_enabled = True
+            record.save(
+                update_fields=[
+                    'follow_up_count',
+                    'last_follow_up_at',
+                    'whatsapp_notified_at',
+                    'follow_up_enabled',
+                    'updated_at',
+                ]
+            )
+            StaffRequestComment.objects.create(
+                request=record,
+                author=None,
+                kind='system',
+                body=f"📲 Manual WhatsApp follow-up #{record.follow_up_count} sent via Miya.",
+                metadata={'trigger': 'agent_chase'},
+            )
+        assignee_name = assignee.get_full_name() or assignee.email or 'Assignee'
+        title = record.subject or 'Request'
+    else:
+        if record.status != 'PENDING':
+            return Response(
+                {
+                    'success': False,
+                    'message_for_user': f"Task #{ref} is already {record.status.lower()} — no follow-up needed.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        assignee = record.assigned_to
+        if not assignee:
+            return Response(
+                {
+                    'success': False,
+                    'message_for_user': f"Task #{ref} has no assignee yet.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        phone = normalize_phone(getattr(assignee, 'phone', None))
+        if not phone:
+            return Response(
+                {
+                    'success': False,
+                    'message_for_user': f"{assignee.get_full_name() or 'The assignee'} has no phone on file.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        message = build_task_follow_up_message(record, record.follow_up_count + 1)
+        ok, _ = notification_service.send_whatsapp_text(phone, message)
+        whatsapp_sent = bool(ok)
+        if ok:
+            record.follow_up_count += 1
+            record.last_follow_up_at = now
+            if not record.whatsapp_notified_at:
+                record.whatsapp_notified_at = now
+            record.follow_up_enabled = True
+            record.save(
+                update_fields=[
+                    'follow_up_count',
+                    'last_follow_up_at',
+                    'whatsapp_notified_at',
+                    'follow_up_enabled',
+                    'updated_at',
+                ]
+            )
+        assignee_name = assignee.get_full_name() or assignee.email or 'Assignee'
+        title = record.title or 'Task'
+
+    if not whatsapp_sent:
+        return Response(
+            {
+                'success': False,
+                'message_for_user': f"I couldn't reach {assignee_name} on WhatsApp right now. They'll still see it in the app.",
+            },
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return Response(
+        {
+            'success': True,
+            'record_type': record_type,
+            'record_id': str(record.id),
+            'ref': ref,
+            'whatsapp_sent': True,
+            'follow_up_count': record.follow_up_count,
+            'message_for_user': (
+                f"✓ Follow-up sent on WhatsApp to {assignee_name} about "
+                f"\"{title}\" (#{ref}). I'll keep chasing automatically if it stays pending."
             ),
         }
     )

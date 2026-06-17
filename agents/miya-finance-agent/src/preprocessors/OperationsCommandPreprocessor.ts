@@ -1,0 +1,52 @@
+/**
+ * Deterministic router — runs before the LLM on specialist agents so delegated
+ * finance / HR / facilities WhatsApp messages still execute reliably.
+ */
+import { ChatMessage, PreProcessor, UserDataInstance } from "lua-cli";
+import { resolveOperationsCommandIntent } from "./operationIntent";
+import { executeOperationsIntent, toolMessage } from "./executeOperationsIntent";
+
+export const operationsCommandPreprocessor = new PreProcessor({
+    name: "operations-command-router",
+    description: "Executes invoice, HR reminder, and maintenance intents before the LLM.",
+    priority: 105,
+
+    execute: async (_user: UserDataInstance, messages: ChatMessage[], channel: string) => {
+        const intent = resolveOperationsCommandIntent(messages);
+        if (!intent) {
+            return { action: "proceed" as const };
+        }
+
+        console.log(`[OperationsCommandPreprocessor] intent=${intent.kind} channel=${channel}`);
+
+        let toolResult: Record<string, unknown> = {};
+        try {
+            toolResult = (await executeOperationsIntent(intent)) as Record<string, unknown>;
+        } catch (err: unknown) {
+            const em = err instanceof Error ? err.message : String(err);
+            console.error("[OperationsCommandPreprocessor] execute threw:", em);
+            toolResult = {
+                status: "error",
+                message: "I couldn't complete that action right now. Please try again in a moment.",
+            };
+        }
+
+        const message = toolMessage(toolResult);
+        if (message) {
+            return {
+                action: "block" as const,
+                response: message,
+                metadata: {
+                    operations_intent: intent.kind,
+                    operations_status: toolResult.status,
+                    task_ref: toolResult.task_ref,
+                    record_id: toolResult.record_id || toolResult.recordId,
+                },
+            };
+        }
+
+        return { action: "proceed" as const };
+    },
+});
+
+export default operationsCommandPreprocessor;

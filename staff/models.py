@@ -423,6 +423,19 @@ class StaffRequest(models.Model):
         help_text='Short note about what we are waiting on, e.g. "Supplier delivery", "Contractor visit", "Document arriving".',
     )
 
+    # Auto follow-up on WhatsApp — Miya nudges the assignee if the request
+    # stays PENDING, mirroring dashboard Task follow-ups.
+    follow_up_enabled = models.BooleanField(default=True)
+    follow_up_count = models.PositiveSmallIntegerField(default=0)
+    follow_up_max = models.PositiveSmallIntegerField(default=2)
+    last_follow_up_at = models.DateTimeField(null=True, blank=True)
+    whatsapp_notified_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text='When the initial WhatsApp notification was sent to the assignee.',
+    )
+    escalated_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ['-created_at']
         indexes = [
