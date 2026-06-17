@@ -147,6 +147,27 @@ class ResolveWidgetAliasTests(SimpleTestCase):
     def test_random_shortcut_does_not_resolve(self):
         self.assertIsNone(resolve_widget_alias("Daily PDF report"))
 
+    def test_explicit_custom_title_does_not_substring_match_stock(self):
+        self.assertIsNone(
+            resolve_widget_alias("PRELEVEMENTS STOCK", strict=True),
+        )
+        self.assertEqual(
+            resolve_widget_alias("PRELEVEMENTS STOCK"),
+            "inventory_delivery",
+        )
+
+    def test_explicit_custom_widget_request_detected(self):
+        from dashboard.widget_alias_resolver import is_explicit_custom_widget_request
+
+        self.assertTrue(
+            is_explicit_custom_widget_request(
+                "create a widget called : Gitex Marrakesh",
+            )
+        )
+        self.assertFalse(
+            is_explicit_custom_widget_request("create a Purchases widget"),
+        )
+
     def test_empty_input_does_not_resolve(self):
         self.assertIsNone(resolve_widget_alias(""))
         self.assertIsNone(resolve_widget_alias(None))

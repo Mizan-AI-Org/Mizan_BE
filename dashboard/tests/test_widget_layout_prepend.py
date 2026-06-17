@@ -19,6 +19,12 @@ class PrependWidgetsToOrderTests(SimpleTestCase):
         self.assertEqual(added, ["maintenance"])
         self.assertEqual(current, ["maintenance", "finance", "operations"])
 
+    def test_bubbles_existing_widgets_to_top(self):
+        current = ["finance", "operations", "maintenance"]
+        current, added = _prepend_widgets_to_order(current, ["finance"])
+        self.assertEqual(added, [])
+        self.assertEqual(current, ["finance", "operations", "maintenance"])
+
     def test_empty_add_list_is_noop(self):
         current = ["finance"]
         current, added = _prepend_widgets_to_order(current, [])
