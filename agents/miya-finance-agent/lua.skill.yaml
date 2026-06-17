@@ -4,19 +4,22 @@ agent:
 skills:
   - name: finance
     skillId: bd44d3c0-0cde-473a-b424-1d5b282b3c8a
-    version: 1.0.8
+    version: 1.0.9
 webhooks: []
 jobs: []
 preprocessors:
   - name: account-activation-router
     preprocessorId: preprocessor_f6b83e37-2259-45ea-8b36-44e5a0d12220
-    version: 1.0.2
+    version: 1.0.3
   - name: clock-in-router
     preprocessorId: preprocessor_2d8f77e3-2589-47ef-9d5e-40e4695ae403
-    version: 1.0.2
+    version: 1.0.3
+  - name: operations-command-router
+    preprocessorId: preprocessor_28f3b74a-bff2-4a03-99c0-d39f9f77ae93
+    version: 1.0.1
 postprocessors: []
 mcpServers: []
 backup:
-  activeVersion: 9
-  lastHash: 41f6a945fd65942d34397fd5912217c9890f76cc9e83a9636874d99ed7d41f40
-  lastPushedAt: '2026-06-15T01:41:56.630Z'
+  activeVersion: 10
+  lastHash: e157922e2fc788e4225057a0e64132b03103aeb6af0bb5350169831161c5fc3e
+  lastPushedAt: '2026-06-17T04:14:39.301Z'

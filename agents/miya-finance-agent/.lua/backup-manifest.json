@@ -1,6 +1,6 @@
 {
-  "lastHash": "41f6a945fd65942d34397fd5912217c9890f76cc9e83a9636874d99ed7d41f40",
-  "lastPushedAt": "2026-06-15T01:41:56.633Z",
+  "lastHash": "e157922e2fc788e4225057a0e64132b03103aeb6af0bb5350169831161c5fc3e",
+  "lastPushedAt": "2026-06-17T04:14:39.303Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "6df37cd18c344000"
+      "hash": "308c0b3d00b5a6b0"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "ac46d84e7b43cc9c"
+      "hash": "72ff42b4cb4f4ccc"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
@@ -35,12 +35,24 @@
       "hash": "d4f6813d000e4999"
     },
     {
+      "relativePath": "src/preprocessors/executeOperationsIntent.ts",
+      "hash": "fadac17309bd2b00"
+    },
+    {
+      "relativePath": "src/preprocessors/operationIntent.ts",
+      "hash": "4017e65b124ae004"
+    },
+    {
+      "relativePath": "src/preprocessors/OperationsCommandPreprocessor.ts",
+      "hash": "0aae80159b68a198"
+    },
+    {
       "relativePath": "src/services/agentContext.ts",
       "hash": "b562bc58de80ae93"
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "d5a99f55366cb312"
+      "hash": "ad63c03b3e110998"
     },
     {
       "relativePath": "src/skills/finance.skill.ts",

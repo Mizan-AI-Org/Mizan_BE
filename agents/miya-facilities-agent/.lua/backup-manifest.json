@@ -1,6 +1,6 @@
 {
-  "lastHash": "4446b8b4742b3ed8e03fb9d8c9cc83a6d425cf4522a6447139f47223e942b6a5",
-  "lastPushedAt": "2026-06-15T01:45:24.721Z",
+  "lastHash": "07717e4d6955c0b593a1889389ef85b3fc28f27cb1c6b638dda2a7a03ecb4d70",
+  "lastPushedAt": "2026-06-17T04:17:53.197Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "9e6cde06fe30b285"
+      "hash": "f76c53cdd4e6d6f4"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "85397e234f8b7f32"
+      "hash": "53ba57bedc77755e"
     },
     {
       "relativePath": "src/modules/incident-management.ts",
@@ -39,12 +39,24 @@
       "hash": "d4f6813d000e4999"
     },
     {
+      "relativePath": "src/preprocessors/executeOperationsIntent.ts",
+      "hash": "fadac17309bd2b00"
+    },
+    {
+      "relativePath": "src/preprocessors/operationIntent.ts",
+      "hash": "4017e65b124ae004"
+    },
+    {
+      "relativePath": "src/preprocessors/OperationsCommandPreprocessor.ts",
+      "hash": "0aae80159b68a198"
+    },
+    {
       "relativePath": "src/services/agentContext.ts",
       "hash": "b562bc58de80ae93"
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "d5a99f55366cb312"
+      "hash": "ad63c03b3e110998"
     },
     {
       "relativePath": "src/skills/facilities.skill.ts",
