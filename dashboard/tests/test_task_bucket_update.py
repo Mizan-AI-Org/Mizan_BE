@@ -168,3 +168,58 @@ class TaskBucketUpdateInvoiceTests(TestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
+
+
+class TaskBucketUpdateDashboardTaskTests(TestCase):
+    """Miya dashboard.Task rows move between Tasks & Demands and custom tiles."""
+
+    def setUp(self):
+        self.restaurant = Restaurant.objects.create(name="Kasbah Bistro")
+        self.manager = CustomUser.objects.create_user(
+            email="m@kasbah.test",
+            password="x",
+            first_name="Hamza",
+            last_name="Hadni",
+            role="MANAGER",
+            restaurant=self.restaurant,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(self.manager)
+
+        from dashboard.models import DashboardCustomWidget, Task
+
+        self.Task = Task
+        self.widget = DashboardCustomWidget.objects.create(
+            user=self.manager,
+            restaurant=self.restaurant,
+            title="Event Kasbah Dif",
+            routing_keywords=["Kasbah"],
+        )
+        self.task = Task.objects.create(
+            restaurant=self.restaurant,
+            assigned_to=self.manager,
+            title="Print menus for the Kasbah Dif event",
+            status="PENDING",
+            source="MIYA",
+        )
+
+    def _patch(self, task_id, bucket):
+        return self.client.patch(
+            f"/api/dashboard/tasks-demands/{task_id}/bucket/",
+            data={"bucket": bucket},
+            format="json",
+        )
+
+    def test_move_task_to_custom_widget(self):
+        resp = self._patch(self.task.id, f"custom:{self.widget.id}")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.custom_widget_id, self.widget.id)
+
+    def test_move_task_back_to_tasks_demands(self):
+        self.task.custom_widget = self.widget
+        self.task.save(update_fields=["custom_widget"])
+        resp = self._patch(self.task.id, "tasks_demands")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        self.task.refresh_from_db()
+        self.assertIsNone(self.task.custom_widget_id)
