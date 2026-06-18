@@ -52,6 +52,9 @@ from rest_framework.response import Response
 
 from scheduling.photo_router_service import parse_photo
 
+from .agent_dates import coerce_agent_date
+from core.media_fetch import fetch_remote_media_bytes
+
 logger = logging.getLogger(__name__)
 
 
@@ -91,19 +94,27 @@ def _action_envelope(
     return out
 
 
-def _try_create_invoice(restaurant, fields: dict[str, Any], note: str, summary: str):
+def _try_create_invoice(
+    restaurant,
+    fields: dict[str, Any],
+    note: str,
+    summary: str,
+    *,
+    photo_url: str = "",
+    acting_user=None,
+):
     """Build an Invoice from vision fields. Returns (invoice_or_None, message)."""
     from finance.models import Invoice
 
     vendor = (fields.get("vendor") or "").strip()
     amount = _to_decimal(fields.get("amount"))
-    due_date = fields.get("due_date") or None
+    due_date = coerce_agent_date(fields.get("due_date"))
     if not (vendor and amount and due_date):
         return None, (
             "I can see this looks like an invoice but I'm missing some details. "
             f"Vendor: {vendor or 'unknown'}, "
             f"amount: {amount or 'unknown'}, "
-            f"due date: {due_date or 'unknown'}. Want me to log it anyway?"
+            f"due date: {fields.get('due_date') or 'unknown'}. Want me to log it anyway?"
         )
 
     invoice_number = (fields.get("invoice_number") or "").strip()
@@ -121,17 +132,22 @@ def _try_create_invoice(restaurant, fields: dict[str, Any], note: str, summary: 
 
     try:
         currency = (fields.get("currency") or "").strip().upper() or "USD"
-        notes = (note or summary or "").strip()
+        notes_parts = [note, summary]
+        notes = "\n\n".join(p for p in notes_parts if (p or "").strip())
+        issue_date = coerce_agent_date(fields.get("issue_date"))
         invoice = Invoice.objects.create(
             restaurant=restaurant,
             vendor_name=vendor,
             invoice_number=invoice_number,
             amount=amount,
             currency=currency,
-            issue_date=fields.get("issue_date") or None,
+            issue_date=issue_date,
             due_date=due_date,
             status="OPEN",
+            category=(fields.get("category") or "payables").strip()[:50],
             notes=notes,
+            photo_url=(photo_url or "")[:1024],
+            created_by=acting_user,
         )
     except Exception:
         logger.exception("parse_photo: failed to auto-create invoice")
@@ -140,6 +156,7 @@ def _try_create_invoice(restaurant, fields: dict[str, Any], note: str, summary: 
     return invoice, (
         f"Logged invoice from {vendor}: {currency} {amount} due {due_date}."
         + (f" (Invoice #{invoice_number})" if invoice_number else "")
+        + " It will show on the manager's Finance dashboard."
     )
 
 
@@ -252,7 +269,64 @@ def agent_parse_photo(request):
         return Response({"success": False, "error": err["error"]}, status=err["status"])
 
     image_file = request.FILES.get("image") or request.FILES.get("photo")
-    if not image_file:
+    image_url = str(request.data.get("image_url") or request.data.get("imageUrl") or "").strip()
+    image_bytes: bytes | None = None
+    content_type = "image/jpeg"
+
+    if image_file:
+        incoming_ct = (getattr(image_file, "content_type", "") or "").lower()
+        incoming_name = (getattr(image_file, "name", "") or "").lower()
+        is_image_mime = incoming_ct.startswith("image/")
+        is_image_ext = incoming_name.endswith(
+            (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif")
+        )
+        if not (is_image_mime or is_image_ext):
+            return Response(
+                {
+                    "success": False,
+                    "status": "wrong_tool",
+                    "code": "USE_PARSE_DOCUMENT",
+                    "error": f"parse_photo only handles images, got content_type={incoming_ct or 'unknown'}",
+                    "miya_directive": (
+                        "This is not an image (got "
+                        f"{incoming_ct or 'unknown content type'}). DO NOT pretend to have parsed it. "
+                        "If it's a PDF / Word / Excel / CSV / text file, call parse_document with the same "
+                        "URL or bytes. If parse_document also can't read it, ask the user to type out the "
+                        "key fields (vendor, amount, due date, invoice number) before you call record_invoice. "
+                        "NEVER fabricate vendor / amount / invoice_number / due_date."
+                    ),
+                    "message_for_user": (
+                        "I can only read images directly. If that file is a PDF or a Word/Excel document, "
+                        "tell me the vendor, the amount, the due date, and the invoice number, and I'll log it."
+                    ),
+                },
+                status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            )
+        try:
+            image_bytes = image_file.read()
+            content_type = getattr(image_file, "content_type", "image/jpeg") or "image/jpeg"
+        except Exception:
+            return Response(
+                {"success": False, "error": "Could not read image"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    elif image_url:
+        image_bytes, fetched_ct = fetch_remote_media_bytes(image_url)
+        if fetched_ct:
+            content_type = fetched_ct
+        if not image_bytes:
+            return Response(
+                {
+                    "success": False,
+                    "error": "Could not download image",
+                    "message_for_user": (
+                        "I couldn't download that photo. Please resend the invoice image, "
+                        "or tell me the vendor, amount, due date, and invoice number."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    else:
         return Response(
             {
                 "success": False,
@@ -262,35 +336,6 @@ def agent_parse_photo(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    incoming_ct = (getattr(image_file, "content_type", "") or "").lower()
-    incoming_name = (getattr(image_file, "name", "") or "").lower()
-    is_image_mime = incoming_ct.startswith("image/")
-    is_image_ext = incoming_name.endswith(
-        (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic", ".heif")
-    )
-    if not (is_image_mime or is_image_ext):
-        return Response(
-            {
-                "success": False,
-                "status": "wrong_tool",
-                "code": "USE_PARSE_DOCUMENT",
-                "error": f"parse_photo only handles images, got content_type={incoming_ct or 'unknown'}",
-                "miya_directive": (
-                    "This is not an image (got "
-                    f"{incoming_ct or 'unknown content type'}). DO NOT pretend to have parsed it. "
-                    "If it's a PDF / Word / Excel / CSV / text file, call parse_document with the same "
-                    "URL or bytes. If parse_document also can't read it, ask the user to type out the "
-                    "key fields (vendor, amount, due date, invoice number) before you call record_invoice. "
-                    "NEVER fabricate vendor / amount / invoice_number / due_date."
-                ),
-                "message_for_user": (
-                    "I can only read images directly. If that file is a PDF or a Word/Excel document, "
-                    "tell me the vendor, the amount, the due date, and the invoice number, and I'll log it."
-                ),
-            },
-            status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-        )
-
     auto_create_raw = request.data.get("auto_create")
     auto_create = True
     if auto_create_raw is not None:
@@ -298,17 +343,9 @@ def agent_parse_photo(request):
 
     note = str(request.data.get("note") or "").strip()
 
-    try:
-        image_bytes = image_file.read()
-    except Exception:
-        return Response(
-            {"success": False, "error": "Could not read image"},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
-
     classification = parse_photo(
         image_bytes,
-        content_type=getattr(image_file, "content_type", "image/jpeg") or "image/jpeg",
+        content_type=content_type or "image/jpeg",
     )
     if classification.get("error"):
         return Response(
@@ -334,7 +371,14 @@ def agent_parse_photo(request):
 
     if auto_create:
         if category == "invoice_or_receipt" and confidence >= 0.55:
-            invoice, msg = _try_create_invoice(restaurant, fields, note, summary)
+            invoice, msg = _try_create_invoice(
+                restaurant,
+                fields,
+                note,
+                summary,
+                photo_url=image_url,
+                acting_user=acting_user,
+            )
             if invoice:
                 action_envelope = _action_envelope(
                     type_="invoice",

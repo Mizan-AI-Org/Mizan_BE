@@ -32,6 +32,7 @@ from rest_framework.response import Response
 from accounts.models import BusinessLocation
 from core.read_through_cache import get_or_set, safe_cache_delete
 
+from dashboard.api.agent_dates import coerce_agent_date
 from .models import Invoice
 from .serializers import InvoiceSerializer
 
@@ -135,26 +136,7 @@ def _coerce_decimal(raw) -> Decimal | None:
 
 
 def _coerce_date(raw) -> date | None:
-    if not raw:
-        return None
-    if isinstance(raw, date):
-        return raw
-    parsed = parse_date(str(raw))
-    if parsed:
-        return parsed
-    dt = parse_datetime(str(raw))
-    if dt:
-        return dt.date()
-    # Friendly aliases.
-    norm = str(raw).strip().lower()
-    today = timezone.now().date()
-    if norm in ("today", "now"):
-        return today
-    if norm == "tomorrow":
-        return today + timedelta(days=1)
-    if norm == "yesterday":
-        return today - timedelta(days=1)
-    return None
+    return coerce_agent_date(raw)
 
 
 def _resolve_location(restaurant, raw) -> BusinessLocation | None:
