@@ -537,7 +537,7 @@ class CategoryTasksView(APIView):
 
         # ----- dashboard.Task --------------------------------------------
         db_qs = (
-            Task.objects.filter(restaurant=restaurant)
+            Task.objects.filter(restaurant=restaurant, custom_widget__isnull=True)
             .select_related("assigned_to")
             .annotate(priority_rank=_PRIORITY_RANK)
         )
@@ -598,7 +598,11 @@ class CategoryTasksView(APIView):
         legacy_in_progress_count = 0
         if not is_urgent and not is_misc:
             legacy_qs = (
-                Task.objects.filter(restaurant=restaurant, category__isnull=True)
+                Task.objects.filter(
+                    restaurant=restaurant,
+                    category__isnull=True,
+                    custom_widget__isnull=True,
+                )
                 .select_related("assigned_to")
                 .annotate(priority_rank=_PRIORITY_RANK)
             )

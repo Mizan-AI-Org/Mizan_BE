@@ -1239,7 +1239,17 @@ def health_check_notifications(request):
         import firebase_admin
         checks['firebase_initialized'] = bool(firebase_admin._apps)
         # WhatsApp
+        from core.whatsapp_config import probe_whatsapp_credentials
+
+        probe = probe_whatsapp_credentials()
         checks['whatsapp_configured'] = bool(getattr(dj_settings, 'WHATSAPP_ACCESS_TOKEN', None)) and bool(getattr(dj_settings, 'WHATSAPP_PHONE_NUMBER_ID', None))
+        checks['whatsapp_token_valid'] = probe.get('ok', False)
+        if not probe.get('ok'):
+            checks['whatsapp_probe'] = {
+                k: probe[k]
+                for k in ('reason', 'message', 'status_code', 'token_length')
+                if k in probe
+            }
         checks['whatsapp_webhook_configured'] = bool(getattr(dj_settings, 'WHATSAPP_WEBHOOK_VERIFY_TOKEN', None))
         # SMS/Twilio
         checks['twilio_configured'] = bool(getattr(dj_settings, 'TWILIO_ACCOUNT_SID', None)) and bool(getattr(dj_settings, 'TWILIO_AUTH_TOKEN', None)) and bool(getattr(dj_settings, 'TWILIO_FROM_NUMBER', None))

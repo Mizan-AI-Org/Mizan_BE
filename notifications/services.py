@@ -14,6 +14,12 @@ import tempfile
 import shutil
 import subprocess
 
+from core.whatsapp_config import (
+    get_whatsapp_access_token,
+    get_whatsapp_phone_number_id,
+    parse_whatsapp_api_error,
+)
+
 logger = logging.getLogger(__name__)
 
 # Lua webhooks may take time (template lookup + WhatsApp API). Use a generous timeout.
@@ -789,8 +795,8 @@ class NotificationService:
                 except Exception:
                     pass
                 return False
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            token = get_whatsapp_access_token() or None
+            phone_id = get_whatsapp_phone_number_id() or None
             
             if not token or not phone_id:
                 logger.warning("WhatsApp not configured: missing token or phone_id")
@@ -860,7 +866,7 @@ class NotificationService:
                     status='SENT' if ok else 'FAILED',
                     external_id=external_id,
                     response_data=response_data,
-                    error_message=None if ok else resp.text[:500]
+                    error_message=None if ok else (parse_whatsapp_api_error(response_data) or resp.text[:500])
                 )
             except Exception:
                 pass
@@ -947,8 +953,8 @@ class NotificationService:
         via send_lua_staff_invite() so the approved Lua template (e.g. staff_invitation) is used.
         """
         try:
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            token = get_whatsapp_access_token() or None
+            phone_id = get_whatsapp_phone_number_id() or None
             if not token or not phone_id or not phone:
                 return False, None
             phone, phone_err = normalize_whatsapp_phone(phone)
@@ -995,8 +1001,8 @@ class NotificationService:
         """Send a plain text WhatsApp message via Meta Cloud API"""
         try:
             from .models import NotificationLog
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            token = get_whatsapp_access_token() or None
+            phone_id = get_whatsapp_phone_number_id() or None
             if not token or not phone_id:
                 # Audit the config-failure so the dashboard Staff Messages
                 # feed shows a FAILED row with a clear reason instead of
@@ -1242,8 +1248,8 @@ class NotificationService:
         """Send a WhatsApp template message via Meta Cloud API"""
         try:
             from .models import NotificationLog
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            token = get_whatsapp_access_token() or None
+            phone_id = get_whatsapp_phone_number_id() or None
             if not token or not phone_id or not phone:
                 return False, {"error": "WhatsApp not configured"}
 
@@ -1772,8 +1778,8 @@ class NotificationService:
         buttons: [{ "id": "yes", "title": "✅ Yes" }, ...]
         """
         try:
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            token = get_whatsapp_access_token() or None
+            phone_id = get_whatsapp_phone_number_id() or None
             if not token or not phone_id or not phone:
                 return False, {"error": "WhatsApp not configured"}
 
@@ -1826,8 +1832,8 @@ class NotificationService:
         https://developers.facebook.com/docs/whatsapp/cloud-api/guides/send-messages/location-request-messages
         """
         try:
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-            phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+            token = get_whatsapp_access_token() or None
+            phone_id = get_whatsapp_phone_number_id() or None
             if not token or not phone_id or not phone:
                 return False, {"error": "WhatsApp not configured"}
             phone, phone_err = normalize_whatsapp_phone(phone)
@@ -1903,7 +1909,7 @@ class NotificationService:
         https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media
         """
         try:
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+            token = get_whatsapp_access_token() or None
             if not token or not media_id:
                 return None, None
 
@@ -1922,7 +1928,7 @@ class NotificationService:
     def download_media_bytes(self, media_url):
         """Download media bytes from a WhatsApp media URL."""
         try:
-            token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
+            token = get_whatsapp_access_token() or None
             if not token or not media_url:
                 return None
 
@@ -2089,8 +2095,8 @@ class NotificationService:
 
         Returns ``(media_id, error)`` -- exactly one of them is set.
         """
-        token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-        phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+        token = get_whatsapp_access_token() or None
+        phone_id = get_whatsapp_phone_number_id() or None
         if not token or not phone_id:
             return None, "WhatsApp not configured"
         url = (
@@ -2136,8 +2142,8 @@ class NotificationService:
         """
         from .models import NotificationLog
 
-        token = getattr(settings, 'WHATSAPP_ACCESS_TOKEN', None)
-        phone_id = getattr(settings, 'WHATSAPP_PHONE_NUMBER_ID', None)
+        token = get_whatsapp_access_token() or None
+        phone_id = get_whatsapp_phone_number_id() or None
         if not token or not phone_id:
             return False, {"error": "WhatsApp not configured on backend"}
 

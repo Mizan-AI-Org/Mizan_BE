@@ -713,6 +713,36 @@ def agent_create_dashboard_task(request):
             description=description,
         )
 
+        from dashboard.custom_widget_routing import (
+            custom_widget_hint,
+            match_custom_widget_for_task,
+        )
+
+        matched_custom_widget = match_custom_widget_for_task(
+            user=acting_user,
+            restaurant=restaurant,
+            title=title,
+            description=description,
+            source_text=str(
+                _get_first(
+                    data,
+                    "source_text",
+                    "sourceText",
+                    "context",
+                    "conversation",
+                    "user_message",
+                )
+                or ""
+            ),
+            explicit_id=_get_first(
+                data,
+                "custom_widget_id",
+                "customWidgetId",
+                "widget_id",
+                "widgetId",
+            ),
+        )
+
         follow_up_enabled = _coerce_bool(
             _get_first(data, "follow_up_enabled", "followUpEnabled"),
             default=False if assign_to_self else True,
@@ -734,6 +764,7 @@ def agent_create_dashboard_task(request):
                 source_label=source_label[:120],
                 ai_summary=ai_summary,
                 category=task_category,
+                custom_widget=matched_custom_widget,
                 follow_up_enabled=follow_up_enabled,
                 follow_up_max=follow_up_max,
             )
@@ -809,26 +840,8 @@ def agent_create_dashboard_task(request):
                 logger.exception("Miya create_task: WhatsApp send crashed for task %s", task.id)
                 wa_result["error"] = str(exc)[:200]
 
-        # Build the human-facing confirmation string.
-        pretty_priority = priority.lower() if priority != "URGENT" else "URGENT"
-        due_phrase = _format_due(task.due_date)
-        assignee_display = (
-            f"{(assignee.first_name or '').strip()} {(assignee.last_name or '').strip()}".strip()
-            or assignee.email
-        )
-        if wa_result["sent"]:
-            wa_phrase = "WhatsApp notification sent."
-        elif wa_result["skipped_reason"] == "no_phone":
-            wa_phrase = (
-                f"{assignee.first_name or 'They'} has no phone on file, so I couldn't send WhatsApp — "
-                "the task is in their inbox."
-            )
-        elif wa_result["skipped_reason"] == "disabled":
-            wa_phrase = "WhatsApp notification skipped (caller asked not to send)."
-        elif wa_result["error"]:
-            user_phrase, is_platform_issue = _sanitize_whatsapp_error_for_user(wa_result["error"])
-            wa_phrase = user_phrase
-            # Keep the raw error in wa_result for ops/monitoring, but stop leaking it to the user.
+        if wa_result.get("error"):
+            _, is_platform_issue = _sanitize_whatsapp_error_for_user(wa_result["error"])
             wa_result["raw_error"] = wa_result["error"]
             wa_result["is_platform_issue"] = is_platform_issue
             if is_platform_issue:
@@ -838,24 +851,30 @@ def agent_create_dashboard_task(request):
                     assignee.id,
                     wa_result["error"],
                 )
-        else:
-            wa_phrase = ""
+
+        # Build the human-facing confirmation string.
+        pretty_priority = priority.lower() if priority != "URGENT" else "URGENT"
+        due_phrase = _format_due(task.due_date)
+        assignee_display = (
+            f"{(assignee.first_name or '').strip()} {(assignee.last_name or '').strip()}".strip()
+            or assignee.email
+        )
         task_ref = _short_record_ref(task.id)
-        widget_hint = _dashboard_widget_hint(task_category)
+        if matched_custom_widget:
+            widget_hint = custom_widget_hint(matched_custom_widget)
+        else:
+            widget_hint = _dashboard_widget_hint(task_category)
         message_for_user = (
             f"Task #{task_ref} — Created '{task.title}' for {assignee_display} "
-            f"({pretty_priority} priority, due {due_phrase}).{widget_hint} {wa_phrase}"
+            f"({pretty_priority} priority, due {due_phrase}).{widget_hint}"
         ).strip()
-        if follow_up_enabled and wa_result["sent"]:
-            message_for_user += " I'll follow up automatically on WhatsApp if they don't respond."
-        elif follow_up_enabled and assignee and not assign_to_self:
-            message_for_user += " Automatic WhatsApp follow-ups are enabled for this task."
 
-        dashboard_widget = (
-            "operations_tasks"
-            if (task_category or "").upper() == "OPERATIONS"
-            else "tasks_demands"
-        )
+        if matched_custom_widget:
+            dashboard_widget = matched_custom_widget.slot_id()
+        elif (task_category or "").upper() == "OPERATIONS":
+            dashboard_widget = "operations_tasks"
+        else:
+            dashboard_widget = "tasks_demands"
 
         return Response(
             {
@@ -864,6 +883,12 @@ def agent_create_dashboard_task(request):
                 "record_id": str(task.id),
                 "task_ref": task_ref,
                 "dashboard_widget": dashboard_widget,
+                "custom_widget_id": (
+                    str(matched_custom_widget.id) if matched_custom_widget else None
+                ),
+                "custom_widget_title": (
+                    matched_custom_widget.title if matched_custom_widget else None
+                ),
                 "assignee": {
                     "id": str(assignee.id),
                     "name": assignee_display,

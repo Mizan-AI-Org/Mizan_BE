@@ -182,7 +182,7 @@ class TasksDemandsView(APIView):
 
         # --- dashboard.Task -------------------------------------------------
         db_base = (
-            Task.objects.filter(restaurant=restaurant)
+            Task.objects.filter(restaurant=restaurant, custom_widget__isnull=True)
             .select_related("assigned_to", "assigned_to__profile")
             .annotate(priority_rank=_PRIORITY_RANK)
         )
@@ -307,6 +307,103 @@ _WIDGET_STATUS_TO_STAFF_REQUEST = {
     "COMPLETED": "CLOSED",
     "CANCELLED": "REJECTED",
 }
+
+
+def _lookup_and_serialize_task_demand(pk, restaurant) -> dict[str, Any] | None:
+    """Resolve a dashboard widget row id to its compact serialized shape.
+
+    Lookup order mirrors ``TaskStatusUpdateView.patch`` so deep-links from
+    category widgets land on the same record the status/bucket endpoints
+    would touch.
+    """
+    try:
+        task = Task.objects.select_related(
+            "assigned_to", "assigned_to__profile"
+        ).get(pk=pk, restaurant=restaurant)
+        return _serialize_dashboard_task(task)
+    except Task.DoesNotExist:
+        pass
+
+    try:
+        from scheduling.task_templates import Task as SchedulingTask
+
+        try:
+            sched = (
+                SchedulingTask.objects.prefetch_related("assigned_to")
+                .select_related("assigned_shift")
+                .get(pk=pk, restaurant=restaurant)
+            )
+        except SchedulingTask.DoesNotExist:
+            sched = None
+    except Exception:  # pragma: no cover - scheduling app missing
+        sched = None
+
+    if sched is not None:
+        return _serialize_scheduling_task(sched)
+
+    try:
+        from staff.models import StaffRequest
+
+        try:
+            sr = StaffRequest.objects.select_related("staff", "assignee").get(
+                pk=pk, restaurant=restaurant
+            )
+        except StaffRequest.DoesNotExist:
+            sr = None
+    except Exception:  # pragma: no cover - staff app missing
+        sr = None
+
+    if sr is not None:
+        from .category_tasks import _serialize_staff_request
+
+        return _serialize_staff_request(sr)
+
+    try:
+        from finance.models import Invoice
+
+        try:
+            inv = Invoice.objects.select_related("created_by").get(
+                pk=pk, restaurant=restaurant
+            )
+        except Invoice.DoesNotExist:
+            inv = None
+    except Exception:  # pragma: no cover - finance app missing
+        inv = None
+
+    if inv is not None:
+        from .category_tasks import _serialize_invoice
+
+        return _serialize_invoice(inv)
+
+    return None
+
+
+class TaskDemandDetailView(APIView):
+    """
+    GET /api/dashboard/tasks-demands/<uuid>/
+
+    Returns the compact row shape used by dashboard widgets so command-centre
+    pages can deep-link to a single task / staff request / invoice without
+    guessing which backend model owns the id.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk=None):
+        restaurant = getattr(request.user, "restaurant", None)
+        if not restaurant:
+            return Response(
+                {"error": "No workspace associated"},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
+        data = _lookup_and_serialize_task_demand(pk, restaurant)
+        if data is None:
+            return Response(
+                {"error": "Task not found"},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+        return Response(data)
 
 
 class TaskStatusUpdateView(APIView):

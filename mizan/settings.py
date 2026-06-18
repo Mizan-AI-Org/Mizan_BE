@@ -355,8 +355,14 @@ if DEBUG:
 
 
 
-WHATSAPP_ACCESS_TOKEN = config('WHATSAPP_ACCESS_TOKEN', default='')
-WHATSAPP_PHONE_NUMBER_ID = config('WHATSAPP_PHONE_NUMBER_ID', default='')
+from core.whatsapp_config import clean_whatsapp_env_value, resolve_whatsapp_access_token
+
+WHATSAPP_ACCESS_TOKEN = resolve_whatsapp_access_token(
+    config('WHATSAPP_ACCESS_TOKEN', default='')
+)
+WHATSAPP_PHONE_NUMBER_ID = clean_whatsapp_env_value(
+    config('WHATSAPP_PHONE_NUMBER_ID', default='')
+)
 WHATSAPP_API_VERSION = config('WHATSAPP_API_VERSION', default='v22.0')
 WHATSAPP_BUSINESS_ACCOUNT_ID = config('WHATSAPP_BUSINESS_ACCOUNT_ID', default='')
 WHATSAPP_VERIFY_TOKEN = config('WHATSAPP_VERIFY_TOKEN', default='')
