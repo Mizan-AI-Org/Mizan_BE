@@ -233,6 +233,10 @@ def agent_record_invoice(request):
             invoice_number__iexact=invoice_number,
         ).first()
         if existing:
+            if photo_url and not (existing.attachment or existing.photo):
+                from finance.attachment_utils import attach_invoice_from_url
+
+                attach_invoice_from_url(existing, photo_url)
             return Response(
                 {
                     "success": True,
@@ -263,6 +267,11 @@ def agent_record_invoice(request):
         photo_url=photo_url,
         created_by=acting_user,
     )
+
+    if photo_url:
+        from finance.attachment_utils import attach_invoice_from_url
+
+        attach_invoice_from_url(invoice, photo_url)
 
     days_left = invoice.days_until_due
     if days_left is None:

@@ -11,6 +11,7 @@ import {
     audienceContextLine,
     resolveMessageAudience,
 } from "../utils/resolveMessageAudience";
+import { stripSystemContextBlocks } from "../utils/stripSystemContext";
 
 /** Bearer/header-safe string — rejects placeholders axios might choke on as Buffer.from(undefined). */
 function coerceBearerLike(v: unknown): string | null {
@@ -299,7 +300,7 @@ export const tenantContextPreprocessor = new PreProcessor({
             const messageAudience = resolveMessageAudience(channel);
             const contextBlock = [
                 `[SYSTEM: PERSISTENT CONTEXT]`,
-                `Restaurant: ${detectedRestaurantName}`,
+                `Restaurant: ${detectedRestaurantName || "Unknown"}`,
                 `Restaurant ID: ${detectedRestaurantId}`,
                 `User: ${user.data?.userName || user._luaProfile?.fullName || "Manager"} (Role: ${user.data?.role || "Owner"})`,
                 user.data?.userId ? `Mizan User ID: ${user.data.mizanUserId || user.data.userId}` : null,
@@ -312,11 +313,21 @@ export const tenantContextPreprocessor = new PreProcessor({
                 `AGENT_IDENTITY_VERIFIED: TRUE`
             ].filter(Boolean).join('\n');
 
-            // Inject into messages to ensure it's in the prompt
-            let modifiedMessages = messages.map((msg, i) => {
+            // LuaPop renders the full user message text in the manager chat UI.
+            // Dashboard sessions already pass restaurant/user/role via metadata +
+            // runtimeContext on init — persisting user.data above is enough for tools.
+            // Injecting the block into message text made [SYSTEM: PERSISTENT CONTEXT]
+            // visible to managers; staff WhatsApp does not show enriched user text.
+            if (messageAudience === "manager") {
+                console.log("[TenantContext] Skipping message injection for manager/LuaPop channel");
+                return { action: 'proceed' as const };
+            }
+
+            // Inject into messages to ensure it's in the prompt (WhatsApp / staff only)
+            let modifiedMessages = messages.map((msg) => {
                 // Remove any existing blocks first
                 if (msg.type === 'text') {
-                    const cleanText = msg.text.replace(/\[SYSTEM: PERSISTENT CONTEXT\][\s\S]*?AGENT_IDENTITY_VERIFIED: TRUE/g, '').trim();
+                    const cleanText = stripSystemContextBlocks(msg.text);
                     let prefix = contextBlock;
 
                     // ACCOUNT ACTIVATION: Prevent refusal and force tool usage

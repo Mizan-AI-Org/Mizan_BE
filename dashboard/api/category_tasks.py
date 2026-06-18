@@ -437,6 +437,7 @@ def _serialize_invoice(inv, *, now=None) -> dict[str, Any]:
         "currency": inv.currency,
         "invoice_status": inv.status,
         "is_overdue": is_overdue,
+        "has_attachment": bool(inv.attachment or inv.photo or (inv.photo_url or "").strip()),
     }
 
 

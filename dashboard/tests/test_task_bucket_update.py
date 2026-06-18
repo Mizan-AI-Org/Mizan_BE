@@ -74,6 +74,13 @@ class TaskBucketUpdateStaffRequestTests(TestCase):
         sr.refresh_from_db()
         self.assertEqual(sr.category, "FINANCE")
 
+    def test_move_misc_to_operations(self):
+        sr = self._make_request(category="OTHER")
+        resp = self._patch(sr.id, "operations")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        sr.refresh_from_db()
+        self.assertEqual(sr.category, "OPERATIONS")
+
     def test_move_records_audit_comment(self):
         from staff.models import StaffRequestComment
 
@@ -270,3 +277,20 @@ class TaskBucketUpdateDashboardTaskTests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
         self.task.refresh_from_db()
         self.assertEqual(self.task.status, "COMPLETED")
+
+    def test_move_task_to_operations_category(self):
+        self.task.category = "OTHER"
+        self.task.save(update_fields=["category"])
+        resp = self._patch(self.task.id, "operations")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.category, "OPERATIONS")
+        self.assertIsNone(self.task.custom_widget_id)
+
+    def test_move_task_from_operations_to_custom_widget(self):
+        self.task.category = "OPERATIONS"
+        self.task.save(update_fields=["category"])
+        resp = self._patch(self.task.id, f"custom:{self.widget.id}")
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.custom_widget_id, self.widget.id)

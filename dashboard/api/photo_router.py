@@ -101,9 +101,13 @@ def _try_create_invoice(
     summary: str,
     *,
     photo_url: str = "",
+    file_bytes: bytes | None = None,
+    content_type: str | None = None,
+    filename_hint: str | None = None,
     acting_user=None,
 ):
     """Build an Invoice from vision fields. Returns (invoice_or_None, message)."""
+    from finance.attachment_utils import attach_invoice_from_url, save_invoice_attachment
     from finance.models import Invoice
 
     vendor = (fields.get("vendor") or "").strip()
@@ -125,6 +129,15 @@ def _try_create_invoice(
             invoice_number=invoice_number,
         ).first()
         if existing:
+            if file_bytes:
+                save_invoice_attachment(
+                    existing,
+                    file_bytes,
+                    content_type=content_type,
+                    filename_hint=filename_hint,
+                )
+            elif photo_url and not (existing.attachment or existing.photo):
+                attach_invoice_from_url(existing, photo_url)
             return existing, (
                 f"That invoice from {vendor} (#{invoice_number}) is already in the books - "
                 f"due {existing.due_date}, status {existing.status}."
@@ -149,6 +162,15 @@ def _try_create_invoice(
             photo_url=(photo_url or "")[:1024],
             created_by=acting_user,
         )
+        if file_bytes:
+            save_invoice_attachment(
+                invoice,
+                file_bytes,
+                content_type=content_type,
+                filename_hint=filename_hint,
+            )
+        elif photo_url:
+            attach_invoice_from_url(invoice, photo_url)
     except Exception:
         logger.exception("parse_photo: failed to auto-create invoice")
         return None, "I tried to log this invoice but the save failed. Please try from the Finance page."
@@ -377,6 +399,8 @@ def agent_parse_photo(request):
                 note,
                 summary,
                 photo_url=image_url,
+                file_bytes=image_bytes,
+                content_type=content_type,
                 acting_user=acting_user,
             )
             if invoice:

@@ -103,6 +103,14 @@ class Invoice(models.Model):
         blank=True,
         help_text="Snapshot of the printed/PDF invoice.",
     )
+    attachment = models.FileField(
+        upload_to="invoices/",
+        null=True,
+        blank=True,
+        help_text="Original invoice scan (image or PDF) from WhatsApp / upload.",
+    )
+    attachment_content_type = models.CharField(max_length=100, blank=True, default="")
+    attachment_filename = models.CharField(max_length=255, blank=True, default="")
     photo_url = models.URLField(
         max_length=1024,
         blank=True,
