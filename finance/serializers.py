@@ -11,6 +11,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
     location_name = serializers.SerializerMethodField()
     created_by_name = serializers.SerializerMethodField()
     paid_by_name = serializers.SerializerMethodField()
+    attachment_url = serializers.SerializerMethodField()
+    has_attachment = serializers.SerializerMethodField()
 
     class Meta:
         model = Invoice
@@ -29,6 +31,11 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "category",
             "notes",
             "photo",
+            "attachment",
+            "attachment_content_type",
+            "attachment_filename",
+            "attachment_url",
+            "has_attachment",
             "photo_url",
             "paid_at",
             "paid_amount",
@@ -51,9 +58,29 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "location_name",
             "created_by_name",
             "paid_by_name",
+            "attachment_url",
+            "has_attachment",
             "created_at",
             "updated_at",
         ]
+
+    def _absolute_file_url(self, file_field) -> str:
+        if not file_field:
+            return ""
+        url = file_field.url
+        request = self.context.get("request")
+        if request and url:
+            return request.build_absolute_uri(url)
+        return url
+
+    def get_attachment_url(self, obj):
+        stored = obj.attachment or obj.photo
+        if stored:
+            return self._absolute_file_url(stored)
+        return (obj.photo_url or "").strip()
+
+    def get_has_attachment(self, obj) -> bool:
+        return bool(obj.attachment or obj.photo or (obj.photo_url or "").strip())
 
     def get_location_name(self, obj):
         return obj.location.name if obj.location_id else ""

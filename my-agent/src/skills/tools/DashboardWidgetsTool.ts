@@ -169,6 +169,8 @@ export default class DashboardWidgetsTool implements LuaTool {
         "The 'incidents' widget shows the top 5 most-recent reported incidents and links to the Reported Incidents page. Custom tiles use a 'custom:<uuid>' slot id — 'list' returns both the slot id and the tile's title so " +
         "you can echo it back. When the manager refers to a widget by free-text name, pick the closest id (fuzzy match by label), or call 'list' first. " +
         "CRITICAL for create_custom: `link_url` is OPTIONAL — NEVER ask the user for a URL. If they don't provide one, omit it and the backend will " +
+        "auto-resolve a route from the title; if nothing matches, the tile is still created with an empty link and works as a labelled placeholder. " +
+        "For event/project/custom lanes, ALWAYS pass `routing_keywords` (e.g. ['Kasbah']) so later tasks mentioning that keyword land on this tile — not Operations tasks. " +
         "auto-resolve a sensible in-app route from the title (or leave it blank, which is still valid). Same for `subtitle` (use the manager's own " +
         "description if they gave one, otherwise omit) and `icon` (omit to use the default). As soon as you have a title, CALL the tool — do not ask " +
         "follow-up questions. After the call, relay the tool's `message_for_user` verbatim in the conversation language. NEVER call any other dashboard " +
@@ -238,6 +240,14 @@ export default class DashboardWidgetsTool implements LuaTool {
             .optional()
             .describe(
                 "Used by 'create_custom' (optional group for the tile) OR **required** for 'create_category' — the new section name (e.g. 'EVENT SOPHIE KASABAH')."
+            ),
+        routing_keywords: z
+            .union([z.string(), z.array(z.string())])
+            .optional()
+            .describe(
+                "Used by 'create_custom'. Keywords that route future Miya tasks into this tile " +
+                    "(e.g. ['Kasbah'] for an 'Event Kasbah Dif' widget). ALWAYS set this for event/project/custom lanes — " +
+                    "use the distinctive word the manager gave (brand, venue, event name) or derive from the title."
             ),
         source_text: z
             .string()
@@ -387,6 +397,7 @@ export default class DashboardWidgetsTool implements LuaTool {
             title: title?.trim(),
             subtitle: input.subtitle,
             source_text: input.source_text || input.subtitle || title?.trim(),
+            routing_keywords: input.routing_keywords,
             link_url: input.link_url,
             icon: input.icon,
             add_to_dashboard: input.add_to_dashboard,

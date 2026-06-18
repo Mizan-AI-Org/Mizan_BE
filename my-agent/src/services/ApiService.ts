@@ -1139,6 +1139,10 @@ export default class ApiService {
             assign_to_self?: boolean;
             /** Sender WhatsApp phone — helps the backend resolve assign_to_self. */
             sender_phone?: string;
+            /** Manager's original phrasing — routes tasks into keyword-matched custom widgets. */
+            source_text?: string;
+            /** Force a specific custom widget tile (custom:<uuid> or raw UUID). */
+            custom_widget_id?: string;
         }
     ): Promise<{
         success: boolean;
@@ -1195,6 +1199,8 @@ export default class ApiService {
                     follow_up_max: input.follow_up_max,
                     assign_to_self: input.assign_to_self,
                     sender_phone: input.sender_phone,
+                    source_text: input.source_text,
+                    custom_widget_id: input.custom_widget_id,
                 },
                 {
                     headers: agentKeyBearerHeadersWithRestaurant(agentKey, rid),
@@ -1384,6 +1390,7 @@ export default class ApiService {
             category_id?: string;
             category_name?: string;
             widget_id?: string;
+            routing_keywords?: string | string[];
             /** Used with action create_category — display order in the Add-widget dialog (default 0). */
             order_index?: number;
         }
@@ -1439,6 +1446,7 @@ export default class ApiService {
                     title: input.title,
                     subtitle: input.subtitle,
                     source_text: input.source_text,
+                    routing_keywords: input.routing_keywords,
                     link_url: input.link_url,
                     icon: input.icon,
                     add_to_dashboard: input.add_to_dashboard,
@@ -2488,18 +2496,24 @@ export default class ApiService {
             let contentType = payload.contentType || "image/jpeg";
 
             if (payload.imageUrl) {
-                const resp = await this.axiosInstance.get(payload.imageUrl, {
-                    responseType: "arraybuffer",
-                    timeout: 20000,
-                    headers: {},
-                    transformRequest: [(d: any) => d],
-                });
-                const raw = resp.data;
-                if (raw == null) {
-                    return { success: false, error: "Image download returned an empty response" };
-                }
-                imageBytes = Buffer.from(raw as ArrayBuffer);
-                contentType = resp.headers?.["content-type"] || contentType;
+                // Prefer server-side download — WhatsApp/Meta URLs need the platform token.
+                const form = new FormData();
+                form.append("image_url", payload.imageUrl);
+                form.append("restaurant_id", restaurantId);
+                if (payload.note) form.append("note", payload.note);
+                if (payload.autoCreate === false) form.append("auto_create", "false");
+
+                const response = await this.axiosInstance.post(
+                    "/api/dashboard/agent/parse-photo/",
+                    form,
+                    {
+                        headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId),
+                        maxContentLength: Infinity,
+                        maxBodyLength: Infinity,
+                        validateStatus: () => true,
+                    },
+                );
+                return response.data;
             } else if (payload.imageBase64) {
                 const b64 = String(payload.imageBase64).trim();
                 if (!b64) {

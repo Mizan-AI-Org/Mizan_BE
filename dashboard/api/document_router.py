@@ -183,7 +183,16 @@ def agent_parse_document(request):
     )
 
     if auto_create and category == "invoice_or_receipt" and confidence >= 0.55:
-        invoice, msg = _try_create_invoice(restaurant, fields, note, summary)
+        invoice, msg = _try_create_invoice(
+            restaurant,
+            fields,
+            note,
+            summary,
+            file_bytes=blob,
+            content_type=content_type,
+            filename_hint=name,
+            acting_user=_acting_user,
+        )
         if invoice:
             action_envelope = _action_envelope(
                 type_="invoice",

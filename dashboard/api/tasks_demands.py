@@ -592,6 +592,7 @@ _BUCKET_TO_STAFF_REQUEST_CATEGORY = {
     "maintenance": "MAINTENANCE",
     "purchase_orders": "PURCHASE_ORDER",
     "miscellaneous": "OTHER",
+    "operations": "OPERATIONS",
     "team_travel": "SCHEDULING",
     "team_medical_service": "MEDICAL",
 }
@@ -839,13 +840,38 @@ class TaskBucketUpdateView(APIView):
             if task.custom_widget_id != widget.id:
                 task.custom_widget = widget
                 update_fields.append("custom_widget")
+        elif target_kind == "category":
+            from .category_tasks import BUCKET_TO_CATEGORIES
+
+            bucket = target_value or ""
+            if bucket == "urgent":
+                if (task.priority or "").upper() != "URGENT":
+                    task.priority = "URGENT"
+                    update_fields.append("priority")
+            else:
+                wanted = BUCKET_TO_CATEGORIES.get(bucket, ())
+                if not wanted:
+                    return Response(
+                        {
+                            "error": (
+                                "This category lane cannot accept Miya tasks."
+                            )
+                        },
+                        status=http_status.HTTP_400_BAD_REQUEST,
+                    )
+                new_category = wanted[0]
+                if (task.category or "") != new_category:
+                    task.category = new_category
+                    update_fields.append("category")
+            if task.custom_widget_id is not None:
+                task.custom_widget = None
+                update_fields.append("custom_widget")
         else:
             return Response(
                 {
                     "error": (
-                        "This Miya task can be moved to Tasks & Demands or a "
-                        "custom dashboard tile. Open the task board to change "
-                        "its category lane."
+                        "This Miya task can be moved to Tasks & Demands, a "
+                        "custom dashboard tile, or another category widget."
                     )
                 },
                 status=http_status.HTTP_400_BAD_REQUEST,

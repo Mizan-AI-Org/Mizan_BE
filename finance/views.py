@@ -90,6 +90,12 @@ class InvoiceViewSet(ModelViewSet):
             return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
         return None
 
+    def retrieve(self, request, *args, **kwargs):
+        denied = self._check_role()
+        if denied:
+            return denied
+        return super().retrieve(request, *args, **kwargs)
+
     def list(self, request, *args, **kwargs):
         denied = self._check_role()
         if denied:
