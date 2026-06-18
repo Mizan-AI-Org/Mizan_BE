@@ -7,7 +7,10 @@ const WIDGET_REQUEST_RE =
     /\b(create|add|make|put|show|display|cr[eé]e|cr[eé]er|ajoute|ajouter|zid|agrega|add)\b[\s\S]{0,80}\bwidget\b/i;
 
 const TITLE_FROM_FOR_RE =
-    /\bwidget\b\s*(?:for|pour|de|about|called|named|titled|«|"|')\s*([^"'\n.]+)/i;
+    /\bwidget\b\s*(?:for|pour|de|about|called|named|titled|«|"|')\s*:?\s*([^"'\n.]+)/i;
+
+const EXPLICIT_CUSTOM_WIDGET_RE =
+    /\bwidget\b[\s\S]{0,40}\b(called|named|titled)\b/i;
 
 /** Built-in lane aliases → widget id (subset of widget_alias_resolver.py). */
 const PHRASE_TO_WIDGET: Array<{ match: RegExp; widget: string; label: string }> = [
@@ -51,6 +54,10 @@ export type DashboardWidgetIntent =
     | { action: "add"; widgets: string[]; label: string; sourceText: string }
     | { action: "create_custom"; title: string; sourceText: string };
 
+export function isExplicitCustomWidgetRequest(text: string): boolean {
+    return EXPLICIT_CUSTOM_WIDGET_RE.test(text.trim());
+}
+
 export function isDashboardWidgetRequest(text: string): boolean {
     const t = text.trim();
     if (!t) return false;
@@ -59,11 +66,19 @@ export function isDashboardWidgetRequest(text: string): boolean {
     return false;
 }
 
+function cleanWidgetTitle(raw: string): string {
+    return raw
+        .trim()
+        .replace(/^:\s*/, "")
+        .replace(/\s+widget\s*$/i, "")
+        .trim();
+}
+
 export function extractWidgetTitlePhrase(text: string): string {
     const t = text.trim();
     const forMatch = t.match(TITLE_FROM_FOR_RE);
     if (forMatch?.[1]) {
-        return forMatch[1].trim().replace(/\s+widget\s*$/i, "").trim();
+        return cleanWidgetTitle(forMatch[1]).slice(0, 255);
     }
     let stripped = t
         .replace(
@@ -72,12 +87,12 @@ export function extractWidgetTitlePhrase(text: string): string {
         )
         .replace(/\s+widget\s*$/i, "")
         .trim();
-    return (stripped || t).slice(0, 255);
+    return cleanWidgetTitle(stripped || t).slice(0, 255);
 }
 
 export function resolveOperationalWidgetFromPhrase(text: string): DashboardWidgetIntent | null {
     const t = text.trim();
-    if (!t) return null;
+    if (!t || isExplicitCustomWidgetRequest(t)) return null;
     const phrase = extractWidgetTitlePhrase(t);
     for (const { match, widget, label } of PHRASE_TO_WIDGET) {
         if (match.test(phrase) || match.test(t)) {
@@ -91,9 +106,14 @@ export function resolveDashboardWidgetIntent(text: string): DashboardWidgetInten
     if (!isDashboardWidgetRequest(text)) return null;
 
     const phrase = extractWidgetTitlePhrase(text);
-    for (const { match, widget, label } of PHRASE_TO_WIDGET) {
-        if (match.test(phrase) || match.test(text)) {
-            return { action: "add", widgets: [widget], label, sourceText: text };
+
+    // "create a widget called Gitex Marrakesh" must stay a custom tile even if
+    // the title contains a lane keyword like "stock" (PRELEVEMENTS STOCK).
+    if (!isExplicitCustomWidgetRequest(text)) {
+        for (const { match, widget, label } of PHRASE_TO_WIDGET) {
+            if (match.test(phrase) || match.test(text)) {
+                return { action: "add", widgets: [widget], label, sourceText: text };
+            }
         }
     }
 

@@ -43,6 +43,7 @@ WASTE:
 - Manager asks summary -> report_waste summary_only=true
 
 LANGUAGE: Match the user's language.
+CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPop/web = manager (operational detail OK).
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [facilitiesSkill],

@@ -100,7 +100,7 @@ import {
     validationError,
     upstreamError,
 } from "./_common/errors";
-import { resolveDashboardWidgetIntent, resolveOperationalWidgetFromPhrase } from "./dashboardWidgetIntent";
+import { resolveDashboardWidgetIntent, resolveOperationalWidgetFromPhrase, isExplicitCustomWidgetRequest } from "./dashboardWidgetIntent";
 
 /** LLM often sends human labels instead of snake_case ids; backend also normalizes. */
 const DASHBOARD_WIDGET_ID_SYNONYMS: Record<string, string> = {
@@ -239,6 +239,12 @@ export default class DashboardWidgetsTool implements LuaTool {
             .describe(
                 "Used by 'create_custom' (optional group for the tile) OR **required** for 'create_category' — the new section name (e.g. 'EVENT SOPHIE KASABAH')."
             ),
+        source_text: z
+            .string()
+            .optional()
+            .describe(
+                "Original manager message (e.g. 'create a widget called Gitex Marrakesh'). Used to detect explicit custom titles and skip lane alias redirects."
+            ),
         order_index: z
             .number()
             .int()
@@ -283,15 +289,10 @@ export default class DashboardWidgetsTool implements LuaTool {
         let widgets = input.widgets;
         let title = input.title;
 
-        if (action === "create_custom" && title?.trim()) {
-            const probes = [
-                input.subtitle?.trim(),
-                title.trim(),
-                `create a ${title.trim()} widget`,
-            ].filter(Boolean) as string[];
+        if (action === "create_custom" && title?.trim() && !isExplicitCustomWidgetRequest(input.source_text || input.subtitle || title || "")) {
+            const probes = [title.trim(), `create a ${title.trim()} widget`].filter(Boolean) as string[];
             for (const probe of probes) {
                 const resolved =
-                    resolveDashboardWidgetIntent(probe) ??
                     resolveOperationalWidgetFromPhrase(probe);
                 if (resolved?.action === "add") {
                     action = "add";
@@ -385,7 +386,7 @@ export default class DashboardWidgetsTool implements LuaTool {
             order: orderForApi,
             title: title?.trim(),
             subtitle: input.subtitle,
-            source_text: input.subtitle || title?.trim(),
+            source_text: input.source_text || input.subtitle || title?.trim(),
             link_url: input.link_url,
             icon: input.icon,
             add_to_dashboard: input.add_to_dashboard,

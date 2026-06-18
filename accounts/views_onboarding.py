@@ -694,7 +694,17 @@ class OnboardingGoogleCalendarView(APIView):
             gcal['skipped'] = True
             gcal['skipped_at'] = timezone.now().isoformat()
         elif action == 'disconnect':
-            gcal = {'connected': False, 'email': None, 'skipped': False}
+            # Wipe tokens so a reconnect always runs a fresh OAuth consent
+            # and the Meetings widget immediately shows the not-connected
+            # state (``_get_valid_access_token`` gates on ``connected``).
+            gcal = {
+                'connected': False,
+                'email': None,
+                'skipped': False,
+                'access_token': None,
+                'refresh_token': None,
+                'token_expires_at': None,
+            }
         elif action == 'connect':
             if not configured:
                 # Keep the user-facing copy short and free of internal

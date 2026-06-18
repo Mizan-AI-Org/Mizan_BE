@@ -20,10 +20,12 @@ from .api.action_center import ActionCenterView
 from .api.portfolio import PortfolioSummaryView, LocationDetailView
 from .api.tasks_demands import (
     TasksDemandsView,
+    TaskDemandDetailView,
     TaskStatusUpdateView,
     TaskBucketUpdateView,
     TaskAssigneeUpdateView,
 )
+from .api.custom_widget_tasks import CustomWidgetTasksView
 from .api.staff_messages import (
     StaffMessagesRecentView,
     StaffMessagesSendView,
@@ -67,6 +69,11 @@ urlpatterns = [
     path('widget-order/', DashboardWidgetOrderView.as_view(), name='dashboard-widget-order'),
     path('custom-widgets/', DashboardCustomWidgetListView.as_view(), name='dashboard-custom-widgets-list'),
     path('custom-widgets/create/', DashboardCustomWidgetCreateView.as_view(), name='dashboard-custom-widgets-create'),
+    path(
+        'custom-widgets/<uuid:pk>/tasks/',
+        CustomWidgetTasksView.as_view(),
+        name='dashboard-custom-widget-tasks',
+    ),
     path(
         'custom-widgets/<uuid:pk>/',
         DashboardCustomWidgetDetailView.as_view(),
@@ -127,6 +134,11 @@ urlpatterns = [
         'tasks-demands/',
         TasksDemandsView.as_view(),
         name='dashboard-tasks-demands',
+    ),
+    path(
+        'tasks-demands/<uuid:pk>/',
+        TaskDemandDetailView.as_view(),
+        name='dashboard-tasks-demands-detail',
     ),
     path(
         'tasks-demands/<uuid:pk>/status/',

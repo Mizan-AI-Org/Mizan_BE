@@ -30,6 +30,7 @@ CROSS-CONSTRAINT INTELLIGENCE:
 - Labor cost above target -> suggest schedule adjustments
 
 LANGUAGE: Match the user's language.
+CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPop/web = manager (operational detail OK).
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [intelligenceSkill],

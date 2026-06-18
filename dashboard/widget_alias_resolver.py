@@ -360,7 +360,26 @@ def _normalise(s: str) -> str:
     return folded
 
 
-def resolve_widget_alias(*candidates: str | None) -> str | None:
+_EXPLICIT_CUSTOM_WIDGET_RE = re.compile(
+    r"\bwidget\b[\s\S]{0,40}\b(called|named|titled)\b",
+    re.IGNORECASE,
+)
+
+
+def is_explicit_custom_widget_request(*texts: str | None) -> bool:
+    """True when the manager named a specific custom tile (not a lane alias).
+
+    Examples:
+        "create a widget called Gitex Marrakesh" → True
+        "create a Purchases widget" → False
+    """
+    blob = " ".join(str(t).strip() for t in texts if t and str(t).strip())
+    if not blob:
+        return False
+    return bool(_EXPLICIT_CUSTOM_WIDGET_RE.search(blob))
+
+
+def resolve_widget_alias(*candidates: str | None, strict: bool = False) -> str | None:
     """
     Return the canonical built-in widget id for the first candidate that
     matches a known alias, or ``None`` if nothing matches.
@@ -368,10 +387,16 @@ def resolve_widget_alias(*candidates: str | None) -> str | None:
     Multiple candidates can be passed (e.g. title + subtitle +
     category_name). The first matching candidate wins.
 
+    When ``strict=True``, only exact normalised keys match — no fuzzy
+    substring scan. Use this for explicit custom titles like
+    "PRELEVEMENTS STOCK" that must not match the word "stock".
+
     >>> resolve_widget_alias("Purchases")
     'purchase_orders'
     >>> resolve_widget_alias("Achats", "Supplier orders")
     'purchase_orders'
+    >>> resolve_widget_alias("PRELEVEMENTS STOCK", strict=True)
+    None
     >>> resolve_widget_alias("Random shortcut")
     None
     """
@@ -392,6 +417,8 @@ def resolve_widget_alias(*candidates: str | None) -> str | None:
             # that doesn't require duplicating every entry.
             if key.endswith("s") and key[:-1] in _ALIASES:
                 return _ALIASES[key[:-1]]
+            if strict:
+                continue
             # Phrase / keyword match: managers often paste a full sentence as the
             # tile title ("Créé un widget pour les groupes…"). Exact-key lookup
             # misses those; scan for known multi-word aliases (longest wins).

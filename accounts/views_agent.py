@@ -183,7 +183,7 @@ When a manager tells you to **create a task/demand and assign it to a staff memb
   - `notify_whatsapp` (optional, default `true`) — set to `false` ONLY if the manager explicitly said "don't tell them yet" / "just create the task".
   - `whatsapp_message` (optional) — overrides the default WhatsApp body if the manager dictated a specific message.
   - **Assignee — pass exactly ONE of** (ordered by preference): `user_id` (UUID), `email`, `phone`, or `name` (free text — server does fuzzy match like "Ahmed" → "Ahmed Hassan"). Prefer `user_id` or `email` if you already have them from a previous `agent_list_staff` call.
-* Response shape: `{success, task, assignee:{id,name,phone,role}, whatsapp:{sent,skipped_reason,error,provider_status}, message_for_user}`. Relay `message_for_user` verbatim to the manager. It already includes the assignee name, priority, due date, and whether WhatsApp succeeded.
+* Response shape: `{success, task, assignee:{id,name,phone,role}, whatsapp:{sent,skipped_reason,error,provider_status}, message_for_user}`. Relay `message_for_user` verbatim to the manager — task ref, assignee, priority, due date, and dashboard widget location only. Do not add WhatsApp or follow-up details unless asked.
 * If the response has `success: false` with an ambiguous-assignee error (e.g. "Multiple staff match 'Sara'"), ask the manager to clarify which staff member, then retry.
 * If `whatsapp.skipped_reason: "no_phone"`, the task still got created and is in the staff member's in-app inbox — tell the manager that in plain language and suggest adding a phone number to that staff profile.
 * Never invent a task title, priority, or assignee name — if the manager didn't give enough info, ask a single, specific clarifying question before calling the tool.

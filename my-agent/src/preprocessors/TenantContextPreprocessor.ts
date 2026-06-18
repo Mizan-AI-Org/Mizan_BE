@@ -7,6 +7,10 @@ import {
 } from "../utils/extractLuaBridgeContext";
 import { resolveStaffPhoneForByPhoneTools } from "../utils/resolveStaffPhoneFromLuaUser";
 import { resolveTenantForUser } from "../utils/resolveTenantForUser";
+import {
+    audienceContextLine,
+    resolveMessageAudience,
+} from "../utils/resolveMessageAudience";
 
 /** Bearer/header-safe string — rejects placeholders axios might choke on as Buffer.from(undefined). */
 function coerceBearerLike(v: unknown): string | null {
@@ -120,7 +124,7 @@ export const tenantContextPreprocessor = new PreProcessor({
         } else if (!user.data?.mizanUserId) {
             const bridgeUserId =
                 extractMizanUserIdFromLuaBridgeId(user.uid) ||
-                extractMizanUserIdFromLuaBridgeId(profile.sessionId) ||
+                extractMizanUserIdFromLuaBridgeId(luaProfile.sessionId) ||
                 extractMizanUserIdFromLuaBridgeId((metadata as any).sessionId);
             if (bridgeUserId) {
                 user.data = { ...user.data, userId: bridgeUserId, mizanUserId: bridgeUserId };
@@ -292,6 +296,7 @@ export const tenantContextPreprocessor = new PreProcessor({
                 }
             }
 
+            const messageAudience = resolveMessageAudience(channel);
             const contextBlock = [
                 `[SYSTEM: PERSISTENT CONTEXT]`,
                 `Restaurant: ${detectedRestaurantName}`,
@@ -300,6 +305,7 @@ export const tenantContextPreprocessor = new PreProcessor({
                 user.data?.userId ? `Mizan User ID: ${user.data.mizanUserId || user.data.userId}` : null,
                 user.data?.email ? `User Email: ${user.data.email}` : null,
                 phone ? `User Phone: ${phone}` : null,
+                audienceContextLine(messageAudience),
                 `Today is ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
                 `Current Time: ${now.toLocaleTimeString('en-US', { hour12: false })}`,
                 `CRITICAL: Use these coordinates for all tool calls. Do not ask for restaurant or date.`,

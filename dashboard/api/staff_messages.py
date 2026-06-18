@@ -29,6 +29,10 @@ from rest_framework.views import APIView
 
 from accounts.permissions import IsAdminOrManager
 from core.http_caching import json_response_with_cache
+from core.whatsapp_config import (
+    is_whatsapp_platform_auth_error,
+    user_facing_whatsapp_error,
+)
 from core.read_through_cache import get_or_set, safe_cache_delete
 from notifications.models import Notification, NotificationLog
 from notifications.services import NotificationService
@@ -715,6 +719,7 @@ class StaffMessagesSendView(APIView):
         )
 
         failure_reason = None
+        whatsapp_platform_issue = False
         log = None
         if single_recipient:
             log = (
@@ -738,11 +743,15 @@ class StaffMessagesSendView(APIView):
                         import json as _json
 
                         parsed = _json.loads(raw)
-                        failure_reason = (
+                        provider_message = (
                             (parsed.get("error") or {}).get("message") or raw[:200]
                         )
                     except Exception:
-                        failure_reason = raw[:200]
+                        provider_message = raw[:200]
+                    whatsapp_platform_issue = is_whatsapp_platform_auth_error(
+                        provider_message
+                    )
+                    failure_reason = user_facing_whatsapp_error(provider_message)
 
         whatsapp_failed = bool(recipients_whatsapp_failed) or bool(
             recipients_without_phone
@@ -754,6 +763,7 @@ class StaffMessagesSendView(APIView):
                 "whatsapp_sent": whatsapp_sent,
                 "whatsapp_failed": whatsapp_failed,
                 "failure_reason": failure_reason,
+                "whatsapp_platform_issue": whatsapp_platform_issue,
                 "notified_count": count,
                 "log": _serialize_log(log) if log else None,
                 "template_id": template_id,

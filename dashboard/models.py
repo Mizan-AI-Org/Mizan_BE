@@ -211,6 +211,16 @@ class Task(models.Model):
     category = models.CharField(
         max_length=20, choices=TASK_CATEGORY, blank=True, null=True, db_index=True,
     )
+    # When set, the task appears only on the manager's Miya-created custom
+    # widget tile (``custom:<uuid>``) — not in Tasks & Demands or a generic
+    # category lane.
+    custom_widget = models.ForeignKey(
+        "dashboard.DashboardCustomWidget",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tasks",
+    )
 
     # Auto follow-up fields — Miya follows up with the assignee on WhatsApp
     # on behalf of the manager if the task stays PENDING. All follow-ups must

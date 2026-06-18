@@ -47,6 +47,7 @@ RICH FORMATTING:
 - Sales: list-item cards for top items + action buttons.
 
 LANGUAGE: Match the user's language on every reply.
+CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPop/web = manager (operational detail OK).
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [financeSkill],

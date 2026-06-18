@@ -24,6 +24,7 @@ from .widget_ids import (
 )
 from .widget_alias_resolver import (
     DATA_BOUND_BUILTIN_IDS,
+    is_explicit_custom_widget_request,
     resolve_widget_alias,
 )
 from .widget_link_resolver import ensure_link
@@ -97,6 +98,27 @@ def _clean_order(raw, user: CustomUser | None) -> list[str] | None:
     return out
 
 
+def _prepend_widgets_to_order(
+    current: list[str],
+    widget_ids: list[str],
+) -> tuple[list[str], list[str]]:
+    """
+    Insert widget ids at the top of the layout (index 0).
+
+    Preserves request order: the first id in ``widget_ids`` ends up topmost.
+    Widgets already on the layout are bubbled to the top as well.
+    """
+    added: list[str] = []
+    ordered = [w for w in widget_ids if isinstance(w, str) and w]
+    for w in reversed(ordered):
+        if w in current:
+            current.remove(w)
+        else:
+            added.insert(0, w)
+        current.insert(0, w)
+    return current, added
+
+
 def _can_customize_dashboard(user: CustomUser) -> bool:
     return user.role in ("SUPER_ADMIN", "ADMIN", "MANAGER", "OWNER")
 
@@ -151,9 +173,10 @@ class DashboardWidgetOrderView(APIView):
             current = _clean_order(user.dashboard_widget_order, user)
             if current is None:
                 current = list(DEFAULT_DASHBOARD_WIDGET_ORDER)
-            for w in to_add:
-                if isinstance(w, str) and w in DASHBOARD_WIDGET_IDS and w not in current:
-                    current.append(w)
+            valid = [
+                w for w in to_add if isinstance(w, str) and w in DASHBOARD_WIDGET_IDS
+            ]
+            current, _added = _prepend_widgets_to_order(current, valid)
             user.dashboard_widget_order = current
             user.save(update_fields=["dashboard_widget_order"])
             return Response({"order": current})
@@ -343,16 +366,31 @@ class AgentDashboardWidgetsAddView(APIView):
         current = _clean_order(user.dashboard_widget_order, user)
         if current is None:
             current = list(DEFAULT_DASHBOARD_WIDGET_ORDER)
-        added = []
-        for w in widgets:
-            if w not in current:
-                current.append(w)
-                added.append(w)
+        current, added = _prepend_widgets_to_order(current, widgets)
         user.dashboard_widget_order = current
         user.save(update_fields=["dashboard_widget_order"])
 
-        widget_labels = WIDGET_CANONICAL_LABELS
         added_labels = [_widget_label(w) for w in added]
+        moved_labels = [_widget_label(w) for w in widgets if w not in added]
+
+        if len(added) == 1 and added[0] in ("staff_inbox", "team_travel", "team_medical_service"):
+            msg = (
+                f'Added the "{added_labels[0]}" lane at the top of your dashboard — it shows live request snippets. '
+                f"Click it to open the full command centre. Refresh the dashboard to see it."
+            )
+        elif added:
+            msg = (
+                f"Added {len(added)} widget(s) at the top of your dashboard: {', '.join(added_labels)}. "
+                "Open or refresh the dashboard to see them."
+            )
+        elif moved_labels:
+            msg = (
+                f'Moved "{moved_labels[0]}" to the top of your dashboard. Refresh to see it.'
+                if len(moved_labels) == 1
+                else f'Moved {len(moved_labels)} widget(s) to the top: {", ".join(moved_labels)}. Refresh to see them.'
+            )
+        else:
+            msg = "Those widgets are already on your dashboard."
 
         return Response(
             {
@@ -360,17 +398,7 @@ class AgentDashboardWidgetsAddView(APIView):
                 "user_id": str(user.id),
                 "order": current,
                 "added": added,
-                "message_for_user": (
-                    f'Added the "{added_labels[0]}" lane to your dashboard — it shows live request snippets. '
-                    f"Click it to open the full command centre. Refresh the dashboard to see it."
-                    if len(added) == 1 and added[0] in ("staff_inbox", "team_travel", "team_medical_service")
-                    else (
-                        f"Added {len(added)} widget(s) to your dashboard: {', '.join(added_labels)}. "
-                        "Open or refresh the dashboard to see them."
-                        if added
-                        else "Those widgets are already on your dashboard."
-                    )
-                ),
+                "message_for_user": msg,
             }
         )
 
@@ -428,12 +456,18 @@ class AgentDashboardWidgetCreateView(APIView):
         #     the dialog UI when a power user really wants a custom tile.
         force_custom = bool(data.get("force_custom"))
         explicit_link = bool(link_raw and link_raw.strip())
+        source_text = data.get("source_text") or data.get("sourceText")
+        explicit_custom_name = is_explicit_custom_widget_request(
+            title,
+            data.get("subtitle"),
+            source_text,
+        )
         aliased_id: str | None = None
-        if not force_custom and not explicit_link:
+        if not force_custom and not explicit_link and not explicit_custom_name:
             aliased_id = resolve_widget_alias(
                 title,
                 data.get("subtitle"),
-                data.get("source_text") or data.get("sourceText"),
+                source_text,
                 data.get("category_name") or data.get("categoryName"),
             )
             if aliased_id and aliased_id not in DATA_BOUND_BUILTIN_IDS:
@@ -523,8 +557,7 @@ class AgentDashboardWidgetCreateView(APIView):
             current = _clean_order(user.dashboard_widget_order, user)
             if current is None:
                 current = list(DEFAULT_DASHBOARD_WIDGET_ORDER)
-            if slot not in current:
-                current.append(slot)
+            current, _added = _prepend_widgets_to_order(current, [slot])
             user.dashboard_widget_order = current
             user.save(update_fields=["dashboard_widget_order"])
 
@@ -543,7 +576,7 @@ class AgentDashboardWidgetCreateView(APIView):
                     "category_id": str(w.category_id) if w.category_id else None,
                 },
                 "message_for_user": (
-                    f'Added a new dashboard card "{w.title}". Open or refresh the dashboard to see it.'
+                    f'Added a new dashboard card "{w.title}" at the top. Open or refresh the dashboard to see it.'
                     if add_to_dashboard
                     else f'Created dashboard card "{w.title}" (slot {slot}).'
                 ),
@@ -601,7 +634,7 @@ class AgentDashboardWidgetCreateView(APIView):
 
         already_present = builtin_id in current
         if not already_present:
-            current.append(builtin_id)
+            current, _added = _prepend_widgets_to_order(current, [builtin_id])
             user.dashboard_widget_order = current
             user.save(update_fields=["dashboard_widget_order"])
 
@@ -633,21 +666,21 @@ class AgentDashboardWidgetCreateView(APIView):
         display_title = _widget_label(builtin_id, requested_title)
         if builtin_id in inbox_style_lanes:
             message = (
-                f'Added the "{display_title}" lane to your dashboard — it shows live request snippets. '
+                f'Added the "{display_title}" lane at the top of your dashboard — it shows live request snippets. '
                 f"Click it to open the full command centre. Refresh the dashboard to see it."
                 if not already_present
                 else f'The "{display_title}" lane is already on your dashboard.'
             )
         elif builtin_id in ("clock_ins", "live_attendance"):
             message = (
-                f'Added the "{display_title}" card to your dashboard — it shows live attendance data. '
+                f'Added the "{display_title}" card at the top of your dashboard — it shows live attendance data. '
                 f"Open or refresh the dashboard to see it."
                 if not already_present
                 else f'The "{display_title}" card is already on your dashboard.'
             )
         else:
             message = (
-                f'Added the "{display_title}" card to your dashboard — it shows live operational data. '
+                f'Added the "{display_title}" card at the top of your dashboard — it shows live operational data. '
                 f"Open or refresh the dashboard to see it."
                 if not already_present
                 else f'The "{display_title}" card is already on your dashboard.'

@@ -1,6 +1,6 @@
 {
-  "lastHash": "1c29a70bf14d88f5e3047e5a4f181d6a4e97597f207f52a1e5925feaecce6c4b",
-  "lastPushedAt": "2026-06-17T04:15:30.963Z",
+  "lastHash": "9155ee34b239a2d577d7d95229abbaa2fe2975438a76d08cf21f6d1156cf42f8",
+  "lastPushedAt": "2026-06-17T23:57:27.951Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "2ec0d0934404487e"
+      "hash": "4100c3b5970fd5b1"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "876b869740b7192c"
+      "hash": "4816da6031a3ab39"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",

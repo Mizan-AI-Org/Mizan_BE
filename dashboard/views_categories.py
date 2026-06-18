@@ -21,6 +21,7 @@ from .models import DashboardCategory, DashboardCustomWidget
 from .views_widget_layout import (
     _can_customize_dashboard,
     _clean_order,
+    _prepend_widgets_to_order,
 )
 from .widget_ids import (
     ALLOWED_CUSTOM_WIDGET_ICONS,
@@ -247,8 +248,7 @@ class DashboardCustomWidgetCreateView(APIView):
             if current is None:
                 current = list(DEFAULT_DASHBOARD_WIDGET_ORDER)
             slot = w.slot_id()
-            if slot not in current:
-                current.append(slot)
+            current, _added = _prepend_widgets_to_order(current, [slot])
             user.dashboard_widget_order = current
             user.save(update_fields=["dashboard_widget_order"])
 
