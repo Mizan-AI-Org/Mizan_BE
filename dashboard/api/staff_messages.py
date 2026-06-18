@@ -37,7 +37,7 @@ from core.read_through_cache import get_or_set, safe_cache_delete
 from notifications.models import Notification, NotificationLog
 from notifications.services import NotificationService
 
-DEFAULT_LIMIT = 10
+DEFAULT_LIMIT = 3
 MAX_LIMIT = 50
 # Bulk direct-message cap — matches what the dashboard composer allows
 # when a manager picks several teammates at once.
@@ -58,12 +58,12 @@ def _recent_cache_key(restaurant_id, limit: int) -> str:
 
 
 def _invalidate_recent_cache(restaurant_id) -> None:
-    """Wipe every limit-slice for this tenant. We only surface three
-    limits in practice (10 default, a 25/50 debug override), so an
+    """Wipe every limit-slice for this tenant. We only surface a few
+    limits in practice (3 default, a 25/50 debug override), so an
     exhaustive wipe is cheap and means we never have to propagate the
     widget's current limit into the send handler.
     """
-    for lim in (DEFAULT_LIMIT, 25, MAX_LIMIT):
+    for lim in (DEFAULT_LIMIT, 10, 25, MAX_LIMIT):
         safe_cache_delete(_recent_cache_key(restaurant_id, lim))
 
 
@@ -434,7 +434,7 @@ def _serialize_log(log: NotificationLog) -> dict[str, Any]:
 
 
 class StaffMessagesRecentView(APIView):
-    """GET /api/dashboard/staff-messages/recent/?limit=10
+    """GET /api/dashboard/staff-messages/recent/?limit=3
 
     Returns the most recent outbound WhatsApp messages for this
     manager's restaurant. Scoped to manager-initiated sends (i.e.

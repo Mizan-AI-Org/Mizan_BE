@@ -244,7 +244,15 @@ docker-compose up -d --build
 
 - **First time:** Copy `.env.production.template` to `.env.production`, fill in all values (DB, Redis, Stripe, Square, WhatsApp, Lua, etc.). Ensure `ALLOWED_HOSTS` includes your API domain (e.g. `api.heymizan.ai`).
 
-- **After `up -d --build`:** The `web` container runs `collectstatic`, `migrate`, then starts Daphne. This can take **1–2 minutes**. If the frontend shows “Network error. Please check backend server.”, wait a bit and retry.
+- **After `up -d --build`:** The backend container runs `migrate`, seeds subscription plans (`seed_subscription_plans`), then starts Daphne. This can take **1–2 minutes**. If the frontend shows “Network error. Please check backend server.”, wait a bit and retry.
+
+**Billing / pricing cards missing?** The Settings → Billing page reads plans from `GET /api/billing/plans/`. If that endpoint returns an empty list, run:
+
+```bash
+docker exec mizan-backend python manage.py seed_subscription_plans --currency MAD
+```
+
+Plans are also seeded automatically on every container start and via migration `billing.0003_seed_subscription_plans`.
 
 **Health check (on server):**
 
@@ -312,6 +320,7 @@ All API routes are under `/api/` (and optionally behind a reverse proxy at `http
 ```bash
 python manage.py migrate
 python manage.py collectstatic --noinput
+python manage.py seed_subscription_plans --currency MAD
 python manage.py createsuperuser
 ```
 

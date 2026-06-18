@@ -75,4 +75,5 @@ EXPOSE 8000
 # Default command runs Daphne. docker-compose overrides this for worker/beat.
 CMD ["sh", "-c", "until nc -z ${POSTGRES_HOST:-db} ${POSTGRES_PORT:-5432}; do echo 'Waiting for database...'; sleep 2; done && \
     python manage.py migrate --noinput && \
+    python manage.py seed_subscription_plans --currency ${BILLING_CURRENCY:-USD} && \
     daphne -b 0.0.0.0 -p 8000 -v 1 mizan.asgi:application"]

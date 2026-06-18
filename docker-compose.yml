@@ -44,6 +44,7 @@ services:
     # workers so a single slow request doesn't block the whole instance.
     command: >
       sh -c "python manage.py migrate --noinput &&
+             python manage.py seed_subscription_plans --currency $${BILLING_CURRENCY:-USD} &&
              daphne -b 0.0.0.0 -p 8000 -v 0 --proxy-headers mizan.asgi:application"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/notifications/whatsapp-webhook/?hub.mode=subscribe&hub.verify_token=mizan-whatsapp-token-20260105&hub.challenge=test"]
