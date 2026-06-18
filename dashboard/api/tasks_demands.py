@@ -599,6 +599,28 @@ _BUCKET_TO_STAFF_REQUEST_CATEGORY = {
 ALLOWED_BUCKETS = frozenset({"urgent", *_BUCKET_TO_STAFF_REQUEST_CATEGORY.keys()})
 _CUSTOM_WIDGET_BUCKET_RE = re.compile(r"^custom:([0-9a-f-]{36})$", re.IGNORECASE)
 
+# Destination tab on the receiving widget. ``open`` / ``done`` are the
+# category-widget filter chips; ``pending`` / ``completed`` are Tasks &
+# Demands / custom-widget tabs. All map to the four-state widget vocab.
+_COLUMN_TO_WIDGET_STATUS = {
+    "pending": "PENDING",
+    "open": "PENDING",
+    "in_progress": "IN_PROGRESS",
+    "completed": "COMPLETED",
+    "done": "COMPLETED",
+}
+ALLOWED_COLUMNS = frozenset(_COLUMN_TO_WIDGET_STATUS.keys())
+
+
+def _parse_column(column: str | None) -> str | None:
+    """Map a destination tab/filter slug to widget status vocabulary."""
+    raw = (column or "").strip().lower()
+    if not raw:
+        return None
+    if raw not in ALLOWED_COLUMNS:
+        return None
+    return _COLUMN_TO_WIDGET_STATUS[raw]
+
 
 def _parse_bucket_target(bucket: str) -> tuple[str | None, str | None]:
     """Return (target_kind, target_value) for a drag-and-drop destination.
@@ -623,10 +645,15 @@ def _parse_bucket_target(bucket: str) -> tuple[str | None, str | None]:
 class TaskBucketUpdateView(APIView):
     """
     PATCH /api/dashboard/tasks-demands/<uuid>/bucket/
-    Body: ``{"bucket": "<lane>"}`` where ``lane`` is a built-in category
-    bucket (``human_resources``, ``team_travel``, …), ``tasks_demands``
-    (move a Miya task back to the global feed), or ``custom:<uuid>``
-    (move a Miya task onto a custom dashboard tile).
+    Body: ``{"bucket": "<lane>", "column": "<tab>"}`` where ``lane`` is a
+    built-in category bucket (``human_resources``, ``team_travel``, …),
+    ``tasks_demands`` (move a Miya task back to the global feed), or
+    ``custom:<uuid>`` (move a Miya task onto a custom dashboard tile).
+    Optional ``column`` is the active tab on the destination widget
+    (``pending`` / ``in_progress`` / ``completed`` for Tasks & Demands
+    and custom tiles; ``open`` / ``in_progress`` / ``done`` for category
+    widgets). When provided the row's status is updated so it appears
+    in that lane after the move.
 
     Drag-and-drop endpoint: when a manager drags a row from one
     dashboard category widget onto another, the FE calls this with the
@@ -670,6 +697,21 @@ class TaskBucketUpdateView(APIView):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
+        raw_column = (request.data or {}).get("column")
+        widget_status = _parse_column(
+            str(raw_column) if raw_column is not None else None
+        )
+        if raw_column is not None and str(raw_column).strip() and widget_status is None:
+            return Response(
+                {
+                    "error": (
+                        "column must be one of: "
+                        + ", ".join(sorted(ALLOWED_COLUMNS))
+                    )
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+
         # 1) staff.StaffRequest — the bulk of dashboard widget rows.
         try:
             from staff.models import StaffRequest
@@ -695,7 +737,9 @@ class TaskBucketUpdateView(APIView):
                     },
                     status=http_status.HTTP_400_BAD_REQUEST,
                 )
-            return self._move_staff_request(request, sr, target_value or "")
+            return self._move_staff_request(
+                request, sr, target_value or "", widget_status
+            )
 
         # 2) finance.Invoice — anchored to the finance widget. Allow a
         #    no-op drop on finance, reject everything else.
@@ -739,6 +783,7 @@ class TaskBucketUpdateView(APIView):
                 task,
                 target_kind,
                 target_value,
+                widget_status,
             )
 
         # 4) scheduling.Task — also rejected; scheduled tasks have
@@ -768,18 +813,19 @@ class TaskBucketUpdateView(APIView):
             {"error": "Item not found"}, status=http_status.HTTP_404_NOT_FOUND
         )
 
-    def _move_dashboard_task(self, request, task, target_kind, target_value):
+    def _move_dashboard_task(
+        self, request, task, target_kind, target_value, widget_status
+    ):
         from dashboard.models import DashboardCustomWidget
         from .category_tasks import _serialize_dashboard_task
 
-        if target_kind == "tasks_demands":
-            if task.custom_widget_id is None:
-                return Response(_serialize_dashboard_task(task))
-            task.custom_widget = None
-            task.save(update_fields=["custom_widget", "updated_at"])
-            return Response(_serialize_dashboard_task(task))
+        update_fields: list[str] = []
 
-        if target_kind == "custom_widget":
+        if target_kind == "tasks_demands":
+            if task.custom_widget_id is not None:
+                task.custom_widget = None
+                update_fields.append("custom_widget")
+        elif target_kind == "custom_widget":
             widget = DashboardCustomWidget.objects.filter(
                 pk=target_value,
                 restaurant=task.restaurant,
@@ -790,26 +836,36 @@ class TaskBucketUpdateView(APIView):
                     {"error": "Custom widget not found for this workspace."},
                     status=http_status.HTTP_404_NOT_FOUND,
                 )
-            task.custom_widget = widget
-            task.save(update_fields=["custom_widget", "updated_at"])
-            return Response(_serialize_dashboard_task(task))
+            if task.custom_widget_id != widget.id:
+                task.custom_widget = widget
+                update_fields.append("custom_widget")
+        else:
+            return Response(
+                {
+                    "error": (
+                        "This Miya task can be moved to Tasks & Demands or a "
+                        "custom dashboard tile. Open the task board to change "
+                        "its category lane."
+                    )
+                },
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
 
-        return Response(
-            {
-                "error": (
-                    "This Miya task can be moved to Tasks & Demands or a "
-                    "custom dashboard tile. Open the task board to change "
-                    "its category lane."
-                )
-            },
-            status=http_status.HTTP_400_BAD_REQUEST,
-        )
+        if widget_status and task.status != widget_status:
+            task.status = widget_status
+            update_fields.append("status")
+
+        if update_fields:
+            update_fields.append("updated_at")
+            task.save(update_fields=update_fields)
+
+        return Response(_serialize_dashboard_task(task))
 
     # ------------------------------------------------------------------
     # StaffRequest mover — split out so the dispatcher above stays a
     # flat read; this method does the actual mutation + audit.
     # ------------------------------------------------------------------
-    def _move_staff_request(self, request, sr, bucket):
+    def _move_staff_request(self, request, sr, bucket, widget_status):
         update_fields: list[str] = []
         comment_lines: list[str] = []
 
@@ -858,6 +914,17 @@ class TaskBucketUpdateView(APIView):
                 except Exception:
                     # Routing must never block the bucket move itself.
                     pass
+
+        if widget_status:
+            target_status = _WIDGET_STATUS_TO_STAFF_REQUEST[widget_status]
+            if (sr.status or "").upper() != target_status:
+                old_status = sr.status or "PENDING"
+                sr.status = target_status
+                update_fields.append("status")
+                comment_lines.append(
+                    f"Status changed from {old_status} to {target_status} "
+                    f"via the dashboard drop target."
+                )
 
         if update_fields:
             update_fields.append("updated_at")
