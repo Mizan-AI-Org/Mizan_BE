@@ -27,6 +27,10 @@ from .widget_alias_resolver import (
     is_explicit_custom_widget_request,
     resolve_widget_alias,
 )
+from .custom_widget_routing import (
+    normalize_routing_keywords,
+    routing_keywords_from_payload,
+)
 from .widget_link_resolver import ensure_link
 
 logger = logging.getLogger(__name__)
@@ -548,6 +552,12 @@ class AgentDashboardWidgetCreateView(APIView):
             category=category,
             title=title,
             subtitle=subtitle,
+            routing_keywords=normalize_routing_keywords(
+                routing_keywords_from_payload(data),
+                title=title,
+                subtitle=subtitle,
+                source_text=str(source_text or ""),
+            ),
             link_url=link_url,
             icon=icon_raw,
         )
@@ -571,6 +581,7 @@ class AgentDashboardWidgetCreateView(APIView):
                     "id": str(w.id),
                     "title": w.title,
                     "subtitle": w.subtitle,
+                    "routing_keywords": w.routing_keywords or [],
                     "link_url": w.link_url,
                     "icon": w.icon,
                     "category_id": str(w.category_id) if w.category_id else None,

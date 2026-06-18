@@ -73,6 +73,14 @@ class DashboardCustomWidget(models.Model):
     )
     title = models.CharField(max_length=255)
     subtitle = models.TextField(blank=True)
+    routing_keywords = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "Keywords that route Miya-created tasks into this tile "
+            "(e.g. ['kasbah'] for 'Event Kasbah Dif')."
+        ),
+    )
     link_url = models.CharField(max_length=2048, blank=True)
     icon = models.CharField(max_length=64, default="sparkles")
     created_at = models.DateTimeField(auto_now_add=True)

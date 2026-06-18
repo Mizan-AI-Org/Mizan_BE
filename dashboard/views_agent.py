@@ -718,6 +718,11 @@ def agent_create_dashboard_task(request):
             match_custom_widget_for_task,
         )
 
+        if not acting_user:
+            from dashboard.views_widget_layout import _resolve_user_from_agent_payload
+
+            acting_user = _resolve_user_from_agent_payload(data)
+
         matched_custom_widget = match_custom_widget_for_task(
             user=acting_user,
             restaurant=restaurant,
