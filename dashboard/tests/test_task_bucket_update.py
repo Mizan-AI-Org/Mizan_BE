@@ -111,6 +111,32 @@ class TaskBucketUpdateStaffRequestTests(TestCase):
         resp = self._patch(sr.id, "nonsense")
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
+    def test_move_with_done_column_closes_request(self):
+        sr = self._make_request(category="OTHER", priority="MEDIUM")
+        resp = self.client.patch(
+            f"/api/dashboard/tasks-demands/{sr.id}/bucket/",
+            data={"bucket": "finance", "column": "done"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        sr.refresh_from_db()
+        self.assertEqual(sr.category, "FINANCE")
+        self.assertEqual(sr.status, "CLOSED")
+
+    def test_move_with_open_column_sets_pending(self):
+        sr = self._make_request(category="FINANCE", priority="MEDIUM")
+        sr.status = "APPROVED"
+        sr.save(update_fields=["status"])
+        resp = self.client.patch(
+            f"/api/dashboard/tasks-demands/{sr.id}/bucket/",
+            data={"bucket": "human_resources", "column": "open"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        sr.refresh_from_db()
+        self.assertEqual(sr.category, "HR")
+        self.assertEqual(sr.status, "PENDING")
+
     def test_unknown_uuid_returns_404(self):
         import uuid as _uuid
 
@@ -223,3 +249,24 @@ class TaskBucketUpdateDashboardTaskTests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
         self.task.refresh_from_db()
         self.assertIsNone(self.task.custom_widget_id)
+
+    def test_move_task_to_custom_widget_with_in_progress_column(self):
+        resp = self.client.patch(
+            f"/api/dashboard/tasks-demands/{self.task.id}/bucket/",
+            data={"bucket": f"custom:{self.widget.id}", "column": "in_progress"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.custom_widget_id, self.widget.id)
+        self.assertEqual(self.task.status, "IN_PROGRESS")
+
+    def test_move_task_to_custom_widget_with_completed_column(self):
+        resp = self.client.patch(
+            f"/api/dashboard/tasks-demands/{self.task.id}/bucket/",
+            data={"bucket": f"custom:{self.widget.id}", "column": "completed"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        self.task.refresh_from_db()
+        self.assertEqual(self.task.status, "COMPLETED")
