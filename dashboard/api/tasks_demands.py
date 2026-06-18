@@ -25,6 +25,7 @@ Design notes:
 
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -596,13 +597,36 @@ _BUCKET_TO_STAFF_REQUEST_CATEGORY = {
 }
 
 ALLOWED_BUCKETS = frozenset({"urgent", *_BUCKET_TO_STAFF_REQUEST_CATEGORY.keys()})
+_CUSTOM_WIDGET_BUCKET_RE = re.compile(r"^custom:([0-9a-f-]{36})$", re.IGNORECASE)
+
+
+def _parse_bucket_target(bucket: str) -> tuple[str | None, str | None]:
+    """Return (target_kind, target_value) for a drag-and-drop destination.
+
+    target_kind is one of:
+    - ``category`` — built-in lane bucket (human_resources, team_travel, …)
+    - ``tasks_demands`` — global Tasks & Demands feed (clears custom_widget)
+    - ``custom_widget`` — user custom tile (target_value = widget UUID)
+    """
+    raw = (bucket or "").strip()
+    lowered = raw.lower()
+    if lowered == "tasks_demands":
+        return "tasks_demands", None
+    match = _CUSTOM_WIDGET_BUCKET_RE.match(raw)
+    if match:
+        return "custom_widget", match.group(1)
+    if lowered in ALLOWED_BUCKETS:
+        return "category", lowered
+    return None, None
 
 
 class TaskBucketUpdateView(APIView):
     """
     PATCH /api/dashboard/tasks-demands/<uuid>/bucket/
-    Body: ``{"bucket": "human_resources" | "finance" | "maintenance" |
-                       "purchase_orders" | "miscellaneous" | "urgent"}``
+    Body: ``{"bucket": "<lane>"}`` where ``lane`` is a built-in category
+    bucket (``human_resources``, ``team_travel``, …), ``tasks_demands``
+    (move a Miya task back to the global feed), or ``custom:<uuid>``
+    (move a Miya task onto a custom dashboard tile).
 
     Drag-and-drop endpoint: when a manager drags a row from one
     dashboard category widget onto another, the FE calls this with the
@@ -618,10 +642,9 @@ class TaskBucketUpdateView(APIView):
     - ``finance.Invoice``: invoices live exclusively in the finance
       widget; dropping them anywhere else returns a friendly 400 with
       a hint to use Mark Paid / Mark Voided instead.
-    - ``dashboard.Task`` and ``scheduling.Task``: rejected with a 400
-      for now — these have their own category systems and need the
-      regular edit dialog. We can wire them up later if managers ask
-      for it; rejecting is safer than guessing the wrong target.
+    - ``dashboard.Task``: assign or clear ``custom_widget`` when dropped
+      on a custom tile or back on Tasks & Demands. Category buckets
+      still require the task edit dialog for now.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -634,10 +657,16 @@ class TaskBucketUpdateView(APIView):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        bucket = str((request.data or {}).get("bucket") or "").lower().strip()
-        if bucket not in ALLOWED_BUCKETS:
+        bucket = str((request.data or {}).get("bucket") or "").strip()
+        target_kind, target_value = _parse_bucket_target(bucket)
+        if target_kind is None:
             return Response(
-                {"error": f"bucket must be one of {sorted(ALLOWED_BUCKETS)}"},
+                {
+                    "error": (
+                        "bucket must be a category lane, tasks_demands, "
+                        "or custom:<widget-uuid>"
+                    )
+                },
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
@@ -656,7 +685,17 @@ class TaskBucketUpdateView(APIView):
             sr = None
 
         if sr is not None:
-            return self._move_staff_request(request, sr, bucket)
+            if target_kind in ("custom_widget", "tasks_demands"):
+                return Response(
+                    {
+                        "error": (
+                            "Staff requests live in category widgets only. "
+                            "Custom tiles accept Miya dashboard tasks."
+                        )
+                    },
+                    status=http_status.HTTP_400_BAD_REQUEST,
+                )
+            return self._move_staff_request(request, sr, target_value or "")
 
         # 2) finance.Invoice — anchored to the finance widget. Allow a
         #    no-op drop on finance, reject everything else.
@@ -673,7 +712,7 @@ class TaskBucketUpdateView(APIView):
             inv = None
 
         if inv is not None:
-            if bucket == "finance":
+            if target_kind == "category" and target_value == "finance":
                 from .category_tasks import _serialize_invoice
 
                 return Response(_serialize_invoice(inv))
@@ -688,24 +727,18 @@ class TaskBucketUpdateView(APIView):
                 status=http_status.HTTP_400_BAD_REQUEST,
             )
 
-        # 3) dashboard.Task — rejected with a clear hint. These rows
-        #    have a TaskCategory FK that doesn't map cleanly to the
-        #    six widget buckets; the manager has to use the task edit
-        #    dialog for now.
+        # 3) dashboard.Task — custom widget assignment or category reject.
         try:
             task = Task.objects.get(pk=pk, restaurant=restaurant)
         except Task.DoesNotExist:
             task = None
 
         if task is not None:
-            return Response(
-                {
-                    "error": (
-                        "This task uses a custom category. Open it from "
-                        "the task list to change its category."
-                    )
-                },
-                status=http_status.HTTP_400_BAD_REQUEST,
+            return self._move_dashboard_task(
+                request,
+                task,
+                target_kind,
+                target_value,
             )
 
         # 4) scheduling.Task — also rejected; scheduled tasks have
@@ -733,6 +766,43 @@ class TaskBucketUpdateView(APIView):
 
         return Response(
             {"error": "Item not found"}, status=http_status.HTTP_404_NOT_FOUND
+        )
+
+    def _move_dashboard_task(self, request, task, target_kind, target_value):
+        from dashboard.models import DashboardCustomWidget
+        from .category_tasks import _serialize_dashboard_task
+
+        if target_kind == "tasks_demands":
+            if task.custom_widget_id is None:
+                return Response(_serialize_dashboard_task(task))
+            task.custom_widget = None
+            task.save(update_fields=["custom_widget", "updated_at"])
+            return Response(_serialize_dashboard_task(task))
+
+        if target_kind == "custom_widget":
+            widget = DashboardCustomWidget.objects.filter(
+                pk=target_value,
+                restaurant=task.restaurant,
+                user=request.user,
+            ).first()
+            if widget is None:
+                return Response(
+                    {"error": "Custom widget not found for this workspace."},
+                    status=http_status.HTTP_404_NOT_FOUND,
+                )
+            task.custom_widget = widget
+            task.save(update_fields=["custom_widget", "updated_at"])
+            return Response(_serialize_dashboard_task(task))
+
+        return Response(
+            {
+                "error": (
+                    "This Miya task can be moved to Tasks & Demands or a "
+                    "custom dashboard tile. Open the task board to change "
+                    "its category lane."
+                )
+            },
+            status=http_status.HTTP_400_BAD_REQUEST,
         )
 
     # ------------------------------------------------------------------
