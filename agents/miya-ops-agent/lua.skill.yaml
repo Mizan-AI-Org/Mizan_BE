@@ -4,19 +4,19 @@ agent:
 skills:
   - name: operations
     skillId: ac9f814c-6765-47e5-9fe9-d12c07c218d3
-    version: 1.0.15
+    version: 1.0.16
 webhooks: []
 jobs: []
 preprocessors:
   - name: clock-in-router
     preprocessorId: preprocessor_e2042718-ddc2-4582-b27e-17eee36ac2da
-    version: 1.0.9
+    version: 1.0.10
   - name: account-activation-router
     preprocessorId: preprocessor_3c41fd96-8a8e-4ed3-a1b8-15d2fbe1b352
-    version: 1.0.5
+    version: 1.0.6
 postprocessors: []
 mcpServers: []
 backup:
-  activeVersion: 16
-  lastHash: 16668b044bf0485e6745c220f26ecbed1d23779ffdc48a5c3dfc6efd231f09a0
-  lastPushedAt: '2026-06-17T04:53:15.006Z'
+  activeVersion: 17
+  lastHash: 2ad16453725a9af87d781a9f68824895a6b8a3ab4bf85860898b4bccca1c0695
+  lastPushedAt: '2026-06-17T23:56:11.892Z'
