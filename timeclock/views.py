@@ -1405,24 +1405,51 @@ def agent_clock_in_by_phone(request):
         if not auth_header or auth_header != f"Bearer {expected_key}":
             return Response({'success': False, 'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
 
+        staff_id_raw = (request.data.get('staff_id') or request.data.get('staffId') or '').strip()
         phone = (request.data.get('phone') or request.data.get('phoneNumber') or '').strip()
         clean_phone = ''.join(filter(str.isdigit, str(phone)))
-        if not clean_phone or len(clean_phone) < 6:
-            return Response({
-                'success': False,
-                'error': 'Invalid or missing phone',
-                'message_for_user': "We couldn't find your account. Please contact your manager to be added.",
-            }, status=status.HTTP_400_BAD_REQUEST)
+        delivery_channel = str(
+            request.data.get('delivery_channel') or request.data.get('channel') or 'whatsapp'
+        ).strip().lower()
+        is_web_channel = delivery_channel in ('web', 'webchat', 'luapop', 'pop', 'dashboard') or 'web' in delivery_channel
 
         from accounts.services import _find_active_user_by_phone, normalize_activation_phone_inbound
-        clean_phone = normalize_activation_phone_inbound(clean_phone) or clean_phone
-        user = _find_active_user_by_phone(clean_phone)
+
+        user = None
+        if staff_id_raw:
+            try:
+                user = CustomUser.objects.filter(id=staff_id_raw, is_active=True).first()
+            except Exception:
+                user = None
+            if not user:
+                return Response({
+                    'success': False,
+                    'error': 'Staff not found for staff_id',
+                    'message_for_user': "We couldn't find your account. Please contact your manager to be added.",
+                }, status=status.HTTP_404_NOT_FOUND)
+            if clean_phone:
+                clean_phone = normalize_activation_phone_inbound(clean_phone) or clean_phone
+            elif getattr(user, 'phone', None):
+                clean_phone = normalize_activation_phone_inbound(
+                    ''.join(filter(str.isdigit, str(user.phone)))
+                ) or ''.join(filter(str.isdigit, str(user.phone)))
+
         if not user:
-            return Response({
-                'success': False,
-                'error': 'Staff not found for this phone',
-                'message_for_user': "We couldn't find your account. Please contact your manager to be added.",
-            }, status=status.HTTP_404_NOT_FOUND)
+            if not clean_phone or len(clean_phone) < 6:
+                return Response({
+                    'success': False,
+                    'error': 'Invalid or missing phone',
+                    'message_for_user': "We couldn't find your account. Please contact your manager to be added.",
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            clean_phone = normalize_activation_phone_inbound(clean_phone) or clean_phone
+            user = _find_active_user_by_phone(clean_phone)
+            if not user:
+                return Response({
+                    'success': False,
+                    'error': 'Staff not found for this phone',
+                    'message_for_user': "We couldn't find your account. Please contact your manager to be added.",
+                }, status=status.HTTP_404_NOT_FOUND)
 
         first_name = getattr(user, 'first_name', None) or 'Team Member'
 
@@ -1433,6 +1460,16 @@ def agent_clock_in_by_phone(request):
         rest = getattr(user, 'restaurant', None)
         # Mandatory location: staff cannot clock in without live location (no bypass)
         if latitude is None or longitude is None:
+            if is_web_channel:
+                return Response({
+                    'success': False,
+                    'error': 'Location required',
+                    'message_for_user': (
+                        "To clock in, open Time Clock from your staff menu and tap Clock In "
+                        "(allow location access when prompted). "
+                        "You can also paste your GPS coordinates here as latitude, longitude."
+                    ),
+                }, status=status.HTTP_400_BAD_REQUEST)
             # Send the official template or interactive message with Share Location button ourselves.
             # Miya must NOT send plain text—the user must get the button from this request.
             # Set session state so the next GPS pin is handled by Django geofence logic.

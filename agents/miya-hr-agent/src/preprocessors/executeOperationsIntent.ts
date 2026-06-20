@@ -5,6 +5,13 @@ import ApiService from "../services/ApiService";
 import { resolveAgentContext } from "../services/agentContext";
 import type { OperationCommandIntent } from "./operationIntent";
 
+export type OperationsTenantContext = {
+    restaurantId: string;
+    userId?: string;
+    email?: string;
+    phone?: string;
+};
+
 export type OperationsExecuteResult = {
     status: string;
     message?: string;
@@ -32,6 +39,15 @@ async function ensureWidget(
     }
 }
 
+export async function ensureDashboardWidget(
+    api: ApiService,
+    widgetId: string,
+    restaurantId: string,
+    ctx: { userId?: string; email?: string; phone?: string },
+): Promise<void> {
+    return ensureWidget(api, widgetId, restaurantId, ctx);
+}
+
 function msg(r: OperationsExecuteResult | Record<string, unknown>): string {
     return String(r.message || r.message_for_user || "").trim();
 }
@@ -50,20 +66,41 @@ function staffRequestMessage(result: Record<string, unknown>, fallback: string):
     return base;
 }
 
+function shortRef(id: string | undefined): string {
+    if (!id) return "";
+    const clean = id.replace(/-/g, "");
+    return clean.slice(-8).toLowerCase();
+}
+
 export async function executeOperationsIntent(
     intent: OperationCommandIntent,
     api: ApiService = new ApiService(),
+    tenantOverride?: OperationsTenantContext,
 ): Promise<OperationsExecuteResult> {
-    const ctx = await resolveAgentContext();
-    const restaurantId = ctx.restaurantId;
+    const resolved = tenantOverride
+        ? {
+              restaurantId: tenantOverride.restaurantId,
+              userId: tenantOverride.userId,
+              email: tenantOverride.email,
+              phone: tenantOverride.phone,
+              token: undefined,
+              agentKey: undefined,
+          }
+        : await resolveAgentContext();
+    const restaurantId = resolved.restaurantId;
+    const ctx = resolved;
     if (!restaurantId) {
         return { status: "error", message: "I couldn't link this to your workspace yet." };
     }
 
+    // Loose alias — specialist agents ship different ApiService versions; some
+    // methods/fields don't exist on older builds. Optional methods are guarded
+    // by presence checks below, and extra request fields are ignored server-side.
+    const A = api as any;
+
     switch (intent.kind) {
         case "lookup": {
-            const searchFn = (api as { searchOperationalRecordsForAgent?: typeof api.searchOperationalRecordsForAgent })
-                .searchOperationalRecordsForAgent;
+            const searchFn = A.searchOperationalRecordsForAgent;
             if (!searchFn) {
                 return { status: "error", message: "Record search isn't available on this channel." };
             }
@@ -90,8 +127,7 @@ export async function executeOperationsIntent(
         }
 
         case "chase": {
-            const chaseFn = (api as { chaseOperationalRecordForAgent?: typeof api.chaseOperationalRecordForAgent })
-                .chaseOperationalRecordForAgent;
+            const chaseFn = A.chaseOperationalRecordForAgent;
             if (!chaseFn) {
                 return { status: "error", message: "Follow-up isn't available on this channel." };
             }
@@ -116,7 +152,7 @@ export async function executeOperationsIntent(
                 intent.kind === "dashboard_reminder"
                     ? intent.widgetId || "human_resources"
                     : "operations_tasks";
-            const result = await api.createDashboardTaskForAgent(restaurantId, {
+            const result = await A.createDashboardTaskForAgent(restaurantId, {
                 title: intent.title,
                 description: intent.description,
                 category,
@@ -141,7 +177,7 @@ export async function executeOperationsIntent(
         }
 
         case "purchase_order": {
-            const result = await api.createStaffRequestForAgent({
+            const result = await A.createStaffRequestForAgent({
                 restaurant_id: restaurantId,
                 subject: intent.subject,
                 description: intent.description,
@@ -161,7 +197,7 @@ export async function executeOperationsIntent(
         }
 
         case "maintenance": {
-            const result = await api.createStaffRequestForAgent({
+            const result = await A.createStaffRequestForAgent({
                 restaurant_id: restaurantId,
                 subject: intent.subject,
                 description: intent.description,
@@ -184,7 +220,7 @@ export async function executeOperationsIntent(
         }
 
         case "record_invoice": {
-            const result = await api.recordInvoice(restaurantId, {
+            const result = await A.recordInvoice(restaurantId, {
                 vendor: intent.vendor,
                 amount: intent.amount,
                 due_date: intent.dueDate,
@@ -207,8 +243,7 @@ export async function executeOperationsIntent(
         }
 
         case "generate_payslip": {
-            const genFn = (api as { generatePayslipForAgent?: typeof api.generatePayslipForAgent })
-                .generatePayslipForAgent;
+            const genFn = A.generatePayslipForAgent;
             if (!genFn) {
                 return { status: "error", message: "Payslip generation isn't available on this channel." };
             }
@@ -234,8 +269,7 @@ export async function executeOperationsIntent(
         }
 
         case "temperature_log": {
-            const logFn = (api as { logTemperatureForAgent?: typeof api.logTemperatureForAgent })
-                .logTemperatureForAgent;
+            const logFn = A.logTemperatureForAgent;
             if (!logFn) {
                 return { status: "error", message: "Temperature logging isn't available on this channel." };
             }
@@ -259,9 +293,7 @@ export async function executeOperationsIntent(
         }
 
         case "bank_payment_status": {
-            const payFn = (api as {
-                updateInvoiceBankPaymentStatusForAgent?: typeof api.updateInvoiceBankPaymentStatusForAgent;
-            }).updateInvoiceBankPaymentStatusForAgent;
+            const payFn = A.updateInvoiceBankPaymentStatusForAgent;
             if (!payFn) {
                 return { status: "error", message: "Bank payment status isn't available on this channel." };
             }
@@ -287,8 +319,7 @@ export async function executeOperationsIntent(
         }
 
         case "delivery_menu_sync": {
-            const syncFn = (api as { syncDeliveryMenuForAgent?: typeof api.syncDeliveryMenuForAgent })
-                .syncDeliveryMenuForAgent;
+            const syncFn = A.syncDeliveryMenuForAgent;
             if (!syncFn) {
                 return { status: "error", message: "Delivery menu sync isn't available on this channel." };
             }
@@ -306,8 +337,7 @@ export async function executeOperationsIntent(
         }
 
         case "seed_compliance": {
-            const seedFn = (api as { seedComplianceRemindersForAgent?: typeof api.seedComplianceRemindersForAgent })
-                .seedComplianceRemindersForAgent;
+            const seedFn = A.seedComplianceRemindersForAgent;
             if (!seedFn) {
                 return { status: "error", message: "Compliance calendar isn't available on this channel." };
             }
@@ -322,6 +352,130 @@ export async function executeOperationsIntent(
             return {
                 status: "success",
                 message: data.message_for_user || "Compliance reminders added.",
+            };
+        }
+
+        case "payroll_escalation": {
+            const hr = await A.createStaffRequestForAgent({
+                restaurant_id: restaurantId,
+                subject: `Payroll follow-up: ${intent.staffName}`,
+                description: intent.description,
+                category: "PAYROLL",
+                priority: "HIGH",
+                follow_up_enabled: true,
+            });
+            const fin = await A.createStaffRequestForAgent({
+                restaurant_id: restaurantId,
+                subject: `Salary payment: ${intent.staffName}`,
+                description: intent.description,
+                category: "FINANCE",
+                priority: "HIGH",
+                follow_up_enabled: true,
+            });
+            if (hr.success === false && fin.success === false) {
+                return {
+                    status: "error",
+                    message: hr.error || fin.error || "Couldn't notify HR and Finance.",
+                };
+            }
+            await ensureWidget(api, "human_resources", restaurantId, ctx);
+            await ensureWidget(api, "finance", restaurantId, ctx);
+            const refs = [shortRef(hr.id), shortRef(fin.id)].filter(Boolean);
+            const refText = refs.length ? ` Reference: ${refs.join(", ")}.` : "";
+            return {
+                status: "success",
+                message: `✓ Logged with HR and Finance for ${intent.staffName}.${refText}`,
+                record_id: hr.id || fin.id,
+            };
+        }
+
+        case "ops_schedule_note":
+        case "event_prep_reminder": {
+            const descParts = [intent.description];
+            if (intent.kind === "event_prep_reminder" && intent.eventName) {
+                descParts.unshift(`Event: ${intent.eventName}`);
+            }
+            const result = await A.createDashboardTaskForAgent(restaurantId, {
+                title: intent.title,
+                description: descParts.join("\n"),
+                category: intent.kind === "event_prep_reminder" ? "MEETING" : "OPERATIONS",
+                assign_to_self: true,
+                notify_whatsapp: false,
+                follow_up_enabled: false,
+                due_date: intent.kind === "ops_schedule_note" ? intent.dueDate : undefined,
+                sender_phone: ctx.phone,
+            });
+            if (!result.success) {
+                return {
+                    status: "error",
+                    message: result.message_for_user || result.error || "Couldn't save the note.",
+                };
+            }
+            const widgetId = intent.kind === "event_prep_reminder" ? "meetings" : "operations_tasks";
+            await ensureWidget(api, widgetId, restaurantId, ctx);
+            return {
+                status: "success",
+                message: result.message_for_user || `✓ Saved: "${intent.title}"`,
+                task_ref: result.task_ref,
+                record_id: result.record_id || result.task?.id,
+            };
+        }
+
+        case "calendar_appointment": {
+            const data = await A.createCalendarEvent(restaurantId, {
+                title: intent.title,
+                start: intent.start,
+                end: intent.end,
+                location: intent.location,
+                is_reminder: false,
+            });
+
+            if (data?.success === false && data?.error === "calendar_not_connected") {
+                const fallback = await A.createDashboardTaskForAgent(restaurantId, {
+                    title: intent.title,
+                    description: [
+                        `Start: ${intent.start}`,
+                        intent.end ? `End: ${intent.end}` : "",
+                        intent.location ? `Location: ${intent.location}` : "",
+                    ]
+                        .filter(Boolean)
+                        .join("\n"),
+                    category: "MEETING",
+                    assign_to_self: true,
+                    due_date: intent.start.slice(0, 10),
+                    sender_phone: ctx.phone,
+                });
+                if (!fallback.success) {
+                    return {
+                        status: "error",
+                        message:
+                            data.message_for_user ||
+                            fallback.message_for_user ||
+                            "Couldn't add the appointment.",
+                    };
+                }
+                await ensureWidget(api, "meetings", restaurantId, ctx);
+                return {
+                    status: "success",
+                    message:
+                        fallback.message_for_user ||
+                        `✓ Added "${intent.title}" to your agenda (${intent.start.slice(0, 16).replace("T", " ")}).`,
+                    task_ref: fallback.task_ref,
+                    record_id: fallback.record_id || fallback.task?.id,
+                };
+            }
+
+            if (data?.success === false) {
+                return {
+                    status: "error",
+                    message: data.message_for_user || data.error || "Couldn't add the appointment.",
+                };
+            }
+            await ensureWidget(api, "meetings", restaurantId, ctx);
+            return {
+                status: "success",
+                message: data.message_for_user || `✓ Added "${intent.title}" to your calendar.`,
+                record_id: data.event_id,
             };
         }
 

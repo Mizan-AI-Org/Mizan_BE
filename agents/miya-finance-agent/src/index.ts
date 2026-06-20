@@ -4,6 +4,7 @@ import { financeSkill } from "./skills/finance.skill";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
+import invoicePhotoPreprocessor from "./preprocessors/InvoicePhotoPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-finance",
@@ -51,7 +52,7 @@ CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPo
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [financeSkill],
-  preProcessors: [accountActivationPreprocessor, clockInPreprocessor, operationsCommandPreprocessor],
+  preProcessors: [accountActivationPreprocessor, clockInPreprocessor, invoicePhotoPreprocessor, operationsCommandPreprocessor],
 });
 
 async function main() {

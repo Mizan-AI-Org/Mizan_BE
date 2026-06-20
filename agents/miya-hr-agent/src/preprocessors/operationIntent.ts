@@ -2,6 +2,7 @@
  * Deterministic intent detection for high-frequency WhatsApp operational commands.
  * Used by OperationsCommandPreprocessor so Miya executes tools instead of hallucinating.
  */
+import { extractMessageText } from "../utils/extractLastUserText";
 
 export type OperationCommandIntent =
     | { kind: "lookup"; query: string }
@@ -55,13 +56,44 @@ export type OperationCommandIntent =
           note?: string;
       }
     | { kind: "delivery_menu_sync"; provider?: string }
-    | { kind: "seed_compliance" };
+    | { kind: "seed_compliance" }
+    | { kind: "payroll_escalation"; staffName: string; description: string }
+    | {
+          kind: "ops_schedule_note";
+          title: string;
+          description: string;
+          dueDate?: string;
+          dueTime?: string;
+      }
+    | { kind: "event_prep_reminder"; title: string; description: string; eventName?: string }
+    | {
+          kind: "calendar_appointment";
+          title: string;
+          start: string;
+          end?: string;
+          location?: string;
+      };
 
 const LOOKUP_ID_RE =
     /(?:num[eé]ro\s+(?:de\s+)?demande|request\s*(?:#|n[o°]\.?)?|demande\s*(?:#|n[o°]\.?)?|task\s*#?|#)\s*([a-f0-9]{6,12})/i;
 
 const LOOKUP_PHRASE_RE =
-    /\b(tu\s+l['']?(?:as|a)\s+enregistr[eé]|o[uù]\s+(?:est|as-tu|l['']?as)|where\s+did\s+you\s+(?:save|record|log)|find\s+(?:this|that|the)\s+(?:request|operation|task)|je\s+trouve\s+pas|can['']?t\s+find\s+(?:this|that|the))\b/i;
+    /\b(tu\s+l['']?(?:as|a)\s+enregistr[eé]|c['']est\s+(?:enregistr[eé]|not[eé])\s+o[uù]|o[uù]\s+(?:est|as-tu|l['']?as)|where\s+(?:is\s+it|did\s+you\s+(?:save|record|log))|find\s+(?:this|that|the)\s+(?:request|operation|task)|je\s+trouve\s+pas|can['']?t\s+find\s+(?:this|that|the))\b/i;
+
+const PAYROLL_ESCALATION_RE =
+    /\b(?:oubli[eé]|forgot(?:ten)?|missed|pas\s+(?:pay[eé]|vers[eé]|r[eé]gl[eé]))\s+(?:de\s+)?(?:payer?\s+)?(?:le\s+)?(?:salaire|pay|paie|wage)|(?:salaire|pay|paie|wage).*(?:hr|rh|finance|ressources?\s+humaines)|(?:pr[eé]venir|notify|informer|alert(?:er)?|transmettre).*(?:hr|rh|finance|ressources?\s+humaines)\b/i;
+
+const INSTALLATION_SCHEDULE_RE =
+    /\b(?:sera\s+install[eé]|will\s+be\s+installed|installation\s+(?:le|on|pr[eé]vue|scheduled)|install[eé]\s+le)\b/i;
+
+const EVENT_PREP_RE =
+    /\b(?:on\s+doit\s+penser|remember\s+to\s+(?:bring|take)|n['']?oublie(?:z)?\s+pas|(?:emmener|apporter|bring|take)\s+(?:des?\s+)?(?:.+?\s+)?(?:pour|for)\s+(?:l['']?)?(?:event|[eé]v[eè]nement))\b/i;
+
+const CALENDAR_APPT_RE =
+    /\b(rendez[- ]?vous|meeting|appointment|r[eé]union)\b/i;
+
+const CALENDAR_PROMPT_ONLY_RE =
+    /^\s*(?:tu\s+peux|peux[- ]tu|can\s+you|oui\s*,?\s*(?:bien\s+s[uû]r)?).*(?:agenda|calendar|calendrier)\s*\??\s*$/i;
 
 const CHASE_RE =
     /\b(?:follow\s*up\s+(?:with|on|about|for)|relance(?:r)?(?:\s+(?:sur|with|on|de|la|le))?|chase|check\s+in\s+(?:with|on)|rappeler?\s+(?:.+?\s+)?(?:sur|about|on|for))\b/i;
@@ -157,11 +189,16 @@ const ASSIGN_TO_COMMANDS_RE =
 
 const NAME_ONLY_RE = /^[a-zàâäéèêëïîôùûüç\s'-]{3,60}$/i;
 
-export function collectRecentText(messages: Array<{ type?: string; text?: string }>, limit = 12): string[] {
-    return messages
-        .filter((m) => m.type === "text" && typeof m.text === "string" && m.text.trim())
-        .map((m) => m.text!.trim())
-        .slice(-limit);
+export function collectRecentText(
+    messages: Array<{ type?: string; text?: string; body?: string }>,
+    limit = 12,
+): string[] {
+    const out: string[] = [];
+    for (const msg of messages.slice(-limit)) {
+        const t = extractMessageText(msg);
+        if (t) out.push(t);
+    }
+    return out;
 }
 
 export function resolveLookupIntent(text: string): OperationCommandIntent | null {
@@ -405,6 +442,7 @@ export function resolvePurchaseOrderIntent(recentTexts: string[]): OperationComm
 export function resolveMaintenanceIntent(text: string): OperationCommandIntent | null {
     const t = text.trim();
     if (!t || t.length < 8) return null;
+    if (INSTALLATION_SCHEDULE_RE.test(t)) return null;
     if (!MAINTENANCE_RE.test(t) || DANGER_RE.test(t)) return null;
 
     const urgent =
@@ -577,6 +615,212 @@ export function resolveInvoiceIntent(recentTexts: string[]): OperationCommandInt
     };
 }
 
+const FR_MONTH_MAP: Record<string, number> = {
+    jan: 1, january: 1, janvier: 1,
+    feb: 2, february: 2, fevrier: 2, février: 2,
+    mar: 3, march: 3, mars: 3,
+    apr: 4, april: 4, avril: 4,
+    may: 5, mai: 5,
+    jun: 6, june: 6, juin: 6,
+    jul: 7, july: 7, juillet: 7,
+    aug: 8, august: 8, aout: 8, août: 8,
+    sep: 9, september: 9, septembre: 9,
+    oct: 10, october: 10, octobre: 10,
+    nov: 11, november: 11, novembre: 11,
+    dec: 12, december: 12, decembre: 12, décembre: 12,
+};
+
+function pad2(n: number): string {
+    return String(n).padStart(2, "0");
+}
+
+function addMinutesToIso(start: string, minutes: number): string {
+    const d = new Date(start);
+    if (Number.isNaN(d.getTime())) return start;
+    d.setMinutes(d.getMinutes() + minutes);
+    const y = d.getFullYear();
+    const mo = pad2(d.getMonth() + 1);
+    const day = pad2(d.getDate());
+    const h = pad2(d.getHours());
+    const mi = pad2(d.getMinutes());
+    return `${y}-${mo}-${day}T${h}:${mi}`;
+}
+
+function resolveMonthDay(
+    day: number,
+    monthToken: string | undefined,
+    ref = new Date(),
+): { year: number; month: number } {
+    let month = ref.getMonth() + 1;
+    let year = ref.getFullYear();
+    if (monthToken) {
+        const key = monthToken.toLowerCase().replace(/[^a-zàâäéèêëïîôùûüç]/g, "");
+        if (FR_MONTH_MAP[key]) month = FR_MONTH_MAP[key];
+    }
+    const candidate = new Date(year, month - 1, day);
+    if (candidate < ref && !monthToken) {
+        month += 1;
+        if (month > 12) {
+            month = 1;
+            year += 1;
+        }
+    }
+    return { year, month };
+}
+
+function parseFrenchSchedule(text: string, ref = new Date()): { date: string; time?: string } | null {
+    const normalized = text.normalize("NFC");
+    const withMonth = normalized.match(
+        new RegExp(
+            `(?:le\\s+)?(?:(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\\s+)?(\\d{1,2})\\s+(${MONTH_NAME})(?:\\s+[àa]\\s+(\\d{1,2})[:hH](\\d{2}))?`,
+            "i",
+        ),
+    );
+    if (withMonth) {
+        const day = Number(withMonth[1]);
+        const { year, month } = resolveMonthDay(day, withMonth[2], ref);
+        const date = `${year}-${pad2(month)}-${pad2(day)}`;
+        const time =
+            withMonth[3] && withMonth[4]
+                ? `${pad2(Number(withMonth[3]))}:${withMonth[4]}`
+                : undefined;
+        return { date, time };
+    }
+
+    const dayOnly = normalized.match(
+        /(?:le\s+)?(?:(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\s+)?(\d{1,2})(?:\s+[àa]\s+(\d{1,2})[:hH](\d{2}))?/i,
+    );
+    if (dayOnly) {
+        const day = Number(dayOnly[1]);
+        const { year, month } = resolveMonthDay(day, undefined, ref);
+        const date = `${year}-${pad2(month)}-${pad2(day)}`;
+        const time =
+            dayOnly[2] && dayOnly[3] ? `${pad2(Number(dayOnly[2]))}:${dayOnly[3]}` : undefined;
+        return { date, time };
+    }
+    return null;
+}
+
+function parseTimeOnly(text: string): string | null {
+    const m = text.trim().match(/^(\d{1,2})[:hH](\d{2})\s*$/);
+    if (!m) return null;
+    return `${pad2(Number(m[1]))}:${m[2]}`;
+}
+
+export function resolvePayrollEscalationIntent(text: string): OperationCommandIntent | null {
+    const t = text.trim();
+    if (!t || !PAYROLL_ESCALATION_RE.test(t)) return null;
+
+    let staffName = "Staff member";
+    const nameMatch =
+        t.match(/\b(?:salaire|pay|paie|wage)\s+(?:de|of|for|du|d[''])\s+([a-zàâäéèêëïîôùûüç\s'-]{3,50})/i) ||
+        t.match(/\bpayer?\s+(?:le\s+)?(?:salaire\s+)?(?:de|of|for)\s+([a-zàâäéèêëïîôùûüç\s'-]{3,50})/i);
+    if (nameMatch?.[1]) {
+        staffName = nameMatch[1]
+            .replace(/\b(?:prevenir|pr[eé]venir|notify|informer|hr|rh|finance|ressources?\s+humaines).*$/i, "")
+            .trim()
+            .slice(0, 80);
+    }
+
+    return {
+        kind: "payroll_escalation",
+        staffName,
+        description: t.slice(0, 500),
+    };
+}
+
+export function resolveOpsScheduleNoteIntent(text: string): OperationCommandIntent | null {
+    const t = text.trim();
+    if (!t || !INSTALLATION_SCHEDULE_RE.test(t)) return null;
+
+    const schedule = parseFrenchSchedule(t);
+    let title = "Scheduled installation";
+    const itemMatch = t.match(/\b(?:le\s+)?(?:nouveau|new)\s+([a-zàâäéèêëïîôùûüç'-]{2,40}?)(?:\s+(?:sera|will|is)\s+|\s+install)/i);
+    if (itemMatch?.[1]) {
+        title = `${itemMatch[1].trim()} installation`;
+    }
+
+    return {
+        kind: "ops_schedule_note",
+        title: title.charAt(0).toUpperCase() + title.slice(1).slice(0, 120),
+        description: t,
+        dueDate: schedule?.date,
+        dueTime: schedule?.time,
+    };
+}
+
+export function resolveEventPrepReminderIntent(text: string): OperationCommandIntent | null {
+    const t = text.trim();
+    if (!t || !EVENT_PREP_RE.test(t)) return null;
+
+    let eventName: string | undefined;
+    const eventMatch = t.match(/\b(?:event|[eé]v[eè]nement)\s+([a-zàâäéèêëïîôùûüç0-9\s'-]{2,60})/i);
+    if (eventMatch?.[1]) eventName = eventMatch[1].trim();
+
+    let title = t.slice(0, 120);
+    const bringMatch = t.match(/\b(?:emmener|apporter|bring|take|penser\s+[àa])\s+(.+?)(?:\s+pour\s+|\s+for\s+|$)/i);
+    if (bringMatch?.[1]) {
+        title = bringMatch[1].trim().slice(0, 120);
+    }
+
+    return {
+        kind: "event_prep_reminder",
+        title: title.charAt(0).toUpperCase() + title.slice(1),
+        description: t,
+        eventName,
+    };
+}
+
+export function resolveCalendarAppointmentIntent(recentTexts: string[]): OperationCommandIntent | null {
+    const joined = recentTexts.join("\n");
+    if (!CALENDAR_APPT_RE.test(joined) && !/\bagenda\b/i.test(joined)) return null;
+
+    const last = recentTexts[recentTexts.length - 1] || "";
+    if (CALENDAR_PROMPT_ONLY_RE.test(last)) return null;
+
+    let apptLine = "";
+    for (const line of [...recentTexts].reverse()) {
+        if (CALENDAR_APPT_RE.test(line)) {
+            apptLine = line;
+            break;
+        }
+    }
+    if (!apptLine) return null;
+
+    const schedule = parseFrenchSchedule(apptLine);
+    if (!schedule?.time) return null;
+
+    const start = `${schedule.date}T${schedule.time}`;
+    let end: string | undefined;
+
+    const endOnly = parseTimeOnly(last);
+    if (endOnly && recentTexts.length >= 2) {
+        end = `${schedule.date}T${endOnly}`;
+    } else {
+        end = addMinutesToIso(start, 60);
+    }
+
+    let title = apptLine.trim();
+    const titleMatch = apptLine.match(
+        /\b(?:rendez[- ]?vous|meeting|appointment|r[eé]union)\s+(?:avec|with)\s+(.+?)(?:\s+(?:le|on|à|at)\s+|\s*$)/i,
+    );
+    if (titleMatch?.[1]) {
+        title = titleMatch[1].trim().slice(0, 120);
+    }
+
+    let location: string | undefined;
+    const locMatch = apptLine.match(/\b(?:à|at|@)\s+([a-zàâäéèêëïîôùûüç0-9\s'-]{3,60})/i);
+    if (locMatch?.[1]) location = locMatch[1].trim();
+
+    return {
+        kind: "calendar_appointment",
+        title: title.charAt(0).toUpperCase() + title.slice(1),
+        start,
+        end,
+        location,
+    };
+}
+
 export function resolveOperationsCommandIntent(
     messages: Array<{ type?: string; text?: string }>,
 ): OperationCommandIntent | null {
@@ -612,6 +856,13 @@ export function resolveOperationsCommandIntent(
     const hrReminder = resolveDashboardReminderIntent(recent);
     if (hrReminder) return hrReminder;
 
+    const installNote = resolveOpsScheduleNoteIntent(last);
+    if (installNote) return installNote;
+    for (const line of [...recent].reverse()) {
+        const n = resolveOpsScheduleNoteIntent(line);
+        if (n) return n;
+    }
+
     const maintenance = resolveMaintenanceIntent(last);
     if (maintenance) return maintenance;
 
@@ -630,6 +881,19 @@ export function resolveOperationsCommandIntent(
         );
         if (hasPurchaseSignal) return purchase;
     }
+
+    const payroll = resolvePayrollEscalationIntent(last);
+    if (payroll) return payroll;
+    for (const line of [...recent].reverse()) {
+        const p = resolvePayrollEscalationIntent(line);
+        if (p) return p;
+    }
+
+    const calendar = resolveCalendarAppointmentIntent(recent);
+    if (calendar) return calendar;
+
+    const eventPrep = resolveEventPrepReminderIntent(last);
+    if (eventPrep) return eventPrep;
 
     const opsReminder = resolvePersonalOpsReminder(recent);
     if (opsReminder) return opsReminder;

@@ -1,6 +1,6 @@
 {
-  "lastHash": "db6ba9b691fd3cc01c579dfbc3965517b664f16623b3c6052c7ffe2afe02ba67",
-  "lastPushedAt": "2026-06-18T11:04:19.408Z",
+  "lastHash": "19c8d69aa8f12564b92a7a060045c8cb4e400d73f011b140da55c5b6618fe7a1",
+  "lastPushedAt": "2026-06-20T01:27:26.062Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "9da8b5f57d78e74b"
+      "hash": "c5693ac5fb61eca1"
     },
     {
       "relativePath": "package.json",
@@ -32,19 +32,19 @@
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "d4f6813d000e4999"
+      "hash": "fb5e8d3046fd4e32"
     },
     {
       "relativePath": "src/preprocessors/executeOperationsIntent.ts",
-      "hash": "fadac17309bd2b00"
+      "hash": "8ef415329892f63f"
     },
     {
       "relativePath": "src/preprocessors/operationIntent.ts",
-      "hash": "4017e65b124ae004"
+      "hash": "a98f2b881cd2a65a"
     },
     {
       "relativePath": "src/preprocessors/OperationsCommandPreprocessor.ts",
-      "hash": "0aae80159b68a198"
+      "hash": "a6a6a6b851efecdf"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -52,7 +52,7 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "4b4ada82c07bc35b"
+      "hash": "de789e0aa1b6b87d"
     },
     {
       "relativePath": "src/skills/hr.skill.ts",
@@ -80,7 +80,7 @@
     },
     {
       "relativePath": "src/skills/tools/StaffClockInTool.ts",
-      "hash": "041a93c9a1121302"
+      "hash": "4d6048911e48f395"
     },
     {
       "relativePath": "src/skills/tools/StaffClockOutTool.ts",
@@ -95,8 +95,24 @@
       "hash": "ad93f3cf9b153957"
     },
     {
+      "relativePath": "src/utils/extractLastUserText.ts",
+      "hash": "9dd35f9d6edf325b"
+    },
+    {
+      "relativePath": "src/utils/extractLuaBridgeContext.ts",
+      "hash": "886079f33d46b8c0"
+    },
+    {
+      "relativePath": "src/utils/resolveStaffIdFromLuaUser.ts",
+      "hash": "9fae9732b0ce03a2"
+    },
+    {
       "relativePath": "src/utils/resolveStaffPhoneFromLuaUser.ts",
       "hash": "7940e06883afdab6"
+    },
+    {
+      "relativePath": "src/utils/resolveTenantForUser.ts",
+      "hash": "5e518f2fd5eab862"
     },
     {
       "relativePath": "tsconfig.json",

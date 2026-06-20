@@ -4,6 +4,7 @@
  */
 import { ChatMessage, PreProcessor, UserDataInstance } from "lua-cli";
 import StaffClockInTool from "../skills/tools/StaffClockInTool";
+import { extractLastUserText } from "../utils/extractLastUserText";
 import {
     resolveStaffPhoneForByPhoneTools,
     type LuaUserPhoneSource,
@@ -65,11 +66,10 @@ export const clockInPreprocessor = new PreProcessor({
     name: "clock-in-router",
     description:
         "Detects staff clock-in intent, runs staff_clock_in, and injects the backend message for verbatim relay.",
-    priority: 10,
+    priority: 8,
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
-        const lastText =
-            messages.filter((m) => m.type === "text").slice(-1)[0]?.text || "";
+        const lastText = extractLastUserText(messages);
         const { lat, lng } = coordsFromMessages(messages);
         const hasLocation = lat !== undefined && lng !== undefined;
         const clockInIntent = isClockInMessage(lastText) || hasLocation;
@@ -80,13 +80,14 @@ export const clockInPreprocessor = new PreProcessor({
 
         const phone = resolvePhone(user);
         console.log(
-            `[ClockInPreprocessor] Running staff_clock_in; phone=${phone || "(from uid)"}, hasLocation=${hasLocation}, channel=${channel}`,
+            `[ClockInPreprocessor] Running staff_clock_in; phone=${phone || "(from uid)"}, hasLocation=${hasLocation}, channel=${channel}, lastText=${JSON.stringify(lastText.slice(0, 80))}`,
         );
 
         let toolResult: Record<string, unknown> = {};
         try {
             toolResult = (await clockInTool.execute({
                 phone: phone || "",
+                channel,
                 ...(hasLocation ? { latitude: lat, longitude: lng } : {}),
             })) as Record<string, unknown>;
         } catch (err: unknown) {
@@ -120,9 +121,9 @@ code=${code}
 message=${JSON.stringify(message)}
 
 Your ENTIRE reply to the staff must be EXACTLY the message string above — character for character, no preface, no apology, no "I am processing".
-FORBIDDEN: "there was an error", "I am unable to clock you in", "I am processing your clock-in request", "contact support".
+FORBIDDEN: "there was an error", "I am unable to clock you in", "I am processing your clock-in request", "contact support", "designated time-tracking system", "I cannot directly perform".
 ${code === "clocked_in" ? "After sending that exact message, call checklist_starter with mode=\"start\"." : ""}
-${code === "location_required" ? "location_required is SUCCESS — Share Location button was sent by the backend." : ""}`;
+${code === "location_required" ? "location_required is SUCCESS — Share Location button was sent by the backend (WhatsApp) or user must open Time Clock on web." : ""}`;
 
         const modifiedMessages = messages.map((m) =>
             m.type === "text" ? { ...m, text: `${block}\n\n${m.text}` } : m,

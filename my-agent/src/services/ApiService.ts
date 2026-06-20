@@ -1750,9 +1750,15 @@ export default class ApiService {
         }
     }
 
-    /** Clock-in by phone (for Miya when staff say "clock in" in chat). Optional lat/lon for geofence validation. */
+    /** Clock-in by phone or staff_id (Miya chat). Optional lat/lon for geofence validation. */
     async clockInByPhone(
-        data: { phone: string; latitude?: number; longitude?: number },
+        data: {
+            phone?: string;
+            staff_id?: string;
+            delivery_channel?: string;
+            latitude?: number;
+            longitude?: number;
+        },
         _tokenLegacy?: string
     ): Promise<{ success: boolean; message_for_user?: string; error?: string; staff_id?: string }> {
         try {
@@ -1766,8 +1772,9 @@ export default class ApiService {
                         "Clock-in is temporarily unavailable. Please contact your manager — the assistant is not linked to the server.",
                 };
             }
+            const staffId = String(data.staff_id ?? "").trim();
             const phoneDigits = normalizeActivationPhoneDigits(String(data.phone ?? "").replace(/\D/g, "").trim());
-            if (!phoneDigits || phoneDigits.length < 6) {
+            if ((!phoneDigits || phoneDigits.length < 6) && !staffId) {
                 return {
                     success: false,
                     error: "Invalid or missing phone",
@@ -1775,7 +1782,17 @@ export default class ApiService {
                         "We couldn't find your account. Please contact your manager to be added.",
                 };
             }
-            const payload: Record<string, string | number> = { phone: phoneDigits };
+            const payload: Record<string, string | number> = {};
+            if (phoneDigits && phoneDigits.length >= 6) {
+                payload.phone = phoneDigits;
+            }
+            if (staffId) {
+                payload.staff_id = staffId;
+            }
+            const channel = String(data.delivery_channel ?? "").trim();
+            if (channel) {
+                payload.delivery_channel = channel;
+            }
             const lat = data.latitude;
             const lng = data.longitude;
             if (

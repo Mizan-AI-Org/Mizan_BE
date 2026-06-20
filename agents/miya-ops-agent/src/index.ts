@@ -3,6 +3,7 @@ import { LuaAgent } from "lua-cli";
 import { operationsSkill } from "./skills/operations.skill";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
+import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-ops",
@@ -62,7 +63,7 @@ CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPo
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [operationsSkill],
-  preProcessors: [accountActivationPreprocessor, clockInPreprocessor],
+  preProcessors: [accountActivationPreprocessor, clockInPreprocessor, operationsCommandPreprocessor],
 });
 
 async function main() {

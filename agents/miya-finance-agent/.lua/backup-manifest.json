@@ -1,6 +1,6 @@
 {
-  "lastHash": "eb0ebb240d6b4985d269289edeef8cbeae7890e0b314e4df70f53ebaaadbdfbe",
-  "lastPushedAt": "2026-06-18T11:03:28.517Z",
+  "lastHash": "b38ca8322a8230d11844429a78b8a904915e33fd98690f41cd17caa813d0d16f",
+  "lastPushedAt": "2026-06-20T01:26:34.961Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "4a6d31ab07069689"
+      "hash": "82b8ddcfea9b6b9b"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "9a2a983862fff031"
+      "hash": "d35876301dce0bc0"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
@@ -32,19 +32,23 @@
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "d4f6813d000e4999"
+      "hash": "fb5e8d3046fd4e32"
     },
     {
       "relativePath": "src/preprocessors/executeOperationsIntent.ts",
-      "hash": "fadac17309bd2b00"
+      "hash": "8ef415329892f63f"
+    },
+    {
+      "relativePath": "src/preprocessors/InvoicePhotoPreprocessor.ts",
+      "hash": "2b1afbff007bea9b"
     },
     {
       "relativePath": "src/preprocessors/operationIntent.ts",
-      "hash": "4017e65b124ae004"
+      "hash": "a98f2b881cd2a65a"
     },
     {
       "relativePath": "src/preprocessors/OperationsCommandPreprocessor.ts",
-      "hash": "0aae80159b68a198"
+      "hash": "a6a6a6b851efecdf"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -52,7 +56,7 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "ad63c03b3e110998"
+      "hash": "881eaa1d834459ba"
     },
     {
       "relativePath": "src/skills/finance.skill.ts",
@@ -84,15 +88,31 @@
     },
     {
       "relativePath": "src/skills/tools/StaffClockInTool.ts",
-      "hash": "041a93c9a1121302"
+      "hash": "4d6048911e48f395"
     },
     {
       "relativePath": "src/skills/tools/SupplierOrderTool.ts",
       "hash": "1613ca074eb80ed7"
     },
     {
+      "relativePath": "src/utils/extractLastUserText.ts",
+      "hash": "9dd35f9d6edf325b"
+    },
+    {
+      "relativePath": "src/utils/extractLuaBridgeContext.ts",
+      "hash": "886079f33d46b8c0"
+    },
+    {
+      "relativePath": "src/utils/resolveStaffIdFromLuaUser.ts",
+      "hash": "9fae9732b0ce03a2"
+    },
+    {
       "relativePath": "src/utils/resolveStaffPhoneFromLuaUser.ts",
       "hash": "7940e06883afdab6"
+    },
+    {
+      "relativePath": "src/utils/resolveTenantForUser.ts",
+      "hash": "5e518f2fd5eab862"
     },
     {
       "relativePath": "tsconfig.json",

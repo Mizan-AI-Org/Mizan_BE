@@ -1,6 +1,6 @@
 {
-  "lastHash": "c939694840684807dfea46ee012492d1f416ae270085a531d01674e8172d896a",
-  "lastPushedAt": "2026-06-18T11:05:55.461Z",
+  "lastHash": "48012329e650c50503de2ecdd672a3e5f4d3a5c9c2e396099d8fd2b4c73f35dd",
+  "lastPushedAt": "2026-06-20T01:29:01.148Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "08ad2a478a3d1acd"
+      "hash": "39a0a2b286c31898"
     },
     {
       "relativePath": "package.json",
@@ -32,7 +32,7 @@
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "d4f6813d000e4999"
+      "hash": "fb5e8d3046fd4e32"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -40,7 +40,7 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "d5a99f55366cb312"
+      "hash": "3e3e35e12af99d5f"
     },
     {
       "relativePath": "src/skills/intelligence.skill.ts",
@@ -76,11 +76,27 @@
     },
     {
       "relativePath": "src/skills/tools/StaffClockInTool.ts",
-      "hash": "041a93c9a1121302"
+      "hash": "4d6048911e48f395"
+    },
+    {
+      "relativePath": "src/utils/extractLastUserText.ts",
+      "hash": "9dd35f9d6edf325b"
+    },
+    {
+      "relativePath": "src/utils/extractLuaBridgeContext.ts",
+      "hash": "886079f33d46b8c0"
+    },
+    {
+      "relativePath": "src/utils/resolveStaffIdFromLuaUser.ts",
+      "hash": "9fae9732b0ce03a2"
     },
     {
       "relativePath": "src/utils/resolveStaffPhoneFromLuaUser.ts",
       "hash": "7940e06883afdab6"
+    },
+    {
+      "relativePath": "src/utils/resolveTenantForUser.ts",
+      "hash": "5e518f2fd5eab862"
     },
     {
       "relativePath": "tsconfig.json",

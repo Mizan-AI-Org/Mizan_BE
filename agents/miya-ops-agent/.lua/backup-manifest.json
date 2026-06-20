@@ -1,6 +1,6 @@
 {
-  "lastHash": "d3ee575e066178bcea496b5dce557fa3b43509ad52f345425559ea3ad768457c",
-  "lastPushedAt": "2026-06-18T11:02:37.491Z",
+  "lastHash": "ec9789670ace95237b3714f6e403faee445f226e04721c92159e581aa77a2b84",
+  "lastPushedAt": "2026-06-20T01:25:42.320Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "f7a083448b60c713"
+      "hash": "9b27ed7573da14d5"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "c42ec734554c3fc7"
+      "hash": "96a7fb0a2e72228c"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
@@ -32,7 +32,19 @@
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "d4f6813d000e4999"
+      "hash": "fb5e8d3046fd4e32"
+    },
+    {
+      "relativePath": "src/preprocessors/executeOperationsIntent.ts",
+      "hash": "8ef415329892f63f"
+    },
+    {
+      "relativePath": "src/preprocessors/operationIntent.ts",
+      "hash": "a98f2b881cd2a65a"
+    },
+    {
+      "relativePath": "src/preprocessors/OperationsCommandPreprocessor.ts",
+      "hash": "ba4ae8e6055367c3"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -40,7 +52,7 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "b1a0bed2cc4bc12a"
+      "hash": "2a734510868d622b"
     },
     {
       "relativePath": "src/skills/operations.skill.ts",
@@ -84,7 +96,7 @@
     },
     {
       "relativePath": "src/skills/tools/StaffClockInTool.ts",
-      "hash": "041a93c9a1121302"
+      "hash": "4d6048911e48f395"
     },
     {
       "relativePath": "src/skills/tools/StaffClockOutTool.ts",
@@ -99,8 +111,24 @@
       "hash": "eef0c3f077f2bfdf"
     },
     {
+      "relativePath": "src/utils/extractLastUserText.ts",
+      "hash": "9dd35f9d6edf325b"
+    },
+    {
+      "relativePath": "src/utils/extractLuaBridgeContext.ts",
+      "hash": "886079f33d46b8c0"
+    },
+    {
+      "relativePath": "src/utils/resolveStaffIdFromLuaUser.ts",
+      "hash": "9fae9732b0ce03a2"
+    },
+    {
       "relativePath": "src/utils/resolveStaffPhoneFromLuaUser.ts",
       "hash": "7940e06883afdab6"
+    },
+    {
+      "relativePath": "src/utils/resolveTenantForUser.ts",
+      "hash": "5e518f2fd5eab862"
     },
     {
       "relativePath": "tsconfig.json",
