@@ -2,8 +2,10 @@ import "dotenv/config";
 import { LuaAgent } from "lua-cli";
 import { hrSkill } from "./skills/hr.skill";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
+import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
+import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-hr",
@@ -41,13 +43,20 @@ HR RULES:
 - Role grants require admin/manager permissions.
 - Account activation uses phone from context.
 - PAYSLIP / HR REMINDERS: when a manager wants a reminder to prepare payslips (including daily / "tous les jours"), the operations preprocessor saves a dashboard task on the HR/Payroll lane — confirm success with the task reference. NEVER say you cannot set reminders or "I'll keep it in mind" without saving.
+- STAFF → MANAGER: "tell my manager I'm yet to receive my wages/payslip" is logged as staff_request PAYROLL by the preprocessor. NEVER invent confirmation cards or claim it was noted without a real create.
 
 LANGUAGE: Match the user's language on every reply.
 CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPop/web = manager (operational detail OK).
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [hrSkill],
-  preProcessors: [accountActivationPreprocessor, clockInPreprocessor, operationsCommandPreprocessor],
+  preProcessors: [
+    languageMirrorPreprocessor,
+    accountActivationPreprocessor,
+    clockInPreprocessor,
+    operationsCommandPreprocessor,
+    staffRequestPreprocessor,
+  ],
 });
 
 async function main() {

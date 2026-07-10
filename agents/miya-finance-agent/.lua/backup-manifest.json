@@ -1,6 +1,6 @@
 {
-  "lastHash": "b38ca8322a8230d11844429a78b8a904915e33fd98690f41cd17caa813d0d16f",
-  "lastPushedAt": "2026-06-20T01:26:34.961Z",
+  "lastHash": "46c3e008706a1a79361875c0bd37ba7e47c8d0d99a5ec1c1e4cbfcf09e60a1aa",
+  "lastPushedAt": "2026-07-10T18:12:47.712Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "82b8ddcfea9b6b9b"
+      "hash": "3a716e7b748c2674"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "d35876301dce0bc0"
+      "hash": "fd7ae7e5c6c28110"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
@@ -32,19 +32,23 @@
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "fb5e8d3046fd4e32"
+      "hash": "dd861cc9cdaa741b"
     },
     {
       "relativePath": "src/preprocessors/executeOperationsIntent.ts",
-      "hash": "8ef415329892f63f"
+      "hash": "86e753866e1aa064"
     },
     {
       "relativePath": "src/preprocessors/InvoicePhotoPreprocessor.ts",
       "hash": "2b1afbff007bea9b"
     },
     {
+      "relativePath": "src/preprocessors/LanguageMirrorPreprocessor.ts",
+      "hash": "246ca85f145a5062"
+    },
+    {
       "relativePath": "src/preprocessors/operationIntent.ts",
-      "hash": "a98f2b881cd2a65a"
+      "hash": "f33e10554eaacc9e"
     },
     {
       "relativePath": "src/preprocessors/OperationsCommandPreprocessor.ts",
@@ -88,11 +92,15 @@
     },
     {
       "relativePath": "src/skills/tools/StaffClockInTool.ts",
-      "hash": "4d6048911e48f395"
+      "hash": "9f359211396784fb"
     },
     {
       "relativePath": "src/skills/tools/SupplierOrderTool.ts",
       "hash": "1613ca074eb80ed7"
+    },
+    {
+      "relativePath": "src/utils/detectReplyLanguage.ts",
+      "hash": "5c797a0740976380"
     },
     {
       "relativePath": "src/utils/extractLastUserText.ts",

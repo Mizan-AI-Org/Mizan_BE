@@ -114,8 +114,7 @@ def user_facing_whatsapp_error(message: str | None) -> str:
     if "131047" in lower or "allowed window" in lower or "24 hour" in lower or "24-hour" in lower:
         return (
             "WhatsApp only allows free messages within 24h of the staff member's "
-            "last reply. Ask them to message Miya once, or configure "
-            "WHATSAPP_TEMPLATE_MANAGER_MESSAGE for outside-window delivery."
+            "last reply. Ask them to message Miya once, then try again."
         )
     if "phone" in lower and (
         "invalid" in lower or "not a whatsapp" in lower or "not registered" in lower

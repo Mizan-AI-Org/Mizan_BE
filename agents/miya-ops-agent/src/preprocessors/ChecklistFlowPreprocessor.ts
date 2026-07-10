@@ -11,11 +11,13 @@ import {
     type LuaUserPhoneSource,
 } from "../utils/resolveStaffPhoneFromLuaUser";
 
+// Plural "checklists", "start tasks", FR/AR variants
 const START_RE =
-    /\b(start\s+(my\s+)?(checklist|tasks|check\s*list)|begin\s+(my\s+)?(checklist|tasks)|checklist\s+start|ابدأ\s*(المهام|القائمة)|demarrer\s+(la\s+)?checklist|commencer\s+(la\s+)?checklist)\b/i;
+    /\b(start\s+(my\s+)?(check\s*lists?|tasks|checklists?)|begin\s+(my\s+)?(check\s*lists?|tasks|checklists?)|checklists?\s+start|ابدأ\s*(المهام|القائمة)|demarrer\s+(la\s+)?checklists?|commencer\s+(la\s+)?checklists?)\b/i;
 
+// Tolerates typos ("what are are tasks"), missing "my", and "tasks today"
 const PREVIEW_RE =
-    /\b(what\s+(are\s+)?my\s+tasks|show\s+(my\s+)?checklist|my\s+checklist|ما\s+هي\s+مهامي|شنو\s+المهام|mes\s+t[aâ]ches|voir\s+(ma\s+)?checklist)\b/i;
+    /\b(what\s+(?:are\s+)+(?:my\s+)?tasks(?:\s+today)?|(?:my\s+)?tasks\s+today|show\s+(?:my\s+)?(?:tasks|check\s*lists?)|my\s+(?:tasks|check\s*lists?)|list\s+(?:my\s+)?(?:tasks|check\s*lists?)|ما\s+هي\s+مهامي|شنو\s+المهام|mes\s+t[aâ]ches(?:\s+aujourd['']?hui)?|voir\s+(?:ma\s+)?checklists?)\b/i;
 
 const respondTool = new ChecklistRespondTool();
 const starterTool = new ChecklistStarterTool();
@@ -54,7 +56,8 @@ export const checklistFlowPreprocessor = new PreProcessor({
     name: "checklist-flow-router",
     description:
         "Starts checklists and records Yes/No/N/A replies deterministically for natural WhatsApp flow.",
-    priority: 9,
+    // Ahead of LLM so typo'd "tasks today" / "start checklists" never invent tech errors
+    priority: 90,
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
         const lastText = extractLastUserText(messages);

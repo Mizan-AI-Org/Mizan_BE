@@ -46,7 +46,10 @@ from ..serializers import DashboardTaskCompactSerializer
 # Human Resources widget because the screenshots-mockup ("Print & sign
 # contracts", "Pictures of staff") mixes them in everyday usage.
 BUCKET_TO_CATEGORIES: dict[str, tuple[str, ...]] = {
-    "human_resources": ("HR", "DOCUMENT"),
+    # PAYROLL also surfaces here so unpaid wages / "tell my manager about
+    # my pay" show on the Human Resources widget managers open first —
+    # primary lane for PAYROLL remains Finance (see category_routing).
+    "human_resources": ("HR", "DOCUMENT", "PAYROLL"),
     # Leave, travel, and other scheduling asks from staff (WhatsApp /
     # voice). Powers the "Team Travel" dashboard lane — distinct from
     # the general staff_inbox (all categories) and HR (people/docs).

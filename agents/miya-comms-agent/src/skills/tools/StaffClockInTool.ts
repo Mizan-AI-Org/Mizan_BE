@@ -114,15 +114,8 @@ export default class StaffClockInTool implements LuaTool {
         const input = parsed.data as z.infer<typeof this.inputSchema>;
 
         const user = await User.get();
-        if (!user) {
-            return {
-                status: "error",
-                code: "no_context",
-                message: "I can't access your account context right now. Please try again in a moment.",
-            };
-        }
-        const userData = (user as any).data || {};
-        const profile = (user as any)._luaProfile || {};
+        const userData = (user as any)?.data || {};
+        const profile = (user as any)?._luaProfile || {};
 
         const hasAgentKey = !!(
             env("LUA_WEBHOOK_API_KEY") ||
@@ -143,17 +136,23 @@ export default class StaffClockInTool implements LuaTool {
         const channel = String(input.channel || "").trim();
         const isWeb = isWebDeliveryChannel(channel);
         const phone = resolveStaffPhoneForByPhoneTools(
-            { uid: (user as any).uid, data: userData as Record<string, unknown>, _luaProfile: profile },
+            user
+                ? { uid: (user as any).uid, data: userData as Record<string, unknown>, _luaProfile: profile }
+                : null,
             input.phone,
         );
-        const staffId = resolveStaffIdFromLuaUser({
-            uid: (user as any).uid,
-            data: userData as Record<string, unknown>,
-            _luaProfile: profile,
-        });
+        const staffId = user
+            ? resolveStaffIdFromLuaUser({
+                  uid: (user as any).uid,
+                  data: userData as Record<string, unknown>,
+                  _luaProfile: profile,
+              })
+            : "";
 
         if (!phone && !staffId) {
-            console.error(`[StaffClockInTool] No valid phone or staff_id: uid=${(user as any).uid}`);
+            console.error(
+                `[StaffClockInTool] No valid phone or staff_id: uid=${user ? (user as any).uid : "(no User.get)"}`,
+            );
             return {
                 status: "error",
                 code: "no_phone",

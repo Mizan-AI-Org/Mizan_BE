@@ -242,6 +242,117 @@ export async function executeOperationsIntent(
             };
         }
 
+        case "mark_invoice_paid": {
+            const markFn = A.markInvoicePaid;
+            if (!markFn) {
+                return { status: "error", message: "Marking invoices paid isn't available on this channel." };
+            }
+            const data = await markFn.call(api, restaurantId, {
+                vendor: intent.vendor,
+                invoice_number: intent.invoiceNumber,
+                paid_on: intent.paidOn,
+                method: intent.paymentMethod,
+                amount: intent.amount,
+                reference: intent.reference,
+            });
+            if (data?.success === false) {
+                // Fallback: record the bill as unpaid tracking if mark-paid can't find it
+                if (intent.amount != null && intent.vendor) {
+                    const recorded = await A.recordInvoice(restaurantId, {
+                        vendor: intent.vendor,
+                        amount: intent.amount,
+                        due_date: intent.paidOn,
+                        invoice_number: intent.invoiceNumber,
+                        notes: [
+                            intent.paymentMethod ? `Payment method: ${intent.paymentMethod}` : "",
+                            `Paid on: ${intent.paidOn}`,
+                        ]
+                            .filter(Boolean)
+                            .join(". "),
+                        currency: "MAD",
+                    });
+                    if (recorded?.success !== false) {
+                        await ensureWidget(api, "finance", restaurantId, ctx);
+                        return {
+                            status: "success",
+                            message:
+                                recorded.message_for_user ||
+                                `✓ Payment noted for ${intent.vendor}${intent.invoiceNumber ? ` (facture ${intent.invoiceNumber})` : ""} on ${intent.paidOn}.`,
+                            record_id: recorded.invoice?.id,
+                        };
+                    }
+                }
+                return {
+                    status: "error",
+                    message: data.message_for_user || data.error || "Couldn't mark the invoice as paid.",
+                };
+            }
+            await ensureWidget(api, "finance", restaurantId, ctx);
+            return {
+                status: "success",
+                message:
+                    data.message_for_user ||
+                    `✓ Payment recorded${intent.invoiceNumber ? ` for facture ${intent.invoiceNumber}` : ""} on ${intent.paidOn}.`,
+                record_id: data.invoice?.id || data.invoice_id,
+            };
+        }
+
+        case "attendance_report": {
+            const report = await A.getAttendanceReport(restaurantId, intent.date);
+            const rows = report?.summary || [];
+            if (!rows.length) {
+                return {
+                    status: "success",
+                    message: intent.date
+                        ? `No attendance records found for ${intent.date}.`
+                        : "No attendance records found for today.",
+                };
+            }
+            const late = rows.filter((r) => r.status === "LATE" || r.status === "ABSENT");
+            const onTime = rows.filter((r) => r.status === "ON_TIME").length;
+            const lines = rows.slice(0, 12).map((r) => {
+                const label =
+                    r.status === "ON_TIME"
+                        ? `on time${r.clock_in ? ` (${r.clock_in})` : ""}`
+                        : r.status === "LATE"
+                          ? `late${r.lateness_minutes ? ` +${r.lateness_minutes}m` : ""}`
+                          : r.status.toLowerCase();
+                return `• ${r.staff_name} — ${label}`;
+            });
+            const header = intent.date ? `Attendance for ${intent.date}` : "Attendance";
+            return {
+                status: "success",
+                message: `${header}: ${onTime} on time, ${late.length} late/absent.\n${lines.join("\n")}`,
+            };
+        }
+
+        case "self_role": {
+            if (!ctx.phone) {
+                return {
+                    status: "error",
+                    message: "I couldn't identify your profile from this channel. Ask HR if you need your role confirmed.",
+                };
+            }
+            const looked = await A.getStaffByPhoneForAgent(ctx.phone);
+            if (!looked.success || !looked.found || !looked.staff) {
+                return {
+                    status: "success",
+                    message:
+                        "I couldn't find your staff profile linked to this number. Check with HR if your WhatsApp isn't registered.",
+                };
+            }
+            const staff = looked.staff;
+            const role = staff.role || staff.position || "not set";
+            const name =
+                staff.full_name ||
+                `${staff.first_name || ""} ${staff.last_name || ""}`.trim() ||
+                "you";
+            return {
+                status: "success",
+                message: `${name} — your role is ${role}.`,
+            };
+        }
+
         case "generate_payslip": {
             const genFn = A.generatePayslipForAgent;
             if (!genFn) {

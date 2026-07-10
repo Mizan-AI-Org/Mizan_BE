@@ -228,11 +228,17 @@ export default class IncidentReportTool implements LuaTool {
         // This prevents Miya from dumping "fridge needs repair" into the incident inbox just because the input
         // contained the word "broken". If we see clear repair language WITHOUT any danger keyword, refuse and
         // redirect to the right tool — the agent will retry with staff_request(category='MAINTENANCE').
+        //
+        // IMPORTANT: "broken glass" / shards / wet floor / slips are SAFETY hazards, not equipment repairs.
         const desc0 = String(input.description || "").toLowerCase().trim();
         if (desc0.length >= 3) {
-            const REPAIR = /\b(repair|repairs|repaired|fix|fixed|fixing|broken|down|out of order|not working|stopped working|en panne|hs|à réparer|a reparer|réparer|reparer|cassé|casse|en rade|kharbana|khasser|mkhsser|إصلاح|تصليح|عطل|خربان)\b/;
-            const DANGER = /\b(fire|smoke|flame|gas|gaz|leak.*flooding|flooding|spark|electric shock|shock|injur|hurt|bleed|burn|burned|burnt|slip|slipped|fall|fell|food poisoning|spoiled food|robbery|robbed|theft|theft|stolen|harass|attack|fight|emergency|évanoui|inconscient|unconscious|incendie|fumée|étincelle|électrocut|blessé|brûl|saign|chute|tomb|empoisonn|vol|harcèl|حريق|دخان|إصاب|جرح|نزيف|حرق|انزلاق|تسمم|سرقة|تحرش|طوارئ)\b/;
-            if (REPAIR.test(desc0) && !DANGER.test(desc0)) {
+            const SAFETY_HAZARD =
+                /\b(broken\s+glass|glass\s+(on|at|by|near|under|broken|shatter)|shatter(?:ed)?\s+glass|shard|shards|verre\s+cass[eé]?|bris\s+de\s+verre|verre\s+bris[eé]?|wet\s+floor|spill(?:ed)?|hazard|sharp\s+(?:glass|edge|object)|table\s+\d+.{0,40}(?:glass|spill|slip)|slip(?:ped)?|fall(?:en)?|fell|injur|hurt|bleed|burn|fire|smoke|gas\s+(?:leak|smell)|food\s+poison|harass|theft|robbery|unconscious)\b/;
+            const REPAIR =
+                /\b(repair|repairs|repaired|fix|fixed|fixing|broken|down|out of order|not working|stopped working|en panne|hs|à réparer|a reparer|réparer|reparer|cassé|casse|en rade|kharbana|khasser|mkhsser|إصلاح|تصليح|عطل|خربان)\b/;
+            const DANGER =
+                /\b(fire|smoke|flame|gas|gaz|leak.*flooding|flooding|spark|electric shock|shock|injur|hurt|bleed|burn|burned|burnt|slip|slipped|fall|fell|food poisoning|spoiled food|robbery|robbed|theft|stolen|harass|attack|fight|emergency|évanoui|inconscient|unconscious|incendie|fumée|étincelle|électrocut|blessé|brûl|saign|chute|tomb|empoisonn|vol|harcèl|حريق|دخان|إصاب|جرح|نزيف|حرق|انزلاق|تسمم|سرقة|تحرش|طوارئ|glass|shard|verre|bris)\b/;
+            if (!SAFETY_HAZARD.test(desc0) && REPAIR.test(desc0) && !DANGER.test(desc0)) {
                 console.warn(`[IncidentReportTool] Repair language detected without danger keywords — redirecting to MAINTENANCE staff_request: "${desc0.substring(0, 80)}"`);
                 return {
                     status: "wrong_tool",
@@ -241,10 +247,10 @@ export default class IncidentReportTool implements LuaTool {
                         "This looks like a routine equipment repair, not a safety incident. Please call staff_request " +
                         "with category='MAINTENANCE', subject=<short issue>, description=<the same description>, " +
                         "priority='HIGH' if the user said 'super soon / ASAP / urgent'. Do NOT call report_incident " +
-                        "for routine repairs — that inbox is reserved for active safety/legal events (fire, gas, injury, theft, harassment).",
+                        "for routine repairs — that inbox is reserved for active safety/legal events (fire, gas, injury, theft, harassment, broken glass).",
                     miya_directive:
-                        "Re-route this clause: call staff_request(category='MAINTENANCE') with the SAME description. " +
-                        "Then continue handling the user's other intents in this turn.",
+                        "Re-route this clause NOW in the same turn: call staff_request(category='MAINTENANCE') with the SAME description. " +
+                        "Then continue handling the user's other intents.",
                 };
             }
         }
@@ -268,9 +274,8 @@ export default class IncidentReportTool implements LuaTool {
 
         if (!restaurantId) {
             console.error(`[IncidentReportTool] No restaurant resolved. phone=${reporterPhone || "none"}, inputPhone=${input.phone || "none"}`);
-            // If the caller is a manager via the dashboard widget (no phone, but authenticated), redirect them to
-            // file the issue as a staff_request so the request still lands in the right inbox.
-            const looksLikeManagerWidget = !reporterPhone && Boolean(ctx.token);
+            // If the caller is a manager via the dashboard (restaurant + Mizan user id, no WhatsApp phone), redirect to staff_request.
+            const looksLikeManagerWidget = Boolean(ctx.restaurantId && ctx.userId && !reporterPhone);
             if (looksLikeManagerWidget) {
                 return {
                     status: "wrong_tool",

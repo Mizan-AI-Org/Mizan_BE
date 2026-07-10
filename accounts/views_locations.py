@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
@@ -94,6 +94,11 @@ class BusinessLocationSerializer(serializers.ModelSerializer):
     def validate_radius(self, value):
         if value is None:
             return value
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            raise serializers.ValidationError('Geofence radius must be a number.')
+        # Inclusive bounds — UI default is exactly 100m.
         if value < 5 or value > 100:
             raise serializers.ValidationError(
                 'Geofence radius must be between 5 and 100 meters.'
@@ -105,6 +110,24 @@ class BusinessLocationSerializer(serializers.ModelSerializer):
         if not value:
             raise serializers.ValidationError('Location name is required.')
         return value
+
+    def create(self, validated_data):
+        # Coerce float coords/radius to values DecimalField accepts cleanly.
+        for key in ('latitude', 'longitude', 'radius'):
+            if key in validated_data and validated_data[key] is not None:
+                validated_data[key] = round(
+                    float(validated_data[key]), 6 if key != 'radius' else 2
+                )
+        if not validated_data.get('geofence_polygon'):
+            validated_data['geofence_polygon'] = []
+        try:
+            return super().create(validated_data)
+        except IntegrityError:
+            # Unique primary-per-tenant race: force non-primary and retry once.
+            restaurant = validated_data.get('restaurant')
+            return BusinessLocation.objects.create(
+                **{**validated_data, 'is_primary': False, 'restaurant': restaurant}
+            )
 
 
 class BusinessLocationViewSet(viewsets.ModelViewSet):
@@ -169,8 +192,43 @@ class BusinessLocationViewSet(viewsets.ModelViewSet):
             raise serializers.ValidationError(
                 {'detail': 'You do not have permission to add business locations.'}
             )
-        serializer.save(restaurant=rest)
+        try:
+            serializer.save(restaurant=rest)
+        except IntegrityError as exc:
+            raise serializers.ValidationError(
+                {
+                    'detail': (
+                        'Could not create that location because of a conflict '
+                        'with an existing primary site. Refresh and try again.'
+                    ),
+                    'code': 'location_conflict',
+                    'error': str(exc)[:200],
+                }
+            )
         _invalidate_portfolio_cache(rest.id)
+
+    def create(self, request, *args, **kwargs):
+        """
+        Override to return a clear JSON body on unexpected failures instead of
+        a bare 500 (e.g. mid-deploy / DB blip), so the Settings toast is useful.
+        """
+        try:
+            return super().create(request, *args, **kwargs)
+        except serializers.ValidationError:
+            raise
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("BusinessLocation create failed: %s", exc)
+            return Response(
+                {
+                    'detail': (
+                        'Could not create the location right now. '
+                        'Please try again in a moment.'
+                    ),
+                    'error': str(exc)[:300],
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
     def perform_update(self, serializer):
         # Mirror the existing single-location lock: once coordinates are set

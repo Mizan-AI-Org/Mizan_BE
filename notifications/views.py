@@ -117,6 +117,14 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
         body = ((msg.get("text") or {}).get("body") or "").strip()
         if _looks_like_voice_ui_placeholder(body):
             return True
+        # Clock-in / clock-out are owned by Django (Share Location + geofence).
+        # Never forward to Lua/Space — Space has no clock-in preprocessor and invents
+        # "trouble with the clock-in system" instead of sending the location button.
+        if _normalize_clock_in_intent(body):
+            return True
+        body_l = body.strip().lower().replace("-", " ")
+        if body_l in ("clock out", "clockout", "clock out.", "pointer sortie", "pointage sortie"):
+            return True
         pair = _parse_lat_lon_from_clock_in_text(body)
         if pair:
             if _text_looks_like_shared_gps_clock_in(body):
@@ -631,12 +639,18 @@ def _normalize_clock_in_intent(body):
     normalized = ' '.join(normalized.split())
     if not normalized:
         return False
-    exact = normalized in ('clock in', 'clockin', 'clock-in')
+    exact = normalized in (
+        'clock in', 'clockin',
+        'pointer', 'pointage', 'je pointe', 'je veux pointer',
+    )
     phrases = (
         'want to clock in', 'want to do clock in', 'clock me in', 'i want to clock in',
         'i need to clock in', 'can you clock me in', 'please clock me in', 'id like to clock in',
         'i would like to clock in', 'do clock in', 'let me clock in', 'need to clock in',
         'wanna clock in', 'going to clock in', 'id like to clock in',
+        'start my shift', 'im here',
+        'je veux pointer', 'je pointe', 'pointage entree',
+        'بغيت نبدا', 'سجل دخول',
     )
     return exact or any(p in normalized for p in phrases)
 

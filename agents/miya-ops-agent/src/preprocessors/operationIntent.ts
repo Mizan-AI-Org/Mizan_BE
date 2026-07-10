@@ -37,6 +37,17 @@ export type OperationCommandIntent =
           currency?: string;
           paymentMethod?: string;
       }
+    | {
+          kind: "mark_invoice_paid";
+          vendor?: string;
+          invoiceNumber?: string;
+          paidOn: string;
+          paymentMethod?: string;
+          amount?: number;
+          reference?: string;
+      }
+    | { kind: "attendance_report"; date?: string }
+    | { kind: "self_role" }
     | { kind: "chase"; query: string }
     | {
           kind: "generate_payslip";
@@ -90,13 +101,22 @@ const EVENT_PREP_RE =
     /\b(?:on\s+doit\s+penser|remember\s+to\s+(?:bring|take)|n['']?oublie(?:z)?\s+pas|(?:emmener|apporter|bring|take)\s+(?:des?\s+)?(?:.+?\s+)?(?:pour|for)\s+(?:l['']?)?(?:event|[eé]v[eè]nement))\b/i;
 
 const CALENDAR_APPT_RE =
-    /\b(rendez[- ]?vous|meeting|appointment|r[eé]union)\b/i;
+    /\b(rendez[- ]?vous|meeting|appointment|r[eé]union|agenda|calendrier|calendar)\b/i;
 
 const CALENDAR_PROMPT_ONLY_RE =
     /^\s*(?:tu\s+peux|peux[- ]tu|can\s+you|oui\s*,?\s*(?:bien\s+s[uû]r)?).*(?:agenda|calendar|calendrier)\s*\??\s*$/i;
 
+const WEEKDAY_NAMES =
+    "lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|monday|tuesday|wednesday|thursday|friday|saturday|sunday";
+
 const CHASE_RE =
     /\b(?:follow\s*up\s+(?:with|on|about|for)|relance(?:r)?(?:\s+(?:sur|with|on|de|la|le))?|chase|check\s+in\s+(?:with|on)|rappeler?\s+(?:.+?\s+)?(?:sur|about|on|for))\b/i;
+
+const ATTENDANCE_RE =
+    /\b(?:arriv[eé]e?s?\s+[àa]\s+l['']?heure|on\s+time|attendance|pr[eé]sences?|tout\s+le\s+monde\s+(?:est\s+)?arriv|did\s+everyone\s+arrive|heures?\s+d['']?arriv)\b/i;
+
+const SELF_ROLE_RE =
+    /\b(?:j['']ai\s+quel\s+poste|quel\s+est\s+mon\s+poste|what(?:'s|\s+is)\s+my\s+(?:role|position|poste|job)|mon\s+poste\s*\?|my\s+(?:role|position)\s*\?)\b/i;
 
 const PAYSLIP_GENERATE_RE =
     /\b(?:generate|g[eé]n[eé]rer|create|cr[eé]er|prepare|pr[eé]parer)\s+(?:the\s+)?(?:staff\s+)?(?:payslips?|fiches?\s+de\s+paie|bulletins?\s+de\s+paie)\b/i;
@@ -132,7 +152,10 @@ const PURCHASE_RE =
     /^(?:commande\s*:|order\s*:)\s*(.+)$/i;
 
 const BUY_VERB_RE =
-    /\b(?:order|purchase|buy|acheter|commander|we\s+need\s+to\s+(?:buy|order|purchase))\b/i;
+    /\b(?:order|purchase|buy|acheter|commander|we\s+need\s+to\s+(?:buy|order|purchase)|[àa]\s+avoir\s+avant)\b/i;
+
+const QTY_PRODUCT_RE =
+    /\b(\d+)\s+(bouteilles?|bottles?|cases?|caisses?|packs?|cartons?|kg|pi[eè]ces?)\b/i;
 
 const MAINTENANCE_RE =
     /\b(?:not\s+working|needs?\s+(?:to\s+be\s+)?repair(?:ed|ing)?|broken|en\s+panne|out\s+of\s+order|stopped\s+working|oven|fridge|freezer|dishwasher|ac\b|air\s+condition|plumbing|leak(?:ing)?|four\b|climat(?:isation)?|r[eé]parer|reparer|[àa]\s+r[eé]parer|wc\b|wcs\b|toilettes?|sanitaires?|restroom|bathroom|lavabos?|urinoirs?|men'?s?\s+(?:room|toilet|wc)|wc\s+hommes?|toilettes?\s+hommes?)\b/i;
@@ -142,6 +165,11 @@ const DANGER_RE =
 
 const MONTH_NAME =
     "janvier|january|jan|f[eé]vrier|february|feb|mars|march|mar|avril|april|apr|mai|may|juin|june|jun|juillet|july|jul|ao[uû]t|august|aug|septembre|september|sep|octobre|october|oct|novembre|november|nov|d[eé]cembre|december|dec";
+
+const WEEKDAY_SLOT_RE = new RegExp(
+    `(?:le\\s+)?(?:${WEEKDAY_NAMES})\\s+(\\d{1,2})(?:\\s+(?:${MONTH_NAME}))?\\s+[àa]\\s+(\\d{1,2})[:hH.](\\d{2})`,
+    "i",
+);
 
 const INVOICE_LINE_RE =
     /\bfacture\s+(\d+)\s*,?\s*(\d[\d\s.,]*)\s*(mad|eur|usd|dh|dhs)\b/i;
@@ -177,12 +205,20 @@ const PAY_VENDOR_RE =
 const VENDOR_HINTS: Array<{ match: RegExp; vendor: string }> = [
     { match: /\b(?:internet|wifi|wi-fi|fibre|fiber|broadband)\b/i, vendor: "Internet" },
     { match: /\b(?:baker|boulanger|boulang(?:er|ère|erie))\b/i, vendor: "Boulanger" },
+    { match: /\b(?:butcher|boucher|boucherie)\b/i, vendor: "Boucher" },
+    { match: /\bzylker\b/i, vendor: "Zylker Translation Services" },
     { match: /\belectric/i, vendor: "Electricity" },
     { match: /\brent\b|\bloyer\b/i, vendor: "Rent" },
 ];
 
 const PAYMENT_METHOD_RE =
-    /\b(virement|transfer|bank\s+transfer|card|cash|cheque|ch[eè]que|check)\b/i;
+    /\b(virement|virment|transfer|bank\s+transfer|card|cash|cheque|ch[eè]que|check|esp[eè]ces?)\b/i;
+
+const INVOICE_REF_RE =
+    /\b(?:n[o°*#.]|num(?:[eé]ro)?|ref(?:erence)?|r[eé]f)\s*[#*°.]?\s*(\d{3,})\b/i;
+
+const DAY_ONLY_PAYMENT_RE =
+    /^\s*(?:le\s+)?(\d{1,2})\s*$/i;
 
 const ASSIGN_TO_COMMANDS_RE =
     /\b(?:c\s+[aà]\s+ranger\s+en\s+commandes?|(?:file|class(?:ify|er))\s+(?:under|in)\s+orders?|in\s+orders?)\b/i;
@@ -221,6 +257,13 @@ export function resolveChaseIntent(text: string): OperationCommandIntent | null 
     if (PERSONAL_OPS_RE.test(t) || HR_REMINDER_LANE_RE.test(t) || PAYSLIP_TASK_RE.test(t)) {
         return null;
     }
+    // Manager personal follow-up ("revenir vers X") is not a chase of an existing ticket.
+    if (
+        /\b(?:revenir\s+(?:vers|chez)|get\s+back\s+to)\b/i.test(t) &&
+        !/\b(?:relance|chase|follow\s*up\s+on)\b/i.test(t)
+    ) {
+        return null;
+    }
 
     const idMatch = t.match(LOOKUP_ID_RE);
     if (idMatch?.[1]) {
@@ -241,6 +284,40 @@ export function resolveChaseIntent(text: string): OperationCommandIntent | null 
     }
 
     return { kind: "chase", query: t.slice(0, 120) };
+}
+
+export function resolveAttendanceReportIntent(text: string): OperationCommandIntent | null {
+    const t = text.trim();
+    if (!t || !ATTENDANCE_RE.test(t)) return null;
+    let date: string | undefined;
+    if (/\bhier|yesterday\b/i.test(t)) {
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        date = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    }
+    return { kind: "attendance_report", date };
+}
+
+export function resolveSelfRoleIntent(text: string): OperationCommandIntent | null {
+    const t = text.trim();
+    if (!t || !SELF_ROLE_RE.test(t)) return null;
+    return { kind: "self_role" };
+}
+
+/** Manager follow-up note ("Revenir vers Lucille…") → ops reminder, not WhatsApp send. */
+export function resolveFollowUpReminderIntent(text: string): OperationCommandIntent | null {
+    const t = text.trim();
+    if (!t || !FOLLOW_UP_RE.test(t)) return null;
+    if (/\b(?:envoie|envoyer|send|message|whatsapp|pr[eé]venir|notify|tell|dire\s+[àa])\b/i.test(t)) {
+        return null;
+    }
+    const title = parseFollowUpTitle(t);
+    if (!title) return null;
+    return {
+        kind: "personal_ops_reminder",
+        title: title.charAt(0).toUpperCase() + title.slice(1),
+        description: t.slice(0, 500),
+    };
 }
 
 export function resolvePayslipGenerateIntent(recentTexts: string[]): OperationCommandIntent | null {
@@ -404,7 +481,11 @@ export function resolveDashboardReminderIntent(recentTexts: string[]): Operation
 function extractPurchaseBody(text: string): string | null {
     const cmd = text.match(PURCHASE_RE);
     if (cmd?.[1]) return cmd[1].trim();
-    if (BUY_VERB_RE.test(text) && /\d+\s+\w+|\bbouteilles?\b|\bbottles?\b|\bcases?\b/i.test(text)) {
+    if (BUY_VERB_RE.test(text) && (QTY_PRODUCT_RE.test(text) || /\d+\s+\w+/i.test(text))) {
+        return text.trim();
+    }
+    // "27 bouteilles d'aperol a avoir avant jeudi" without explicit buy verb
+    if (QTY_PRODUCT_RE.test(text) && /\b(?:avant|before|pour|for|jeudi|thursday|lundi|monday)\b/i.test(text)) {
         return text.trim();
     }
     return null;
@@ -562,6 +643,7 @@ export function resolveInvoiceIntent(recentTexts: string[]): OperationCommandInt
     let currency: string | undefined;
     let dueDate: string | null = null;
     let paymentMethod: string | undefined;
+    let reference: string | undefined;
 
     for (const line of recentTexts) {
         const fr = line.match(INVOICE_LINE_RE);
@@ -580,6 +662,13 @@ export function resolveInvoiceIntent(recentTexts: string[]): OperationCommandInt
             const fn = line.match(FACTURE_NUM_RE);
             if (fn?.[1]) invoiceNumber = fn[1];
         }
+        if (!invoiceNumber) {
+            const ref = line.match(INVOICE_REF_RE);
+            if (ref?.[1]) {
+                invoiceNumber = ref[1];
+                reference = ref[1];
+            }
+        }
         if (amount == null) {
             const am = line.match(AMOUNT_ONLY_RE);
             if (am) {
@@ -592,16 +681,33 @@ export function resolveInvoiceIntent(recentTexts: string[]): OperationCommandInt
         if (due) dueDate = due;
 
         const pm = line.match(PAYMENT_METHOD_RE);
-        if (pm?.[1]) paymentMethod = pm[1];
+        if (pm?.[1]) {
+            const raw = pm[1].toLowerCase();
+            paymentMethod = raw === "virment" ? "virement" : pm[1];
+        }
     }
 
-    // Pay-vendor topic alone isn't enough — need amount + due date from follow-up.
-    const payTopic = /\b(?:pay|payer|invoice|facture|bill)\b/i.test(joined);
-    if (!amount || !dueDate) return null;
+    // Pay-vendor topic alone isn't enough — need amount; due date defaults to today when method given.
+    const payTopic = /\b(?:pay|payer|invoice|facture|bill|boucher|boulanger|internet)\b/i.test(joined);
+    if (!amount) return null;
     if (!payTopic && !invoiceNumber) return null;
 
+    if (!dueDate) {
+        // Manager shorthand often omits due date ("3450 dhs N*4567 par virement") — default today.
+        if (paymentMethod || invoiceNumber) {
+            const d = new Date();
+            dueDate = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+        } else {
+            return null;
+        }
+    }
+
     const vendor = inferVendor(joined);
-    const notes = paymentMethod ? `Payment method: ${paymentMethod}` : undefined;
+    const notesParts = [
+        paymentMethod ? `Payment method: ${paymentMethod}` : "",
+        reference && reference !== invoiceNumber ? `Ref: ${reference}` : "",
+    ].filter(Boolean);
+    const notes = notesParts.length ? notesParts.join(". ") : undefined;
 
     return {
         kind: "record_invoice",
@@ -612,6 +718,96 @@ export function resolveInvoiceIntent(recentTexts: string[]): OperationCommandInt
         notes,
         currency: currency || "MAD",
         paymentMethod,
+    };
+}
+
+function parsePaidOnFromRecent(recentTexts: string[], fallbackDue?: string | null): string | null {
+    const last = (recentTexts[recentTexts.length - 1] || "").trim();
+    const withMonth = last.match(
+        new RegExp(`(?:le\\s+|pour\\s+le\\s+|on\\s+)?(\\d{1,2})\\s+(${MONTH_NAME})`, "i"),
+    );
+    if (withMonth) {
+        const day = Number(withMonth[1]);
+        const { year, month } = resolveMonthDay(day, withMonth[2]);
+        return `${year}-${pad2(month)}-${pad2(day)}`;
+    }
+
+    const dayOnly = last.match(DAY_ONLY_PAYMENT_RE);
+    if (dayOnly && recentTexts.length >= 2) {
+        const day = Number(dayOnly[1]);
+        if (day >= 1 && day <= 31) {
+            // Prefer month from due-date context in the thread.
+            if (fallbackDue && /^\d{4}-\d{2}-\d{2}$/.test(fallbackDue)) {
+                const [y, m] = fallbackDue.split("-");
+                return `${y}-${m}-${pad2(day)}`;
+            }
+            const { year, month } = resolveMonthDay(day, undefined);
+            return `${year}-${pad2(month)}-${pad2(day)}`;
+        }
+    }
+
+    for (const line of recentTexts) {
+        const due = parseDueDateFromText(line);
+        if (due && /\b(?:pay[eé]|paid|effectu[eé]|r[eé]gl[eé]|sera\s+effectu)\b/i.test(line)) {
+            return due;
+        }
+    }
+    return null;
+}
+
+export function resolveMarkInvoicePaidIntent(recentTexts: string[]): OperationCommandIntent | null {
+    const joined = recentTexts.join("\n");
+    const payTopic = /\b(?:pay|payer|invoice|facture|bill|a\s+payer|to\s+pay|paiement)\b/i.test(joined);
+    if (!payTopic) return null;
+
+    let invoiceNumber: string | undefined;
+    let amount: number | undefined;
+    let paymentMethod: string | undefined;
+    let dueDate: string | null = null;
+
+    for (const line of recentTexts) {
+        const fr = line.match(INVOICE_LINE_RE) || line.match(INVOICE_EN_RE);
+        if (fr) {
+            invoiceNumber = fr[1];
+            const parsed = parseAmount(fr[2]);
+            if (parsed != null) amount = parsed;
+        }
+        if (!invoiceNumber) {
+            const fn = line.match(FACTURE_NUM_RE) || line.match(INVOICE_REF_RE);
+            if (fn?.[1]) invoiceNumber = fn[1];
+        }
+        if (amount == null) {
+            const am = line.match(AMOUNT_ONLY_RE);
+            if (am) amount = parseAmount(am[1]) ?? undefined;
+        }
+        const due = parseDueDateFromText(line);
+        if (due) dueDate = due;
+        const pm = line.match(PAYMENT_METHOD_RE);
+        if (pm?.[1]) {
+            const raw = pm[1].toLowerCase();
+            paymentMethod = raw === "virment" ? "virement" : pm[1];
+        }
+    }
+
+    const paidOn = parsePaidOnFromRecent(recentTexts, dueDate);
+    // Need an explicit payment date (e.g. "le 27") — not just the due/échéance.
+    const last = (recentTexts[recentTexts.length - 1] || "").trim();
+    const lastIsPaymentDay =
+        DAY_ONLY_PAYMENT_RE.test(last) ||
+        new RegExp(`(?:le\\s+|pour\\s+le\\s+)(\\d{1,2})\\s+(${MONTH_NAME})`, "i").test(last);
+    if (!paidOn || !lastIsPaymentDay) return null;
+    if (!invoiceNumber && amount == null) return null;
+    if (!paymentMethod && !/\b(?:par\s+virement|by\s+transfer|paid|pay[eé]|r[eé]gl[eé])\b/i.test(joined)) {
+        return null;
+    }
+
+    return {
+        kind: "mark_invoice_paid",
+        vendor: inferVendor(joined),
+        invoiceNumber,
+        paidOn,
+        paymentMethod,
+        amount,
     };
 }
 
@@ -668,11 +864,28 @@ function resolveMonthDay(
     return { year, month };
 }
 
-function parseFrenchSchedule(text: string, ref = new Date()): { date: string; time?: string } | null {
+function parseFrenchSchedule(text: string, ref = new Date()): { date: string; time?: string; endTime?: string } | null {
     const normalized = text.normalize("NFC");
+    const range = normalized.match(
+        new RegExp(
+            `(?:le\\s+)?(?:(?:${WEEKDAY_NAMES})\\s+)?(\\d{1,2})(?:\\s+(${MONTH_NAME}))?\\s+[àa]\\s+(\\d{1,2})[:hH.](\\d{2})\\s*[-–àa]\\s*(\\d{1,2})[:hH.](\\d{2})`,
+            "i",
+        ),
+    );
+    if (range) {
+        const day = Number(range[1]);
+        const { year, month } = resolveMonthDay(day, range[2], ref);
+        const date = `${year}-${pad2(month)}-${pad2(day)}`;
+        return {
+            date,
+            time: `${pad2(Number(range[3]))}:${range[4]}`,
+            endTime: `${pad2(Number(range[5]))}:${range[6]}`,
+        };
+    }
+
     const withMonth = normalized.match(
         new RegExp(
-            `(?:le\\s+)?(?:(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\\s+)?(\\d{1,2})\\s+(${MONTH_NAME})(?:\\s+[àa]\\s+(\\d{1,2})[:hH](\\d{2}))?`,
+            `(?:le\\s+)?(?:(?:${WEEKDAY_NAMES})\\s+)?(\\d{1,2})\\s+(${MONTH_NAME})(?:\\s+[àa]\\s+(\\d{1,2})[:hH.](\\d{2}))?`,
             "i",
         ),
     );
@@ -688,7 +901,10 @@ function parseFrenchSchedule(text: string, ref = new Date()): { date: string; ti
     }
 
     const dayOnly = normalized.match(
-        /(?:le\s+)?(?:(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\s+)?(\d{1,2})(?:\s+[àa]\s+(\d{1,2})[:hH](\d{2}))?/i,
+        new RegExp(
+            `(?:le\\s+)?(?:(?:${WEEKDAY_NAMES})\\s+)?(\\d{1,2})(?:\\s+[àa]\\s+(\\d{1,2})[:hH.](\\d{2}))?`,
+            "i",
+        ),
     );
     if (dayOnly) {
         const day = Number(dayOnly[1]);
@@ -773,14 +989,24 @@ export function resolveEventPrepReminderIntent(text: string): OperationCommandIn
 
 export function resolveCalendarAppointmentIntent(recentTexts: string[]): OperationCommandIntent | null {
     const joined = recentTexts.join("\n");
-    if (!CALENDAR_APPT_RE.test(joined) && !/\bagenda\b/i.test(joined)) return null;
-
     const last = recentTexts[recentTexts.length - 1] || "";
     if (CALENDAR_PROMPT_ONLY_RE.test(last)) return null;
 
+    const hasCalendarWord = CALENDAR_APPT_RE.test(joined);
+    const hasWeekdaySlot = recentTexts.some((l) => WEEKDAY_SLOT_RE.test(l));
+    if (!hasCalendarWord && !hasWeekdaySlot && !/\bagenda\b/i.test(joined)) {
+        // Still allow bare "le 24 à 10:00" + follow-up end time
+        const hasTimedSlot = recentTexts.some((l) => Boolean(parseFrenchSchedule(l)?.time));
+        const endOnly = parseTimeOnly(last);
+        if (!(hasTimedSlot && endOnly && recentTexts.length >= 2)) return null;
+    }
+
     let apptLine = "";
     for (const line of [...recentTexts].reverse()) {
-        if (CALENDAR_APPT_RE.test(line)) {
+        if (CALENDAR_APPT_RE.test(line) || WEEKDAY_SLOT_RE.test(line) || parseFrenchSchedule(line)?.time) {
+            if (parseTimeOnly(line) && !WEEKDAY_SLOT_RE.test(line) && !CALENDAR_APPT_RE.test(line)) {
+                continue; // bare end-time reply
+            }
             apptLine = line;
             break;
         }
@@ -793,11 +1019,15 @@ export function resolveCalendarAppointmentIntent(recentTexts: string[]): Operati
     const start = `${schedule.date}T${schedule.time}`;
     let end: string | undefined;
 
-    const endOnly = parseTimeOnly(last);
-    if (endOnly && recentTexts.length >= 2) {
-        end = `${schedule.date}T${endOnly}`;
+    if (schedule.endTime) {
+        end = `${schedule.date}T${schedule.endTime}`;
     } else {
-        end = addMinutesToIso(start, 60);
+        const endOnly = parseTimeOnly(last);
+        if (endOnly && recentTexts.length >= 2) {
+            end = `${schedule.date}T${endOnly}`;
+        } else {
+            end = addMinutesToIso(start, 60);
+        }
     }
 
     let title = apptLine.trim();
@@ -806,11 +1036,13 @@ export function resolveCalendarAppointmentIntent(recentTexts: string[]): Operati
     );
     if (titleMatch?.[1]) {
         title = titleMatch[1].trim().slice(0, 120);
+    } else if (WEEKDAY_SLOT_RE.test(apptLine) || /^le\s+/i.test(apptLine)) {
+        title = "Rendez-vous";
     }
 
     let location: string | undefined;
     const locMatch = apptLine.match(/\b(?:à|at|@)\s+([a-zàâäéèêëïîôùûüç0-9\s'-]{3,60})/i);
-    if (locMatch?.[1]) location = locMatch[1].trim();
+    if (locMatch?.[1] && !/^\d{1,2}[:hH]/.test(locMatch[1])) location = locMatch[1].trim();
 
     return {
         kind: "calendar_appointment",
@@ -832,6 +1064,18 @@ export function resolveOperationsCommandIntent(
     const lookup = resolveLookupIntent(last);
     if (lookup) return lookup;
 
+    const selfRole = resolveSelfRoleIntent(last);
+    if (selfRole) return selfRole;
+
+    const attendance = resolveAttendanceReportIntent(last);
+    if (attendance) return attendance;
+
+    // Personal follow-up / ops reminder before chase (avoids "couldn't send message" for "revenir vers X")
+    const followUp = resolveFollowUpReminderIntent(last);
+    if (followUp) return followUp;
+    const opsReminderEarly = resolvePersonalOpsReminder(recent);
+    if (opsReminderEarly) return opsReminderEarly;
+
     const chase = resolveChaseIntent(last);
     if (chase) return chase;
 
@@ -849,6 +1093,10 @@ export function resolveOperationsCommandIntent(
 
     const compliance = resolveComplianceSeedIntent(last);
     if (compliance) return compliance;
+
+    // Payment date confirmation ("le 27") → mark paid before recording a new bill
+    const markPaid = resolveMarkInvoicePaidIntent(recent);
+    if (markPaid) return markPaid;
 
     const invoice = resolveInvoiceIntent(recent);
     if (invoice) return invoice;
@@ -877,7 +1125,11 @@ export function resolveOperationsCommandIntent(
     const purchase = resolvePurchaseOrderIntent(recent);
     if (purchase) {
         const hasPurchaseSignal = recent.some(
-            (l) => PURCHASE_RE.test(l) || BUY_VERB_RE.test(l) || ASSIGN_TO_COMMANDS_RE.test(l),
+            (l) =>
+                PURCHASE_RE.test(l) ||
+                BUY_VERB_RE.test(l) ||
+                ASSIGN_TO_COMMANDS_RE.test(l) ||
+                (QTY_PRODUCT_RE.test(l) && /\b(?:avant|before|jeudi|thursday)\b/i.test(l)),
         );
         if (hasPurchaseSignal) return purchase;
     }
@@ -894,9 +1146,6 @@ export function resolveOperationsCommandIntent(
 
     const eventPrep = resolveEventPrepReminderIntent(last);
     if (eventPrep) return eventPrep;
-
-    const opsReminder = resolvePersonalOpsReminder(recent);
-    if (opsReminder) return opsReminder;
 
     return null;
 }

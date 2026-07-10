@@ -2,7 +2,9 @@ import "dotenv/config";
 import { LuaAgent } from "lua-cli";
 import { communicationsSkill } from "./skills/communications.skill";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
+import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
+import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
 
 const agent = new LuaAgent({
   name: "miya-comms",
@@ -16,8 +18,13 @@ CORE CAPABILITIES:
 - WhatsApp Flows: Send interactive forms (leave requests, incident reports, feedback)
 - voice_reply: TTS audio messages over WhatsApp
 
+TELL MY MANAGER (STAFF → MANAGER ESCALATION) — NON-NEGOTIABLE:
+- When staff say "tell my manager that…", "let my manager know…", "I'm yet to receive my wages/payslip", or similar ABOUT THEMSELVES → that is a staff_request for the manager dashboard, NOT inform_staff.
+- A preprocessor logs these automatically. NEVER invent "Preparing to inform…", WhatsApp confirm buttons, or "a confirmation card will be shown". NEVER claim you noted it without a real staff_request success.
+- inform_staff is ONLY for manager→staff pings ("Tell Adam to come in", "Message the kitchen…").
+
 INFORM STAFF vs SEND ANNOUNCEMENT:
-- inform_staff: Quick direct WhatsApp ping, no in-app notification. Default for "tell/message/inform".
+- inform_staff: Quick direct WhatsApp ping to staff, no in-app notification. For manager saying "tell/message/inform [staff]".
 - send_announcement: Formal broadcast with in-app Notification AND WhatsApp. For "announce/broadcast".
 
 TARGETING:
@@ -48,7 +55,12 @@ CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPo
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [communicationsSkill],
-  preProcessors: [accountActivationPreprocessor, clockInPreprocessor],
+  preProcessors: [
+    languageMirrorPreprocessor,
+    accountActivationPreprocessor,
+    clockInPreprocessor,
+    staffRequestPreprocessor,
+  ],
 });
 
 async function main() {

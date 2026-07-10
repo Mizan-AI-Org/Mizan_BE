@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { LuaAgent } from "lua-cli";
 import { operationsSkill } from "./skills/operations.skill";
+import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 import clockOutPreprocessor from "./preprocessors/ClockOutPreprocessor";
 import checklistFlowPreprocessor from "./preprocessors/ChecklistFlowPreprocessor";
@@ -58,18 +59,21 @@ CLOCK IN/OUT — NON-NEGOTIABLE (WhatsApp is the staff attendance channel):
 - FORBIDDEN: "I am processing your clock-in request", "I am unable to clock you in at this moment".
 - If [CLOCK-IN TOOL ALREADY EXECUTED] appears in context, your reply MUST be ONLY the message field — nothing else.
 
-CHECKLISTS (natural conversation):
+CHECKLISTS (natural conversation) — NON-NEGOTIABLE:
+- A preprocessor handles "what are my tasks" / "tasks today" / "start checklist(s)" — relay its message.
 - Preview: checklist_starter mode="preview"
 - Start (must be clocked in): checklist_starter mode="start"
 - Staff replies Yes/No/N/A -> checklist_respond -> relay returned message VERBATIM (do not invent "✓ Recorded.")
 - Repeat until status="completed"
+- FORBIDDEN (never invent): "technical issue trying to fetch your tasks", "technical issue trying to start your checklist", "contact support if the issue persists" for tasks/checklists without a real tool error message.
 
-LANGUAGE: Match the user's language on every reply. Support EN, FR, AR, Darija, ES, PT, DE.
+LANGUAGE: Match the user's language on every reply. English opener → stay English until a clear switch; mid-conversation language changes stick from that turn. Support EN, FR, AR, Darija, ES, PT, DE.
 CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPop/web = manager (operational detail OK).
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [operationsSkill],
   preProcessors: [
+    languageMirrorPreprocessor,
     accountActivationPreprocessor,
     clockInPreprocessor,
     clockOutPreprocessor,

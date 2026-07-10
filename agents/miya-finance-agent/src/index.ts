@@ -2,6 +2,7 @@ import "dotenv/config";
 import { LuaAgent } from "lua-cli";
 import { financeSkill } from "./skills/finance.skill";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
+import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 import invoicePhotoPreprocessor from "./preprocessors/InvoicePhotoPreprocessor";
@@ -52,7 +53,8 @@ CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPo
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [financeSkill],
-  preProcessors: [accountActivationPreprocessor, clockInPreprocessor, invoicePhotoPreprocessor, operationsCommandPreprocessor],
+  preProcessors: [
+    languageMirrorPreprocessor,accountActivationPreprocessor, clockInPreprocessor, invoicePhotoPreprocessor, operationsCommandPreprocessor],
 });
 
 async function main() {

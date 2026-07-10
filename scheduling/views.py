@@ -110,13 +110,17 @@ class WeeklyScheduleListCreateAPIView(generics.ListCreateAPIView):
         # WeeklyScheduleSerializer expands every AssignedShift inline (with
         # tasks, task templates, and staff members). Without eager loading,
         # a 7-day view with 40 shifts = 200+ SQL queries.
-        return (
+        qs = (
             WeeklySchedule.objects
             .filter(restaurant=self.request.user.restaurant)
             .select_related('restaurant')
             .prefetch_related(Prefetch('assigned_shifts', queryset=_assigned_shift_eager()))
             .order_by('-week_start')
         )
+        week_start = self.request.query_params.get('week_start')
+        if week_start:
+            qs = qs.filter(week_start=week_start)
+        return qs
 
     def list(self, request, *args, **kwargs):
         import logging
@@ -169,12 +173,17 @@ class WeeklyScheduleViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
 
     def get_queryset(self):
-        return (
+        qs = (
             WeeklySchedule.objects
             .filter(restaurant=self.request.user.restaurant)
             .select_related('restaurant')
             .prefetch_related(Prefetch('assigned_shifts', queryset=_assigned_shift_eager()))
+            .order_by('-week_start')
         )
+        week_start = self.request.query_params.get('week_start')
+        if week_start:
+            qs = qs.filter(week_start=week_start)
+        return qs
     
     def list(self, request, *args, **kwargs):
         import logging

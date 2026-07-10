@@ -1,6 +1,6 @@
 {
-  "lastHash": "ec9789670ace95237b3714f6e403faee445f226e04721c92159e581aa77a2b84",
-  "lastPushedAt": "2026-06-20T01:25:42.320Z",
+  "lastHash": "8df26774d6bfef66b46adcb3db1585b79cfce8b5a487b2323f4cfbd1674425ff",
+  "lastPushedAt": "2026-07-10T18:12:17.337Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "9b27ed7573da14d5"
+      "hash": "ee6791eacb4235e3"
     },
     {
       "relativePath": "package.json",
@@ -24,23 +24,35 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "96a7fb0a2e72228c"
+      "hash": "44f2ab4495c63f95"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
       "hash": "6735ab8c8e15ec79"
     },
     {
+      "relativePath": "src/preprocessors/ChecklistFlowPreprocessor.ts",
+      "hash": "bc0bb4d3d5747eee"
+    },
+    {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "fb5e8d3046fd4e32"
+      "hash": "9e88dc6f1bbc1044"
+    },
+    {
+      "relativePath": "src/preprocessors/ClockOutPreprocessor.ts",
+      "hash": "96f42e7032ba1d6c"
     },
     {
       "relativePath": "src/preprocessors/executeOperationsIntent.ts",
-      "hash": "8ef415329892f63f"
+      "hash": "86e753866e1aa064"
+    },
+    {
+      "relativePath": "src/preprocessors/LanguageMirrorPreprocessor.ts",
+      "hash": "246ca85f145a5062"
     },
     {
       "relativePath": "src/preprocessors/operationIntent.ts",
-      "hash": "a98f2b881cd2a65a"
+      "hash": "f33e10554eaacc9e"
     },
     {
       "relativePath": "src/preprocessors/OperationsCommandPreprocessor.ts",
@@ -71,12 +83,16 @@
       "hash": "d5b1314d0888068e"
     },
     {
+      "relativePath": "src/skills/tools/BusinessContextTool.ts",
+      "hash": "ba7ee9af360cfa43"
+    },
+    {
       "relativePath": "src/skills/tools/ChecklistRespondTool.ts",
-      "hash": "91b8c941cdedc22f"
+      "hash": "26907748c61274c6"
     },
     {
       "relativePath": "src/skills/tools/ChecklistStarterTool.ts",
-      "hash": "6f59b444cc23fe3d"
+      "hash": "912212728c963866"
     },
     {
       "relativePath": "src/skills/tools/LaborReportExportTool.ts",
@@ -96,7 +112,7 @@
     },
     {
       "relativePath": "src/skills/tools/StaffClockInTool.ts",
-      "hash": "4d6048911e48f395"
+      "hash": "9f359211396784fb"
     },
     {
       "relativePath": "src/skills/tools/StaffClockOutTool.ts",
@@ -109,6 +125,14 @@
     {
       "relativePath": "src/skills/tools/StandaloneTasksTool.ts",
       "hash": "eef0c3f077f2bfdf"
+    },
+    {
+      "relativePath": "src/utils/checklistMessages.ts",
+      "hash": "074b18ba2460ea9b"
+    },
+    {
+      "relativePath": "src/utils/detectReplyLanguage.ts",
+      "hash": "5c797a0740976380"
     },
     {
       "relativePath": "src/utils/extractLastUserText.ts",

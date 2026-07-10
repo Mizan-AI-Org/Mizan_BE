@@ -1,6 +1,6 @@
 {
-  "lastHash": "19c8d69aa8f12564b92a7a060045c8cb4e400d73f011b140da55c5b6618fe7a1",
-  "lastPushedAt": "2026-06-20T01:27:26.062Z",
+  "lastHash": "e666fc9aacd85f27b31559bf1f42ae1099bf89dfbc7447e6503b2ba976aaa1fd",
+  "lastPushedAt": "2026-07-10T18:13:23.593Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "c5693ac5fb61eca1"
+      "hash": "5421c8dbebdb235c"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "4816da6031a3ab39"
+      "hash": "4b05aaa3e8f9968e"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
@@ -32,19 +32,27 @@
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "fb5e8d3046fd4e32"
+      "hash": "dd861cc9cdaa741b"
     },
     {
       "relativePath": "src/preprocessors/executeOperationsIntent.ts",
-      "hash": "8ef415329892f63f"
+      "hash": "86e753866e1aa064"
+    },
+    {
+      "relativePath": "src/preprocessors/LanguageMirrorPreprocessor.ts",
+      "hash": "246ca85f145a5062"
     },
     {
       "relativePath": "src/preprocessors/operationIntent.ts",
-      "hash": "a98f2b881cd2a65a"
+      "hash": "f33e10554eaacc9e"
     },
     {
       "relativePath": "src/preprocessors/OperationsCommandPreprocessor.ts",
       "hash": "a6a6a6b851efecdf"
+    },
+    {
+      "relativePath": "src/preprocessors/StaffRequestPreprocessor.ts",
+      "hash": "91537779885696ff"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -80,7 +88,7 @@
     },
     {
       "relativePath": "src/skills/tools/StaffClockInTool.ts",
-      "hash": "4d6048911e48f395"
+      "hash": "9f359211396784fb"
     },
     {
       "relativePath": "src/skills/tools/StaffClockOutTool.ts",
@@ -93,6 +101,10 @@
     {
       "relativePath": "src/skills/tools/StaffReportPdfTool.ts",
       "hash": "ad93f3cf9b153957"
+    },
+    {
+      "relativePath": "src/utils/detectReplyLanguage.ts",
+      "hash": "5c797a0740976380"
     },
     {
       "relativePath": "src/utils/extractLastUserText.ts",
