@@ -4,28 +4,28 @@ agent:
 skills:
   - name: facilities
     skillId: 86716e63-b05a-4936-8452-a435a5d5bdfb
-    version: 1.0.22
+    version: 1.0.24
 webhooks: []
 jobs: []
 preprocessors:
   - name: account-activation-router
     preprocessorId: preprocessor_976b38e8-4d61-49dd-9779-430469fb92bc
-    version: 1.0.14
+    version: 1.0.16
   - name: clock-in-router
     preprocessorId: preprocessor_9f267ac1-9d89-4f5c-b4ef-af7b8ccd9043
-    version: 1.0.14
+    version: 1.0.16
   - name: operations-command-router
     preprocessorId: preprocessor_790b3286-4c53-481b-9190-6c1ddf28beb1
-    version: 1.0.14
+    version: 1.0.16
   - name: language-mirror
     preprocessorId: preprocessor_d099d962-6317-4ef1-b9fa-90037f19c2a8
-    version: 1.0.4
+    version: 1.0.6
   - name: incident-command-router
     preprocessorId: preprocessor_0eba8b51-d728-47e5-b3ab-a875404a8251
-    version: 1.0.3
+    version: 1.0.5
 postprocessors: []
 mcpServers: []
 backup:
-  activeVersion: 23
-  lastHash: 2b8f919b2afc4c7078d099aa26cb0bb8f8f4bad2525c9f691925b7dde0e7ace4
-  lastPushedAt: '2026-07-10T18:14:53.263Z'
+  activeVersion: 25
+  lastHash: ab2a15273009d96d455f1782f9cfc7141ca1ad988aded7a57ae1757077190249
+  lastPushedAt: '2026-07-10T20:06:45.738Z'
