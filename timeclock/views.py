@@ -1637,11 +1637,18 @@ def agent_clock_in_by_phone(request):
                 or active_qs.order_by('start_time').first()
             )
             if active_shift:
-                started = notification_service.start_conversational_checklist_after_clock_in(
-                    user, active_shift, phone_digits=clean_phone
-                )
-                if not started and getattr(user, 'phone', None):
-                    notification_service.start_conversational_checklist_after_clock_in(user, active_shift)
+                lua_url = (getattr(settings, "LUA_WHATSAPP_WEBHOOK_URL", None) or "").strip()
+                if lua_url:
+                    # Miya owns WhatsApp delivery — prepare progress only, no direct send.
+                    notification_service.prepare_checklist_for_miya(
+                        user, active_shift, phone_digits=clean_phone
+                    )
+                else:
+                    started = notification_service.start_conversational_checklist_after_clock_in(
+                        user, active_shift, phone_digits=clean_phone
+                    )
+                    if not started and getattr(user, 'phone', None):
+                        notification_service.start_conversational_checklist_after_clock_in(user, active_shift)
         except Exception as e:
             logger.warning(
                 "start_conversational_checklist_after_clock_in failed after agent_clock_in_by_phone: %s", e

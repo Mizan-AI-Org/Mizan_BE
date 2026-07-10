@@ -921,6 +921,350 @@ export default class ApiService {
         }
     }
 
+    // ─── WhatsApp-first knowledge memory (Memorae-parity) ─────────────────
+
+    async saveMemoryNoteForAgent(
+        data: {
+            restaurant_id: string;
+            content: string;
+            why?: string;
+            project_key?: string;
+            entities?: string[];
+            people?: string[];
+            tags?: string[];
+            visibility?: string;
+            department?: string;
+            media_url?: string;
+            media_type?: string;
+            linked_task_id?: string;
+            linked_invoice_id?: string;
+            sender_phone?: string;
+            user_id?: string;
+        },
+        userToken?: string | null
+    ): Promise<{ success: boolean; note?: any; message?: string; error?: string }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(data.restaurant_id, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/scheduling/agent/memory-notes/",
+                data,
+                { headers }
+            );
+            return response.data;
+        } catch (error: any) {
+            const err = error?.response?.data?.error || error.message;
+            return { success: false, error: err };
+        }
+    }
+
+    async recallMemoryNotesForAgent(
+        restaurantId: string,
+        options?: { q?: string; project_key?: string; visibility?: string; phone?: string; limit?: number },
+        userToken?: string | null
+    ): Promise<{ success?: boolean; notes?: any[]; count?: number }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.get("/api/scheduling/agent/memory-notes/", {
+                headers,
+                params: {
+                    restaurant_id: restaurantId,
+                    q: options?.q,
+                    project_key: options?.project_key,
+                    visibility: options?.visibility,
+                    phone: options?.phone,
+                    limit: options?.limit || 20,
+                },
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] recallMemoryNotes failed:", error.message);
+            return { notes: [] };
+        }
+    }
+
+    async deleteMemoryNoteForAgent(
+        restaurantId: string,
+        noteId: string,
+        userToken?: string | null
+    ): Promise<{ success: boolean }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/scheduling/agent/memory-notes/delete/",
+                { note_id: noteId, restaurant_id: restaurantId },
+                { headers }
+            );
+            return response.data;
+        } catch {
+            return { success: false };
+        }
+    }
+
+    async memorySerendipityForAgent(
+        restaurantId: string,
+        options?: { phone?: string },
+        userToken?: string | null
+    ): Promise<{ success?: boolean; note?: any; message?: string }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.get("/api/scheduling/agent/memory-serendipity/", {
+                headers,
+                params: { restaurant_id: restaurantId, phone: options?.phone },
+            });
+            return response.data;
+        } catch (error: any) {
+            return { success: false, message: error.message };
+        }
+    }
+
+    async memoryListsForAgent(
+        restaurantId: string,
+        options?: { phone?: string; name?: string },
+        userToken?: string | null
+    ): Promise<{ success?: boolean; lists?: any[] }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.get("/api/scheduling/agent/memory-lists/", {
+                headers,
+                params: {
+                    restaurant_id: restaurantId,
+                    phone: options?.phone,
+                    name: options?.name,
+                },
+            });
+            return response.data;
+        } catch {
+            return { lists: [] };
+        }
+    }
+
+    async memoryListActionForAgent(
+        data: {
+            restaurant_id: string;
+            action: string;
+            name?: string;
+            list_id?: string;
+            text?: string;
+            items?: string[];
+            visibility?: string;
+            sender_phone?: string;
+        },
+        userToken?: string | null
+    ): Promise<{ success: boolean; list?: any; message?: string; error?: string }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(data.restaurant_id, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/scheduling/agent/memory-lists/",
+                data,
+                { headers }
+            );
+            return response.data;
+        } catch (error: any) {
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async createPersonalReminderForAgent(
+        data: {
+            restaurant_id: string;
+            title: string;
+            body?: string;
+            due_at: string;
+            recurrence?: string;
+            timezone?: string;
+            linked_note_id?: string;
+            sender_phone?: string;
+        },
+        userToken?: string | null
+    ): Promise<{ success: boolean; reminder?: any; message?: string; error?: string }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(data.restaurant_id, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/scheduling/agent/personal-reminders/",
+                { ...data, action: "create" },
+                { headers }
+            );
+            return response.data;
+        } catch (error: any) {
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async listPersonalRemindersForAgent(
+        restaurantId: string,
+        options?: { phone?: string },
+        userToken?: string | null
+    ): Promise<{ success?: boolean; reminders?: any[] }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.get("/api/scheduling/agent/personal-reminders/", {
+                headers,
+                params: { restaurant_id: restaurantId, phone: options?.phone, status: "pending" },
+            });
+            return response.data;
+        } catch {
+            return { reminders: [] };
+        }
+    }
+
+    async cancelPersonalReminderForAgent(
+        restaurantId: string,
+        reminderId: string,
+        options?: { phone?: string },
+        userToken?: string | null
+    ): Promise<{ success: boolean; error?: string }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/scheduling/agent/personal-reminders/",
+                {
+                    restaurant_id: restaurantId,
+                    action: "cancel",
+                    reminder_id: reminderId,
+                    sender_phone: options?.phone,
+                },
+                { headers }
+            );
+            return response.data;
+        } catch (error: any) {
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async getDailyBriefingForAgent(
+        restaurantId: string,
+        options?: { phone?: string },
+        userToken?: string | null
+    ): Promise<{
+        success?: boolean;
+        briefing_text?: string;
+        reminders?: any[];
+        open_tasks?: any[];
+        error?: string;
+    }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.get("/api/scheduling/agent/daily-briefing/", {
+                headers,
+                params: { restaurant_id: restaurantId, phone: options?.phone },
+            });
+            return response.data;
+        } catch (error: any) {
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async validateDashboardTaskForAgent(
+        restaurantId: string,
+        taskId: string,
+        userToken?: string | null
+    ): Promise<{ success: boolean; task_id?: string; message?: string; error?: string }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/dashboard/agent/tasks/validate/",
+                { restaurant_id: restaurantId, task_id: taskId },
+                { headers }
+            );
+            return response.data;
+        } catch (error: any) {
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async submitTaskProofForAgent(
+        restaurantId: string,
+        data: { task_id: string; media_url: string },
+        userToken?: string | null
+    ): Promise<{ success: boolean; task_id?: string; message?: string; error?: string }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/dashboard/agent/tasks/proof/",
+                { restaurant_id: restaurantId, ...data },
+                { headers }
+            );
+            return response.data;
+        } catch (error: any) {
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async opsSearchForAgent(
+        restaurantId: string,
+        q: string,
+        userToken?: string | null
+    ): Promise<{
+        success?: boolean;
+        staff?: any[];
+        tasks?: any[];
+        staff_requests?: any[];
+        error?: string;
+    }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.get("/api/dashboard/agent/search/", {
+                headers,
+                params: { restaurant_id: restaurantId, q },
+            });
+            return response.data;
+        } catch (error: any) {
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async classifyCheckinMessageForAgent(
+        restaurantId: string,
+        data: { text: string; sender_phone?: string },
+        userToken?: string | null
+    ): Promise<{
+        success?: boolean;
+        classification?: string;
+        note_id?: string;
+        task_id?: string;
+        message?: string;
+        error?: string;
+    }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/dashboard/agent/checkin-message/",
+                { restaurant_id: restaurantId, ...data },
+                { headers }
+            );
+            return response.data;
+        } catch (error: any) {
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async detectOrderStationForAgent(
+        restaurantId: string,
+        data: { role?: string },
+        userToken?: string | null
+    ): Promise<{
+        success?: boolean;
+        station?: string | null;
+        needs_clarification?: boolean;
+        message?: string;
+    }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/dashboard/agent/order-station/",
+                { restaurant_id: restaurantId, ...data },
+                { headers }
+            );
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                needs_clarification: true,
+                message: error?.response?.data?.error || error.message,
+            };
+        }
+    }
+
     /**
      * Proactive insights: no-shows, understaffed shifts, late patterns, staffing suggestions.
      * Miya uses this to surface alerts and recommendations without being asked.
@@ -1143,6 +1487,8 @@ export default class ApiService {
             source_text?: string;
             /** Force a specific custom widget tile (custom:<uuid> or raw UUID). */
             custom_widget_id?: string;
+            requires_manager_validation?: boolean;
+            require_photo_proof?: boolean;
         }
     ): Promise<{
         success: boolean;
@@ -1201,6 +1547,8 @@ export default class ApiService {
                     sender_phone: input.sender_phone,
                     source_text: input.source_text,
                     custom_widget_id: input.custom_widget_id,
+                    requires_manager_validation: input.requires_manager_validation,
+                    require_photo_proof: input.require_photo_proof,
                 },
                 {
                     headers: agentKeyBearerHeadersWithRestaurant(agentKey, rid),

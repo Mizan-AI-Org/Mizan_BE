@@ -55,6 +55,11 @@ class DashboardTaskCompactSerializer(serializers.ModelSerializer):
             'follow_up_count',
             'follow_up_max',
             'last_follow_up_at',
+            'requires_manager_validation',
+            'manager_validated_at',
+            'require_photo_proof',
+            'proof_media_url',
+            'proof_submitted_at',
         )
         read_only_fields = fields
 

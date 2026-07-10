@@ -799,6 +799,18 @@ def agent_checklist_respond(request):
     yes_count = sum(1 for v in responses.values() if v == "yes")
     no_count = sum(1 for v in responses.values() if v == "no")
     na_count = sum(1 for v in responses.values() if v == "n_a")
+
+    try:
+        from notifications.models import WhatsAppSession
+        sess = WhatsAppSession.objects.filter(phone=clean_phone).first()
+        if sess and sess.state == "in_checklist":
+            sess.state = "idle"
+            if isinstance(sess.context, dict):
+                sess.context.pop("checklist", None)
+            sess.save(update_fields=["state", "context"])
+    except Exception:
+        pass
+
     return Response({
         "success": True,
         "status": "completed",
@@ -810,8 +822,9 @@ def agent_checklist_respond(request):
             "n_a": na_count,
         },
         "message_for_user": (
-            f"✅ Checklist complete! {yes_count} done, "
-            f"{no_count} not done, {na_count} skipped out of {total} tasks."
+            f"Nice work — checklist complete! "
+            f"{yes_count} done, {no_count} still open, {na_count} skipped "
+            f"out of {total} tasks. Have a great shift!"
         ),
     })
 

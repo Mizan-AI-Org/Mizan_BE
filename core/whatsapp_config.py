@@ -111,6 +111,12 @@ def user_facing_whatsapp_error(message: str | None) -> str:
             "Your message was saved in-app — our team is fixing the connection."
         )
     lower = str(message).lower()
+    if "131047" in lower or "allowed window" in lower or "24 hour" in lower or "24-hour" in lower:
+        return (
+            "WhatsApp only allows free messages within 24h of the staff member's "
+            "last reply. Ask them to message Miya once, or configure "
+            "WHATSAPP_TEMPLATE_MANAGER_MESSAGE for outside-window delivery."
+        )
     if "phone" in lower and (
         "invalid" in lower or "not a whatsapp" in lower or "not registered" in lower
     ):
@@ -120,6 +126,12 @@ def user_facing_whatsapp_error(message: str | None) -> str:
         )
     if "rate" in lower and "limit" in lower:
         return "WhatsApp is rate-limiting us — try again in a few minutes."
+    if "manager_message" in lower and "template" in lower:
+        return (
+            "Staff haven't messaged recently (WhatsApp 24h rule). "
+            "Ask them to send any message to Miya, then try again — "
+            "or set up the manager_message WhatsApp template."
+        )
     return str(message).strip()[:240]
 
 

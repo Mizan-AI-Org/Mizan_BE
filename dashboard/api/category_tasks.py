@@ -291,6 +291,29 @@ def _serialize_dashboard_task(task, *, now=None) -> dict[str, Any]:
     # frontend falls back to ``status`` when ``pill_status`` is missing.
     data["pill_status"] = _task_pill_status(task, now=now)
     data["age_label"] = _age_label(getattr(task, "created_at", None), now=now)
+
+    # Cross-cutting: manager validation label (non-blocking) + absent assignee
+    requires_val = bool(getattr(task, "requires_manager_validation", False))
+    validated = bool(getattr(task, "manager_validated_at", None))
+    data["requires_manager_validation"] = requires_val
+    data["manager_validated"] = validated if requires_val else None
+    data["validation_label"] = (
+        None
+        if not requires_val
+        else ("validated" if validated else "not validated by manager")
+    )
+    data["has_photo_proof"] = bool(getattr(task, "proof_media_url", None))
+    data["require_photo_proof"] = bool(getattr(task, "require_photo_proof", False))
+
+    assignee_absent = False
+    try:
+        from dashboard.views_ops_memory import _is_user_absent
+
+        if getattr(task, "assigned_to_id", None):
+            assignee_absent = _is_user_absent(task.assigned_to, task.restaurant)
+    except Exception:
+        pass
+    data["assignee_absent"] = assignee_absent
     return data
 
 

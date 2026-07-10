@@ -26,6 +26,23 @@ logger = logging.getLogger(__name__)
 LUA_WEBHOOK_TIMEOUT = 25
 
 
+def _is_outside_messaging_window_error(payload) -> bool:
+    """True when Meta rejects free-form send because the 24h window closed."""
+    text = (parse_whatsapp_api_error(payload) or "").lower()
+    if not text and isinstance(payload, dict):
+        text = str(payload).lower()
+    hints = (
+        "131047",
+        "outside the allowed window",
+        "re-engagement message",
+        "24 hour",
+        "24-hour",
+        "experimental number",
+    )
+    return any(h in text for h in hints)
+
+
+
 KNOWN_COUNTRY_CODES = [
     '1', '7',
     '20', '27', '30', '31', '32', '33', '34', '36', '39', '40', '41', '43', '44', '45', '46', '47', '48', '49',
@@ -857,6 +874,19 @@ class NotificationService:
             except Exception:
                 response_data = {"raw": resp.text}
 
+            # Outside Meta's 24h window (#131047), free-form text fails.
+            # Retry with an approved utility template when configured.
+            if not ok and _is_outside_messaging_window_error(response_data):
+                tpl_ok, tpl_data = self._send_manager_message_template(
+                    phone_digits,
+                    body,
+                    notification=data.get('notification'),
+                )
+                if tpl_ok:
+                    return True
+                if tpl_data:
+                    response_data = tpl_data
+
             # Audit log
             try:
                 NotificationLog.objects.create(
@@ -865,7 +895,7 @@ class NotificationService:
                     recipient_address=phone_digits,
                     status='SENT' if ok else 'FAILED',
                     external_id=external_id,
-                    response_data=response_data,
+                    response_data=response_data if isinstance(response_data, dict) else {"raw": str(response_data)},
                     error_message=None if ok else (parse_whatsapp_api_error(response_data) or resp.text[:500])
                 )
             except Exception:
@@ -1102,6 +1132,7 @@ class NotificationService:
         departments=None,
         tags=None,
         channels=None,
+        source="miya_announcement",
     ):
         """
         Send an announcement (in-app + WhatsApp) to staff in a restaurant.
@@ -1208,7 +1239,10 @@ class NotificationService:
                         message=message,
                         notification_type="ANNOUNCEMENT",
                         priority="MEDIUM",
-                        data={"source": "miya_announcement", "channels": channels},
+                        data={
+                            "source": source or "miya_announcement",
+                            "channels": channels,
+                        },
                     )
                     ok, _ = self.send_custom_notification(
                         recipient=recipient,

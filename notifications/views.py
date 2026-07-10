@@ -1146,8 +1146,21 @@ def create_announcement(request):
             logger.info("Announcement scheduled for future delivery.")
         else:
             # Send via notification service for immediate delivery with multi-channel support
-            # Channels can be provided as list in request.data['channels']
-            channels = request.data.get('channels', ['app', 'whatsapp'])
+            # Channels can be provided as list in request.data['channels'] (FormData may
+            # send repeated keys — QueryDict.getlist handles that).
+            raw_channels = request.data.getlist('channels') if hasattr(request.data, 'getlist') else None
+            if raw_channels:
+                channels = [str(c).strip() for c in raw_channels if str(c).strip()]
+            else:
+                single = request.data.get('channels')
+                if isinstance(single, (list, tuple)):
+                    channels = [str(c).strip() for c in single if str(c).strip()]
+                elif single:
+                    channels = [str(single).strip()]
+                else:
+                    channels = ['app', 'whatsapp']
+            if not channels:
+                channels = ['app', 'whatsapp']
             override = bool(request.data.get('override_preferences', False))
             # If override, include more channels by default
             if override and 'sms' not in channels:
@@ -1159,7 +1172,7 @@ def create_announcement(request):
                 channels=channels,
                 override_preferences=override
                 )
-            logger.info("Announcement sent via notification service.")
+            logger.info("Announcement sent via notification service channels=%s", channels)
         
         return Response({
             'success': True,
@@ -1419,6 +1432,11 @@ def register_device_token(request):
             'success': False,
             'error': str(e)
         }, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _lua_owns_whatsapp_conversation() -> bool:
+    """When Lua/Miya webhook is configured, Miya owns checklist Yes/No/N/A replies."""
+    return bool((getattr(dj_settings, "LUA_WHATSAPP_WEBHOOK_URL", None) or "").strip())
 
 
 def _forward_to_lua_whatsapp(payload):
@@ -1880,6 +1898,9 @@ def whatsapp_webhook(request):
                             # HANDLE CHECKLIST BUTTON RESPONSES (Yes/No/N/A)
                             # =====================================================
                             elif btn_id in ['yes', 'no', 'n_a', 'Yes', 'No', 'N/A'] and session.state == 'in_checklist':
+                                # When Miya is live, let Lua handle Yes/No/N/A (avoid double replies).
+                                if _lua_owns_whatsapp_conversation():
+                                    continue
                                 response_value = btn_id.lower().replace('/', '_')
                                 if _handle_checklist_response(notification_service, session, user, phone_digits, response_value):
                                     continue
@@ -2750,8 +2771,15 @@ def whatsapp_webhook(request):
 
                     # Checklist: accept typed yes/no/n/a as well as button replies
                     if session.state == 'in_checklist':
+                        # Miya owns the conversational checklist when Lua webhook is configured.
+                        if _lua_owns_whatsapp_conversation():
+                            # Still allow start checklist / clock out to fall through for legacy paths
+                            if _normalize_start_checklist_intent(raw_body or body) or body in ['clock out', 'clock-out', 'clockout']:
+                                pass
+                            else:
+                                continue
                         # Let "start checklist" / "clock out" intents pass through
-                        if _normalize_start_checklist_intent(raw_body or body) or body in ['clock out', 'clock-out', 'clockout']:
+                        elif _normalize_start_checklist_intent(raw_body or body) or body in ['clock out', 'clock-out', 'clockout']:
                             pass  # Fall through to the handlers below
                         else:
                             body_clean = body.strip()
@@ -2766,7 +2794,7 @@ def whatsapp_webhook(request):
                             if response_value and _handle_checklist_response(notification_service, session, user, phone_digits, response_value):
                                 continue
                             checklist_invalid = (
-                                "Hmm, I didn't get that. Please choose ✅ Yes, ❌ No, or ➖ N/A for this step (or type yes, no, or n/a)."
+                                "Hmm, I didn't quite catch that — reply *Yes*, *No*, or *N/A* for this step."
                             )
                             notification_service.send_whatsapp_text(phone_digits, checklist_invalid)
                             continue

@@ -483,6 +483,16 @@ class StaffMessagesRecentView(APIView):
                     notification__sender__isnull=False,
                 )
                 .filter(recipient_scope)
+                # Composer feed: manager messages from this widget (or Miya
+                # "Message from manager" titles). Exclude process-template
+                # blasts that used to fill this list with FAILED noise.
+                .filter(
+                    Q(notification__title__istartswith="Message from manager")
+                    | Q(notification__title__istartswith="Urgent message from manager")
+                    | Q(notification__data__source="staff_messages_widget")
+                )
+                .exclude(notification__title__istartswith="Process updated")
+                .exclude(notification__title__istartswith="Process created")
                 .select_related(
                     "notification",
                     "notification__recipient",
@@ -679,6 +689,7 @@ class StaffMessagesSendView(APIView):
             departments=departments_kw,
             tags=tags_kw,
             channels=["app", "whatsapp"],
+            source="staff_messages_widget",
         )
 
         if not success or count == 0:

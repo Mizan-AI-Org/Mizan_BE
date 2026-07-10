@@ -1,15 +1,18 @@
 /**
  * ChecklistRespondTool
  *
- * Records a staff member's response (Yes/No/N/A) to the current checklist task
- * and returns the next task for Miya to send, or a completion summary.
- *
- * Miya drives the entire checklist conversation — Django is just the data API.
+ * Records Yes/No/N/A for the current shift checklist task and returns the next
+ * prompt (or a warm completion). Miya owns WhatsApp delivery.
  */
 
 import { LuaTool, User, env } from "lua-cli";
 import { z } from "zod";
 import ApiService from "../../services/ApiService";
+import {
+    formatChecklistComplete,
+    formatChecklistTaskPrompt,
+} from "../../utils/checklistMessages";
+import { resolveStaffPhoneForByPhoneTools } from "../../utils/resolveStaffPhoneFromLuaUser";
 
 export default class ChecklistRespondTool implements LuaTool {
     name = "checklist_respond";
@@ -19,11 +22,11 @@ export default class ChecklistRespondTool implements LuaTool {
         "Phone is auto-resolved from WhatsApp context.";
 
     inputSchema = z.object({
-        response: z.enum(["yes", "no", "n_a"]).describe(
-            "The staff's response: 'yes' = task done, 'no' = not done, 'n_a' = not applicable"
-        ),
+        response: z
+            .enum(["yes", "no", "n_a"])
+            .describe("The staff's response: 'yes' = task done, 'no' = not done, 'n_a' = not applicable"),
         notes: z.string().optional().describe("Optional notes from the staff (e.g. reason for 'no')"),
-        phone: z.string().optional().describe("Staff phone (auto-resolved from WhatsApp)")
+        phone: z.string().optional().describe("Staff phone (auto-resolved from WhatsApp)"),
     });
 
     private apiService: ApiService;
@@ -33,21 +36,21 @@ export default class ChecklistRespondTool implements LuaTool {
     }
 
     private resolvePhone(user: any, inputPhone?: string): string {
-        if (!user) return inputPhone ? String(inputPhone).replace(/[^0-9]/g, "") : "";
-        const userData = (user as any)?.data || {};
-        const profile = (user as any)?._luaProfile || {};
-        const uid = (user as any)?.uid;
-        const phoneFromUid =
-            uid && String(uid).includes(":") ? String(uid).split(":")[1] : uid;
-        const phoneFromData = (userData as any).phone ?? (profile as any).phoneNumber ?? (profile as any).mobileNumber;
-        const raw = [inputPhone, phoneFromData, phoneFromUid].find((p) => p && String(p).replace(/[^0-9]/g, "").length >= 6);
-        return raw ? String(raw).replace(/[^0-9]/g, "") : "";
+        return resolveStaffPhoneForByPhoneTools(
+            {
+                uid: (user as any)?.uid,
+                data: (user as any)?.data,
+                _luaProfile: (user as any)?._luaProfile,
+            },
+            inputPhone || null,
+        );
     }
 
     private resolveToken(user: any, context?: any): string | undefined {
         return (
             env("LUA_WEBHOOK_API_KEY") ||
             env("WEBHOOK_API_KEY") ||
+            env("MIZAN_SERVICE_TOKEN") ||
             (user as any)?.token ||
             (user as any)?.data?.token ||
             context?.metadata?.token ||
@@ -65,18 +68,29 @@ export default class ChecklistRespondTool implements LuaTool {
             return { status: "error", message: "Connection issue. Please try again." };
         }
         if (!phone) {
-            return { status: "error", message: "I couldn't identify your account. Please try again." };
+            return {
+                status: "error",
+                message: "I couldn't identify your account. Please try again.",
+            };
         }
 
         try {
             console.log(`[ChecklistRespondTool] phone=${phone} response=${input.response}`);
-            const result = await this.apiService.respondToChecklist(phone, input.response, token, input.notes);
+            const result = await this.apiService.respondToChecklist(
+                phone,
+                input.response,
+                token,
+                input.notes,
+            );
             console.log(`[ChecklistRespondTool] Response:`, JSON.stringify(result));
 
             if (!result.success) {
                 return {
                     status: "error",
-                    message: result.message_for_user || result.error || "Could not record your response. Please try again.",
+                    message:
+                        result.message_for_user ||
+                        result.error ||
+                        "Could not record your response. Please try again.",
                 };
             }
 
@@ -86,7 +100,14 @@ export default class ChecklistRespondTool implements LuaTool {
                 const s = r.summary || {};
                 return {
                     status: "completed",
-                    message: r.message_for_user || `✅ Checklist complete! ${s.yes || 0} done, ${s.no || 0} not done, ${s.n_a || 0} skipped.`,
+                    message:
+                        r.message_for_user ||
+                        formatChecklistComplete({
+                            yes: s.yes,
+                            no: s.no,
+                            n_a: s.n_a,
+                            total: r.total,
+                        }),
                     summary: r.summary,
                     instruction: "SEND this completion message to the staff. The checklist is finished.",
                 };
@@ -94,19 +115,19 @@ export default class ChecklistRespondTool implements LuaTool {
 
             if (r.status === "next_task" && r.current_task) {
                 const t = r.current_task;
+                const task = {
+                    index: t.index,
+                    title: t.title,
+                    description: t.description || "",
+                };
                 return {
                     status: "next_task",
                     answered: r.answered,
                     total: r.total,
-                    current_task: {
-                        id: t.id,
-                        index: t.index,
-                        title: t.title,
-                        description: t.description || "",
-                    },
-                    message: `✓ Recorded.\n\n📋 *Task ${t.index}/${r.total}:* ${t.title}` +
-                        (t.description ? `\n${t.description}` : "") +
-                        `\n\nReply *Yes*, *No*, or *N/A*.`,
+                    current_task: { id: t.id, ...task },
+                    message: formatChecklistTaskPrompt(task, r.total, {
+                        answered: r.answered,
+                    }),
                     instruction: "SEND this next task to the staff and wait for their reply.",
                 };
             }
