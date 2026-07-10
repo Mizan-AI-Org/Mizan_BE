@@ -297,11 +297,64 @@ export const tenantContextPreprocessor = new PreProcessor({
                 }
             }
 
+            // Load sector playbook so Miya is brilliantly vertical-aware on WhatsApp too
+            let businessVertical =
+                String(
+                    (user.data as any)?.businessVertical ||
+                        (user.data as any)?.business_vertical ||
+                        (metadata as any).businessVertical ||
+                        (metadata as any).business_vertical ||
+                        "",
+                )
+                    .trim()
+                    .toUpperCase() || "";
+            let verticalHint = "";
+            try {
+                const details = await new ApiService().getRestaurantDetailsForAgent(
+                    String(detectedRestaurantId),
+                );
+                if (details) {
+                    businessVertical = String(
+                        details.business_vertical ||
+                            details.general_settings?.business_vertical ||
+                            businessVertical ||
+                            "RESTAURANT",
+                    ).toUpperCase();
+                    const pb = details.vertical_playbook;
+                    if (pb) {
+                        verticalHint = [
+                            `Sector label: ${pb.label || businessVertical}`,
+                            pb.vocabulary ? `Vocabulary: ${pb.vocabulary}` : null,
+                            pb.priorities ? `Priorities: ${pb.priorities}` : null,
+                            pb.do_not ? `Hard rules: ${pb.do_not}` : null,
+                        ]
+                            .filter(Boolean)
+                            .join(" | ");
+                    }
+                    if (details.name && !detectedRestaurantName) {
+                        detectedRestaurantName = details.name;
+                    }
+                    user.data = {
+                        ...user.data,
+                        businessVertical,
+                        restaurantName: detectedRestaurantName || user.data?.restaurantName,
+                    };
+                }
+            } catch (e: unknown) {
+                const em = e instanceof Error ? e.message : String(e);
+                console.warn(`[TenantContext] vertical playbook fetch failed (non-fatal): ${em}`);
+            }
+            if (!businessVertical) businessVertical = "RESTAURANT";
+
             const messageAudience = resolveMessageAudience(channel);
             const contextBlock = [
                 `[SYSTEM: PERSISTENT CONTEXT]`,
+                `Workspace: ${detectedRestaurantName || "Unknown"}`,
                 `Restaurant: ${detectedRestaurantName || "Unknown"}`,
                 `Restaurant ID: ${detectedRestaurantId}`,
+                `business_vertical: ${businessVertical}`,
+                verticalHint ? `VERTICAL_PLAYBOOK: ${verticalHint}` : null,
+                `NOTE: restaurant_id is the tenant/workspace id for EVERY sector (retail, construction, healthcare ops, hospitality, manufacturing, services, restaurant, other) — not proof this is a restaurant.`,
                 `User: ${user.data?.userName || user._luaProfile?.fullName || "Manager"} (Role: ${user.data?.role || "Owner"})`,
                 user.data?.userId ? `Mizan User ID: ${user.data.mizanUserId || user.data.userId}` : null,
                 user.data?.email ? `User Email: ${user.data.email}` : null,
@@ -309,7 +362,8 @@ export const tenantContextPreprocessor = new PreProcessor({
                 audienceContextLine(messageAudience),
                 `Today is ${now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}`,
                 `Current Time: ${now.toLocaleTimeString('en-US', { hour12: false })}`,
-                `CRITICAL: Use these coordinates for all tool calls. Do not ask for restaurant or date.`,
+                `CRITICAL: Use these coordinates for all tool calls. Do not ask for restaurant or date. Match language and examples to business_vertical.`,
+                `Be brilliantly proactive for this sector — anticipate coverage, checklists, stock, safety, and follow-ups.`,
                 `AGENT_IDENTITY_VERIFIED: TRUE`
             ].filter(Boolean).join('\n');
 

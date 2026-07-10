@@ -205,10 +205,10 @@ class StaffMessagesRecentCacheHelpersTests(SimpleTestCase):
         )
 
         rid = uuid.uuid4()
-        for lim in (DEFAULT_LIMIT, 25, MAX_LIMIT):
+        for lim in (DEFAULT_LIMIT, 10, 25, MAX_LIMIT):
             cache.set(_recent_cache_key(rid, lim), {"lim": lim}, 60)
         _invalidate_recent_cache(rid)
-        for lim in (DEFAULT_LIMIT, 25, MAX_LIMIT):
+        for lim in (DEFAULT_LIMIT, 10, 25, MAX_LIMIT):
             self.assertIsNone(
                 cache.get(_recent_cache_key(rid, lim)),
                 msg=f"limit {lim} slice should be wiped",

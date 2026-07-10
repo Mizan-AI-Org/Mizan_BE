@@ -1,6 +1,6 @@
 {
-  "lastHash": "c59f4e06916d24d161209155396657abc2488a2ec7316ee395bfb6a226db2c12",
-  "lastPushedAt": "2026-06-18T00:35:25.184Z",
+  "lastHash": "ab2a15273009d96d455f1782f9cfc7141ca1ad988aded7a57ae1757077190249",
+  "lastPushedAt": "2026-07-10T20:06:45.739Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "a52345c2a0d85706"
+      "hash": "81585ca97b78d73b"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "d4e486cced212fa7"
+      "hash": "9c06bd60922ae89d"
     },
     {
       "relativePath": "src/modules/incident-management.ts",
@@ -36,19 +36,27 @@
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "d4f6813d000e4999"
+      "hash": "dd861cc9cdaa741b"
     },
     {
       "relativePath": "src/preprocessors/executeOperationsIntent.ts",
-      "hash": "fadac17309bd2b00"
+      "hash": "86e753866e1aa064"
+    },
+    {
+      "relativePath": "src/preprocessors/IncidentCommandPreprocessor.ts",
+      "hash": "16fe5a1f341b580a"
+    },
+    {
+      "relativePath": "src/preprocessors/LanguageMirrorPreprocessor.ts",
+      "hash": "246ca85f145a5062"
     },
     {
       "relativePath": "src/preprocessors/operationIntent.ts",
-      "hash": "4017e65b124ae004"
+      "hash": "f33e10554eaacc9e"
     },
     {
       "relativePath": "src/preprocessors/OperationsCommandPreprocessor.ts",
-      "hash": "0aae80159b68a198"
+      "hash": "a6a6a6b851efecdf"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -56,7 +64,7 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "ad63c03b3e110998"
+      "hash": "881eaa1d834459ba"
     },
     {
       "relativePath": "src/skills/facilities.skill.ts",
@@ -76,7 +84,7 @@
     },
     {
       "relativePath": "src/skills/tools/IncidentReportTool.ts",
-      "hash": "dca10c574c0f69bc"
+      "hash": "17076442dfa3b74b"
     },
     {
       "relativePath": "src/skills/tools/InventoryCountTool.ts",
@@ -92,15 +100,35 @@
     },
     {
       "relativePath": "src/skills/tools/StaffClockInTool.ts",
-      "hash": "041a93c9a1121302"
+      "hash": "9f359211396784fb"
     },
     {
       "relativePath": "src/skills/tools/WasteReportTool.ts",
       "hash": "9a9a48203aaa30df"
     },
     {
+      "relativePath": "src/utils/detectReplyLanguage.ts",
+      "hash": "5c797a0740976380"
+    },
+    {
+      "relativePath": "src/utils/extractLastUserText.ts",
+      "hash": "9dd35f9d6edf325b"
+    },
+    {
+      "relativePath": "src/utils/extractLuaBridgeContext.ts",
+      "hash": "886079f33d46b8c0"
+    },
+    {
+      "relativePath": "src/utils/resolveStaffIdFromLuaUser.ts",
+      "hash": "9fae9732b0ce03a2"
+    },
+    {
       "relativePath": "src/utils/resolveStaffPhoneFromLuaUser.ts",
       "hash": "7940e06883afdab6"
+    },
+    {
+      "relativePath": "src/utils/resolveTenantForUser.ts",
+      "hash": "5e518f2fd5eab862"
     },
     {
       "relativePath": "tsconfig.json",

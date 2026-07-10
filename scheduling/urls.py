@@ -61,6 +61,16 @@ from .views_agent import (
     agent_approve_shift_swap,
     agent_reject_shift_swap,
 )
+from .views_memory import (
+    agent_memory_notes,
+    agent_memory_note_delete,
+    agent_memory_lists,
+    agent_personal_reminders,
+    agent_daily_briefing,
+    agent_memory_serendipity,
+    agent_reminders_due,
+    agent_reminder_mark_fired,
+)
 
 router = DefaultRouter()
 router.register(r'weekly-schedules-v2', WeeklyScheduleViewSet, basename='weekly-schedule-v2')
@@ -140,6 +150,15 @@ urlpatterns = [
     path('agent/detect-conflicts/', csrf_exempt(agent_detect_conflicts), name='agent_detect_conflicts'),
     path('agent/memories/', csrf_exempt(agent_memory_list_or_save), name='agent_memory_list_or_save'),
     path('agent/memories/delete/', csrf_exempt(agent_memory_delete), name='agent_memory_delete'),
+    # WhatsApp-first memory layer (Memorae-parity)
+    path('agent/memory-notes/', csrf_exempt(agent_memory_notes), name='agent_memory_notes'),
+    path('agent/memory-notes/delete/', csrf_exempt(agent_memory_note_delete), name='agent_memory_note_delete'),
+    path('agent/memory-lists/', csrf_exempt(agent_memory_lists), name='agent_memory_lists'),
+    path('agent/personal-reminders/', csrf_exempt(agent_personal_reminders), name='agent_personal_reminders'),
+    path('agent/daily-briefing/', csrf_exempt(agent_daily_briefing), name='agent_daily_briefing'),
+    path('agent/memory-serendipity/', csrf_exempt(agent_memory_serendipity), name='agent_memory_serendipity'),
+    path('agent/reminders-due/', csrf_exempt(agent_reminders_due), name='agent_reminders_due'),
+    path('agent/reminders/mark-fired/', csrf_exempt(agent_reminder_mark_fired), name='agent_reminder_mark_fired'),
     path('agent/proactive-insights/', csrf_exempt(agent_proactive_insights), name='agent_proactive_insights'),
     path('agent/mark-no-show/', csrf_exempt(agent_mark_no_show), name='agent_mark_no_show'),
     path('agent/assign-coverage/', csrf_exempt(agent_assign_coverage), name='agent_assign_coverage'),

@@ -433,6 +433,12 @@ CLOCK_IN_WINDOW_MINUTES_BEFORE = int(config('CLOCK_IN_WINDOW_MINUTES_BEFORE', de
 CLOCK_IN_WINDOW_MINUTES_AFTER = int(config('CLOCK_IN_WINDOW_MINUTES_AFTER', default='15'))
 # Optional: use approved staff_checklist template for each step (body {{1}} = question; buttons Yes/No/N/A). Empty = use interactive buttons with dynamic task text.
 WHATSAPP_TEMPLATE_STAFF_CHECKLIST = config('WHATSAPP_TEMPLATE_STAFF_CHECKLIST', default='staff_checklist')
+# Manager → staff free-form fallback when Meta's 24h window is closed (#131047).
+# Approve a UTILITY template in Meta with one body variable {{1}} = message text.
+WHATSAPP_TEMPLATE_MANAGER_MESSAGE = config('WHATSAPP_TEMPLATE_MANAGER_MESSAGE', default='')
+WHATSAPP_TEMPLATE_MANAGER_MESSAGE_LANGUAGE = config(
+    'WHATSAPP_TEMPLATE_MANAGER_MESSAGE_LANGUAGE', default='en'
+)
 
 # ---------------------------
 # Stripe Configuration
@@ -554,6 +560,19 @@ CELERY_BEAT_SCHEDULE = {
     "invoice_overdue_reminder_daily": {
         "task": "finance.tasks.invoice_overdue_reminder_sweep",
         "schedule": crontab(minute=30, hour=8),
+    },
+    # WhatsApp-first memory layer (Memorae-parity)
+    "personal_reminder_sweep": {
+        "task": "scheduling.memory_tasks.personal_reminder_sweep",
+        "schedule": crontab(minute='*'),  # every minute — fire due reminders
+    },
+    "daily_briefing_sweep": {
+        "task": "scheduling.memory_tasks.daily_briefing_sweep",
+        "schedule": crontab(minute=30, hour=7),  # 07:30 local
+    },
+    "memory_serendipity_weekly": {
+        "task": "scheduling.memory_tasks.serendipity_sweep",
+        "schedule": crontab(minute=0, hour=18, day_of_week=0),  # Sunday 18:00
     },
 }
 

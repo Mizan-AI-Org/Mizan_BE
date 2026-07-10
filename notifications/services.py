@@ -26,6 +26,48 @@ logger = logging.getLogger(__name__)
 LUA_WEBHOOK_TIMEOUT = 25
 
 
+def _is_outside_messaging_window_error(payload) -> bool:
+    """True when Meta rejects free-form send because the 24h window closed."""
+    text = (parse_whatsapp_api_error(payload) or "").lower()
+    if not text and isinstance(payload, dict):
+        text = str(payload).lower()
+    hints = (
+        "131047",
+        "131026",  # Message undeliverable / session issues
+        "131051",  # Unsupported message type outside window (some payloads)
+        "outside the allowed window",
+        "re-engagement message",
+        "24 hour",
+        "24-hour",
+        "more than 24 hours",
+        "experimental number",
+        "free-form messages can only be sent",
+    )
+    return any(h in text for h in hints)
+
+
+def _should_retry_manager_template(payload, *, force: bool = False) -> bool:
+    """Whether a free-form WhatsApp failure should fall back to manager_message."""
+    if force:
+        return True
+    if _is_outside_messaging_window_error(payload):
+        return True
+    text = (parse_whatsapp_api_error(payload) or "").lower()
+    if not text and isinstance(payload, dict):
+        text = str(payload).lower()
+    # Catch-all Meta rejections that templates often still deliver.
+    return any(
+        h in text
+        for h in (
+            "(#131",
+            "error_subcode",
+            "user has not accepted",
+            "not a valid whatsapp user",
+        )
+    )
+
+
+
 KNOWN_COUNTRY_CODES = [
     '1', '7',
     '20', '27', '30', '31', '32', '33', '34', '36', '39', '40', '41', '43', '44', '45', '46', '47', '48', '49',
@@ -857,15 +899,43 @@ class NotificationService:
             except Exception:
                 response_data = {"raw": resp.text}
 
-            # Audit log
+            # Outside Meta's 24h window (#131047) free-form text fails.
+            # Staff Messages widget often hits cold contacts — always try the
+            # approved manager_message utility template as fallback.
+            notif = data.get("notification")
+            source = ""
+            try:
+                source = str((getattr(notif, "data", None) or {}).get("source") or "")
+            except Exception:
+                source = ""
+            force_tpl = source in (
+                "staff_messages_widget",
+                "miya_announcement",
+                "inform_staff",
+            )
+            template_attempted = False
+            if not ok and _should_retry_manager_template(response_data, force=force_tpl):
+                template_attempted = True
+                tpl_ok, tpl_data = self._send_manager_message_template(
+                    phone_digits,
+                    body,
+                    notification=notif,
+                    audit=True,
+                )
+                if tpl_ok:
+                    return True
+                # Template helper already wrote the FAILED audit row.
+                return False
+
+            # Audit log (free-form success, or failure with no template fallback)
             try:
                 NotificationLog.objects.create(
-                    notification=data.get('notification'),
+                    notification=notif,
                     channel='whatsapp',
                     recipient_address=phone_digits,
                     status='SENT' if ok else 'FAILED',
                     external_id=external_id,
-                    response_data=response_data,
+                    response_data=response_data if isinstance(response_data, dict) else {"raw": str(response_data)},
                     error_message=None if ok else (parse_whatsapp_api_error(response_data) or resp.text[:500])
                 )
             except Exception:
@@ -892,6 +962,100 @@ class NotificationService:
             except Exception:
                 pass
             return False
+
+    def _send_manager_message_template(
+        self, phone_digits, body, notification=None, *, audit: bool = True
+    ):
+        """
+        Fallback when free-form WhatsApp fails outside the 24h window.
+        Requires approved UTILITY template WHATSAPP_TEMPLATE_MANAGER_MESSAGE
+        with a single body variable {{1}} = full message text.
+
+        Tries the configured language first, then common approved locales
+        (fr / en / en_US / ar) so a language mismatch doesn't block delivery.
+        """
+        template_name = (getattr(settings, "WHATSAPP_TEMPLATE_MANAGER_MESSAGE", None) or "").strip()
+        if not template_name:
+            logger.warning(
+                "_send_manager_message_template: WHATSAPP_TEMPLATE_MANAGER_MESSAGE not set"
+            )
+            return False, {
+                "error": "WHATSAPP_TEMPLATE_MANAGER_MESSAGE is not configured",
+            }
+        primary = (
+            getattr(settings, "WHATSAPP_TEMPLATE_MANAGER_MESSAGE_LANGUAGE", None) or "fr"
+        ).strip() or "fr"
+        languages: list[str] = []
+        for lang in (primary, "fr", "en", "en_US", "ar"):
+            if lang and lang not in languages:
+                languages.append(lang)
+
+        # Meta rejects some control chars in template params — keep one line.
+        text = " ".join((body or "").split())[:1024] or "You have a new message from your manager."
+        components = [
+            {
+                "type": "body",
+                "parameters": [{"type": "text", "text": text}],
+            }
+        ]
+        last: dict | None = None
+        for idx, language in enumerate(languages):
+            is_last = idx == len(languages) - 1
+            # Don't write intermediate FAILED rows while probing locales.
+            ok, data = self.send_whatsapp_template(
+                phone_digits,
+                template_name,
+                language_code=language,
+                components=components,
+                notification=notification,
+                audit=False,
+            )
+            last = data if isinstance(data, dict) else {"raw": data}
+            if ok:
+                if audit:
+                    try:
+                        from .models import NotificationLog
+
+                        payload = data.get("data") if isinstance(data, dict) else None
+                        external_id = None
+                        if isinstance(data, dict):
+                            external_id = data.get("external_id")
+                        if not external_id and isinstance(payload, dict) and payload.get("messages"):
+                            external_id = str(payload["messages"][0].get("id") or "") or None
+                        NotificationLog.objects.create(
+                            notification=notification,
+                            channel="whatsapp",
+                            recipient_address=str(phone_digits),
+                            status="SENT",
+                            external_id=external_id,
+                            response_data=(
+                                payload
+                                if isinstance(payload, dict)
+                                else (data if isinstance(data, dict) else {})
+                            ),
+                            error_message=None,
+                        )
+                    except Exception:
+                        pass
+                return True, last
+            if is_last and audit:
+                try:
+                    from .models import NotificationLog
+
+                    payload = data.get("data") if isinstance(data, dict) else data
+                    NotificationLog.objects.create(
+                        notification=notification,
+                        channel="whatsapp",
+                        recipient_address=str(phone_digits),
+                        status="FAILED",
+                        response_data=(
+                            payload if isinstance(payload, dict) else {"raw": str(payload)}
+                        ),
+                        error_message=(parse_whatsapp_api_error(payload) or str(payload))[:500],
+                    )
+                except Exception:
+                    pass
+        return False, last or {"error": "template send failed"}
 
     # ----------------------------------------------------------------------
 
@@ -1060,6 +1224,18 @@ class NotificationService:
             if isinstance(data, dict):
                 external_id = str(data.get('messages', [{}])[0].get('id')) if data.get('messages') else None
 
+            if not ok and _should_retry_manager_template(data, force=True):
+                tpl_ok, tpl_data = self._send_manager_message_template(
+                    phone,
+                    body,
+                    notification=notification,
+                    audit=True,
+                )
+                if tpl_ok:
+                    return True, tpl_data if isinstance(tpl_data, dict) else {"data": tpl_data}
+                # Template helper already audited failure
+                return False, tpl_data if isinstance(tpl_data, dict) else data
+
             # Audit log (best-effort)
             try:
                 NotificationLog.objects.create(
@@ -1102,6 +1278,7 @@ class NotificationService:
         departments=None,
         tags=None,
         channels=None,
+        source="miya_announcement",
     ):
         """
         Send an announcement (in-app + WhatsApp) to staff in a restaurant.
@@ -1208,7 +1385,10 @@ class NotificationService:
                         message=message,
                         notification_type="ANNOUNCEMENT",
                         priority="MEDIUM",
-                        data={"source": "miya_announcement", "channels": channels},
+                        data={
+                            "source": source or "miya_announcement",
+                            "channels": channels,
+                        },
                     )
                     ok, _ = self.send_custom_notification(
                         recipient=recipient,
@@ -1244,7 +1424,16 @@ class NotificationService:
             logger.exception("send_announcement_to_audience failed: %s", e)
             return False, 0, str(e), {}
 
-    def send_whatsapp_template(self, phone, template_name, language_code='en_US', components=None, notification=None):
+    def send_whatsapp_template(
+        self,
+        phone,
+        template_name,
+        language_code='en_US',
+        components=None,
+        notification=None,
+        *,
+        audit: bool = True,
+    ):
         """Send a WhatsApp template message via Meta Cloud API"""
         try:
             from .models import NotificationLog
@@ -1269,7 +1458,7 @@ class NotificationService:
                 }
             }
             
-            logger.info(f"Sending WhatsApp template '{template_name}' to {phone}")
+            logger.info(f"Sending WhatsApp template '{template_name}' ({language_code}) to {phone}")
             resp = requests.post(url, headers={'Authorization': f"Bearer {token}"}, json=payload)
             try:
                 data = resp.json()
@@ -1283,35 +1472,36 @@ class NotificationService:
             if isinstance(data, dict):
                 external_id = str(data.get('messages', [{}])[0].get('id')) if data.get('messages') else None
 
-            # Audit log
-            try:
-                NotificationLog.objects.create(
-                    notification=notification,
-                    channel='whatsapp',
-                    recipient_address=phone,
-                    status='SENT' if ok else 'FAILED',
-                    external_id=external_id,
-                    response_data=data if isinstance(data, dict) else {"raw": str(data)},
-                    error_message=None if ok else str(data)[:500],
-                )
-            except Exception:
-                pass
+            if audit:
+                try:
+                    NotificationLog.objects.create(
+                        notification=notification,
+                        channel='whatsapp',
+                        recipient_address=phone,
+                        status='SENT' if ok else 'FAILED',
+                        external_id=external_id,
+                        response_data=data if isinstance(data, dict) else {"raw": str(data)},
+                        error_message=None if ok else str(data)[:500],
+                    )
+                except Exception:
+                    pass
 
             return ok, {"status_code": resp.status_code, "data": data, "external_id": external_id}
         except Exception as e:
             logger.error(f"WhatsApp template error: {e}")
-            try:
-                from .models import NotificationLog
-                NotificationLog.objects.create(
-                    notification=notification,
-                    channel='whatsapp',
-                    recipient_address=''.join(filter(str.isdigit, str(phone or ''))),
-                    status='FAILED',
-                    response_data={},
-                    error_message=str(e)[:500],
-                )
-            except Exception:
-                pass
+            if audit:
+                try:
+                    from .models import NotificationLog
+                    NotificationLog.objects.create(
+                        notification=notification,
+                        channel='whatsapp',
+                        recipient_address=''.join(filter(str.isdigit, str(phone or ''))),
+                        status='FAILED',
+                        response_data={},
+                        error_message=str(e)[:500],
+                    )
+                except Exception:
+                    pass
             return False, {"error": str(e)}
 
     def send_staff_activated_welcome(self, phone, first_name, restaurant_name, language_code='en_US'):

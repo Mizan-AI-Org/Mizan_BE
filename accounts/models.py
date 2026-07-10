@@ -297,7 +297,26 @@ class BusinessLocation(models.Model):
                     setattr(rest, attr, getattr(self, attr))
                     dirty = True
             if dirty:
-                rest.save(update_fields=['latitude', 'longitude', 'radius', 'geofence_enabled', 'geofence_polygon', 'updated_at'])
+                # Never let Restaurant sync blow up location create/update —
+                # the BusinessLocation row is already saved at this point.
+                try:
+                    rest.save(
+                        update_fields=[
+                            'latitude',
+                            'longitude',
+                            'radius',
+                            'geofence_enabled',
+                            'geofence_polygon',
+                            'updated_at',
+                        ]
+                    )
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "Failed syncing primary BusinessLocation %s → Restaurant %s",
+                        self.pk,
+                        getattr(rest, 'id', None),
+                    )
 
 
 class CustomUser(AbstractUser):

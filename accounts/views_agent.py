@@ -12,6 +12,11 @@ from django.conf import settings
 from core.read_through_cache import get_or_set
 
 from .business_vertical import ALLOWED_BUSINESS_VERTICALS
+from .vertical_playbooks import (
+    format_vertical_runtime_note,
+    normalize_business_vertical,
+    vertical_playbook_for_api,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,32 +26,16 @@ def _effective_business_vertical(restaurant) -> str:
     if not restaurant:
         return "RESTAURANT"
     gs = restaurant.general_settings or {}
-    bv = str(gs.get("business_vertical") or "RESTAURANT").strip().upper()
-    return bv if bv in ALLOWED_BUSINESS_VERTICALS else "RESTAURANT"
+    return normalize_business_vertical(gs.get("business_vertical"))
 
 
 def _normalize_business_vertical(raw: str | None) -> str:
-    bv = str(raw or "RESTAURANT").strip().upper()
-    return bv if bv in ALLOWED_BUSINESS_VERTICALS else "RESTAURANT"
+    return normalize_business_vertical(raw)
 
 
 def _miya_vertical_runtime_note(business_vertical: str) -> str:
-    """Appended to base instructions so Miya tailors examples to the signed-in account."""
-    bv = _normalize_business_vertical(business_vertical)
-    hints = {
-        "RESTAURANT": "Prefer restaurant/hospitality wording when natural: guests, menu, tables, reservations, kitchen, service.",
-        "HOSPITALITY": "Prefer hotel/guest-stay wording when natural: guests, rooms, front desk, housekeeping, F&B as applicable.",
-        "RETAIL": "Prefer retail wording: store floor, SKUs, stock, registers, customers, shifts as coverage.",
-        "MANUFACTURING": "Prefer production wording: lines, shifts, QC, inventory/raw materials, safety rounds.",
-        "CONSTRUCTION": "Prefer jobsite/trades wording: crew, site, safety checklists, equipment, schedules.",
-        "HEALTHCARE": "Use operational wording only (scheduling, tasks, compliance); never give medical advice or diagnoses.",
-        "SERVICES": "Prefer professional-services wording: clients, appointments, jobs, team capacity.",
-        "OTHER": "Stay generic (team, tasks, shifts, compliance) unless the user uses sector-specific terms.",
-    }
-    return (
-        f"\n---\nCURRENT ACCOUNT — business_vertical: **{bv}**\n"
-        f"{hints.get(bv, hints['OTHER'])}\n"
-    )
+    """Appended to base instructions so Miya tailors intelligence to the signed-in account."""
+    return format_vertical_runtime_note(business_vertical)
 
 
 # Full OPERATIONAL INTELLIGENCE & EXECUTION SYSTEM PROMPT for Miya (enhancement to existing Lua instructions).
@@ -68,11 +57,21 @@ You must:
 * Never go outside the authenticated workspace scope
 
 ---
-0. VERTICAL AWARENESS (NON-NEGOTIABLE)
+0. VERTICAL AWARENESS (NON-NEGOTIABLE — BE BRILLIANTLY SECTOR-SMART)
 Supported **business_vertical** values: RESTAURANT, RETAIL, MANUFACTURING, CONSTRUCTION, HEALTHCARE, HOSPITALITY, SERVICES, OTHER.
 * Do **not** assume every account is a restaurant. Avoid defaulting to tables, menu, or reservations unless vertical is RESTAURANT/HOSPITALITY or the user uses those concepts.
-* Match the user's sector (retail → floor/stock/SKUs; construction → jobsite/crew/safety; manufacturing → production/QC; healthcare → ops/scheduling/compliance only; services → clients/appointments).
+* Match the user's sector with expert ops judgment:
+  - RESTAURANT → guests, covers, kitchen/bar, service peaks, food-safety checklists
+  - HOSPITALITY → rooms, housekeeping, front desk, arrivals/departures, guest requests
+  - RETAIL → floor, SKUs, till, stock counts, opening/closing
+  - MANUFACTURING → lines, shift handover, QC, downtime, PPE, materials
+  - CONSTRUCTION → jobsite, crew, toolbox talks, equipment, safety-first
+  - HEALTHCARE → roster, rooms, compliance checklists ONLY — never medical advice/diagnoses/prescriptions
+  - SERVICES → clients, jobs, appointments, field capacity
+  - OTHER → mirror user language; still classify requests precisely
+* Call get_business_context (or read VERTICAL_PLAYBOOK from persistent context) for peak windows and hard rules.
 * When recommending dashboard widgets, prefer ids that fit the vertical (e.g. retail_store_ops, jobsite_crew, take_orders/reservations when F&B-appropriate).
+* Be proactive: anticipate understaffing, incomplete checklists, stock risk, and safety in THIS sector's language.
 
 ---
 1. ACCOUNT ISOLATION (NON-NEGOTIABLE)
@@ -258,6 +257,7 @@ def agent_miya_instructions(request):
             return Response({
                 'instructions': full,
                 'business_vertical': bv,
+                'vertical_playbook': vertical_playbook_for_api(bv),
                 'note': 'Append or merge with existing Miya system prompt in Lua Admin.',
             })
     except Exception:
@@ -265,10 +265,28 @@ def agent_miya_instructions(request):
     # Else allow agent key (Lua calling with LUA_WEBHOOK_API_KEY)
     is_valid, _ = _validate_agent_key(request)
     if is_valid:
+        rid = (
+            request.query_params.get("restaurant_id")
+            or request.query_params.get("restaurantId")
+            or (request.data.get("restaurant_id") if hasattr(request, "data") else None)
+        )
+        bv = None
+        note = format_vertical_runtime_note("RESTAURANT")
+        if rid:
+            try:
+                from .models import Restaurant
+                rest = Restaurant.objects.filter(id=rid).first()
+                if rest:
+                    bv = _effective_business_vertical(rest)
+                    note = format_vertical_runtime_note(bv)
+            except Exception:
+                pass
+        full = MIYA_OPERATIONAL_INSTRUCTIONS + (note if bv else "")
         return Response({
-            'instructions': MIYA_OPERATIONAL_INSTRUCTIONS,
-            'business_vertical': None,
-            'note': 'Append or merge with existing Miya system prompt in Lua Admin. With agent key only, resolve business_vertical from workspace settings or user context when available.',
+            'instructions': full if bv else MIYA_OPERATIONAL_INSTRUCTIONS,
+            'business_vertical': bv,
+            'vertical_playbook': vertical_playbook_for_api(bv) if bv else None,
+            'note': 'Append or merge with existing Miya system prompt. Pass restaurant_id to get sector-specific playbook.',
         })
     return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
 

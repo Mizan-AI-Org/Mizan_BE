@@ -1,6 +1,6 @@
 {
-  "lastHash": "37e9008d0a9c03ec363297b23c613b26187a09297a43b12f25da1cb9b138d550",
-  "lastPushedAt": "2026-06-18T00:31:20.572Z",
+  "lastHash": "895088e31504b4ed201af033fea0cba456e4c3e633ab974f29cdb4ab5b6d6c36",
+  "lastPushedAt": "2026-07-10T20:03:56.705Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "623cef4ede8f431f"
+      "hash": "1b38cc45176af65c"
     },
     {
       "relativePath": "package.json",
@@ -24,15 +24,39 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "c42ec734554c3fc7"
+      "hash": "44f2ab4495c63f95"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
       "hash": "6735ab8c8e15ec79"
     },
     {
+      "relativePath": "src/preprocessors/ChecklistFlowPreprocessor.ts",
+      "hash": "bc0bb4d3d5747eee"
+    },
+    {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "d4f6813d000e4999"
+      "hash": "9e88dc6f1bbc1044"
+    },
+    {
+      "relativePath": "src/preprocessors/ClockOutPreprocessor.ts",
+      "hash": "96f42e7032ba1d6c"
+    },
+    {
+      "relativePath": "src/preprocessors/executeOperationsIntent.ts",
+      "hash": "86e753866e1aa064"
+    },
+    {
+      "relativePath": "src/preprocessors/LanguageMirrorPreprocessor.ts",
+      "hash": "246ca85f145a5062"
+    },
+    {
+      "relativePath": "src/preprocessors/operationIntent.ts",
+      "hash": "f33e10554eaacc9e"
+    },
+    {
+      "relativePath": "src/preprocessors/OperationsCommandPreprocessor.ts",
+      "hash": "ba4ae8e6055367c3"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -40,7 +64,7 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "b1a0bed2cc4bc12a"
+      "hash": "2a734510868d622b"
     },
     {
       "relativePath": "src/skills/operations.skill.ts",
@@ -59,12 +83,16 @@
       "hash": "d5b1314d0888068e"
     },
     {
+      "relativePath": "src/skills/tools/BusinessContextTool.ts",
+      "hash": "ba7ee9af360cfa43"
+    },
+    {
       "relativePath": "src/skills/tools/ChecklistRespondTool.ts",
-      "hash": "91b8c941cdedc22f"
+      "hash": "26907748c61274c6"
     },
     {
       "relativePath": "src/skills/tools/ChecklistStarterTool.ts",
-      "hash": "6f59b444cc23fe3d"
+      "hash": "912212728c963866"
     },
     {
       "relativePath": "src/skills/tools/LaborReportExportTool.ts",
@@ -84,7 +112,7 @@
     },
     {
       "relativePath": "src/skills/tools/StaffClockInTool.ts",
-      "hash": "041a93c9a1121302"
+      "hash": "9f359211396784fb"
     },
     {
       "relativePath": "src/skills/tools/StaffClockOutTool.ts",
@@ -99,8 +127,32 @@
       "hash": "eef0c3f077f2bfdf"
     },
     {
+      "relativePath": "src/utils/checklistMessages.ts",
+      "hash": "074b18ba2460ea9b"
+    },
+    {
+      "relativePath": "src/utils/detectReplyLanguage.ts",
+      "hash": "5c797a0740976380"
+    },
+    {
+      "relativePath": "src/utils/extractLastUserText.ts",
+      "hash": "9dd35f9d6edf325b"
+    },
+    {
+      "relativePath": "src/utils/extractLuaBridgeContext.ts",
+      "hash": "886079f33d46b8c0"
+    },
+    {
+      "relativePath": "src/utils/resolveStaffIdFromLuaUser.ts",
+      "hash": "9fae9732b0ce03a2"
+    },
+    {
       "relativePath": "src/utils/resolveStaffPhoneFromLuaUser.ts",
       "hash": "7940e06883afdab6"
+    },
+    {
+      "relativePath": "src/utils/resolveTenantForUser.ts",
+      "hash": "5e518f2fd5eab862"
     },
     {
       "relativePath": "tsconfig.json",

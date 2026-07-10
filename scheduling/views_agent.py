@@ -2355,28 +2355,40 @@ def agent_get_restaurant_details(request):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Default peak definitions
-        peak_definitions = {
-            'lunch': {'start': '12:00', 'end': '15:00'},
-            'dinner': {'start': '19:00', 'end': '23:00'},
-            'breakfast': {'start': '07:00', 'end': '10:30'}
-        }
-        
-
-        cache_key = f"agent:sched:restaurant_details:{restaurant.id}"
-
         def _compute_details():
+            from accounts.vertical_playbooks import (
+                normalize_business_vertical,
+                vertical_playbook_for_api,
+            )
+            gs = getattr(restaurant, 'general_settings', None) or {}
+            if not isinstance(gs, dict):
+                gs = {}
+            bv = normalize_business_vertical(gs.get('business_vertical'))
+            playbook = vertical_playbook_for_api(bv)
+            peak_definitions = playbook.get('peak_periods') or {
+                'lunch': {'start': '12:00', 'end': '15:00'},
+                'dinner': {'start': '19:00', 'end': '23:00'},
+                'breakfast': {'start': '07:00', 'end': '10:30'},
+            }
             labor_policy = SchedulingService._get_labor_policy(restaurant)
             return {
                 'id': str(restaurant.id),
                 'name': restaurant.name,
                 'timezone': str(restaurant.timezone) if hasattr(restaurant, 'timezone') else 'Africa/Casablanca',
+                'currency': getattr(restaurant, 'currency', None) or 'MAD',
+                'country_code': getattr(restaurant, 'country_code', None) or 'MA',
+                'business_vertical': bv,
+                'vertical_playbook': playbook,
                 'operating_hours': getattr(restaurant, 'operating_hours', {}),
                 'restaurant_type': getattr(restaurant, 'restaurant_type', 'CASUAL_DINING'),
                 'max_weekly_hours': float(labor_policy['max_hours_per_week']),
                 'min_rest_hours': float(labor_policy['min_rest_hours_between_shifts']),
                 'general_settings': {
-                    'peak_periods': getattr(restaurant, 'general_settings', {}).get('peak_periods', peak_definitions) if isinstance(getattr(restaurant, 'general_settings', None), dict) else peak_definitions
+                    'business_vertical': bv,
+                    'peak_periods': gs.get('peak_periods') or peak_definitions,
+                    'ramadan_mode': gs.get('ramadan_mode'),
+                    'iftar_time': gs.get('iftar_time'),
+                    'suhoor_time': gs.get('suhoor_time'),
                 },
                 'break_duration': getattr(restaurant, 'break_duration', 30),
                 'labor_policy': {
@@ -2391,6 +2403,10 @@ def agent_get_restaurant_details(request):
                 'labor_target_percent': float(restaurant.labor_target_percent) if getattr(restaurant, 'labor_target_percent', None) else None,
             }
 
+        # Include vertical in cache key so sector changes invalidate
+        gs0 = getattr(restaurant, 'general_settings', None) or {}
+        bv0 = (gs0.get('business_vertical') if isinstance(gs0, dict) else None) or 'RESTAURANT'
+        cache_key = f"agent:sched:restaurant_details:{restaurant.id}:{bv0}"
         return Response(get_or_set(cache_key, 120, _compute_details))
         
     except Exception as e:

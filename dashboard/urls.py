@@ -53,6 +53,14 @@ from .views_categories import (
     DashboardCustomWidgetDetailView,
 )
 from .views_agent import agent_create_dashboard_task
+from .views_ops_memory import (
+    agent_validate_task,
+    agent_submit_task_proof,
+    agent_department_owners,
+    agent_search_tasks_and_staff,
+    agent_classify_checkin_message,
+    agent_detect_order_station,
+)
 from .api.cross_location_report import agent_cross_location_report
 from .api.calendar_write import agent_create_calendar_event
 from .api.photo_router import agent_parse_photo
@@ -90,6 +98,12 @@ urlpatterns = [
         name='dashboard-categories-detail',
     ),
     path('agent/tasks/create/', agent_create_dashboard_task, name='dashboard-agent-tasks-create'),
+    path('agent/tasks/validate/', agent_validate_task, name='dashboard-agent-tasks-validate'),
+    path('agent/tasks/proof/', agent_submit_task_proof, name='dashboard-agent-tasks-proof'),
+    path('agent/department-owners/', agent_department_owners, name='dashboard-agent-department-owners'),
+    path('agent/search/', agent_search_tasks_and_staff, name='dashboard-agent-search'),
+    path('agent/checkin-message/', agent_classify_checkin_message, name='dashboard-agent-checkin-message'),
+    path('agent/order-station/', agent_detect_order_station, name='dashboard-agent-order-station'),
     path(
         'agent/cross-location-report/',
         agent_cross_location_report,

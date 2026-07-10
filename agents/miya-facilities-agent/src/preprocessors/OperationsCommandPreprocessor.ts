@@ -1,27 +1,43 @@
 /**
- * Deterministic router — runs before the LLM on specialist agents so delegated
- * finance / HR / facilities WhatsApp messages still execute reliably.
+ * Deterministic router for WhatsApp operational commands (procurement, maintenance,
+ * finance invoices, HR reminders, record lookup). Runs after tenant context
+ * so tools always have restaurant_id — prevents "problème technique" LLM failures.
  */
+import ApiService from "../services/ApiService";
 import { ChatMessage, PreProcessor, UserDataInstance } from "lua-cli";
 import { resolveOperationsCommandIntent } from "./operationIntent";
 import { executeOperationsIntent, toolMessage } from "./executeOperationsIntent";
+import { resolveTenantForUser } from "../utils/resolveTenantForUser";
 
 export const operationsCommandPreprocessor = new PreProcessor({
     name: "operations-command-router",
-    description: "Executes invoice, HR reminder, and maintenance intents before the LLM.",
+    description:
+        "Detects procurement, maintenance, invoice, HR/ops reminders, and lookup intents; executes immediately.",
     priority: 105,
 
-    execute: async (_user: UserDataInstance, messages: ChatMessage[], channel: string) => {
+    execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
         const intent = resolveOperationsCommandIntent(messages);
         if (!intent) {
             return { action: "proceed" as const };
         }
 
-        console.log(`[OperationsCommandPreprocessor] intent=${intent.kind} channel=${channel}`);
+        const tenant = await resolveTenantForUser(user);
+        if (!tenant.restaurantId) {
+            return { action: "proceed" as const };
+        }
+
+        console.log(
+            `[OperationsCommandPreprocessor] intent=${intent.kind} channel=${channel} restaurant=${tenant.restaurantId}`,
+        );
 
         let toolResult: Record<string, unknown> = {};
         try {
-            toolResult = (await executeOperationsIntent(intent)) as Record<string, unknown>;
+            toolResult = (await executeOperationsIntent(intent, new ApiService(), {
+                restaurantId: tenant.restaurantId,
+                userId: tenant.userId,
+                email: tenant.email,
+                phone: tenant.phone,
+            })) as Record<string, unknown>;
         } catch (err: unknown) {
             const em = err instanceof Error ? err.message : String(err);
             console.error("[OperationsCommandPreprocessor] execute threw:", em);

@@ -46,7 +46,10 @@ from ..serializers import DashboardTaskCompactSerializer
 # Human Resources widget because the screenshots-mockup ("Print & sign
 # contracts", "Pictures of staff") mixes them in everyday usage.
 BUCKET_TO_CATEGORIES: dict[str, tuple[str, ...]] = {
-    "human_resources": ("HR", "DOCUMENT"),
+    # PAYROLL also surfaces here so unpaid wages / "tell my manager about
+    # my pay" show on the Human Resources widget managers open first —
+    # primary lane for PAYROLL remains Finance (see category_routing).
+    "human_resources": ("HR", "DOCUMENT", "PAYROLL"),
     # Leave, travel, and other scheduling asks from staff (WhatsApp /
     # voice). Powers the "Team Travel" dashboard lane — distinct from
     # the general staff_inbox (all categories) and HR (people/docs).
@@ -291,6 +294,29 @@ def _serialize_dashboard_task(task, *, now=None) -> dict[str, Any]:
     # frontend falls back to ``status`` when ``pill_status`` is missing.
     data["pill_status"] = _task_pill_status(task, now=now)
     data["age_label"] = _age_label(getattr(task, "created_at", None), now=now)
+
+    # Cross-cutting: manager validation label (non-blocking) + absent assignee
+    requires_val = bool(getattr(task, "requires_manager_validation", False))
+    validated = bool(getattr(task, "manager_validated_at", None))
+    data["requires_manager_validation"] = requires_val
+    data["manager_validated"] = validated if requires_val else None
+    data["validation_label"] = (
+        None
+        if not requires_val
+        else ("validated" if validated else "not validated by manager")
+    )
+    data["has_photo_proof"] = bool(getattr(task, "proof_media_url", None))
+    data["require_photo_proof"] = bool(getattr(task, "require_photo_proof", False))
+
+    assignee_absent = False
+    try:
+        from dashboard.views_ops_memory import _is_user_absent
+
+        if getattr(task, "assigned_to_id", None):
+            assignee_absent = _is_user_absent(task.assigned_to, task.restaurant)
+    except Exception:
+        pass
+    data["assignee_absent"] = assignee_absent
     return data
 
 

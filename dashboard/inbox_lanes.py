@@ -63,8 +63,8 @@ WIDGET_INBOX_LANES: dict[str, InboxLaneDef] = {
         widget_id="human_resources",
         label="Human Resources",
         page_title="Human Resources",
-        page_subtitle="HR and document requests — contracts, IDs, onboarding, and people paperwork.",
-        categories=("HR", "DOCUMENT"),
+        page_subtitle="HR, documents, and payroll asks — contracts, IDs, onboarding, and unpaid wages.",
+        categories=("HR", "DOCUMENT", "PAYROLL"),
         icon="briefcase",
     ),
     "finance": InboxLaneDef(

@@ -2,6 +2,7 @@ import "dotenv/config";
 import { LuaAgent } from "lua-cli";
 import { intelligenceSkill } from "./skills/intelligence.skill";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
+import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 
 const agent = new LuaAgent({
@@ -34,7 +35,8 @@ CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPo
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [intelligenceSkill],
-  preProcessors: [accountActivationPreprocessor, clockInPreprocessor],
+  preProcessors: [
+    languageMirrorPreprocessor,accountActivationPreprocessor, clockInPreprocessor],
 });
 
 async function main() {

@@ -243,6 +243,28 @@ class Task(models.Model):
     )
     escalated_at = models.DateTimeField(null=True, blank=True)
 
+    # Cross-cutting manager validation (any category — Orders, Maintenance, etc.)
+    requires_manager_validation = models.BooleanField(
+        default=False,
+        help_text="When true, task shows 'not validated by manager' until validated. Non-blocking.",
+    )
+    manager_validated_at = models.DateTimeField(null=True, blank=True)
+    manager_validated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="dashboard_tasks_validated",
+    )
+
+    # WhatsApp photo proof of work / incident evidence
+    proof_media_url = models.URLField(max_length=1000, blank=True, default="")
+    proof_submitted_at = models.DateTimeField(null=True, blank=True)
+    require_photo_proof = models.BooleanField(
+        default=False,
+        help_text="Assignee should send a photo via WhatsApp before completion.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -304,6 +326,15 @@ class StaffCapturedOrder(models.Model):
         max_length=20,
         choices=FULFILLMENT_STATUS_CHOICES,
         default="NEW",
+    )
+    # Optional manager validation (non-blocking — order still displays)
+    requires_manager_validation = models.BooleanField(default=False)
+    manager_validated_at = models.DateTimeField(null=True, blank=True)
+    detected_station = models.CharField(
+        max_length=20,
+        blank=True,
+        default="",
+        help_text="Auto-detected: Floor / Bar / Kitchen / Other from sender role",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
