@@ -4,7 +4,11 @@
  */
 import { ChatMessage, PreProcessor, UserDataInstance } from "lua-cli";
 import DashboardWidgetsTool from "../skills/tools/DashboardWidgetsTool";
-import { resolveDashboardWidgetIntent } from "../skills/tools/dashboardWidgetIntent";
+import {
+    resolveDashboardWidgetIntent,
+    sanitizeWidgetUserText,
+} from "../skills/tools/dashboardWidgetIntent";
+import { extractLastUserText } from "../utils/extractLastUserText";
 import { resolveTenantForUser } from "../utils/resolveTenantForUser";
 
 const dashboardWidgetsTool = new DashboardWidgetsTool();
@@ -17,8 +21,9 @@ export const dashboardWidgetRequestPreprocessor = new PreProcessor({
     priority: 110,
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
-        const lastText =
-            messages.filter((m) => m.type === "text").slice(-1)[0]?.text?.trim() || "";
+        // LanguageMirror (priority 2) prefixes [REPLY LANGUAGE] onto the last user
+        // message — never use that raw string as a widget title.
+        const lastText = sanitizeWidgetUserText(extractLastUserText(messages));
         const intent = resolveDashboardWidgetIntent(lastText);
         if (!intent) {
             return { action: "proceed" as const };
