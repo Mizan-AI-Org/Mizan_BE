@@ -13,7 +13,7 @@ import {
 
 // Plural "checklists", "start tasks", FR/AR variants
 const START_RE =
-    /\b(start\s+(my\s+)?(check\s*lists?|tasks|checklists?)|begin\s+(my\s+)?(check\s*lists?|tasks|checklists?)|checklists?\s+start|ابدأ\s*(المهام|القائمة)|demarrer\s+(la\s+)?checklists?|commencer\s+(la\s+)?checklists?)\b/i;
+    /\b(start\s+(my\s+)?(check\s*lists?|tasks|checklists?)|begin\s+(my\s+)?(check\s*lists?|tasks|checklists?)|checklists?\s+start|get\s+(my\s+)?checklist\s+started|load\s+(my\s+)?(checklist|tasks)|(?:staff\s+)?(?:wants?|needs?)\s+to\s+start\s+(?:their\s+)?(?:checklist|tasks)|ابدأ\s*(المهام|القائمة)|demarrer\s+(la\s+)?checklists?|commencer\s+(la\s+)?checklists?)\b/i;
 
 // Tolerates typos ("what are are tasks"), missing "my", and "tasks today"
 const PREVIEW_RE =

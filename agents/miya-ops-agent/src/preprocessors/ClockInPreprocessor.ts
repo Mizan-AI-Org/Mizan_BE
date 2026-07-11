@@ -19,7 +19,7 @@ import {
 } from "../utils/resolveStaffIdFromLuaUser";
 
 const CLOCK_IN_RE =
-    /\b(clock[\s-]?in|clockin|pointer|pointage|start my shift|i['']?m here|arriver|سجل دخول|بغيت نبدا|بغيت نبدا الخدمة|nbeda lkhedma)\b/i;
+    /\b(clock[\s-]?in|clockin|pointer|pointage|start my shift|i['']?m here|arriver|سجل دخول|بغيت نبدا|بغيت نبدا الخدمة|nbeda lkhedma|(?:staff\s+)?(?:wants?|needs?)\s+to\s+clock\s*in)\b/i;
 
 const checklistStarterTool = new ChecklistStarterTool();
 const api = new ApiService();
@@ -143,7 +143,7 @@ export const clockInPreprocessor = new PreProcessor({
     name: "clock-in-router",
     description:
         "Detects staff clock-in intent, runs staff_clock_in, and injects the backend message for verbatim relay.",
-    priority: 1,
+    priority: 95,
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
         const lastText = extractLastUserText(messages);

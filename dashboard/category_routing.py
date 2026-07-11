@@ -23,9 +23,9 @@ for _widget_id, _cats in BUCKET_TO_CATEGORIES.items():
     for _cat in _cats:
         _CATEGORY_TO_WIDGET.setdefault(_cat, _widget_id)
 
-# PAYROLL appears in both Finance and HR widgets for visibility, but the
-# canonical primary lane (pin + manager copy) stays Finance.
-_CATEGORY_TO_WIDGET["PAYROLL"] = "finance"
+# PAYROLL appears in both Finance and HR widgets for visibility; staff wage /
+# payslip escalations surface on Human Resources first (manager expectation).
+_CATEGORY_TO_WIDGET["PAYROLL"] = "human_resources"
 
 _CATEGORY_TO_WIDGET.setdefault("INVENTORY", "inventory_delivery")
 _CATEGORY_TO_WIDGET.setdefault("RESERVATIONS", "reservations")
@@ -59,9 +59,9 @@ def dashboard_widgets_for_category(category: str | None) -> list[str]:
     widgets: list[str] = ["staff_inbox"]
     if primary not in widgets:
         widgets.append(primary)
-    # Unpaid wages / payslip asks also appear on the HR widget — pin it too.
-    if (category or "").upper().strip() == "PAYROLL" and "human_resources" not in widgets:
-        widgets.append("human_resources")
+    # PAYROLL also appears on the Finance widget — pin it too.
+    if (category or "").upper().strip() == "PAYROLL" and "finance" not in widgets:
+        widgets.append("finance")
     return [w for w in widgets if w in DASHBOARD_WIDGET_IDS]
 
 

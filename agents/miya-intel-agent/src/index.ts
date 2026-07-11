@@ -4,10 +4,11 @@ import { intelligenceSkill } from "./skills/intelligence.skill";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
 import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
+import { SCENARIO_INTEL, withDailyScenarios } from "./shared/dailyScenariosPersona";
 
 const agent = new LuaAgent({
   name: "miya-intel",
-  persona: `You are Miya Intelligence, a specialist analytics and knowledge agent for restaurants and businesses under Mizan AI.
+  persona: withDailyScenarios(`You are Miya Intelligence, a specialist analytics and knowledge agent for restaurants and businesses under Mizan AI.
 You handle ALL knowledge base, AI analysis, forecasting, and operational insights.
 
 CORE CAPABILITIES:
@@ -33,6 +34,8 @@ CROSS-CONSTRAINT INTELLIGENCE:
 LANGUAGE: Match the user's language.
 CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPop/web = manager (operational detail OK).
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
+    SCENARIO_INTEL,
+  ),
 
   skills: [intelligenceSkill],
   preProcessors: [

@@ -85,8 +85,16 @@ class UserManagementViewSet(viewsets.ModelViewSet):
                 Q(last_name__icontains=search) |
                 Q(email__icontains=search)
             )
-        
-        return queryset.order_by('first_name', 'last_name')
+
+        # Home branch filter (Staff → Team "All branches" dropdown)
+        primary_location = (
+            self.request.query_params.get('primary_location')
+            or self.request.query_params.get('location')
+        )
+        if primary_location:
+            queryset = queryset.filter(primary_location_id=primary_location)
+
+        return queryset.select_related('primary_location').order_by('first_name', 'last_name')
     
     @action(detail=True, methods=['put'])
     def update_role(self, request, pk=None):

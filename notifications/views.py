@@ -109,6 +109,25 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
         return True
     if t == "interactive" and (msg.get("interactive") or {}).get("type") == "location_reply":
         return True
+    if t == "interactive":
+        inter = msg.get("interactive") or {}
+        if inter.get("type") == "button_reply":
+            title = ((inter.get("button_reply") or {}).get("title") or "").strip()
+            try:
+                from staff.whatsapp_escalation import (
+                    is_cancel_send_reply,
+                    is_confirm_send_reply,
+                    looks_like_staff_manager_escalation,
+                )
+
+                if (
+                    is_confirm_send_reply(title)
+                    or is_cancel_send_reply(title)
+                    or looks_like_staff_manager_escalation(title)
+                ):
+                    return True
+            except Exception:
+                pass
     _, lat_raw, lon_raw = _extract_whatsapp_inbound_location(msg)
     lat_c, lon_c = _coerce_whatsapp_location_lat_lon(lat_raw, lon_raw)
     if lat_c is not None and lon_c is not None:
@@ -125,6 +144,21 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
         body_l = body.strip().lower().replace("-", " ")
         if body_l in ("clock out", "clockout", "clock out.", "pointer sortie", "pointage sortie"):
             return True
+        # Staff → manager escalations (wages, payslip, HR docs) must land as
+        # StaffRequest on the dashboard — never Lua/Space inform_staff confirm flows.
+        try:
+            from staff.whatsapp_escalation import (
+                is_cancel_send_reply,
+                is_confirm_send_reply,
+                looks_like_staff_manager_escalation,
+            )
+
+            if looks_like_staff_manager_escalation(body):
+                return True
+            if is_confirm_send_reply(body) or is_cancel_send_reply(body):
+                return True
+        except Exception:
+            pass
         pair = _parse_lat_lon_from_clock_in_text(body)
         if pair:
             if _text_looks_like_shared_gps_clock_in(body):
@@ -675,6 +709,95 @@ def _normalize_start_checklist_intent(body):
         "let's begin tasks", 'lets begin tasks',
     )
     return any(p in normalized for p in phrases)
+
+
+def _process_whatsapp_staff_escalation(
+    notification_service,
+    user,
+    phone_digits,
+    session,
+    raw_body: str,
+    *,
+    wamid: str = "",
+) -> bool:
+    """
+    Create a StaffRequest for staff→manager escalations (wages, payslip, etc.).
+    Returns True when handled (caller should continue the webhook loop).
+    """
+    from staff.whatsapp_escalation import (
+        classify_whatsapp_escalation,
+        extract_quoted_user_lines,
+        is_cancel_send_reply,
+        is_confirm_send_reply,
+    )
+    from staff.whatsapp_request_ingest import ingest_staff_escalation_from_whatsapp
+
+    raw = (raw_body or "").strip()
+    if not raw:
+        return False
+
+    if is_cancel_send_reply(raw):
+        if session:
+            session.context.pop("pending_staff_escalation", None)
+            session.save(update_fields=["context"])
+        notification_service.send_whatsapp_text(
+            phone_digits,
+            "Okay — I cancelled that. Nothing was sent to your manager.",
+        )
+        return True
+
+    routed = None
+    if is_confirm_send_reply(raw):
+        pending = (getattr(session, "context", None) or {}).get("pending_staff_escalation") or {}
+        if pending.get("description"):
+            routed = {
+                "category": pending.get("category") or "OTHER",
+                "subject": pending.get("subject") or pending["description"][:200],
+                "description": pending["description"],
+            }
+        else:
+            for quoted in extract_quoted_user_lines(raw):
+                routed = classify_whatsapp_escalation(quoted)
+                if routed:
+                    break
+    else:
+        routed = classify_whatsapp_escalation(raw)
+        if not routed:
+            for quoted in extract_quoted_user_lines(raw):
+                routed = classify_whatsapp_escalation(quoted)
+                if routed:
+                    break
+
+    if not routed:
+        return False
+
+    if not user:
+        notification_service.send_whatsapp_text(
+            phone_digits,
+            "Please link your phone number in your profile to use this feature.",
+        )
+        return True
+
+    try:
+        reply = ingest_staff_escalation_from_whatsapp(
+            user=user,
+            phone_digits=phone_digits,
+            subject=routed["subject"],
+            description=routed["description"],
+            agent_category=routed.get("category"),
+            external_id=wamid or "",
+        )
+        if session:
+            session.context.pop("pending_staff_escalation", None)
+            session.save(update_fields=["context"])
+        notification_service.send_whatsapp_text(phone_digits, reply)
+    except Exception:
+        logger.exception("WhatsApp staff escalation ingest failed phone=%s", phone_digits)
+        notification_service.send_whatsapp_text(
+            phone_digits,
+            "I couldn't pass that to your manager just now. Please try again in a moment.",
+        )
+    return True
 
 
 def _get_shift_for_checklist(user):
@@ -1817,6 +1940,33 @@ def whatsapp_webhook(request):
                         and text_body
                         and _looks_like_voice_ui_placeholder(text_body)
                     )
+                    _text_is_staff_escalation = False
+                    _interactive_is_staff_escalation = False
+                    _text_is_clock_in = (
+                        msg_type == "text"
+                        and text_body
+                        and _normalize_clock_in_intent(text_body)
+                    )
+                    try:
+                        from staff.whatsapp_escalation import (
+                            is_cancel_send_reply,
+                            is_confirm_send_reply,
+                            looks_like_staff_manager_escalation,
+                        )
+
+                        if msg_type == 'text' and text_body:
+                            _text_is_staff_escalation = looks_like_staff_manager_escalation(text_body)
+                        if msg_type == 'interactive':
+                            inter = msg.get('interactive') or {}
+                            if inter.get('type') == 'button_reply':
+                                btn_title = ((inter.get('button_reply') or {}).get('title') or '').strip()
+                                _interactive_is_staff_escalation = (
+                                    looks_like_staff_manager_escalation(btn_title)
+                                    or is_confirm_send_reply(btn_title)
+                                    or is_cancel_send_reply(btn_title)
+                                )
+                    except Exception:
+                        pass
                     if (
                         lua_url
                         and session
@@ -1824,6 +1974,9 @@ def whatsapp_webhook(request):
                         and msg_type not in _django_only_msg_types
                         and not _gps_clock_in_applies_to_whatsapp_message(msg, session)
                         and not _text_is_voice_placeholder
+                        and not _text_is_staff_escalation
+                        and not _interactive_is_staff_escalation
+                        and not _text_is_clock_in
                     ):
                         logger.info("Session state '%s' for %s — deferring to Lua/Miya.", session.state, phone_digits)
                         continue
@@ -1839,6 +1992,16 @@ def whatsapp_webhook(request):
                             btn_reply = interactive.get('button_reply', {})
                             btn_id = btn_reply.get('id')
                             btn_title = (btn_reply.get('title') or '').strip()
+
+                            if _process_whatsapp_staff_escalation(
+                                notification_service,
+                                user,
+                                phone_digits,
+                                session,
+                                btn_title or btn_id or '',
+                                wamid=wamid or '',
+                            ):
+                                continue
 
                             if btn_id == 'clock_in_now':
                                 if not user:
@@ -1859,7 +2022,7 @@ def whatsapp_webhook(request):
                                 session.save(update_fields=['state'])
                                 notification_service.send_whatsapp_location_request(
                                     phone_digits,
-                                    "Please share your live location to clock in."
+                                    "Share your location to clock in.",
                                 )
                                 continue
 
@@ -2673,6 +2836,17 @@ def whatsapp_webhook(request):
                     if not body:
                         continue
 
+                    # Staff → manager escalations (wages, payslip, HR docs) — Django-owned.
+                    if _process_whatsapp_staff_escalation(
+                        notification_service,
+                        user,
+                        phone_digits,
+                        session,
+                        raw_body,
+                        wamid=wamid or '',
+                    ):
+                        continue
+
                     # Voice surfaced as placeholder text (no transcript): do not fall through to Lua or incident heuristics.
                     if _looks_like_voice_ui_placeholder(raw_body):
                         if not user:
@@ -3011,7 +3185,7 @@ def whatsapp_webhook(request):
                         session.save(update_fields=['state'])
                         notification_service.send_whatsapp_location_request(
                             phone_digits,
-                            "Please share your live location to clock in."
+                            "Share your location to clock in.",
                         )
                         continue
 

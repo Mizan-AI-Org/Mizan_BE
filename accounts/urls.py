@@ -11,6 +11,7 @@ from .views import (
     StaffActivationPendingDeleteView,
     redirect_to_wa_activation,
 )
+from .views_staff_transfer import StaffTransferLocationsView
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet
 from .views_locations import BusinessLocationViewSet
 from .views_eatnow_webhook import eatnow_webhook
@@ -75,6 +76,7 @@ urlpatterns = [
     path('restaurant/<uuid:pk>/update/', RestaurantUpdateView.as_view(), name='restaurant_update'),
     path('staff/invitations/', StaffInvitationListView.as_view(), name='staff_invitations'),
     path('staff/profile/<uuid:pk>/update/', StaffProfileUpdateView.as_view(), name='staff_profile_update'),
+    path('staff/transfer-locations/', StaffTransferLocationsView.as_view(), name='staff_transfer_locations'),
     path('staff/profile/<uuid:pk>/reset-password/', StaffPasswordResetView.as_view(), name='staff_password_reset'),
     path('staff/', StaffListAPIView.as_view(), name='staff_list'),
     # Read-only catalog of canonical staff tags + the ``category →

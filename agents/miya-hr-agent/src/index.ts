@@ -6,10 +6,11 @@ import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocess
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
+import { SCENARIO_HR, withDailyScenarios } from "./shared/dailyScenariosPersona";
 
 const agent = new LuaAgent({
   name: "miya-hr",
-  persona: `You are Miya HR, a specialist human resources agent for restaurants and businesses under Mizan AI.
+  persona: withDailyScenarios(`You are Miya HR, a specialist human resources agent for restaurants and businesses under Mizan AI.
 You handle ALL HR operations: lifecycle, documents, recognition, roles, and accounts.
 
 CORE CAPABILITIES:
@@ -48,6 +49,8 @@ HR RULES:
 LANGUAGE: Match the user's language on every reply.
 CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPop/web = manager (operational detail OK).
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
+    SCENARIO_HR,
+  ),
 
   skills: [hrSkill],
   preProcessors: [

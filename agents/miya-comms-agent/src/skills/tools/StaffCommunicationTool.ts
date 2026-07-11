@@ -1,6 +1,15 @@
 import { LuaTool, User, env } from "lua-cli";
 import { z } from "zod";
 import ApiService from "../../services/ApiService";
+import {
+    classifyStaffEscalation,
+    isMisroutedStaffEscalation,
+    type StaffRouteKind,
+} from "../../utils/staffEscalationRouting";
+import {
+    resolveStaffPhoneForByPhoneTools,
+    type LuaUserPhoneSource,
+} from "../../utils/resolveStaffPhoneFromLuaUser";
 
 /**
  * inform_staff — direct WhatsApp message to one or more staff members.
@@ -67,7 +76,68 @@ export default class StaffCommunicationTool implements LuaTool {
         return cleaned || null;
     }
 
-    async execute(input: z.infer<typeof this.inputSchema>, _context?: any) {
+    private phoneFromUser(user: unknown): string {
+        const u = user as LuaUserPhoneSource & { uid?: string };
+        return resolveStaffPhoneForByPhoneTools(
+            {
+                uid: u?.uid,
+                data: (u as { data?: Record<string, unknown> })?.data,
+                _luaProfile: (u as { _luaProfile?: Record<string, unknown> })?._luaProfile,
+            },
+            null,
+        );
+    }
+
+    private async redirectStaffEscalationToRequest(
+        routed: { category: StaffRouteKind; subject: string },
+        description: string,
+        restaurantId: string,
+        phone: string,
+        channel?: string,
+    ) {
+        console.log(
+            `[StaffCommunicationTool] Guard: redirecting staff escalation to staff_request category=${routed.category}`,
+        );
+        const result = await this.apiService.createStaffRequestForAgent({
+            restaurant_id: restaurantId,
+            subject: routed.subject,
+            description,
+            category: routed.category,
+            priority: routed.category === "MAINTENANCE" ? "HIGH" : "MEDIUM",
+            phone: phone || undefined,
+            auto_assign: true,
+            metadata: {
+                source_context: "inform_staff_guard",
+                channel: channel || "whatsapp",
+            },
+        });
+
+        if (!result.success) {
+            return {
+                status: "error",
+                message:
+                    "I couldn't pass that to your manager just now. Please try again in a moment.",
+            };
+        }
+
+        const apiMsg =
+            typeof (result as { message_for_staff?: string }).message_for_staff === "string"
+                ? String((result as { message_for_staff?: string }).message_for_staff).trim()
+                : "";
+
+        const fallback =
+            routed.category === "PAYROLL"
+                ? "Thanks — I've passed your payroll note on to your manager. They'll get back to you as soon as they can."
+                : "Thanks — I've passed that on to your manager. They'll get back to you as soon as they can.";
+
+        return {
+            status: "success",
+            message: apiMsg || fallback,
+            details: { record_id: result.id, category: routed.category, redirected_from: "inform_staff" },
+        };
+    }
+
+    async execute(input: z.infer<typeof this.inputSchema>, context?: any) {
         const user = await User.get();
         const userData = user ? ((user as any).data || {}) : {};
         const profile = user ? ((user as any)._luaProfile || {}) : {};
@@ -83,6 +153,31 @@ export default class StaffCommunicationTool implements LuaTool {
                 status: "error",
                 message: "I need to know which restaurant this is for. Please make sure I have the restaurant context.",
             };
+        }
+
+        const channel =
+            typeof context?.channel === "string"
+                ? context.channel
+                : typeof context?.channel === "object"
+                  ? String(context.channel?.type || context.channel?.name || "")
+                  : "";
+
+        if (
+            isMisroutedStaffEscalation(input.message, input.staff_names) ||
+            classifyStaffEscalation(input.message)
+        ) {
+            const routed = classifyStaffEscalation(input.message) || {
+                category: "PAYROLL" as StaffRouteKind,
+                subject: input.message.slice(0, 200),
+            };
+            const phone = this.phoneFromUser(user);
+            return this.redirectStaffEscalationToRequest(
+                routed,
+                input.message.trim(),
+                restaurantId,
+                phone,
+                channel,
+            );
         }
 
         const tags = (input.tags || [])

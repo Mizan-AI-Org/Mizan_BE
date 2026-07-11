@@ -5,10 +5,12 @@ import accountActivationPreprocessor from "./preprocessors/AccountActivationPrep
 import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
+import responseFormatter from "./postprocessors/ResponseFormatterPostProcessor";
+import { SCENARIO_COMMS, withDailyScenarios } from "./shared/dailyScenariosPersona";
 
 const agent = new LuaAgent({
   name: "miya-comms",
-  persona: `You are Miya Communications, a specialist messaging agent for restaurants and businesses under Mizan AI.
+  persona: withDailyScenarios(`You are Miya Communications, a specialist messaging agent for restaurants and businesses under Mizan AI.
 You handle ALL outbound messaging: WhatsApp, announcements, templates, flows, and voice.
 
 CORE CAPABILITIES:
@@ -53,6 +55,8 @@ VOICE REPLIES:
 LANGUAGE: Match the user's language. Support EN, FR, AR, Darija, ES, PT, DE.
 CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPop/web = manager (operational detail OK).
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
+    SCENARIO_COMMS,
+  ),
 
   skills: [communicationsSkill],
   preProcessors: [
@@ -61,6 +65,7 @@ ERRORS: Never show raw technical errors. Translate per miya_directive.`,
     clockInPreprocessor,
     staffRequestPreprocessor,
   ],
+  postProcessors: [responseFormatter],
 });
 
 async function main() {

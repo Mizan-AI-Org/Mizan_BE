@@ -4,38 +4,20 @@
  */
 import { ChatMessage, PreProcessor, UserDataInstance } from "lua-cli";
 import ApiService from "../services/ApiService";
-import { extractLastUserText, extractMessageText } from "../utils/extractLastUserText";
+import {
+    collectUserTextsFromMessages,
+    extractLastUserText,
+} from "../utils/extractLastUserText";
 import { resolveTenantForUser } from "../utils/resolveTenantForUser";
 import {
     resolveStaffPhoneForByPhoneTools,
     type LuaUserPhoneSource,
 } from "../utils/resolveStaffPhoneFromLuaUser";
-
-type StaffRouteKind =
-    | "PAYROLL"
-    | "DOCUMENT"
-    | "HR"
-    | "SCHEDULING"
-    | "MAINTENANCE"
-    | "OTHER";
-
-const TELL_MANAGER_RE =
-    /\b(tell\s+(my\s+)?manager|pass\s+(this\s+)?(to|on\s+to)\s+(my\s+)?manager|let\s+(my\s+)?manager\s+know|inform\s+(my\s+)?manager|dis\s+[àa]\s+(mon\s+)?(manager|responsable|patron)|قل\s+(ل|لـ)?(المدير|المانجر|المسؤول))\b/i;
-
-const PAYROLL_RE =
-    /\b(pay\s*slip|payslip|pay\s*stub|salary\s+slip|bulletin\s+de\s+paie|fiche\s+de\s+paie|كشف\s+الراتب|ورقة\s+الأجر|my\s+pay|last\s+\d+\s+months?\s+pay|wages?|salary|unpaid\s+(pay|wages?|salary)|missing\s+(pay|wages?|salary)|haven['']?t\s+received\s+(my\s+)?(pay|wages?|salary|last)|yet\s+to\s+receive\s+(my\s+)?(pay|wages?|salary|last)|didn['']?t\s+(get|receive)\s+(my\s+)?(pay|wages?|salary)|last\s+week['']?s?\s+wages?|paie|salaire|أجرى|راتبي)\b/i;
-
-const DOCUMENT_RE =
-    /\b(visa|passport|work\s+permit|certificate|attestation|document|papers|وثيقة|تأشيرة|شهادة)\b/i;
-
-const HR_RE =
-    /\b(leave\s+request|time\s+off|vacation|holiday|sick\s+day|hr\s+request|cong[eé]|arrêt\s+maladie|إجازة)\b/i;
-
-const SCHEDULING_RE =
-    /\b(swap\s+(my\s+)?shift|change\s+(my\s+)?shift|cover\s+(my\s+)?shift|schedule\s+change|تبديل\s+الشيفت)\b/i;
-
-const MAINTENANCE_RE =
-    /\b(leak|not\s+working|repair|fix\s+the|maintenance|en\s+panne|fuite|خاسر|معطل|(?:broken|down)\s+(?:fridge|freezer|oven|dishwasher|ac|equipment|machine))\b/i;
+import {
+    classifyStaffEscalation,
+    TELL_MANAGER_RE,
+    type StaffRouteKind,
+} from "../utils/staffEscalationRouting";
 
 const CONFIRM_SEND_RE =
     /^(yes([,!]?\s*(send(\s+it)?|please)?)?|oui([,!]?\s*(envoie|envoyer|s['']il\s+te\s+pla[iî]t)?)?|send(\s+it)?|confirm(ed)?|ok([,!]?\s*send)?|نعم|أرسل|ارسل)\s*[.!]?$/i;
@@ -43,48 +25,15 @@ const CONFIRM_SEND_RE =
 const CANCEL_SEND_RE =
     /^(no([,!]?\s*(cancel|thanks)?)?|non([,!]?\s*(annule|merci)?)?|cancel(led)?|never\s*mind|لا|ألغ)\s*[.!]?$/i;
 
-function classifyStaffAsk(text: string): { category: StaffRouteKind; subject: string } | null {
-    const t = text.trim();
-    if (!t || t.length < 8) return null;
-
-    const wantsManager = TELL_MANAGER_RE.test(t);
-    const isPayroll = PAYROLL_RE.test(t);
-    const isDoc = DOCUMENT_RE.test(t);
-    const isHr = HR_RE.test(t);
-    const isSched = SCHEDULING_RE.test(t);
-    const isMaint = MAINTENANCE_RE.test(t);
-
-    if (wantsManager) {
-        if (isPayroll) return { category: "PAYROLL", subject: t.slice(0, 200) };
-        if (isDoc) return { category: "DOCUMENT", subject: t.slice(0, 200) };
-        if (isHr) return { category: "HR", subject: t.slice(0, 200) };
-        if (isSched) return { category: "SCHEDULING", subject: t.slice(0, 200) };
-        if (isMaint) return { category: "MAINTENANCE", subject: t.slice(0, 200) };
-        return { category: "OTHER", subject: t.slice(0, 200) };
-    }
-
-    if (
-        isPayroll &&
-        /\b(need|want|ask|request|can\s+i|please|haven['']?t|yet\s+to|didn['']?t|missing|unpaid|بغيت|خاصني|je\s+veux|j['']ai\s+besoin)\b/i.test(
-            t,
-        )
-    ) {
-        return { category: "PAYROLL", subject: t.slice(0, 200) };
-    }
-    if (isDoc && /\b(need|want|apply|request|please|بغيت|خاصني|je\s+veux|demande)\b/i.test(t)) {
-        return { category: "DOCUMENT", subject: t.slice(0, 200) };
-    }
-
-    return null;
+function isManagerDashboardChannel(channel: string): boolean {
+    return /luapop|dashboard|webchat|embed/i.test(channel || "");
 }
 
 function findPriorTellManagerText(messages: ChatMessage[]): string | null {
-    for (let i = messages.length - 1; i >= 0; i--) {
-        const text = extractMessageText(messages[i] as ChatMessage);
-        if (!text) continue;
+    for (const text of collectUserTextsFromMessages(messages)) {
         if (CONFIRM_SEND_RE.test(text) || CANCEL_SEND_RE.test(text)) continue;
         if (/please confirm|correct recipient|preparing to (let|inform)/i.test(text)) continue;
-        if (classifyStaffAsk(text) || TELL_MANAGER_RE.test(text)) {
+        if (classifyStaffEscalation(text) || TELL_MANAGER_RE.test(text)) {
             return text.trim();
         }
     }
@@ -95,9 +44,16 @@ function resolveRoutedAsk(
     lastText: string,
     messages: ChatMessage[],
 ): { category: StaffRouteKind; subject: string; description: string } | null {
-    const direct = classifyStaffAsk(lastText);
+    const direct = classifyStaffEscalation(lastText);
     if (direct) {
         return { ...direct, description: lastText.trim() };
+    }
+
+    for (const text of collectUserTextsFromMessages(messages)) {
+        const routed = classifyStaffEscalation(text);
+        if (routed) {
+            return { ...routed, description: text.trim() };
+        }
     }
 
     if (CANCEL_SEND_RE.test(lastText.trim())) return null;
@@ -105,7 +61,7 @@ function resolveRoutedAsk(
     if (CONFIRM_SEND_RE.test(lastText.trim())) {
         const prior = findPriorTellManagerText(messages);
         if (!prior) return null;
-        const routed = classifyStaffAsk(prior);
+        const routed = classifyStaffEscalation(prior);
         if (!routed) {
             return { category: "OTHER", subject: prior.slice(0, 200), description: prior };
         }
@@ -138,11 +94,10 @@ export const staffRequestPreprocessor = new PreProcessor({
     name: "staff-request-router",
     description:
         "Routes tell-my-manager / wages / payslip asks to staff_request (not inform_staff).",
-    // Ahead of LLM so "tell my manager" never becomes a fake WhatsApp ping confirm.
     priority: 100,
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
-        if (channel && !/whatsapp/i.test(channel)) {
+        if (isManagerDashboardChannel(channel)) {
             return { action: "proceed" as const };
         }
 

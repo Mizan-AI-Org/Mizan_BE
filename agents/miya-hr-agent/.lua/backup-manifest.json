@@ -1,6 +1,6 @@
 {
-  "lastHash": "61346790bd091b91459284b9b5f88d2d8d18b3e87dd7957bfce87b8b68037870",
-  "lastPushedAt": "2026-07-10T20:05:12.188Z",
+  "lastHash": "16cbcda01488be3a538af77692599617d278fd087ec950c429878b9e91705ba4",
+  "lastPushedAt": "2026-07-11T13:58:12.038Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "7b8224b648ffcc2a"
+      "hash": "c316b76e62041f04"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "4b05aaa3e8f9968e"
+      "hash": "9b443296d818d031"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
@@ -52,7 +52,7 @@
     },
     {
       "relativePath": "src/preprocessors/StaffRequestPreprocessor.ts",
-      "hash": "91537779885696ff"
+      "hash": "24df9df63547f741"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -61,6 +61,10 @@
     {
       "relativePath": "src/services/ApiService.ts",
       "hash": "de789e0aa1b6b87d"
+    },
+    {
+      "relativePath": "src/shared/dailyScenariosPersona.ts",
+      "hash": "a038bfe8c7aee7bb"
     },
     {
       "relativePath": "src/skills/hr.skill.ts",
@@ -108,7 +112,7 @@
     },
     {
       "relativePath": "src/utils/extractLastUserText.ts",
-      "hash": "9dd35f9d6edf325b"
+      "hash": "51d0530a84ba3d51"
     },
     {
       "relativePath": "src/utils/extractLuaBridgeContext.ts",
@@ -125,6 +129,10 @@
     {
       "relativePath": "src/utils/resolveTenantForUser.ts",
       "hash": "5e518f2fd5eab862"
+    },
+    {
+      "relativePath": "src/utils/staffEscalationRouting.ts",
+      "hash": "59aff0625431a403"
     },
     {
       "relativePath": "tsconfig.json",

@@ -670,14 +670,28 @@ class LocationDetailView(APIView):
 
         today = timezone.now().date()
         details = self._collect_today(restaurant, location, today)
+        staff_block = self._collect_staff(restaurant, location, today)
+        performance = self._collect_performance(restaurant, location, today, days=30)
 
         return Response(
             {
                 "generated_at": full["generated_at"],
                 "today": full["today"],
                 "tenant": full["tenant"],
-                "location": row,
+                "location": {
+                    **row,
+                    "address": location.address or "",
+                    "timezone": location.timezone
+                    or getattr(restaurant, "timezone", "")
+                    or "",
+                    "geofence_enabled": bool(location.geofence_enabled),
+                    "radius_m": float(location.radius) if location.radius is not None else None,
+                    "latitude": float(location.latitude) if location.latitude is not None else None,
+                    "longitude": float(location.longitude) if location.longitude is not None else None,
+                },
                 **details,
+                **staff_block,
+                "performance": performance,
             }
         )
 
@@ -796,4 +810,250 @@ class LocationDetailView(APIView):
             "shifts_today": shifts_payload,
             "clock_events_today": events_payload,
             "cash_sessions_today": cash_payload,
+        }
+
+    def _collect_staff(self, restaurant, location, today) -> dict[str, Any]:
+        """Roster for this branch: home staff + anyone with allowed access."""
+        from accounts.models import CustomUser
+
+        qs = (
+            CustomUser.objects.filter(restaurant=restaurant, is_active=True)
+            .filter(
+                Q(primary_location_id=location.id)
+                | Q(allowed_locations__id=location.id)
+            )
+            .select_related("profile", "primary_location")
+            .distinct()
+            .order_by("first_name", "last_name")
+        )
+
+        # Who is currently clocked in at this branch (today: in without out).
+        clocked_ids: set[str] = set()
+        try:
+            events = (
+                ClockEvent.objects.filter(
+                    staff__restaurant=restaurant,
+                    timestamp__date=today,
+                    location_id=location.id,
+                )
+                .order_by("staff_id", "timestamp")
+                .values_list("staff_id", "event_type")
+            )
+            last_by_staff: dict[Any, str] = {}
+            for sid, evt in events:
+                if sid is None:
+                    continue
+                last_by_staff[sid] = (evt or "").lower()
+            for sid, evt in last_by_staff.items():
+                if evt in ("in", "clock_in"):
+                    clocked_ids.add(str(sid))
+        except Exception:
+            logger.exception("location detail: clocked-in probe failed")
+
+        roster: list[dict[str, Any]] = []
+        home_count = 0
+        for u in qs[:200]:
+            is_home = str(u.primary_location_id) == str(location.id) if u.primary_location_id else False
+            if is_home:
+                home_count += 1
+            profile = getattr(u, "profile", None)
+            roster.append(
+                {
+                    "id": str(u.id),
+                    "first_name": u.first_name or "",
+                    "last_name": u.last_name or "",
+                    "role": u.role or "",
+                    "role_display": (
+                        (u.custom_role_label or "").strip()
+                        if u.role == "CUSTOM" and (u.custom_role_label or "").strip()
+                        else u.get_role_display()
+                    ),
+                    "phone": u.phone or "",
+                    "email": u.email or "",
+                    "is_home": is_home,
+                    "clocked_in": str(u.id) in clocked_ids,
+                    "hourly_rate": (
+                        float(profile.hourly_rate)
+                        if profile and profile.hourly_rate is not None
+                        else None
+                    ),
+                }
+            )
+
+        return {
+            "staff": roster,
+            "staff_summary": {
+                "total": len(roster),
+                "home": home_count,
+                "clocked_in_now": sum(1 for s in roster if s["clocked_in"]),
+            },
+        }
+
+    def _collect_performance(
+        self, restaurant, location, today, days: int = 30
+    ) -> dict[str, Any]:
+        """
+        Rolling window performance for one branch: attendance, no-shows,
+        mismatches, labor hours/cost, and a daily series for charts.
+        """
+        start = today - timedelta(days=days - 1)
+        primary = BusinessLocation.objects.filter(
+            restaurant=restaurant, is_primary=True
+        ).first()
+        is_primary_branch = primary and primary.id == location.id
+
+        shift_filter = Q(location_id=location.id)
+        if is_primary_branch:
+            shift_filter = shift_filter | Q(location__isnull=True)
+
+        shifts = list(
+            AssignedShift.objects.filter(
+                schedule__restaurant=restaurant,
+                shift_date__gte=start,
+                shift_date__lte=today,
+            )
+            .filter(shift_filter)
+            .only("id", "shift_date", "status", "staff_id")
+        )
+
+        clock_filter = Q(location_id=location.id)
+        if is_primary_branch:
+            clock_filter = clock_filter | Q(location__isnull=True)
+
+        clock_events = list(
+            ClockEvent.objects.filter(
+                staff__restaurant=restaurant,
+                timestamp__date__gte=start,
+                timestamp__date__lte=today,
+            )
+            .filter(clock_filter)
+            .select_related("staff", "staff__profile")
+            .order_by("staff_id", "timestamp")
+        )
+
+        # Daily buckets
+        daily: dict[str, dict[str, Any]] = {}
+        cursor = start
+        while cursor <= today:
+            key = cursor.isoformat()
+            daily[key] = {
+                "date": key,
+                "scheduled": 0,
+                "completed": 0,
+                "no_shows": 0,
+                "mismatches": 0,
+                "hours_worked": 0.0,
+                "labor_cost": 0.0,
+            }
+            cursor += timedelta(days=1)
+
+        scheduled = completed = no_shows = 0
+        for s in shifts:
+            key = s.shift_date.isoformat()
+            if key not in daily:
+                continue
+            daily[key]["scheduled"] += 1
+            scheduled += 1
+            status = (s.status or "").upper()
+            if status in ("COMPLETED", "IN_PROGRESS", "CHECKED_OUT"):
+                daily[key]["completed"] += 1
+                completed += 1
+            elif status == "NO_SHOW":
+                daily[key]["no_shows"] += 1
+                no_shows += 1
+
+        mismatches = 0
+        # Pair clock events per staff per day for hours + labor
+        by_staff_day: dict[tuple[Any, str], dict[str, Any]] = defaultdict(
+            lambda: {
+                "first_in": None,
+                "last_out": None,
+                "rate": Decimal("0"),
+                "mismatched": False,
+            }
+        )
+        for ev in clock_events:
+            if ev.staff_id is None:
+                continue
+            day_key = timezone.localtime(ev.timestamp).date().isoformat()
+            slot = by_staff_day[(ev.staff_id, day_key)]
+            evt = (ev.event_type or "").lower()
+            if evt in ("in", "clock_in") and slot["first_in"] is None:
+                slot["first_in"] = ev.timestamp
+                profile = getattr(ev.staff, "profile", None)
+                slot["rate"] = (
+                    profile.hourly_rate
+                    if profile and profile.hourly_rate
+                    else Decimal("0")
+                )
+            if evt in ("out", "clock_out"):
+                slot["last_out"] = ev.timestamp
+            if ev.location_mismatch:
+                slot["mismatched"] = True
+                mismatches += 1
+                if day_key in daily:
+                    daily[day_key]["mismatches"] += 1
+
+        hours_worked = 0.0
+        labor_cost = 0.0
+        now = timezone.now()
+        for (sid, day_key), slot in by_staff_day.items():
+            if slot["first_in"] is None:
+                continue
+            end = slot["last_out"] or (
+                now if day_key == today.isoformat() else slot["first_in"]
+            )
+            if end <= slot["first_in"]:
+                continue
+            hrs = (end - slot["first_in"]).total_seconds() / 3600.0
+            # Cap absurd open sessions
+            hrs = min(hrs, 16.0)
+            cost = round(hrs * float(slot["rate"]), 2)
+            hours_worked += hrs
+            labor_cost += cost
+            if day_key in daily:
+                daily[day_key]["hours_worked"] = round(
+                    daily[day_key]["hours_worked"] + hrs, 2
+                )
+                daily[day_key]["labor_cost"] = round(
+                    daily[day_key]["labor_cost"] + cost, 2
+                )
+
+        attendance_pct = (
+            int(round(100.0 * completed / scheduled)) if scheduled > 0 else None
+        )
+
+        series = [daily[k] for k in sorted(daily.keys())]
+
+        # Last-7 rollup from the same series
+        last7 = series[-7:] if len(series) >= 7 else series
+        scheduled_7 = sum(d["scheduled"] for d in last7)
+        completed_7 = sum(d["completed"] for d in last7)
+        no_shows_7 = sum(d["no_shows"] for d in last7)
+
+        return {
+            "window_days": days,
+            "summary": {
+                "scheduled_shifts": scheduled,
+                "completed_shifts": completed,
+                "no_shows": no_shows,
+                "attendance_pct": attendance_pct,
+                "mismatches": mismatches,
+                "hours_worked": round(hours_worked, 1),
+                "labor_cost": round(labor_cost, 2),
+            },
+            "last_7_days": {
+                "scheduled_shifts": scheduled_7,
+                "completed_shifts": completed_7,
+                "no_shows": no_shows_7,
+                "attendance_pct": (
+                    int(round(100.0 * completed_7 / scheduled_7))
+                    if scheduled_7 > 0
+                    else None
+                ),
+                "hours_worked": round(sum(d["hours_worked"] for d in last7), 1),
+                "labor_cost": round(sum(d["labor_cost"] for d in last7), 2),
+                "mismatches": sum(d["mismatches"] for d in last7),
+            },
+            "daily": series,
         }

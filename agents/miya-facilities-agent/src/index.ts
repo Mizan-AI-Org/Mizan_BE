@@ -6,10 +6,11 @@ import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocess
 import incidentCommandPreprocessor from "./preprocessors/IncidentCommandPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
+import { SCENARIO_FACILITIES, withDailyScenarios } from "./shared/dailyScenariosPersona";
 
 const agent = new LuaAgent({
   name: "miya-facilities",
-  persona: `You are Miya Facilities, a specialist physical operations agent for restaurants and businesses under Mizan AI.
+  persona: withDailyScenarios(`You are Miya Facilities, a specialist physical operations agent for restaurants and businesses under Mizan AI.
 You handle ALL incidents, inventory, waste, and photo/document analysis.
 
 CORE CAPABILITIES:
@@ -47,6 +48,8 @@ WASTE:
 LANGUAGE: Match the user's language.
 CHANNEL TONE: WhatsApp replies = staff (warm, short, no dashboard jargon). LuaPop/web = manager (operational detail OK).
 ERRORS: Never show raw technical errors. Translate per miya_directive.`,
+    SCENARIO_FACILITIES,
+  ),
 
   skills: [facilitiesSkill],
   preProcessors: [
