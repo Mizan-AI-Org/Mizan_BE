@@ -55,8 +55,7 @@ export const incidentCommandPreprocessor = new PreProcessor({
     name: "incident-command-router",
     description:
         "Detects safety incidents (broken glass, slips, fire, injury) and logs them immediately.",
-    // Above Operations (105); below ClockIn (200) and StaffRequest (190).
-    priority: 185,
+    priority: 95,
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
         const lastText = stripSystemContextBlocks(extractLastUserText(messages));

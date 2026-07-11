@@ -159,6 +159,13 @@ def agent_create_incident(request):
             logger.warning("[AgentIncident] post-create widget/location finalize failed", exc_info=True)
 
         try:
+            from notifications.views import _notify_managers_of_whatsapp_incident
+
+            _notify_managers_of_whatsapp_incident(concern)
+        except Exception:
+            logger.warning("[AgentIncident] manager notify failed", exc_info=True)
+
+        try:
             Incident.objects.create(
                 restaurant=restaurant,
                 reporter=reporter,

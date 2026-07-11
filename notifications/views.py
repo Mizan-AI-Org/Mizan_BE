@@ -2501,7 +2501,6 @@ def whatsapp_webhook(request):
                             if session.state == 'awaiting_incident_text':
                                 if caption:
                                     raw_body = caption
-                                    from staff.models_task import SafetyConcernReport
                                     from scheduling.models import AssignedShift
                                     def _infer_shift_img(u, when_dt):
                                         try:
@@ -2534,46 +2533,31 @@ def whatsapp_webhook(request):
                                     shift_obj = _infer_shift_img(user, occurred_at) if occurred_at else None
                                     severity = infer_severity(raw_body)
                                     try:
-                                        _assign = resolve_default_assignee_for_incident_type(
-                                            user.restaurant, incident_type or 'General'
-                                        )
-                                        ticket = SafetyConcernReport.objects.create(
-                                            restaurant=user.restaurant,
-                                            reporter=user,
-                                            is_anonymous=False,
+                                        ticket = _create_safety_concern_from_whatsapp(
+                                            user=user,
+                                            description=raw_body,
                                             incident_type=incident_type or 'General',
-                                            title=f"{incident_type or 'General'} incident",
-                                            description=raw_body.strip(),
                                             severity=severity,
-                                            status='OPEN',
                                             occurred_at=occurred_at,
                                             shift=shift_obj,
-                                            assigned_to=_assign,
+                                        )
+                                        _finalize_whatsapp_incident(
+                                            notification_service,
+                                            ticket,
+                                            session,
+                                            raw_body,
+                                            user,
+                                            phone_digits,
+                                            incident_type=ticket.incident_type,
                                         )
                                         occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
                                         notification_service.send_whatsapp_text(
                                             phone_digits,
-                                            R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=incident_type or 'General', occurred_at=occurred_str)
+                                            R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=ticket.incident_type, occurred_at=occurred_str)
                                         )
                                         session.state = 'idle'
                                         session.context.pop('pending_incident', None)
                                         session.save(update_fields=['state', 'context'])
-                                        try:
-                                            if session.context.get('incident_photo_media_id'):
-                                                _attach_whatsapp_photo_to_incident(
-                                                    notification_service, ticket,
-                                                    session.context.get('incident_photo_media_id'),
-                                                    session.context.get('incident_photo_mime_type'),
-                                                )
-                                                session.context.pop('incident_photo_media_id', None)
-                                                session.context.pop('incident_photo_mime_type', None)
-                                                session.save(update_fields=['context'])
-                                            notification_service.send_lua_incident(
-                                                user, raw_body,
-                                                metadata={'channel': 'whatsapp', 'phone': phone_digits, 'ticket_id': str(ticket.id), 'incident_type': incident_type or 'General'}
-                                            )
-                                        except Exception:
-                                            pass
                                     except Exception as e:
                                         logger.exception("Failed to create incident from image caption: %s", e)
                                         notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
@@ -2595,7 +2579,6 @@ def whatsapp_webhook(request):
                                         "📷 Got the photo. Please also send a short description (what happened, when)."
                                     )
                                     continue
-                                from staff.models_task import SafetyConcernReport
                                 from scheduling.models import AssignedShift
                                 def _infer_shift_cl(u, when_dt):
                                     try:
@@ -2622,36 +2605,28 @@ def whatsapp_webhook(request):
                                 shift_obj = _infer_shift_cl(user, occurred_at) if occurred_at else None
                                 severity = infer_severity(combined_text)
                                 try:
-                                    _assign = resolve_default_assignee_for_incident_type(user.restaurant, incident_type)
-                                    ticket = SafetyConcernReport.objects.create(
-                                        restaurant=user.restaurant,
-                                        reporter=user,
-                                        is_anonymous=False,
+                                    ticket = _create_safety_concern_from_whatsapp(
+                                        user=user,
+                                        description=combined_text,
                                         incident_type=incident_type,
-                                        title=f"{incident_type} incident",
-                                        description=combined_text.strip(),
                                         severity=severity,
-                                        status='OPEN',
                                         occurred_at=occurred_at,
                                         shift=shift_obj,
                                         audio_evidence=[pending.get('audio_url')] if pending.get('audio_url') else [],
-                                        assigned_to=_assign,
                                     )
-                                    if session.context.get('incident_photo_media_id'):
-                                        _attach_whatsapp_photo_to_incident(
-                                            notification_service, ticket,
-                                            session.context.get('incident_photo_media_id'),
-                                            session.context.get('incident_photo_mime_type'),
-                                        )
-                                        session.context.pop('incident_photo_media_id', None)
-                                        session.context.pop('incident_photo_mime_type', None)
-                                    notification_service.send_lua_incident(user, combined_text, metadata={
-                                        'channel': 'whatsapp', 'phone': phone_digits, 'ticket_id': str(ticket.id), 'incident_type': incident_type
-                                    })
+                                    _finalize_whatsapp_incident(
+                                        notification_service,
+                                        ticket,
+                                        session,
+                                        combined_text,
+                                        user,
+                                        phone_digits,
+                                        incident_type=ticket.incident_type,
+                                    )
                                     occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
                                     notification_service.send_whatsapp_text(
                                         phone_digits,
-                                        R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=incident_type, occurred_at=occurred_str)
+                                        R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=ticket.incident_type, occurred_at=occurred_str)
                                     )
                                     session.state = 'idle'
                                     session.context.pop('pending_incident', None)
@@ -2958,39 +2933,29 @@ def whatsapp_webhook(request):
                         shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
                         severity = infer_severity(transcript)
 
-                        _assign_voice = resolve_default_assignee_for_incident_type(user.restaurant, incident_type)
-                        ticket = SafetyConcernReport.objects.create(
-                            restaurant=user.restaurant,
-                            reporter=user,
-                            is_anonymous=False,
+                        ticket = _create_safety_concern_from_whatsapp(
+                            user=user,
+                            description=transcript,
                             incident_type=incident_type,
-                            title=f"{incident_type} incident",
-                            description=transcript.strip(),
                             severity=severity,
-                            status='OPEN',
                             occurred_at=occurred_at,
                             shift=shift_obj,
                             audio_evidence=[media_url] if media_url else [],
-                            assigned_to=_assign_voice,
                         )
-
-                        # Send to Lua Agent for analysis/context if needed
-                        notification_service.send_lua_incident(
-                            user,
+                        _finalize_whatsapp_incident(
+                            notification_service,
+                            ticket,
+                            session,
                             transcript,
-                            metadata={
-                                'channel': 'whatsapp',
-                                'phone': phone_digits,
-                                'media_id': media_id,
-                                'ticket_id': str(ticket.id),
-                                'incident_type': incident_type,
-                            }
+                            user,
+                            phone_digits,
+                            incident_type=ticket.incident_type,
                         )
 
                         occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
                         notification_service.send_whatsapp_text(
                             phone_digits,
-                            R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=incident_type, occurred_at=occurred_str)
+                            R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=ticket.incident_type, occurred_at=occurred_str)
                         )
 
                         # Notify Manager (best-effort)
@@ -3336,45 +3301,29 @@ def whatsapp_webhook(request):
                         shift_obj = _infer_shift(user, occurred_at) if occurred_at else None
                         severity = infer_severity(combined_text)
 
-                        _assign_clar = resolve_default_assignee_for_incident_type(user.restaurant, incident_type)
-                        ticket = SafetyConcernReport.objects.create(
-                            restaurant=user.restaurant,
-                            reporter=user,
-                            is_anonymous=False,
+                        ticket = _create_safety_concern_from_whatsapp(
+                            user=user,
+                            description=combined_text,
                             incident_type=incident_type,
-                            title=f"{incident_type} incident",
-                            description=combined_text.strip(),
                             severity=severity,
-                            status='OPEN',
                             occurred_at=occurred_at,
                             shift=shift_obj,
                             audio_evidence=[pending.get('audio_url')] if pending.get('audio_url') else [],
-                            assigned_to=_assign_clar,
                         )
-                        if session.context.get('incident_photo_media_id'):
-                            _attach_whatsapp_photo_to_incident(
-                                notification_service, ticket,
-                                session.context.get('incident_photo_media_id'),
-                                session.context.get('incident_photo_mime_type'),
-                            )
-                            session.context.pop('incident_photo_media_id', None)
-                            session.context.pop('incident_photo_mime_type', None)
-
-                        notification_service.send_lua_incident(
-                            user,
+                        _finalize_whatsapp_incident(
+                            notification_service,
+                            ticket,
+                            session,
                             combined_text,
-                            metadata={
-                                'channel': 'whatsapp',
-                                'phone': phone_digits,
-                                'ticket_id': str(ticket.id),
-                                'incident_type': incident_type,
-                            }
+                            user,
+                            phone_digits,
+                            incident_type=ticket.incident_type,
                         )
 
                         occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
                         notification_service.send_whatsapp_text(
                             phone_digits,
-                            R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=incident_type, occurred_at=occurred_str)
+                            R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=ticket.incident_type, occurred_at=occurred_str)
                         )
 
                         # reset session state

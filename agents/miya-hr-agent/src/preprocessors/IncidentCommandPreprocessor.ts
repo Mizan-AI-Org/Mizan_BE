@@ -5,6 +5,7 @@
 import { ChatMessage, PreProcessor, UserDataInstance } from "lua-cli";
 import ApiService from "../services/ApiService";
 import { extractLastUserText } from "../utils/extractLastUserText";
+import { stripSystemContextBlocks } from "../utils/stripSystemContext";
 import { resolveTenantForUser } from "../utils/resolveTenantForUser";
 import {
     resolveStaffPhoneForByPhoneTools,
@@ -58,7 +59,7 @@ export const incidentCommandPreprocessor = new PreProcessor({
     priority: 185,
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
-        const lastText = extractLastUserText(messages);
+        const lastText = stripSystemContextBlocks(extractLastUserText(messages));
         if (!isSafetyIncidentMessage(lastText)) {
             return { action: "proceed" as const };
         }

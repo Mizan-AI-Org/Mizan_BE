@@ -1,6 +1,6 @@
 {
-  "lastHash": "96e005fe754d094bac26a0712f13794d248d6148c1dfeb22661edca191548c64",
-  "lastPushedAt": "2026-07-11T18:25:19.299Z",
+  "lastHash": "f2949c531592c172705171d148ee7c38d32ae8a4d263f367be4bf1ddf9943a8a",
+  "lastPushedAt": "2026-07-11T19:02:08.965Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "46f02267963e578f"
+      "hash": "9f58710b4e4959a4"
     },
     {
       "relativePath": "package.json",
@@ -44,7 +44,7 @@
     },
     {
       "relativePath": "src/preprocessors/IncidentCommandPreprocessor.ts",
-      "hash": "4cf02599f1e3a192"
+      "hash": "845cb7fbc3206f6b"
     },
     {
       "relativePath": "src/preprocessors/InvoicePhotoPreprocessor.ts",
