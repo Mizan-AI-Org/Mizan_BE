@@ -1,10 +1,13 @@
 /**
  * CashReconciliationTool — Cash drawer management per shift.
  * Open drawer at shift start, count cash at shift end.
+ *
+ * NEVER used for "clock in" — that is staff_clock_in (location → geofence first).
  */
 import { LuaTool, User } from "lua-cli";
 import { z } from "zod";
 import ApiService from "../../services/ApiService";
+import { isClockInMessage } from "../../shared/clockInGuard";
 
 export default class CashReconciliationTool implements LuaTool {
     name = "cash_reconciliation";
@@ -12,9 +15,10 @@ export default class CashReconciliationTool implements LuaTool {
         "Manage cash drawer sessions. Actions: " +
         "'open' — open the cash drawer at shift start (specify opening float). " +
         "'close' — staff counts the cash at shift end; system computes variance. " +
-        "Use when staff say 'open drawer', 'cash count', 'close cash', 'count the cash', " +
+        "Use ONLY when staff explicitly say 'open drawer', 'cash count', 'close cash', 'count the cash', " +
         "'comptage caisse', 'فتح الصندوق', 'حساب الكاش'. " +
-        "NEVER use for 'clock in' / 'I want to clock in' — that is staff_clock_in (location first).";
+        "NEVER use for 'clock in' / 'I want to clock in' / 'pointer' — that is staff_clock_in (Share Location first). " +
+        "NEVER ask for opening float as a requirement to clock in.";
 
     inputSchema = z.object({
         action: z.enum(["open", "close"]).describe("'open' to start a cash session, 'close' to count and close"),
@@ -23,12 +27,22 @@ export default class CashReconciliationTool implements LuaTool {
         variance_reason: z.string().optional().describe("For 'close': staff explanation if there's a variance"),
         session_id: z.string().optional().describe("For 'close': specific session to close (auto-detected if omitted)"),
         restaurantId: z.string().optional().describe("ALWAYS pass the Restaurant ID from [SYSTEM: PERSISTENT CONTEXT]. Do NOT omit."),
+        last_user_message: z.string().optional().describe("Optional: last user text for safety checks"),
     });
 
     private apiService: ApiService;
     constructor(apiService?: ApiService) { this.apiService = apiService || new ApiService(); }
 
     async execute(input: z.infer<typeof this.inputSchema>, context?: any) {
+        const lastMsg = String(input.last_user_message || context?.lastUserMessage || "").trim();
+        if (isClockInMessage(lastMsg)) {
+            return {
+                status: "error",
+                code: "use_staff_clock_in",
+                message: "Share your location to clock in.",
+            };
+        }
+
         const user = await User.get();
         const restaurantId = input.restaurantId || (user as any)?.data?.restaurantId || context?.metadata?.restaurantId;
         const staffId = (user as any)?.data?.staffId || (user as any)?.data?.id;

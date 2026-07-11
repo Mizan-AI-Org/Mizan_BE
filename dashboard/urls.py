@@ -1,5 +1,12 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
+from .views_ops_ui import (
+    ManagerValidateTaskView,
+    ManagerValidateOrderView,
+    ManagerRequireValidationView,
+    DashboardOpsSearchView,
+    StaffDailyTaskProgressView,
+)
 from .views import (
     DailyKPIListAPIView,
     StaffCapturedOrderListCreateAPIView,
@@ -211,6 +218,31 @@ urlpatterns = [
         'captured-orders/<uuid:pk>/',
         StaffCapturedOrderRetrieveUpdateDestroyAPIView.as_view(),
         name='staff-captured-order-detail',
+    ),
+    path(
+        'captured-orders/<uuid:pk>/validate/',
+        ManagerValidateOrderView.as_view(),
+        name='staff-captured-order-validate',
+    ),
+    path(
+        'tasks/<uuid:pk>/validate/',
+        ManagerValidateTaskView.as_view(),
+        name='dashboard-task-validate',
+    ),
+    path(
+        'tasks/<uuid:pk>/require-validation/',
+        ManagerRequireValidationView.as_view(),
+        name='dashboard-task-require-validation',
+    ),
+    path(
+        'ops-search/',
+        DashboardOpsSearchView.as_view(),
+        name='dashboard-ops-search',
+    ),
+    path(
+        'staff-daily-progress/',
+        StaffDailyTaskProgressView.as_view(),
+        name='dashboard-staff-daily-progress',
     ),
     path('alerts-old/', AlertListCreateAPIView.as_view(), name='alert-list-create'),
     path('alerts-old/<uuid:pk>/', AlertRetrieveUpdateDestroyAPIView.as_view(), name='alert-detail'),

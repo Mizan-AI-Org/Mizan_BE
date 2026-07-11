@@ -349,7 +349,7 @@ export async function executeOperationsIntent(
                 "you";
             return {
                 status: "success",
-                message: `${name} — your role is ${role}.`,
+                message: `You are ${name} (${role}).`,
             };
         }
 

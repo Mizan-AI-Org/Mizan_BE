@@ -6,9 +6,14 @@ from datetime import timedelta
 from django.utils import timezone as tz
 
 SAFETY_KEYWORDS = [
-    'injury', 'hurt', 'slip', 'fall', 'bleed', 'burn', 'fire', 'unsafe', 'hazard', 'accident',
-    'إصابة', 'انزلاق', 'سقوط', 'حرق', 'حادث', 'خطر', 'نار',  # Arabic
-    'blessure', 'glissade', 'chute', 'brûlure', 'incident', 'danger', 'feu', 'accident',  # French
+    # Broken glass / shards are SAFETY hazards (not routine maintenance), even though
+    # "broken" alone often means equipment repair.
+    'broken glass', 'glass shard', 'glass shards', 'shattered glass', 'shatter glass',
+    'wet floor', 'slip', 'slipped', 'fell', 'fall', 'injury', 'hurt', 'bleed', 'bleeding',
+    'burn', 'fire', 'smoke', 'unsafe', 'hazard', 'accident', 'gas leak',
+    'إصابة', 'انزلاق', 'سقوط', 'حرق', 'حادث', 'خطر', 'نار', 'زجاج مكسور',  # Arabic
+    'blessure', 'glissade', 'chute', 'brûlure', 'incident', 'danger', 'feu', 'accident',
+    'verre cassé', 'bris de verre',  # French
 ]
 MAINTENANCE_KEYWORDS = [
     'broken', 'leak', 'maintenance', 'machine', 'equipment', 'fridge', 'freezer', 'oven', 'gas', 'water',
@@ -31,7 +36,7 @@ CRITICAL_KEYWORDS = [
     'critique', 'menaçant', 'feu', 'fuite de gaz',  # French
 ]
 HIGH_KEYWORDS = [
-    'injury', 'bleeding', 'severe', 'danger', 'urgent',
+    'injury', 'bleeding', 'severe', 'danger', 'urgent', 'broken glass', 'shard', 'wet floor',
     'إصابة', 'نزيف', 'خطير', 'خطر', 'عاجل',  # Arabic
     'blessure', 'saignement', 'sévère', 'danger', 'urgent',  # French
 ]
@@ -148,6 +153,7 @@ def infer_incident_type(text):
     t_norm = (text or '').lower()
     if t_low in ['safety', 'maintenance', 'hr', 'service', 'other', 'general']:
         return t_low.title() if t_low != 'hr' else 'HR'
+    # Safety before maintenance so "broken glass" is never Maintenance.
     if any(k in t_norm for k in SAFETY_KEYWORDS):
         return 'Safety'
     if any(k in t_norm for k in MAINTENANCE_KEYWORDS):
@@ -157,6 +163,54 @@ def infer_incident_type(text):
     if any(k in t_norm for k in SERVICE_KEYWORDS):
         return 'Service'
     return None
+
+
+def extract_incident_location(text: str) -> str:
+    """Best-effort location from phrases like 'table 44' / 'at the bar'."""
+    import re
+
+    t = (text or "").strip()
+    if not t:
+        return ""
+    m = re.search(
+        r"\b(?:at\s+)?(?:table|tbl|table\s*#)\s*#?\s*(\d+)\b",
+        t,
+        re.I,
+    )
+    if m:
+        return f"Table {m.group(1)}"
+    m = re.search(
+        r"\b(?:at|near|by|in)\s+(?:the\s+)?(bar|kitchen|lobby|entrance|patio|terrace|bathroom|wc|restroom|freezer|fridge)\b",
+        t,
+        re.I,
+    )
+    if m:
+        return m.group(1).strip().title()
+    return ""
+
+
+def looks_like_whatsapp_incident_report(text: str) -> bool:
+    """
+    True when inbound WhatsApp text should be owned by Django as an incident
+    (not deferred to Lua/Space, which invents clock-in / unable-to-report replies).
+    """
+    import re
+
+    t = (text or "").strip()
+    if not t or len(t) < 6:
+        return False
+    if looks_like_guest_order_intent(t):
+        return False
+    if infer_incident_type(t):
+        return True
+    if re.search(
+        r"\b(report(\s+an?)?\s+incident|safety\s+(issue|concern|report)|broken\s+glass|"
+        r"verre\s+cass|بلاغ|signalement)\b",
+        t,
+        re.I,
+    ):
+        return True
+    return False
 
 
 def infer_severity(text):

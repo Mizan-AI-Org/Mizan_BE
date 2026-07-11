@@ -921,6 +921,117 @@ export default class ApiService {
         }
     }
 
+    async validateDashboardTaskForAgent(
+        restaurantId: string,
+        taskId: string,
+        userToken?: string | null
+    ): Promise<{ success: boolean; task_id?: string; message?: string; error?: string }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/dashboard/agent/tasks/validate/",
+                { restaurant_id: restaurantId, task_id: taskId },
+                { headers }
+            );
+            return response.data;
+        } catch (error: any) {
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async submitTaskProofForAgent(
+        restaurantId: string,
+        data: { task_id: string; media_url: string },
+        userToken?: string | null
+    ): Promise<{ success: boolean; task_id?: string; message?: string; error?: string }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/dashboard/agent/tasks/proof/",
+                { restaurant_id: restaurantId, ...data },
+                { headers }
+            );
+            return response.data;
+        } catch (error: any) {
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async opsSearchForAgent(
+        restaurantId: string,
+        q: string,
+        userToken?: string | null
+    ): Promise<{
+        success?: boolean;
+        staff?: any[];
+        tasks?: any[];
+        staff_requests?: any[];
+        error?: string;
+    }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.get("/api/dashboard/agent/search/", {
+                headers,
+                params: { restaurant_id: restaurantId, q },
+            });
+            return response.data;
+        } catch (error: any) {
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async classifyCheckinMessageForAgent(
+        restaurantId: string,
+        data: { text: string; sender_phone?: string },
+        userToken?: string | null
+    ): Promise<{
+        success?: boolean;
+        classification?: string;
+        note_id?: string;
+        task_id?: string;
+        message?: string;
+        error?: string;
+    }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/dashboard/agent/checkin-message/",
+                { restaurant_id: restaurantId, ...data },
+                { headers }
+            );
+            return response.data;
+        } catch (error: any) {
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async detectOrderStationForAgent(
+        restaurantId: string,
+        data: { role?: string },
+        userToken?: string | null
+    ): Promise<{
+        success?: boolean;
+        station?: string | null;
+        needs_clarification?: boolean;
+        message?: string;
+    }> {
+        try {
+            const headers = agentAuthHeadersWithRestaurant(restaurantId, userToken);
+            const response = await this.axiosInstance.post(
+                "/api/dashboard/agent/order-station/",
+                { restaurant_id: restaurantId, ...data },
+                { headers }
+            );
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                needs_clarification: true,
+                message: error?.response?.data?.error || error.message,
+            };
+        }
+    }
+
     /**
      * Proactive insights: no-shows, understaffed shifts, late patterns, staffing suggestions.
      * Miya uses this to surface alerts and recommendations without being asked.
@@ -1135,6 +1246,10 @@ export default class ApiService {
             follow_up_enabled?: boolean;
             /** Max number of automatic follow-up messages (0-3, default 2). */
             follow_up_max?: number;
+            /** Hours until first follow-up nudge (1-20). Alias: reminderHours. */
+            follow_up_first_hours?: number;
+            /** Alias for follow_up_first_hours (backend accepts both). */
+            reminderHours?: number;
             /** Assign the task to the manager who sent the WhatsApp (personal reminder). */
             assign_to_self?: boolean;
             /** Sender WhatsApp phone — helps the backend resolve assign_to_self. */
@@ -1192,6 +1307,9 @@ export default class ApiService {
                     attachments: input.attachments,
                     follow_up_enabled: input.follow_up_enabled,
                     follow_up_max: input.follow_up_max,
+                    follow_up_first_hours:
+                        input.follow_up_first_hours ?? input.reminderHours,
+                    reminderHours: input.reminderHours ?? input.follow_up_first_hours,
                     assign_to_self: input.assign_to_self,
                     sender_phone: input.sender_phone,
                 },
@@ -2302,6 +2420,9 @@ export default class ApiService {
         table_or_location?: string;
         dietary_notes?: string;
         special_instructions?: string;
+        /** Bar / Floor / Kitchen / Other — from detectOrderStationForAgent. */
+        station?: string;
+        detected_station?: string;
     }) {
         const agentKey = env("LUA_WEBHOOK_API_KEY") || env("WEBHOOK_API_KEY") || env("MIZAN_SERVICE_TOKEN");
         if (!agentKey) {
@@ -2322,6 +2443,11 @@ export default class ApiService {
         if (data.table_or_location) payload.table_or_location = data.table_or_location;
         if (data.dietary_notes) payload.dietary_notes = data.dietary_notes;
         if (data.special_instructions) payload.special_instructions = data.special_instructions;
+        const station = (data.detected_station || data.station || "").trim();
+        if (station) {
+            payload.station = station;
+            payload.detected_station = station;
+        }
 
         try {
             const response = await this.axiosInstance.post(

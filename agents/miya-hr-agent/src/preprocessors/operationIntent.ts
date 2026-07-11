@@ -116,7 +116,7 @@ const ATTENDANCE_RE =
     /\b(?:arriv[eé]e?s?\s+[àa]\s+l['']?heure|on\s+time|attendance|pr[eé]sences?|tout\s+le\s+monde\s+(?:est\s+)?arriv|did\s+everyone\s+arrive|heures?\s+d['']?arriv)\b/i;
 
 const SELF_ROLE_RE =
-    /\b(?:j['']ai\s+quel\s+poste|quel\s+est\s+mon\s+poste|what(?:'s|\s+is)\s+my\s+(?:role|position|poste|job)|mon\s+poste\s*\?|my\s+(?:role|position)\s*\?)\b/i;
+    /\b(?:who\s+am\s+i|whoami|c['']est\s+qui|qui\s+suis[- ]?je|j['']ai\s+quel\s+poste|quel\s+est\s+mon\s+poste|what(?:'s|\s+is)\s+my\s+(?:role|position|poste|job|name)|mon\s+poste\s*\?|my\s+(?:role|position|name)\s*\?|what(?:'s|\s+is)\s+my\s+account)\b/i;
 
 const PAYSLIP_GENERATE_RE =
     /\b(?:generate|g[eé]n[eé]rer|create|cr[eé]er|prepare|pr[eé]parer)\s+(?:the\s+)?(?:staff\s+)?(?:payslips?|fiches?\s+de\s+paie|bulletins?\s+de\s+paie)\b/i;

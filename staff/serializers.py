@@ -14,6 +14,7 @@ from .models_task import StandardOperatingProcedure, SafetyChecklist, ScheduleTa
 from accounts.serializers import CustomUserSerializer, RestaurantSerializer
 import decimal
 from accounts.models import CustomUser, Restaurant
+from typing import Tuple
 
 class StaffProfileSerializer(serializers.ModelSerializer):
     user_details = CustomUserSerializer(source='user', read_only=True)
@@ -162,6 +163,88 @@ class StaffRequestCommentSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'author', 'author_details']
 
 
+def _phone_from_activation_email(email: str | None) -> str:
+    """Extract +212… from wa_212…@mizan.activation-style accounts."""
+    raw = (email or "").strip().lower()
+    if not raw or "@" not in raw:
+        return ""
+    local = raw.split("@", 1)[0]
+    if local.startswith("wa_"):
+        digits = "".join(c for c in local[3:] if c.isdigit())
+        if len(digits) >= 8:
+            return f"+{digits}"
+    return ""
+
+
+def _format_phone_label(phone: str | None) -> str:
+    raw = (phone or "").strip()
+    if not raw:
+        return ""
+    digits = "".join(c for c in raw if c.isdigit())
+    if raw.startswith("+") and digits:
+        return f"+{digits}"
+    if digits:
+        return f"+{digits}" if len(digits) >= 10 else digits
+    return raw
+
+
+def resolve_staff_request_sender(obj) -> Tuple[str, str]:
+    """
+    Return (display_name, phone) for a StaffRequest.
+
+    Never returns the useless placeholder \"Staff\" when any identity signal
+    exists (linked user name, stored staff_name, WhatsApp profile in metadata,
+    phone on the row / user, or wa_* activation email).
+    """
+    phone = (getattr(obj, "staff_phone", None) or "").strip()
+    name = (getattr(obj, "staff_name", None) or "").strip()
+    if name.lower() in ("staff", "a staff member", "unknown", "unknown sender"):
+        name = ""
+
+    staff = getattr(obj, "staff", None) if getattr(obj, "staff_id", None) else None
+    if staff is not None:
+        try:
+            full = staff.get_full_name() or ""
+        except Exception:
+            first = getattr(staff, "first_name", "") or ""
+            last = getattr(staff, "last_name", "") or ""
+            full = f"{first} {last}".strip()
+        if full:
+            name = name or full
+        phone = phone or (getattr(staff, "phone", None) or "").strip()
+        if not phone:
+            phone = _phone_from_activation_email(getattr(staff, "email", None))
+        if not name:
+            email = (getattr(staff, "email", None) or "").strip()
+            if email and not email.lower().startswith("wa_"):
+                local = email.split("@", 1)[0].replace(".", " ").replace("_", " ").strip()
+                if local:
+                    name = local.title()
+
+    md = getattr(obj, "metadata", None) or {}
+    if isinstance(md, dict) and not name:
+        for key in (
+            "sender_name",
+            "push_name",
+            "pushName",
+            "profile_name",
+            "profileName",
+            "wa_profile_name",
+            "whatsapp_name",
+        ):
+            val = (md.get(key) or "").strip() if isinstance(md.get(key), str) else ""
+            if val and val.lower() not in ("staff", "unknown"):
+                name = val
+                break
+
+    phone_label = _format_phone_label(phone)
+    if not name and phone_label:
+        name = phone_label
+    if not name:
+        name = "Unknown sender"
+    return name, phone_label
+
+
 class StaffRequestListSerializer(serializers.ModelSerializer):
     """
     Lightweight serializer used for the inbox list view.
@@ -173,6 +256,7 @@ class StaffRequestListSerializer(serializers.ModelSerializer):
     (comments + full staff object) is fetched on row click via retrieve().
     """
     staff_display_name = serializers.SerializerMethodField()
+    staff_phone_display = serializers.SerializerMethodField()
     assignee_summary = serializers.SerializerMethodField()
 
     class Meta:
@@ -183,6 +267,7 @@ class StaffRequestListSerializer(serializers.ModelSerializer):
             'staff_name',
             'staff_display_name',
             'staff_phone',
+            'staff_phone_display',
             'category',
             'priority',
             'status',
@@ -200,14 +285,12 @@ class StaffRequestListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_staff_display_name(self, obj):
-        # Avoid triggering extra queries — rely on the prefetched staff columns.
-        if obj.staff_id and getattr(obj, 'staff', None):
-            first = getattr(obj.staff, 'first_name', '') or ''
-            last = getattr(obj.staff, 'last_name', '') or ''
-            full = f"{first} {last}".strip()
-            if full:
-                return full
-        return obj.staff_name or 'Staff'
+        name, _ = resolve_staff_request_sender(obj)
+        return name
+
+    def get_staff_phone_display(self, obj):
+        _, phone = resolve_staff_request_sender(obj)
+        return phone
 
     def get_assignee_summary(self, obj):
         if not obj.assignee_id:
@@ -229,6 +312,7 @@ class StaffRequestListSerializer(serializers.ModelSerializer):
 class StaffRequestSerializer(serializers.ModelSerializer):
     staff_details = CustomUserSerializer(source='staff', read_only=True)
     staff_display_name = serializers.SerializerMethodField()
+    staff_phone_display = serializers.SerializerMethodField()
     comments = StaffRequestCommentSerializer(many=True, read_only=True)
     assignee_details = CustomUserSerializer(source='assignee', read_only=True)
 
@@ -242,6 +326,7 @@ class StaffRequestSerializer(serializers.ModelSerializer):
             'staff_name',
             'staff_display_name',
             'staff_phone',
+            'staff_phone_display',
             'category',
             'priority',
             'status',
@@ -269,6 +354,7 @@ class StaffRequestSerializer(serializers.ModelSerializer):
             'staff',
             'staff_details',
             'staff_display_name',
+            'staff_phone_display',
             'assignee_details',
             'voice_audio_url',
             'transcription',
@@ -281,15 +367,12 @@ class StaffRequestSerializer(serializers.ModelSerializer):
         ]
 
     def get_staff_display_name(self, obj):
-        """Best display name: from linked staff user, else staff_name from request."""
-        if obj.staff:
-            try:
-                name = obj.staff.get_full_name() or f"{getattr(obj.staff, 'first_name', '')} {getattr(obj.staff, 'last_name', '')}".strip()
-                if name:
-                    return name
-            except Exception:
-                pass
-        return obj.staff_name or 'Staff'
+        name, _ = resolve_staff_request_sender(obj)
+        return name
+
+    def get_staff_phone_display(self, obj):
+        _, phone = resolve_staff_request_sender(obj)
+        return phone
         
     def create(self, validated_data):
         request = self.context.get('request')

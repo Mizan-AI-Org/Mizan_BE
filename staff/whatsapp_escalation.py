@@ -143,6 +143,64 @@ def classify_whatsapp_escalation(text: str) -> Optional[EscalationRoute]:
     return None
 
 
+def extract_escalation_text_from_whatsapp_message(msg: dict | None, raw_body: str) -> list[str]:
+    """
+    Collect candidate texts from a WhatsApp inbound message for escalation routing.
+
+    Includes the body, embedded ``You:`` quotes, and nested reply/context bodies
+    (needed when staff tap "Yes, send it" quoting Miya's confirm prompt that itself
+    quoted the original wages ask).
+    """
+    candidates: list[str] = []
+    raw = (raw_body or "").strip()
+    if raw:
+        candidates.append(_strip_you_prefix(raw))
+        candidates.extend(extract_quoted_user_lines(raw))
+
+    if not isinstance(msg, dict):
+        return [c for c in candidates if c]
+
+    # Interactive button title already in raw_body; also dig into nested structures.
+    interactive = msg.get("interactive") or {}
+    if isinstance(interactive, dict):
+        for key in ("button_reply", "list_reply"):
+            block = interactive.get(key) or {}
+            if isinstance(block, dict):
+                for field in ("title", "description", "id"):
+                    val = (block.get(field) or "").strip()
+                    if val:
+                        candidates.append(_strip_you_prefix(val))
+                        candidates.extend(extract_quoted_user_lines(val))
+
+    context = msg.get("context") or {}
+    if isinstance(context, dict):
+        for key in ("quoted_message", "referred_product", "message"):
+            quoted = context.get(key)
+            if isinstance(quoted, dict):
+                for field in ("body", "text", "caption", "title", "description"):
+                    val = quoted.get(field)
+                    if isinstance(val, dict):
+                        val = val.get("body") or val.get("text") or ""
+                    val = (val or "").strip() if isinstance(val, str) else ""
+                    if val:
+                        candidates.append(_strip_you_prefix(val))
+                        candidates.extend(extract_quoted_user_lines(val))
+            elif isinstance(quoted, str) and quoted.strip():
+                candidates.append(_strip_you_prefix(quoted))
+                candidates.extend(extract_quoted_user_lines(quoted))
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for c in candidates:
+        c = (c or "").strip()
+        if not c or c.lower() in seen:
+            continue
+        seen.add(c.lower())
+        out.append(c)
+    return out
+
+
 def looks_like_staff_manager_escalation(text: str) -> bool:
     """True when Django should own this inbound text (block Lua/Space)."""
     t = _strip_you_prefix((text or "").strip())
@@ -158,5 +216,40 @@ def is_confirm_send_reply(text: str) -> bool:
     return bool(CONFIRM_SEND_RE.match(_strip_you_prefix((text or "").strip())))
 
 
+def is_explicit_confirm_send_reply(text: str) -> bool:
+    """
+    True for \"Yes, send it\" / \"send it\" / \"confirm\" — not bare \"Yes\" / \"Ok\".
+
+    Bare affirmatives must stay with Lua (checklists). Explicit send confirms
+    are owned by Django even when session pending was never set (Lua invented
+    a confirm card first).
+    """
+    t = _strip_you_prefix((text or "").strip())
+    if not is_confirm_send_reply(t):
+        return False
+    return bool(
+        re.search(
+            r"\b(send(\s+it)?|confirm(ed)?|envoie|envoyer|أرسل|ارسل)\b",
+            t,
+            re.I,
+        )
+    )
+
+
 def is_cancel_send_reply(text: str) -> bool:
     return bool(CANCEL_SEND_RE.match(_strip_you_prefix((text or "").strip())))
+
+
+def session_has_staff_escalation_context(session) -> bool:
+    """True when this WhatsApp session has a remembered escalate-to-manager ask."""
+    if not session:
+        return False
+    ctx = getattr(session, "context", None) or {}
+    if not isinstance(ctx, dict):
+        return False
+    pending = ctx.get("pending_staff_escalation") or {}
+    last = ctx.get("last_staff_escalation") or {}
+    return bool(
+        (isinstance(pending, dict) and pending.get("description"))
+        or (isinstance(last, dict) and last.get("description"))
+    )

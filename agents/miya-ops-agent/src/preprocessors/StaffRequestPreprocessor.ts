@@ -85,7 +85,10 @@ function phoneFromUser(user: UserDataInstance): string {
 
 function staffFacingSuccess(category: StaffRouteKind): string {
     if (category === "PAYROLL") {
-        return "Thanks — I've passed your unpaid wages / payroll note on to your manager. They'll get back to you as soon as they can.";
+        return "Thanks — I've passed your unpaid wages / payroll note on to your manager. They'll see it under *Human Resources* (Pending) and get back to you as soon as they can.";
+    }
+    if (category === "HR" || category === "DOCUMENT") {
+        return "Thanks — I've passed that on to your manager. They'll see it under *Human Resources* and get back to you as soon as they can.";
     }
     return "Thanks — I've passed that on to your manager. They'll get back to you as soon as they can.";
 }
@@ -94,7 +97,8 @@ export const staffRequestPreprocessor = new PreProcessor({
     name: "staff-request-router",
     description:
         "Routes tell-my-manager / wages / payslip asks to staff_request (not inform_staff).",
-    priority: 100,
+    // Above Operations (105); below ClockIn (200). Must win over Space inventing confirm cards.
+    priority: 190,
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
         if (isManagerDashboardChannel(channel)) {

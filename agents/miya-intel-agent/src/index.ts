@@ -4,6 +4,9 @@ import { intelligenceSkill } from "./skills/intelligence.skill";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
 import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
+import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
+import incidentCommandPreprocessor from "./preprocessors/IncidentCommandPreprocessor";
+import responseFormatter from "./postprocessors/ResponseFormatterPostProcessor";
 import { SCENARIO_INTEL, withDailyScenarios } from "./shared/dailyScenariosPersona";
 
 const agent = new LuaAgent({
@@ -39,7 +42,10 @@ ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [intelligenceSkill],
   preProcessors: [
-    languageMirrorPreprocessor,accountActivationPreprocessor, clockInPreprocessor],
+    languageMirrorPreprocessor,accountActivationPreprocessor, clockInPreprocessor,
+    staffRequestPreprocessor,
+    incidentCommandPreprocessor],
+  postProcessors: [responseFormatter],
 });
 
 async function main() {

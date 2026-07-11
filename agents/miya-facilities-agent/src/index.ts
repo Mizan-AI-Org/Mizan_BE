@@ -5,7 +5,9 @@ import accountActivationPreprocessor from "./preprocessors/AccountActivationPrep
 import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocessor";
 import incidentCommandPreprocessor from "./preprocessors/IncidentCommandPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
+import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
+import responseFormatter from "./postprocessors/ResponseFormatterPostProcessor";
 import { SCENARIO_FACILITIES, withDailyScenarios } from "./shared/dailyScenariosPersona";
 
 const agent = new LuaAgent({
@@ -57,8 +59,10 @@ ERRORS: Never show raw technical errors. Translate per miya_directive.`,
     incidentCommandPreprocessor,
     accountActivationPreprocessor,
     clockInPreprocessor,
+    staffRequestPreprocessor,
     operationsCommandPreprocessor,
   ],
+  postProcessors: [responseFormatter],
 });
 
 async function main() {

@@ -29,14 +29,16 @@ from .utils import (
     infer_incident_type,
     infer_severity,
     extract_occurred_at,
+    extract_incident_location,
     looks_like_guest_order_intent,
+    looks_like_whatsapp_incident_report,
     should_route_whatsapp_voice_to_incident,
 )
 from scheduling.audit import AuditTrailService, AuditActionType, AuditSeverity
 from core.utils import build_tenant_context
 from .models import WhatsAppSession
 from accounts.models import CustomUser
-from accounts.utils import calculate_distance, find_matching_location
+from accounts.utils import calculate_distance, find_matching_location, restaurant_has_clockin_geofence
 from accounts.services import UserManagementService, try_activate_staff_on_inbound_message, normalize_activation_phone_inbound
 from timeclock.models import ClockEvent
 from scheduling.models import ShiftTask, AssignedShift, ShiftChecklistProgress
@@ -116,12 +118,12 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
             try:
                 from staff.whatsapp_escalation import (
                     is_cancel_send_reply,
-                    is_confirm_send_reply,
+                    is_explicit_confirm_send_reply,
                     looks_like_staff_manager_escalation,
                 )
 
                 if (
-                    is_confirm_send_reply(title)
+                    is_explicit_confirm_send_reply(title)
                     or is_cancel_send_reply(title)
                     or looks_like_staff_manager_escalation(title)
                 ):
@@ -138,27 +140,62 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
             return True
         # Clock-in / clock-out are owned by Django (Share Location + geofence).
         # Never forward to Lua/Space — Space has no clock-in preprocessor and invents
-        # "trouble with the clock-in system" instead of sending the location button.
+        # "trouble with the clock-in system" / "opening float" instead of the location button.
         if _normalize_clock_in_intent(body):
             return True
         body_l = body.strip().lower().replace("-", " ")
         if body_l in ("clock out", "clockout", "clock out.", "pointer sortie", "pointage sortie"):
             return True
+        # Recover from wrong cash-float clock-in flows: while awaiting GPS, Django
+        # owns every text turn (re-prompt Share Location / parse coords). Never
+        # let Lua/finance continue a float interrogation.
+        from_phone = msg.get("from")
+        phone_digits = "".join(filter(str.isdigit, str(from_phone or "")))
+        phone_digits = normalize_activation_phone_inbound(phone_digits) or phone_digits
+        if phone_digits:
+            sess = WhatsAppSession.objects.filter(phone=phone_digits).first()
+            if sess and getattr(sess, "state", None) == "awaiting_clock_in_location":
+                return True
         # Staff → manager escalations (wages, payslip, HR docs) must land as
         # StaffRequest on the dashboard — never Lua/Space inform_staff confirm flows.
         try:
             from staff.whatsapp_escalation import (
                 is_cancel_send_reply,
                 is_confirm_send_reply,
+                is_explicit_confirm_send_reply,
                 looks_like_staff_manager_escalation,
+                session_has_staff_escalation_context,
             )
 
             if looks_like_staff_manager_escalation(body):
                 return True
-            if is_confirm_send_reply(body) or is_cancel_send_reply(body):
+            # Own confirm/cancel only when explicit ("Yes, send it") or this
+            # session already has a pending escalate-to-manager ask. Bare
+            # "Yes"/"Ok" stay with Lua for checklists.
+            if is_explicit_confirm_send_reply(body) or (
+                (is_cancel_send_reply(body) or is_confirm_send_reply(body))
+                and session_has_staff_escalation_context(
+                    WhatsAppSession.objects.filter(phone=phone_digits).first()
+                    if phone_digits
+                    else None
+                )
+            ):
                 return True
         except Exception:
             pass
+        # Safety / maintenance incident reports (broken glass, slips, …)
+        if looks_like_whatsapp_incident_report(body):
+            return True
+        if phone_digits:
+            sess = WhatsAppSession.objects.filter(phone=phone_digits).first()
+            if sess:
+                st = getattr(sess, "state", None) or ""
+                ctx = getattr(sess, "context", None) or {}
+                if st in (
+                    "awaiting_incident_text",
+                    "awaiting_incident_clarification",
+                ) or ctx.get("incident_photo_media_id"):
+                    return True
         pair = _parse_lat_lon_from_clock_in_text(body)
         if pair:
             if _text_looks_like_shared_gps_clock_in(body):
@@ -466,6 +503,24 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
             "You are not within any approved location zone. Please move closer and try again.",
             log_ctx="whatsapp_clock_in_gps",
         )
+        # Show the approved workplace pin so staff know where to go, then
+        # re-offer Share Location — matches the proven WhatsApp clock-in UX.
+        try:
+            notification_service.send_approved_clockin_zone_hint(phone_digits, nearest)
+        except Exception:
+            logger.warning("WhatsApp clock-in: zone hint send failed", exc_info=True)
+        try:
+            session.state = "awaiting_clock_in_location"
+            session.save(update_fields=["state"])
+        except Exception:
+            pass
+        try:
+            notification_service.send_whatsapp_location_request(
+                phone_digits,
+                "Share your location to clock in.",
+            )
+        except Exception:
+            logger.warning("WhatsApp clock-in: re-prompt location after outside-zone failed", exc_info=True)
         return True
 
     dist = float(dist_m) if dist_m is not None else 0.0
@@ -474,31 +529,9 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
     # Staff may clock in without a scheduled shift (unplanned / extra cover).
     active_shift = _get_shift_for_clock_in(user)
 
-    ref_lat = getattr(matched_location, "latitude", None)
-    ref_lon = getattr(matched_location, "longitude", None)
-    is_shared, reject_msg = _is_likely_shared_static_location(loc, rest, lat, lon, ref_lat=ref_lat, ref_lon=ref_lon)
-    if is_shared and reject_msg:
-        try:
-            from accounts.models import AuditLog
-
-            AuditLog.create_log(
-                restaurant=rest,
-                user=user,
-                action_type="OTHER",
-                entity_type="CLOCK_EVENT",
-                description="Clock-in attempt rejected: shared/pinned location (not live)",
-                new_values={
-                    "phone": phone_digits,
-                    "lat": lat,
-                    "lon": lon,
-                    "has_name": bool((loc or {}).get("name")),
-                    "has_address": bool((loc or {}).get("address")),
-                },
-            )
-        except Exception:
-            pass
-        _safe_whatsapp_text_send(phone_digits, reject_msg, log_ctx="whatsapp_clock_in_gps")
-        return True
+    # Do NOT reject "pin matches venue exactly" — WhatsApp place shares and
+    # live GPS standing at the door both land on/near the site centroid. The
+    # geofence match above is the security boundary (see product WhatsApp flow).
 
     from datetime import timedelta as _td_cl
 
@@ -506,9 +539,11 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
     if last_event and last_event.event_type == "in":
         now_local = timezone.localtime(timezone.now()).date()
         if timezone.localtime(last_event.timestamp).date() == now_local:
+            first_name = getattr(user, "first_name", None) or "Team Member"
+            local_time = timezone.localtime(last_event.timestamp).strftime("%H:%M")
             _safe_whatsapp_text_send(
                 phone_digits,
-                "You are already clocked in for this shift.",
+                f"You're already clocked in (since {local_time}). Have a great shift {first_name}!",
                 log_ctx="whatsapp_clock_in_gps",
             )
             session.state = "idle"
@@ -560,9 +595,11 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
                 and last_event.event_type == "in"
                 and timezone.localtime(last_event.timestamp).date() == timezone.localtime(timezone.now()).date()
             ):
+                first_name = getattr(user, "first_name", None) or "Team Member"
+                local_time = timezone.localtime(last_event.timestamp).strftime("%H:%M")
                 _safe_whatsapp_text_send(
                     phone_digits,
-                    "You are already clocked in for this shift.",
+                    f"You're already clocked in (since {local_time}). Have a great shift {first_name}!",
                     log_ctx="whatsapp_clock_in_gps",
                 )
                 session.state = "idle"
@@ -719,26 +756,32 @@ def _process_whatsapp_staff_escalation(
     raw_body: str,
     *,
     wamid: str = "",
+    msg: dict | None = None,
 ) -> bool:
     """
     Create a StaffRequest for staff→manager escalations (wages, payslip, etc.).
     Returns True when handled (caller should continue the webhook loop).
+
+    Creates the inbox row immediately on the first ask (no fake confirmation card).
+    ``Yes, send it`` recovers the original ask from session pending or WhatsApp quotes.
     """
     from staff.whatsapp_escalation import (
         classify_whatsapp_escalation,
-        extract_quoted_user_lines,
+        extract_escalation_text_from_whatsapp_message,
         is_cancel_send_reply,
         is_confirm_send_reply,
     )
     from staff.whatsapp_request_ingest import ingest_staff_escalation_from_whatsapp
 
     raw = (raw_body or "").strip()
-    if not raw:
+    if not raw and not msg:
         return False
 
     if is_cancel_send_reply(raw):
         if session:
-            session.context.pop("pending_staff_escalation", None)
+            ctx = dict(getattr(session, "context", None) or {})
+            ctx.pop("pending_staff_escalation", None)
+            session.context = ctx
             session.save(update_fields=["context"])
         notification_service.send_whatsapp_text(
             phone_digits,
@@ -746,7 +789,9 @@ def _process_whatsapp_staff_escalation(
         )
         return True
 
+    candidates = extract_escalation_text_from_whatsapp_message(msg, raw)
     routed = None
+
     if is_confirm_send_reply(raw):
         pending = (getattr(session, "context", None) or {}).get("pending_staff_escalation") or {}
         if pending.get("description"):
@@ -756,20 +801,54 @@ def _process_whatsapp_staff_escalation(
                 "description": pending["description"],
             }
         else:
-            for quoted in extract_quoted_user_lines(raw):
-                routed = classify_whatsapp_escalation(quoted)
+            for candidate in candidates:
+                if is_confirm_send_reply(candidate) or is_cancel_send_reply(candidate):
+                    continue
+                routed = classify_whatsapp_escalation(candidate)
                 if routed:
                     break
+            if not routed:
+                # Last resort: any stored last escalation on this session
+                last = (getattr(session, "context", None) or {}).get("last_staff_escalation") or {}
+                if last.get("description"):
+                    routed = {
+                        "category": last.get("category") or "OTHER",
+                        "subject": last.get("subject") or last["description"][:200],
+                        "description": last["description"],
+                    }
     else:
-        routed = classify_whatsapp_escalation(raw)
-        if not routed:
-            for quoted in extract_quoted_user_lines(raw):
-                routed = classify_whatsapp_escalation(quoted)
-                if routed:
-                    break
+        for candidate in candidates:
+            routed = classify_whatsapp_escalation(candidate)
+            if routed:
+                break
 
     if not routed:
+        if is_confirm_send_reply(raw):
+            notification_service.send_whatsapp_text(
+                phone_digits,
+                "Please say again what you'd like me to tell your manager "
+                '(e.g. "Tell my manager I haven\'t received last week\'s wages") '
+                "and I'll pass it on right away — they'll see it under Human Resources.",
+            )
+            return True
         return False
+
+    # Remember for a possible follow-up "Yes, send it" if Lua raced a confirm UI.
+    if session:
+        try:
+            ctx = dict(getattr(session, "context", None) or {})
+            ctx["last_staff_escalation"] = {
+                "category": routed.get("category") or "OTHER",
+                "subject": routed.get("subject") or "",
+                "description": routed.get("description") or "",
+            }
+            # Keep pending only until we successfully ingest (confirm path uses it).
+            if not is_confirm_send_reply(raw):
+                ctx["pending_staff_escalation"] = ctx["last_staff_escalation"]
+            session.context = ctx
+            session.save(update_fields=["context"])
+        except Exception:
+            logger.warning("WhatsApp staff escalation: could not persist session context", exc_info=True)
 
     if not user:
         notification_service.send_whatsapp_text(
@@ -788,8 +867,15 @@ def _process_whatsapp_staff_escalation(
             external_id=wamid or "",
         )
         if session:
-            session.context.pop("pending_staff_escalation", None)
-            session.save(update_fields=["context"])
+            try:
+                ctx = dict(getattr(session, "context", None) or {})
+                ctx.pop("pending_staff_escalation", None)
+                # Prevent "Yes, send it" from creating a duplicate after we already ingested.
+                ctx.pop("last_staff_escalation", None)
+                session.context = ctx
+                session.save(update_fields=["context"])
+            except Exception:
+                pass
         notification_service.send_whatsapp_text(phone_digits, reply)
     except Exception:
         logger.exception("WhatsApp staff escalation ingest failed phone=%s", phone_digits)
@@ -1133,6 +1219,125 @@ def _attach_whatsapp_photo_to_incident(notification_service, ticket, media_id, m
         logger.info("Attached WhatsApp photo to incident %s (%d bytes)", ticket.id, len(image_bytes))
     except Exception as e:
         logger.warning("Could not attach WhatsApp photo to incident %s: %s", getattr(ticket, 'id', '?'), e)
+
+
+def _notify_managers_of_whatsapp_incident(ticket):
+    """In-app notify managers so Ops review / Reported Incidents update promptly."""
+    try:
+        from accounts.models import CustomUser
+        from .models import Notification
+
+        managers = CustomUser.objects.filter(
+            restaurant=ticket.restaurant,
+            role__in=['MANAGER', 'ADMIN', 'SUPER_ADMIN', 'OWNER'],
+            is_active=True,
+        )
+        title = (ticket.title or "Incident").strip()
+        msg = (ticket.description or title)[:200]
+        sev = (ticket.severity or "MEDIUM").upper()
+        if sev == "CRITICAL":
+            sev = "URGENT"
+        elif sev not in ("LOW", "MEDIUM", "HIGH", "URGENT"):
+            sev = "MEDIUM"
+        for m in managers:
+            notif = Notification.objects.create(
+                recipient=m,
+                title="New incident report",
+                message=msg,
+                notification_type='EMERGENCY',
+                priority=sev,
+                data={
+                    'incident_id': str(ticket.id),
+                    'route': '/dashboard/analytics?tab=incidents',
+                    'status': ticket.status,
+                    'incident_type': ticket.incident_type,
+                },
+            )
+            notification_service.send_custom_notification(
+                recipient=m,
+                notification=notif,
+                message=notif.message,
+                notification_type='EMERGENCY',
+                title=notif.title,
+                channels=['app'],
+            )
+    except Exception as e:
+        logger.warning("WhatsApp incident notify managers failed: %s", e)
+
+
+def _finalize_whatsapp_incident(notification_service, ticket, session, raw_body, user, phone_digits, *, incident_type: str):
+    """Attach stored photo, pin widgets, notify Lua + managers after SafetyConcernReport create."""
+    try:
+        from dashboard.category_routing import ensure_dashboard_widgets_for_managers
+
+        ensure_dashboard_widgets_for_managers(ticket.restaurant, incident=True)
+    except Exception:
+        logger.warning("ensure_dashboard_widgets_for_managers(incident) failed", exc_info=True)
+
+    media_id = None
+    mime = None
+    if session:
+        media_id = (session.context or {}).get('incident_photo_media_id')
+        mime = (session.context or {}).get('incident_photo_mime_type')
+    if media_id:
+        _attach_whatsapp_photo_to_incident(notification_service, ticket, media_id, mime)
+        if session:
+            session.context.pop('incident_photo_media_id', None)
+            session.context.pop('incident_photo_mime_type', None)
+
+    try:
+        notification_service.send_lua_incident(
+            user,
+            raw_body,
+            metadata={
+                'channel': 'whatsapp',
+                'phone': phone_digits,
+                'ticket_id': str(ticket.id),
+                'incident_type': incident_type,
+            },
+        )
+    except Exception:
+        pass
+
+    _notify_managers_of_whatsapp_incident(ticket)
+
+
+def _create_safety_concern_from_whatsapp(
+    *,
+    user,
+    description: str,
+    incident_type: str | None,
+    severity: str | None = None,
+    occurred_at=None,
+    shift=None,
+    audio_evidence=None,
+):
+    """Create SafetyConcernReport with normalized category, location, and default assignee."""
+    from staff.models_task import SafetyConcernReport
+    from staff.incident_routing import (
+        normalize_incident_category_for_storage,
+        resolve_default_assignee_for_incident_type,
+    )
+
+    itype = normalize_incident_category_for_storage(incident_type or 'General')
+    when = occurred_at or timezone.now()
+    loc = extract_incident_location(description) or None
+    assignee = resolve_default_assignee_for_incident_type(user.restaurant, itype)
+    return SafetyConcernReport.objects.create(
+        restaurant=user.restaurant,
+        reporter=user,
+        is_anonymous=False,
+        incident_type=itype,
+        title=f"{itype} incident",
+        description=(description or '').strip(),
+        location=loc,
+        severity=severity or infer_severity(description),
+        status='OPEN',
+        occurred_at=when,
+        shift=shift,
+        assigned_to=assignee,
+        audio_evidence=audio_evidence or [],
+    )
 
 
 class NotificationPagination(PageNumberPagination):
@@ -1927,7 +2132,7 @@ def whatsapp_webhook(request):
                     _active_django_states = {
                         'awaiting_clock_in_location',
                         'awaiting_task_photo', 'awaiting_feedback',
-                        'awaiting_incident', 'awaiting_incident_details',
+                        'awaiting_incident_text', 'awaiting_incident_clarification',
                         'awaiting_order_voice',
                         'awaiting_order_clarification',
                     }
@@ -1942,28 +2147,49 @@ def whatsapp_webhook(request):
                     )
                     _text_is_staff_escalation = False
                     _interactive_is_staff_escalation = False
+                    _text_is_incident_report = False
                     _text_is_clock_in = (
                         msg_type == "text"
                         and text_body
                         and _normalize_clock_in_intent(text_body)
                     )
+                    _awaiting_clock_in_gps = bool(
+                        session and getattr(session, "state", None) == "awaiting_clock_in_location"
+                    )
                     try:
                         from staff.whatsapp_escalation import (
                             is_cancel_send_reply,
                             is_confirm_send_reply,
+                            is_explicit_confirm_send_reply,
                             looks_like_staff_manager_escalation,
+                            session_has_staff_escalation_context,
                         )
 
                         if msg_type == 'text' and text_body:
                             _text_is_staff_escalation = looks_like_staff_manager_escalation(text_body)
+                            if not _text_is_staff_escalation:
+                                _text_is_staff_escalation = is_explicit_confirm_send_reply(
+                                    text_body
+                                ) or (
+                                    (is_cancel_send_reply(text_body) or is_confirm_send_reply(text_body))
+                                    and session_has_staff_escalation_context(session)
+                                )
+                            _text_is_incident_report = looks_like_whatsapp_incident_report(text_body)
+                            if not _text_is_incident_report and session:
+                                ctx = getattr(session, "context", None) or {}
+                                if ctx.get("incident_photo_media_id"):
+                                    _text_is_incident_report = True
                         if msg_type == 'interactive':
                             inter = msg.get('interactive') or {}
                             if inter.get('type') == 'button_reply':
                                 btn_title = ((inter.get('button_reply') or {}).get('title') or '').strip()
                                 _interactive_is_staff_escalation = (
                                     looks_like_staff_manager_escalation(btn_title)
-                                    or is_confirm_send_reply(btn_title)
-                                    or is_cancel_send_reply(btn_title)
+                                    or is_explicit_confirm_send_reply(btn_title)
+                                    or (
+                                        (is_cancel_send_reply(btn_title) or is_confirm_send_reply(btn_title))
+                                        and session_has_staff_escalation_context(session)
+                                    )
                                 )
                     except Exception:
                         pass
@@ -1977,6 +2203,8 @@ def whatsapp_webhook(request):
                         and not _text_is_staff_escalation
                         and not _interactive_is_staff_escalation
                         and not _text_is_clock_in
+                        and not _awaiting_clock_in_gps
+                        and not _text_is_incident_report
                     ):
                         logger.info("Session state '%s' for %s — deferring to Lua/Miya.", session.state, phone_digits)
                         continue
@@ -2000,6 +2228,7 @@ def whatsapp_webhook(request):
                                 session,
                                 btn_title or btn_id or '',
                                 wamid=wamid or '',
+                                msg=msg,
                             ):
                                 continue
 
@@ -2009,10 +2238,15 @@ def whatsapp_webhook(request):
                                     continue
                                 last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
                                 if last_event and last_event.event_type == 'in':
-                                    notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
+                                    first_name = getattr(user, "first_name", None) or "Team Member"
+                                    local_time = timezone.localtime(last_event.timestamp).strftime("%H:%M")
+                                    notification_service.send_whatsapp_text(
+                                        phone_digits,
+                                        f"You're already clocked in (since {local_time}). Have a great shift {first_name}!",
+                                    )
                                     continue
                                 rest = getattr(user, 'restaurant', None)
-                                if rest and (not getattr(rest, 'latitude', None) or not getattr(rest, 'longitude', None) or not getattr(rest, 'radius', None)):
+                                if not restaurant_has_clockin_geofence(rest):
                                     notification_service.send_whatsapp_text(
                                         phone_digits,
                                         "Location check is not set up for your restaurant. Please contact your manager to clock in."
@@ -2416,16 +2650,20 @@ def whatsapp_webhook(request):
                                     notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
                             continue
                         elif user and not session.context.get('awaiting_verification_for_task_id'):
+                            # Idle photo (not checklist evidence): treat as incident evidence.
+                            # Clear stale clock-in so we never answer an incident photo with
+                            # "try clocking in again".
                             image_obj_fb = msg.get('image') or {}
                             caption_fb = (image_obj_fb.get('caption') or '').strip()
+                            media_id_fb = image_obj_fb.get('id')
+                            mime_type_fb = image_obj_fb.get('mime_type')
+                            if session.state == 'awaiting_clock_in_location':
+                                session.state = 'idle'
                             if caption_fb:
-                                from staff.models_task import SafetyConcernReport
                                 from scheduling.models import AssignedShift
-                                media_id_fb = image_obj_fb.get('id')
-                                mime_type_fb = image_obj_fb.get('mime_type')
                                 now = timezone.now()
                                 incident_type_fb = infer_incident_type(caption_fb) or 'General'
-                                occurred_at_fb = now
+
                                 def _infer_shift_fb(u, when_dt):
                                     try:
                                         qs = AssignedShift.objects.filter(
@@ -2436,78 +2674,63 @@ def whatsapp_webhook(request):
                                         return overlap or qs.order_by('start_time').first()
                                     except Exception:
                                         return None
-                                shift_obj_fb = _infer_shift_fb(user, occurred_at_fb)
-                                severity_fb = infer_severity(caption_fb)
+
+                                shift_obj_fb = _infer_shift_fb(user, now)
                                 try:
-                                    _assign_fb = resolve_default_assignee_for_incident_type(
-                                        user.restaurant, incident_type_fb
-                                    )
-                                    ticket_fb = SafetyConcernReport.objects.create(
-                                        restaurant=user.restaurant,
-                                        reporter=user,
-                                        is_anonymous=False,
+                                    if media_id_fb:
+                                        session.context['incident_photo_media_id'] = media_id_fb
+                                        session.context['incident_photo_mime_type'] = mime_type_fb
+                                    ticket_fb = _create_safety_concern_from_whatsapp(
+                                        user=user,
+                                        description=caption_fb,
                                         incident_type=incident_type_fb,
-                                        title=f"{incident_type_fb} incident",
-                                        description=caption_fb.strip(),
-                                        severity=severity_fb,
-                                        status='OPEN',
-                                        occurred_at=occurred_at_fb,
+                                        severity=infer_severity(caption_fb),
+                                        occurred_at=now,
                                         shift=shift_obj_fb,
-                                        assigned_to=_assign_fb,
                                     )
-                                    occurred_str_fb = occurred_at_fb.strftime('%Y-%m-%d %H:%M')
+                                    _finalize_whatsapp_incident(
+                                        notification_service,
+                                        ticket_fb,
+                                        session,
+                                        caption_fb,
+                                        user,
+                                        phone_digits,
+                                        incident_type=ticket_fb.incident_type,
+                                    )
+                                    occurred_str_fb = now.strftime('%Y-%m-%d %H:%M')
                                     notification_service.send_whatsapp_text(
                                         phone_digits,
-                                        R(user, 'incident_recorded', ticket_id=str(ticket_fb.id)[:8], incident_type=incident_type_fb, occurred_at=occurred_str_fb)
+                                        R(
+                                            user,
+                                            'incident_recorded',
+                                            ticket_id=str(ticket_fb.id)[:8],
+                                            incident_type=ticket_fb.incident_type,
+                                            occurred_at=occurred_str_fb,
+                                        ),
                                     )
-                                    try:
-                                        if media_id_fb:
-                                            _attach_whatsapp_photo_to_incident(notification_service, ticket_fb, media_id_fb, mime_type_fb)
-                                        notification_service.send_lua_incident(user, caption_fb, metadata={
-                                            'channel': 'whatsapp', 'phone': phone_digits, 'ticket_id': str(ticket_fb.id), 'incident_type': incident_type_fb
-                                        })
-                                    except Exception:
-                                        pass
+                                    session.state = 'idle'
+                                    session.context.pop('pending_incident', None)
+                                    session.save(update_fields=['state', 'context'])
                                     continue
                                 except Exception as e:
                                     logger.exception("Failed to create incident from image+caption fallback: %s", e)
                                     notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
                                     continue
+                            # Photo without caption — keep media and ask for a short description.
+                            if media_id_fb:
+                                session.context['incident_photo_media_id'] = media_id_fb
+                                session.context['incident_photo_mime_type'] = mime_type_fb
+                            session.state = 'awaiting_incident_text'
+                            session.save(update_fields=['state', 'context'])
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                '📷 Got the photo. Please describe what happened '
+                                '(e.g. "Broken glass at table 44").',
+                            )
+                            continue
                         else:
-                            image_obj_nc = msg.get('image') or {}
-                            media_id_nc = image_obj_nc.get('id')
-                            if user and media_id_nc:
-                                from staff.models_task import SafetyConcernReport
-                                now = timezone.now()
-                                try:
-                                    _assign_nc = resolve_default_assignee_for_incident_type(
-                                        user.restaurant, 'General'
-                                    )
-                                    ticket_nc = SafetyConcernReport.objects.create(
-                                        restaurant=user.restaurant,
-                                        reporter=user,
-                                        is_anonymous=False,
-                                        incident_type='General',
-                                        title='General incident',
-                                        description='Incident reported with photo (no caption).',
-                                        severity='MEDIUM',
-                                        status='OPEN',
-                                        occurred_at=now,
-                                        assigned_to=_assign_nc,
-                                    )
-                                    _attach_whatsapp_photo_to_incident(
-                                        notification_service, ticket_nc,
-                                        media_id_nc, image_obj_nc.get('mime_type'),
-                                    )
-                                    notification_service.send_whatsapp_text(
-                                        phone_digits,
-                                        R(user, 'incident_recorded', ticket_id=str(ticket_nc.id)[:8], incident_type='General', occurred_at=now.strftime('%Y-%m-%d %H:%M'))
-                                    )
-                                except Exception as e:
-                                    logger.exception("Failed to create incident from photo-only: %s", e)
-                                    notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
-                            else:
-                                notification_service.send_whatsapp_text(phone_digits, R(user, 'unrecognized'))
+                            # Unlinked phone — cannot create a ticket yet.
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                             continue
 
                     # ------------------------------------------------------------------
@@ -2844,6 +3067,7 @@ def whatsapp_webhook(request):
                         session,
                         raw_body,
                         wamid=wamid or '',
+                        msg=msg,
                     ):
                         continue
 
@@ -3172,10 +3396,15 @@ def whatsapp_webhook(request):
                             continue
                         last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
                         if last_event and last_event.event_type == 'in':
-                            notification_service.send_whatsapp_text(phone_digits, "You are already clocked in for this shift.")
+                            first_name = getattr(user, "first_name", None) or "Team Member"
+                            local_time = timezone.localtime(last_event.timestamp).strftime("%H:%M")
+                            notification_service.send_whatsapp_text(
+                                phone_digits,
+                                f"You're already clocked in (since {local_time}). Have a great shift {first_name}!",
+                            )
                             continue
                         rest = getattr(user, 'restaurant', None)
-                        if rest and (not getattr(rest, 'latitude', None) or not getattr(rest, 'longitude', None) or not getattr(rest, 'radius', None)):
+                        if not restaurant_has_clockin_geofence(rest):
                             notification_service.send_whatsapp_text(
                                 phone_digits,
                                 "Location check is not set up for your restaurant. Please contact your manager to clock in."
@@ -3323,7 +3552,6 @@ def whatsapp_webhook(request):
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                             continue
                         # Use the same structured extraction + clarification rules as voice
-                        from staff.models_task import SafetyConcernReport
                         from scheduling.models import AssignedShift
 
                         def _infer_shift(u, when_dt):
@@ -3369,41 +3597,34 @@ def whatsapp_webhook(request):
                         severity = infer_severity(raw_body)
 
                         try:
-                            _assign_txt = resolve_default_assignee_for_incident_type(
-                                user.restaurant, incident_type or 'General'
-                            )
-                            ticket = SafetyConcernReport.objects.create(
-                                restaurant=user.restaurant,
-                                reporter=user,
-                                is_anonymous=False,
+                            ticket = _create_safety_concern_from_whatsapp(
+                                user=user,
+                                description=raw_body,
                                 incident_type=incident_type or 'General',
-                                title=f"{incident_type or 'General'} incident",
-                                description=raw_body.strip(),
                                 severity=severity,
-                                status='OPEN',
                                 occurred_at=occurred_at,
                                 shift=shift_obj,
-                                assigned_to=_assign_txt,
                             )
-                            if session.context.get('incident_photo_media_id'):
-                                _attach_whatsapp_photo_to_incident(
-                                    notification_service, ticket,
-                                    session.context.get('incident_photo_media_id'),
-                                    session.context.get('incident_photo_mime_type'),
-                                )
-                                session.context.pop('incident_photo_media_id', None)
-                                session.context.pop('incident_photo_mime_type', None)
-
-                            notification_service.send_lua_incident(
-                                user,
+                            _finalize_whatsapp_incident(
+                                notification_service,
+                                ticket,
+                                session,
                                 raw_body,
-                                metadata={'channel': 'whatsapp', 'phone': phone_digits, 'ticket_id': str(ticket.id), 'incident_type': incident_type or 'General'}
+                                user,
+                                phone_digits,
+                                incident_type=ticket.incident_type,
                             )
 
                             occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
                             notification_service.send_whatsapp_text(
                                 phone_digits,
-                                R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=incident_type or 'General', occurred_at=occurred_str)
+                                R(
+                                    user,
+                                    'incident_recorded',
+                                    ticket_id=str(ticket.id)[:8],
+                                    incident_type=ticket.incident_type,
+                                    occurred_at=occurred_str,
+                                ),
                             )
                             session.state = 'idle'
                             session.context.pop('pending_incident', None)
@@ -3415,13 +3636,13 @@ def whatsapp_webhook(request):
 
                     # Fallback: if the message looks like an incident description, log it directly.
                     if user:
-                        from staff.models_task import SafetyConcernReport
                         from scheduling.models import AssignedShift
 
                         incident_type = infer_incident_type(raw_body)
-                        if incident_type:
+                        if incident_type or (session.context or {}).get('incident_photo_media_id'):
                             now = timezone.now()
                             occurred_at = now
+                            incident_type = incident_type or 'General'
 
                             def _infer_shift_text(u, when_dt):
                                 try:
@@ -3439,52 +3660,41 @@ def whatsapp_webhook(request):
                             severity = infer_severity(raw_body)
 
                             try:
-                                _assign_fb2 = resolve_default_assignee_for_incident_type(
-                                    user.restaurant, incident_type
-                                )
-                                ticket = SafetyConcernReport.objects.create(
-                                    restaurant=user.restaurant,
-                                    reporter=user,
-                                    is_anonymous=False,
+                                ticket = _create_safety_concern_from_whatsapp(
+                                    user=user,
+                                    description=raw_body,
                                     incident_type=incident_type,
-                                    title=f"{incident_type} incident",
-                                    description=raw_body.strip(),
                                     severity=severity,
-                                    status='OPEN',
                                     occurred_at=occurred_at,
                                     shift=shift_obj,
-                                    assigned_to=_assign_fb2,
                                 )
-                                if session.context.get('incident_photo_media_id'):
-                                    _attach_whatsapp_photo_to_incident(
-                                        notification_service, ticket,
-                                        session.context.get('incident_photo_media_id'),
-                                        session.context.get('incident_photo_mime_type'),
-                                    )
-                                    session.context.pop('incident_photo_media_id', None)
-                                    session.context.pop('incident_photo_mime_type', None)
-
-                                notification_service.send_lua_incident(
-                                    user,
+                                _finalize_whatsapp_incident(
+                                    notification_service,
+                                    ticket,
+                                    session,
                                     raw_body,
-                                    metadata={
-                                        'channel': 'whatsapp',
-                                        'phone': phone_digits,
-                                        'ticket_id': str(ticket.id),
-                                        'incident_type': incident_type,
-                                    }
+                                    user,
+                                    phone_digits,
+                                    incident_type=ticket.incident_type,
                                 )
 
                                 occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M')
                                 notification_service.send_whatsapp_text(
                                     phone_digits,
-                                    R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=incident_type, occurred_at=occurred_str)
+                                    R(
+                                        user,
+                                        'incident_recorded',
+                                        ticket_id=str(ticket.id)[:8],
+                                        incident_type=ticket.incident_type,
+                                        occurred_at=occurred_str,
+                                    ),
                                 )
                                 session.state = 'idle'
                                 session.context.pop('pending_incident', None)
                                 session.save(update_fields=['state', 'context'])
-                                return Response({'success': True})
+                                continue
                             except Exception:
+                                logger.exception("Failed to create incident from fallback text")
                                 # Fall through to generic unrecognized response if anything fails
                                 pass
 

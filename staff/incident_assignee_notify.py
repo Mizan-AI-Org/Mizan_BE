@@ -34,7 +34,7 @@ def _build_assignee_message(ticket: "SafetyConcernReport") -> str:
             reporter_bits.append(f"*Reported by:* {name}")
 
     front = getattr(settings, "FRONTEND_URL", "") or ""
-    dash = f"{front.rstrip('/')}/dashboard/safety" if front else ""
+    dash = f"{front.rstrip('/')}/dashboard/analytics?tab=incidents" if front else ""
 
     lines = [
         "🔔 *Miya — new incident assigned to you*",

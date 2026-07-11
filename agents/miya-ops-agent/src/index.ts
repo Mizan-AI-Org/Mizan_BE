@@ -4,10 +4,12 @@ import { operationsSkill } from "./skills/operations.skill";
 import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 import clockOutPreprocessor from "./preprocessors/ClockOutPreprocessor";
+import checkinMessagePreprocessor from "./preprocessors/CheckinMessagePreprocessor";
 import checklistFlowPreprocessor from "./preprocessors/ChecklistFlowPreprocessor";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
+import incidentCommandPreprocessor from "./preprocessors/IncidentCommandPreprocessor";
 import responseFormatter from "./postprocessors/ResponseFormatterPostProcessor";
 import { SCENARIO_OPS, withDailyScenarios } from "./shared/dailyScenariosPersona";
 
@@ -21,11 +23,14 @@ HEALTHCARE: operations only — never medical advice.
 
 CORE CAPABILITIES:
 - Staff clock-in/out with geofence verification
+- Late/absence free-text check-in notes (classify_checkin_message)
 - Shift creation (individual and team/role-based)
 - Shift swap listing, approval, rejection
 - No-show marking and coverage assignment
 - Checklist start/respond step-by-step flows
 - Standalone task templates from shift templates
+- Staff-captured guest orders (capture_guest_order + station detect)
+- Ops memory: validate_task, submit_task_proof, ops_search
 - Schedule import from photos/documents
 - Schedule optimization and optimal staffing recommendations
 - Labor report exports
@@ -61,6 +66,7 @@ CLOCK IN/OUT — NON-NEGOTIABLE (WhatsApp is the staff attendance channel):
 - FORBIDDEN: generic apologies that hide what the tool returned.
 - FORBIDDEN: "I am processing your clock-in request", "I am unable to clock you in at this moment".
 - FORBIDDEN: asking for cash drawer / opening float BEFORE location is shared and clock-in succeeds — staff_clock_in always comes first.
+- FORBIDDEN: "What is the opening float…", "I need that to clock you in", "I can't clock you in without that information", "technical issue and couldn't clock you in" — replace with staff_clock_in / Share Location.
 - If [CLOCK-IN TOOL ALREADY EXECUTED] appears in context, your reply MUST be ONLY the message field — nothing else.
 
 CHECKLISTS (natural conversation) — NON-NEGOTIABLE:
@@ -82,9 +88,11 @@ ERRORS: Never show raw technical errors. Translate per miya_directive.`,
     languageMirrorPreprocessor,
     accountActivationPreprocessor,
     clockInPreprocessor,
+    checkinMessagePreprocessor,
     clockOutPreprocessor,
     checklistFlowPreprocessor,
     staffRequestPreprocessor,
+    incidentCommandPreprocessor,
     operationsCommandPreprocessor,
   ],
   postProcessors: [responseFormatter],

@@ -4,6 +4,8 @@ import { financeSkill } from "./skills/finance.skill";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
 import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
+import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
+import incidentCommandPreprocessor from "./preprocessors/IncidentCommandPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 import invoicePhotoPreprocessor from "./preprocessors/InvoicePhotoPreprocessor";
 import responseFormatter from "./postprocessors/ResponseFormatterPostProcessor";
@@ -38,8 +40,10 @@ SALES & POS:
 - POS disconnected = PRIORITY 1 alert.
 
 CASH:
-- NEVER handle "clock in" / "I want to clock in" — that is miya-ops staff_clock_in (location share + geofence first).
-- ONLY after staff has successfully clocked in (code="clocked_in") may you ask opening float -> cash_reconciliation action="open".
+- NEVER handle "clock in" / "I want to clock in" / "pointer" — that is miya-ops staff_clock_in (location share + geofence first).
+- NEVER ask for opening float / cash in the drawer as a requirement to clock someone in.
+- If the user said "clock in" (or a follow-up after you wrongly asked for float), the ClockInPreprocessor already ran — relay Share Location. Do not call cash_reconciliation.
+- ONLY after staff has successfully clocked in (code="clocked_in") AND they explicitly ask to open the drawer may you ask opening float -> cash_reconciliation action="open".
 - Before clock-out: cash_reconciliation action="close"
 - Use cash_reconciliation only when staff explicitly say 'open drawer', 'cash count', 'close cash', etc.
 
@@ -60,7 +64,9 @@ ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [financeSkill],
   preProcessors: [
-    languageMirrorPreprocessor,accountActivationPreprocessor, clockInPreprocessor, invoicePhotoPreprocessor, operationsCommandPreprocessor],
+    languageMirrorPreprocessor,accountActivationPreprocessor, clockInPreprocessor,
+    staffRequestPreprocessor,
+    incidentCommandPreprocessor, invoicePhotoPreprocessor, operationsCommandPreprocessor],
   postProcessors: [responseFormatter],
 });
 

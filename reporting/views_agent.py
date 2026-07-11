@@ -147,6 +147,18 @@ def agent_create_incident(request):
         logger.info(f"[AgentIncident] Created SafetyConcernReport {concern.id} for restaurant {restaurant.name}")
 
         try:
+            from notifications.utils import extract_incident_location
+            from dashboard.category_routing import ensure_dashboard_widgets_for_managers
+
+            loc = extract_incident_location(description)
+            if loc and not concern.location:
+                concern.location = loc
+                concern.save(update_fields=['location', 'updated_at'])
+            ensure_dashboard_widgets_for_managers(restaurant, incident=True)
+        except Exception:
+            logger.warning("[AgentIncident] post-create widget/location finalize failed", exc_info=True)
+
+        try:
             Incident.objects.create(
                 restaurant=restaurant,
                 reporter=reporter,
@@ -166,6 +178,9 @@ def agent_create_incident(request):
             'title': concern.title,
             'priority': concern.severity,
             'status': concern.status,
+            'incident_type': concern.incident_type,
+            'assigned_to': str(assignee.id) if assignee else None,
+            'dashboard_widget': 'incidents',
             'created_at': concern.created_at.isoformat()
         }, status=status.HTTP_201_CREATED)
         

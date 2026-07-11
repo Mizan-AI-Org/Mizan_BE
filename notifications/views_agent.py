@@ -289,6 +289,35 @@ def agent_create_staff_captured_order(request):
     try:
         merged = merge_parsed_order_fields(items_summary, overrides)
         merged["channel"] = ch
+
+        # Auto-detect Bar / Floor / Kitchen from staff role; manager may
+        # still toggle validation per order after the fact.
+        station = (data.get("detected_station") or data.get("station") or "").strip()
+        if not station and user is not None:
+            role_l = str(
+                getattr(user, "role", None) or getattr(user, "position", None) or ""
+            ).lower()
+            import re as _re
+
+            if _re.search(r"bar|bartender|barman|mixolog", role_l):
+                station = "Bar"
+            elif _re.search(r"chef|kitchen|cook|cuisine|commis", role_l):
+                station = "Kitchen"
+            elif _re.search(r"wait|server|floor|service|host|runner", role_l):
+                station = "Floor"
+            else:
+                station = "Other"
+        if station:
+            merged["detected_station"] = station[:20]
+
+        requires_val = data.get("requires_manager_validation")
+        if requires_val is None:
+            requires_val = data.get("requiresManagerValidation")
+        if isinstance(requires_val, str):
+            requires_val = requires_val.lower() in ("1", "true", "yes")
+        if requires_val:
+            merged["requires_manager_validation"] = True
+
         order = StaffCapturedOrder.objects.create(
             restaurant=restaurant,
             recorded_by=user,
@@ -307,6 +336,11 @@ def agent_create_staff_captured_order(request):
             "success": True,
             "order_id": str(order.id),
             "short_id": str(order.id)[:8],
+            "detected_station": order.detected_station or None,
+            "requires_manager_validation": bool(order.requires_manager_validation),
+            "needs_station_clarification": (
+                not bool(order.detected_station) or order.detected_station == "Other"
+            ),
         },
         status=status.HTTP_201_CREATED,
     )

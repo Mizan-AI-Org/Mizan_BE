@@ -754,6 +754,19 @@ def agent_create_dashboard_task(request):
         )
         follow_up_max = int(_get_first(data, "follow_up_max", "followUpMax") or 2)
         follow_up_max = max(0, min(3, follow_up_max))
+        follow_up_first_hours_raw = _get_first(
+            data,
+            "follow_up_first_hours",
+            "followUpFirstHours",
+            "reminder_hours",
+            "reminderHours",
+        )
+        follow_up_first_hours = None
+        if follow_up_first_hours_raw not in (None, "", False):
+            try:
+                follow_up_first_hours = max(1, min(20, int(follow_up_first_hours_raw)))
+            except (TypeError, ValueError):
+                follow_up_first_hours = None
         requires_manager_validation = _coerce_bool(
             _get_first(
                 data,
@@ -785,6 +798,7 @@ def agent_create_dashboard_task(request):
                 custom_widget=matched_custom_widget,
                 follow_up_enabled=follow_up_enabled,
                 follow_up_max=follow_up_max,
+                follow_up_first_hours=follow_up_first_hours,
                 requires_manager_validation=requires_manager_validation,
                 require_photo_proof=require_photo_proof,
             )

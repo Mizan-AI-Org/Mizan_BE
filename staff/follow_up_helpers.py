@@ -70,6 +70,7 @@ def should_send_follow_up(
     follow_up_max: int,
     last_follow_up_at,
     now=None,
+    follow_up_first_hours: int | None = None,
 ) -> bool:
     now = now or timezone.now()
     if not notified_at or follow_up_count >= follow_up_max:
@@ -77,8 +78,16 @@ def should_send_follow_up(
     hours_since = (now - notified_at).total_seconds() / 3600
     if hours_since >= MAX_WINDOW_HOURS:
         return False
-    schedule = FOLLOW_UP_SCHEDULE_HOURS.get(follow_up_count, {})
-    trigger_hours = schedule.get((priority or "MEDIUM").upper(), 6)
+    if follow_up_count == 0 and follow_up_first_hours is not None:
+        try:
+            trigger_hours = max(1, min(20, int(follow_up_first_hours)))
+        except (TypeError, ValueError):
+            trigger_hours = FOLLOW_UP_SCHEDULE_HOURS.get(0, {}).get(
+                (priority or "MEDIUM").upper(), 6
+            )
+    else:
+        schedule = FOLLOW_UP_SCHEDULE_HOURS.get(follow_up_count, {})
+        trigger_hours = schedule.get((priority or "MEDIUM").upper(), 6)
     if hours_since < trigger_hours:
         return False
     if last_follow_up_at:

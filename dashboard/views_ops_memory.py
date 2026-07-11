@@ -150,8 +150,15 @@ def agent_department_owners(request):
         if not isinstance(updates, dict):
             return Response({"error": "category_owners must be an object"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Merge
-        owners = {**owners, **{str(k).upper(): str(v) for k, v in updates.items() if v}}
+        # Merge — accept list or single UUID per category
+        for k, v in updates.items():
+            if v in (None, ""):
+                continue
+            key = str(k).upper()
+            if isinstance(v, (list, tuple)):
+                owners[key] = [str(x) for x in v if x]
+            else:
+                owners[key] = str(v)
         settings_blob["category_owners"] = owners
         restaurant.general_settings = settings_blob
         restaurant.save(update_fields=["general_settings", "updated_at"])
@@ -312,6 +319,36 @@ def agent_classify_checkin_message(request):
             label = "arrival"
         elif re.search(r"\b(leave early|partir|غادي نمشي)\b", lower):
             label = "leaving_early"
+
+        # Prefer LLM classification when available (falls back to regex above).
+        try:
+            import os
+            from openai import OpenAI
+
+            api_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
+            if api_key and label == "note":
+                client = OpenAI(api_key=api_key)
+                resp = client.chat.completions.create(
+                    model=os.environ.get("OPENAI_CHECKIN_MODEL", "gpt-4o-mini"),
+                    temperature=0,
+                    max_tokens=20,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Classify a staff check-in message into exactly one label: "
+                                "running_late, absence, arrival, leaving_early, or note. "
+                                "Reply with only the label."
+                            ),
+                        },
+                        {"role": "user", "content": text[:500]},
+                    ],
+                )
+                raw = (resp.choices[0].message.content or "").strip().lower().replace(" ", "_")
+                if raw in ("running_late", "absence", "arrival", "leaving_early", "note"):
+                    label = raw
+        except Exception:
+            logger.debug("checkin LLM classify skipped", exc_info=True)
 
         # Persist as personal memory note + optional dashboard task for managers
         from scheduling.memory_models import MemoryNote

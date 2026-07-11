@@ -59,6 +59,14 @@ Before the wishlist, these are **already in scope** when deployed and configured
 | **Staff request notify (WhatsApp)** | New maintenance / PO / HR request — assignee pinged on WhatsApp | orchestration · `staff_request` ingest |
 | **Urgent lane (app)** | Open URGENT/HIGH items surface on `urgent_top` + category widgets | Dashboard · staff inbox |
 | **SLA re-surface (app)** | Stale URGENT/HIGH requests get SLA nudge comments; WAITING_ON revived on follow-up date | `staff_request_sla_sweep` |
+| **Manager validation (any task)** | Optional non-blocking “not validated by manager” label + Validate action | Dashboard widgets · `tasks/validate/` |
+| **Absent assignee flag** | Keep assignment; show Absent badge when on approved leave | category-tasks + ops search |
+| **Order station routing** | Auto Bar / Floor / Kitchen from role; clarify only if unclear | `detect_order_station` + Take Orders |
+| **Custom keyword widgets** | Manager-configured routing keywords (e.g. “New Year's event”) | Manage dashboard categories |
+| **Global ops search** | Find staff, tasks, or requests from the dashboard header | `/dashboard/ops-search/` |
+| **Staff daily progress** | Per-employee done/total bar for today’s tasks | `staff_daily_progress` widget |
+| **Reminder duration on assign** | Miya asks when to first remind; stores `follow_up_first_hours` | `create_dashboard_task` |
+| **Free-text check-in** | “I'll be late” / absence logged against the employee (regex + optional LLM) | `checkin-message` + CheckinMessagePreprocessor |
 
 Everything below extends, deepens, or crosses into **new verticals**.
 

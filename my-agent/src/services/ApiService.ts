@@ -1479,6 +1479,10 @@ export default class ApiService {
             follow_up_enabled?: boolean;
             /** Max number of automatic follow-up messages (0-3, default 2). */
             follow_up_max?: number;
+            /** Hours until first follow-up nudge (1-20). Alias: reminderHours. */
+            follow_up_first_hours?: number;
+            /** Alias for follow_up_first_hours (backend accepts both). */
+            reminderHours?: number;
             /** Assign the task to the manager who sent the WhatsApp (personal reminder). */
             assign_to_self?: boolean;
             /** Sender WhatsApp phone — helps the backend resolve assign_to_self. */
@@ -1543,6 +1547,9 @@ export default class ApiService {
                     attachments: input.attachments,
                     follow_up_enabled: input.follow_up_enabled,
                     follow_up_max: input.follow_up_max,
+                    follow_up_first_hours:
+                        input.follow_up_first_hours ?? input.reminderHours,
+                    reminderHours: input.reminderHours ?? input.follow_up_first_hours,
                     assign_to_self: input.assign_to_self,
                     sender_phone: input.sender_phone,
                     source_text: input.source_text,

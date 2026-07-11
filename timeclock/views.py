@@ -108,7 +108,7 @@ def _notify_managers_of_location_mismatch(clock_event, user, branch):
     except Exception:
         logger.exception("Unexpected error while sending location-mismatch notification")
 
-from accounts.utils import calculate_distance, find_matching_location
+from accounts.utils import calculate_distance, find_matching_location, restaurant_has_clockin_geofence
 from .models import ClockEvent
 from .serializers import ClockEventSerializer, ClockInSerializer, ShiftSerializer
 from accounts.models import CustomUser, AuditLog
@@ -1503,7 +1503,7 @@ def agent_clock_in_by_phone(request):
                 'location_request_sent': ok,
                 'message_for_user': "Share your location to clock in.",
             }, status=status.HTTP_400_BAD_REQUEST)
-        if not rest:
+        if not rest or not restaurant_has_clockin_geofence(rest):
             return Response({
                 'success': False,
                 'error': 'Geofence not configured',
@@ -1519,12 +1519,43 @@ def agent_clock_in_by_phone(request):
                     'message_for_user': "Location check is not set up for your restaurant. Please contact your manager to clock in.",
                 }, status=status.HTTP_400_BAD_REQUEST)
             if matched_location is None:
+                # Keep session open for a retry and show the approved workplace pin.
+                try:
+                    from notifications.models import WhatsAppSession
+
+                    session, _ = WhatsAppSession.objects.get_or_create(
+                        phone=clean_phone,
+                        defaults={"user": user, "state": "awaiting_clock_in_location"},
+                    )
+                    if session.user_id != user.id:
+                        session.user = user
+                    session.state = "awaiting_clock_in_location"
+                    session.save(update_fields=["user", "state"])
+                except Exception:
+                    logger.warning(
+                        "agent_clock_in_by_phone: could not keep awaiting_clock_in_location after outside zone",
+                        exc_info=True,
+                    )
+                try:
+                    notification_service.send_approved_clockin_zone_hint(clean_phone, nearest)
+                except Exception:
+                    logger.warning("agent_clock_in_by_phone: zone hint send failed", exc_info=True)
+                try:
+                    notification_service.send_whatsapp_location_request(
+                        clean_phone,
+                        "Share your location to clock in.",
+                    )
+                except Exception:
+                    logger.warning("agent_clock_in_by_phone: re-prompt location failed", exc_info=True)
                 return Response({
                     'success': False,
                     'error': 'Outside geofence',
                     'message_for_user': (
                         "You are not within any approved location zone. Please move closer and try again."
                     ),
+                    # Miya should not invent a second copy — Django already sent
+                    # the zone pin + Share Location button when channel is WhatsApp.
+                    'zone_hint_sent': True,
                 }, status=status.HTTP_400_BAD_REQUEST)
             latitude, longitude = lat_f, lon_f
         except (TypeError, ValueError):

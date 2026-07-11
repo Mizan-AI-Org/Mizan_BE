@@ -236,6 +236,13 @@ class Task(models.Model):
     follow_up_enabled = models.BooleanField(default=True)
     follow_up_count = models.PositiveSmallIntegerField(default=0)
     follow_up_max = models.PositiveSmallIntegerField(default=2)
+    # Optional override for the first WhatsApp nudge (hours after assign).
+    # When set, replaces the priority-based schedule for follow_up_count == 0.
+    follow_up_first_hours = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        help_text="Hours until first auto follow-up; null = use priority schedule.",
+    )
     last_follow_up_at = models.DateTimeField(null=True, blank=True)
     whatsapp_notified_at = models.DateTimeField(
         null=True, blank=True,

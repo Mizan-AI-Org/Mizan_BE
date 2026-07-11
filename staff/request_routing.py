@@ -83,17 +83,33 @@ def _lookup_user_by_id(
 
 
 def _first_uid(mapping: dict, slugs: Iterable[str]) -> Optional[str]:
-    """Return the first non-empty UUID in ``mapping`` for any of ``slugs``."""
+    """Return the first non-empty UUID in ``mapping`` for any of ``slugs``.
+
+    Onboarding stores owners as ``string[]`` per slug; agent API may store a
+    single string. Accept both.
+    """
+
+    def _as_uid(raw) -> Optional[str]:
+        if raw is None or raw == "":
+            return None
+        if isinstance(raw, (list, tuple)):
+            for item in raw:
+                got = _as_uid(item)
+                if got:
+                    return got
+            return None
+        return str(raw).strip() or None
+
     for slug in slugs:
-        uid = mapping.get(slug)
+        uid = _as_uid(mapping.get(slug))
         if uid:
-            return str(uid)
+            return uid
     # Case-insensitive fallback: handles manually-edited JSON.
     lowered = {str(k).lower(): v for k, v in mapping.items() if isinstance(k, str)}
     for slug in slugs:
-        uid = lowered.get(slug.lower())
+        uid = _as_uid(lowered.get(slug.lower()))
         if uid:
-            return str(uid)
+            return uid
     return None
 
 

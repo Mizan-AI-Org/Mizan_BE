@@ -84,6 +84,8 @@ class DashboardTaskCompactSerializer(serializers.ModelSerializer):
 
 class StaffCapturedOrderSerializer(serializers.ModelSerializer):
     recorded_by_name = serializers.SerializerMethodField()
+    manager_validated = serializers.SerializerMethodField()
+    validation_label = serializers.SerializerMethodField()
 
     class Meta:
         model = StaffCapturedOrder
@@ -101,6 +103,11 @@ class StaffCapturedOrderSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
             "recorded_by_name",
+            "requires_manager_validation",
+            "manager_validated_at",
+            "manager_validated",
+            "validation_label",
+            "detected_station",
         )
         read_only_fields = (
             "id",
@@ -108,7 +115,22 @@ class StaffCapturedOrderSerializer(serializers.ModelSerializer):
             "updated_at",
             "recorded_by_name",
             "fulfillment_status",
+            "manager_validated_at",
+            "manager_validated",
+            "validation_label",
         )
+
+    def get_manager_validated(self, obj):
+        if not getattr(obj, "requires_manager_validation", False):
+            return None
+        return bool(getattr(obj, "manager_validated_at", None))
+
+    def get_validation_label(self, obj):
+        if not getattr(obj, "requires_manager_validation", False):
+            return None
+        if getattr(obj, "manager_validated_at", None):
+            return "validated"
+        return "not validated by manager"
 
     def get_recorded_by_name(self, obj):
         u = obj.recorded_by

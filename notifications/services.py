@@ -2089,6 +2089,73 @@ class NotificationService:
         logger.warning("send_whatsapp_location_request: template and interactive failed for %s", phone)
         return False, {"error": "Location request (template and interactive) failed"}
 
+    def send_whatsapp_location_pin(self, phone, latitude, longitude, name="", address=""):
+        """
+        Send a WhatsApp location pin (approved workplace) so staff can see
+        where they need to be after an out-of-zone clock-in attempt.
+        https://developers.facebook.com/docs/whatsapp/cloud-api/messages/location-messages
+        """
+        try:
+            token = get_whatsapp_access_token() or None
+            phone_id = get_whatsapp_phone_number_id() or None
+            if not token or not phone_id or not phone:
+                return False, {"error": "WhatsApp not configured"}
+            phone, phone_err = normalize_whatsapp_phone(phone)
+            if phone_err:
+                return False, {"error": phone_err}
+            lat_f = float(latitude)
+            lon_f = float(longitude)
+            url = (
+                f"https://graph.facebook.com/"
+                f"{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
+            )
+            location_payload = {
+                "latitude": lat_f,
+                "longitude": lon_f,
+            }
+            name = (name or "").strip()
+            address = (address or "").strip()
+            if name:
+                location_payload["name"] = name[:1000]
+            if address:
+                location_payload["address"] = address[:1000]
+            payload = {
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "location",
+                "location": location_payload,
+            }
+            resp = requests.post(
+                url, headers={"Authorization": f"Bearer {token}"}, json=payload, timeout=15
+            )
+            try:
+                data = resp.json()
+            except Exception:
+                data = {"error": resp.text}
+            ok = resp.status_code == 200
+            if not ok:
+                logger.warning("WhatsApp location pin failed: %s - %s", resp.status_code, data)
+            return ok, {"status_code": resp.status_code, "data": data}
+        except Exception as e:
+            logger.error("send_whatsapp_location_pin error: %s", e)
+            return False, {"error": str(e)}
+
+    def send_approved_clockin_zone_hint(self, phone, location):
+        """
+        After an out-of-zone clock-in, share the nearest approved workplace pin
+        so staff know where to move (matches WhatsApp UX of sending the site map).
+        """
+        if not location:
+            return False
+        lat = getattr(location, "latitude", None)
+        lon = getattr(location, "longitude", None)
+        if lat is None or lon is None:
+            return False
+        name = (getattr(location, "name", None) or "Approved location").strip()
+        address = (getattr(location, "address", None) or "").strip()
+        ok, _ = self.send_whatsapp_location_pin(phone, lat, lon, name=name, address=address)
+        return ok
+
     # ----------------------------------------------------------------------
     # WHATSAPP MEDIA + VOICE NOTE TRANSCRIPTION
     # ----------------------------------------------------------------------

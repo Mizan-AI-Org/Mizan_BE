@@ -47,6 +47,9 @@ def _serialize_category(c: DashboardCategory) -> dict:
 
 
 def _serialize_widget(w: DashboardCustomWidget) -> dict:
+    keywords = getattr(w, "routing_keywords", None) or []
+    if not isinstance(keywords, list):
+        keywords = []
     return {
         "id": str(w.id),
         "slot_id": w.slot_id(),
@@ -56,6 +59,7 @@ def _serialize_widget(w: DashboardCustomWidget) -> dict:
         "icon": w.icon or "sparkles",
         "category_id": str(w.category_id) if w.category_id else None,
         "user_id": str(w.user_id),
+        "routing_keywords": [str(k) for k in keywords if str(k).strip()],
         "created_at": w.created_at.isoformat() if w.created_at else None,
         "updated_at": w.updated_at.isoformat() if w.updated_at else None,
     }
@@ -233,6 +237,14 @@ class DashboardCustomWidgetCreateView(APIView):
         if isinstance(add_to_dashboard, str):
             add_to_dashboard = add_to_dashboard.lower() in ("1", "true", "yes")
 
+        from dashboard.custom_widget_routing import normalize_routing_keywords
+
+        routing_keywords = normalize_routing_keywords(
+            data.get("routing_keywords")
+            or data.get("routingKeywords")
+            or data.get("keywords")
+        )
+
         w = DashboardCustomWidget.objects.create(
             user=user,
             restaurant_id=user.restaurant_id,
@@ -241,6 +253,7 @@ class DashboardCustomWidgetCreateView(APIView):
             subtitle=subtitle,
             link_url=link_url,
             icon=icon_raw,
+            routing_keywords=routing_keywords,
         )
 
         if add_to_dashboard:
@@ -334,6 +347,15 @@ class DashboardCustomWidgetDetailView(APIView):
                     return Response({"detail": "category_id not found"}, status=status.HTTP_404_NOT_FOUND)
                 w.category = cat
                 updates.append("category")
+        if "routing_keywords" in body or "routingKeywords" in body or "keywords" in body:
+            from dashboard.custom_widget_routing import normalize_routing_keywords
+
+            w.routing_keywords = normalize_routing_keywords(
+                body.get("routing_keywords")
+                or body.get("routingKeywords")
+                or body.get("keywords")
+            )
+            updates.append("routing_keywords")
 
         if updates:
             w.save(update_fields=updates + ["updated_at"])

@@ -433,6 +433,8 @@ class EffectivePermissionsView(APIView):
       2. Stored UserPermissionSet for (tenant, user)    → stored permissions.
       3. Stored RolePermissionSet for (tenant, role)    → stored permissions.
       4. Otherwise                                      → catalog defaults.
+
+    Then intersect widgets with onboarding ``widget_role_visibility`` when set.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -442,13 +444,12 @@ class EffectivePermissionsView(APIView):
         role = (getattr(user, "role", "") or "").upper()
 
         if role in PRIVILEGED_ROLES:
-            return Response(
-                {
-                    "role": role,
-                    "source": "privileged",
-                    "permissions": full_permissions(),
-                }
-            )
+            payload = {
+                "role": role,
+                "source": "privileged",
+                "permissions": full_permissions(),
+            }
+            return Response(self._apply_widget_visibility(user, role, payload))
 
         restaurant = getattr(user, "restaurant", None)
 
@@ -460,14 +461,56 @@ class EffectivePermissionsView(APIView):
                 .first()
             )
             if user_row is not None:
-                return Response(
-                    {
-                        "role": role,
-                        "source": "user",
-                        "permissions": sanitize_permissions(user_row.permissions),
-                    }
-                )
+                payload = {
+                    "role": role,
+                    "source": "user",
+                    "permissions": sanitize_permissions(user_row.permissions),
+                }
+                return Response(self._apply_widget_visibility(user, role, payload))
 
         # 3 + 4. Role-level override or defaults.
         perms, source = _role_permissions_for(restaurant, role)
-        return Response({"role": role, "source": source, "permissions": perms})
+        payload = {"role": role, "source": source, "permissions": perms}
+        return Response(self._apply_widget_visibility(user, role, payload))
+
+    @staticmethod
+    def _apply_widget_visibility(user, role: str, payload: dict) -> dict:
+        """
+        Onboarding stores ``Restaurant.general_settings['widget_role_visibility']``
+        as {widget_id: [ROLE, ...]}. When present, widgets not listing the
+        caller's role are removed from the effective set (privileged roles
+        still see all unless explicitly restricted — we skip filtering for
+        SUPER_ADMIN only).
+        """
+        if role == "SUPER_ADMIN":
+            return payload
+        restaurant = getattr(user, "restaurant", None)
+        if restaurant is None:
+            return payload
+        gs = getattr(restaurant, "general_settings", None)
+        if not isinstance(gs, dict):
+            return payload
+        visibility = gs.get("widget_role_visibility") or {}
+        if not isinstance(visibility, dict) or not visibility:
+            return payload
+
+        perms = dict(payload.get("permissions") or {})
+        widgets = list(perms.get("widgets") or [])
+        if not widgets:
+            return payload
+
+        filtered = []
+        for wid in widgets:
+            allowed = visibility.get(wid) or visibility.get(str(wid))
+            if allowed is None:
+                # Widget not mentioned in onboarding map → keep RBAC decision
+                filtered.append(wid)
+                continue
+            if not isinstance(allowed, (list, tuple, set)):
+                continue
+            allowed_roles = {str(r).upper() for r in allowed}
+            if role in allowed_roles:
+                filtered.append(wid)
+        perms["widgets"] = filtered
+        payload = {**payload, "permissions": perms}
+        return payload

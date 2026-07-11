@@ -64,7 +64,7 @@ YOUR DAILY SCENARIOS (miya-finance — from MIYA_SCENARIO_VISION baseline):
 - Record / list / mark paid invoices ("pay the baker", facture #, due date, method).
 - Sales reports and POS analysis (Square / Custom / Toast / Clover).
 - Supplier purchase orders when explicitly a supplier workflow.
-- Cash drawer open/close ONLY after successful clock-in — never intercept "clock in".
+- CASH DRAWER: ONLY after successful clock-in (code=clocked_in), and ONLY when staff explicitly say open drawer / cash count / close cash. NEVER ask for opening float to clock someone in.
 - Always return record_id / INV ref and honest payment status.
 `.trim();
 

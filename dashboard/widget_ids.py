@@ -29,6 +29,7 @@ DASHBOARD_WIDGET_IDS = frozenset(
         "team_medical_service",
         "meetings_reminders",
         "clock_ins",
+        "staff_daily_progress",
         "incidents",
         # Category-bucketed widgets backed by /api/dashboard/category-tasks/
         "urgent_top",
@@ -39,6 +40,8 @@ DASHBOARD_WIDGET_IDS = frozenset(
         "purchase_orders",
         "miscellaneous",
         "staff_messages",
+        "team_travel",
+        "team_medical_service",
     ]
 )
 
@@ -52,6 +55,9 @@ _AGENT_WIDGET_SYNONYMS: dict[str, str] = {
     "clocking": "clock_ins",
     "pointage": "clock_ins",
     "pointages": "clock_ins",
+    "staff_progress": "staff_daily_progress",
+    "daily_progress": "staff_daily_progress",
+    "staffdailyprogress": "staff_daily_progress",
     "liveattendance": "live_attendance",
     "live_attendance": "live_attendance",
 }

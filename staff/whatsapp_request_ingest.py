@@ -34,7 +34,12 @@ def _staff_facing_message(category: str) -> str:
     if category == "PAYROLL":
         return (
             "Thanks — I've passed your unpaid wages / payroll note on to your manager. "
-            "They'll get back to you as soon as they can."
+            "They'll see it under *Human Resources* (Pending) and get back to you as soon as they can."
+        )
+    if category in ("HR", "DOCUMENT"):
+        return (
+            "Thanks — I've passed that on to your manager. "
+            "They'll see it under *Human Resources* and get back to you as soon as they can."
         )
     return (
         "Thanks — I've passed that on to your manager. "
@@ -85,9 +90,33 @@ def ingest_staff_escalation_from_whatsapp(
     except Exception:
         staff_name = f"{getattr(staff, 'first_name', '')} {getattr(staff, 'last_name', '')}".strip()
     staff_phone = getattr(staff, "phone", "") or phone_digits
+    if not staff_phone:
+        email = getattr(staff, "email", "") or ""
+        if email.lower().startswith("wa_") and "@" in email:
+            digits = "".join(c for c in email.split("@", 1)[0][3:] if c.isdigit())
+            if len(digits) >= 8:
+                staff_phone = f"+{digits}"
+    if not staff_name and staff_phone:
+        staff_name = staff_phone if str(staff_phone).startswith("+") else f"+{staff_phone}"
 
     assignee = resolve_default_assignee_for_category(restaurant, category)
     auto_assigned = assignee is not None
+
+    ext = (external_id or "").strip()
+    if ext:
+        existing = (
+            StaffRequest.objects.filter(restaurant=restaurant, external_id=ext)
+            .order_by("-created_at")
+            .first()
+        )
+        if existing:
+            logger.info(
+                "whatsapp_escalation_ingest: idempotent hit restaurant=%s request=%s ext=%s",
+                restaurant.id,
+                existing.id,
+                ext,
+            )
+            return _staff_facing_message(existing.category or category)
 
     inbox_metadata = {
         "source_context": "whatsapp_escalation_webhook",
@@ -112,7 +141,7 @@ def ingest_staff_escalation_from_whatsapp(
         description=description,
         assignee=assignee,
         source="whatsapp",
-        external_id=(external_id or "").strip(),
+        external_id=ext,
         metadata=inbox_metadata,
         follow_up_enabled=True,
         follow_up_max=2,

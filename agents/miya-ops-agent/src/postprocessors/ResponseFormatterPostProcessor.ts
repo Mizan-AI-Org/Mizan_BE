@@ -13,6 +13,12 @@ import {
   resolveMessageAudience,
 } from "../utils/resolveMessageAudience";
 import { stripSystemContextBlocks } from "../utils/stripSystemContext";
+import {
+  isClockInMessage,
+  looksLikeCashBeforeClockInAsk,
+  looksLikeFakeClockInOutage,
+  shareLocationClockInMessage,
+} from "../shared/clockInGuard";
 
 const JARGON_PATTERNS = [
   /\baccess token\b/gi,
@@ -64,8 +70,8 @@ const responseFormatter = new PostProcessor({
   ) => {
     let formatted = stripSystemContextBlocks(response);
     const audience = resolveMessageAudience(channel);
+    const userMsg = String(message || "");
 
-    // Strip any leaked technical jargon
     for (const pattern of JARGON_PATTERNS) {
       formatted = formatted.replace(pattern, "");
     }
@@ -74,28 +80,25 @@ const responseFormatter = new PostProcessor({
       formatted = formatted.replace(re, replacement);
     }
 
-    // Never let the model invent fake clock-in outages — replace with actionable copy.
-    const fakeClockIn =
-      /\b(trouble with the clock[- ]?in|temporary system issue preventing clock[- ]?ins?|clock[- ]?in system right now|unable to clock you in|sorry[,.]?\s*I was unable to clock you in|having a bit of trouble with (?:the )?clock)\b/i.test(
-        formatted,
-      );
-    if (fakeClockIn) {
-      const isWeb = /web|luapop|pop|dashboard/i.test(String(channel || ""));
-      formatted = isWeb
-        ? "To clock in, open Time Clock from your staff menu and tap Clock In (allow location when prompted)."
-        : "Share your location to clock in.";
-    }
-
-    // Never ask for cash drawer / opening float instead of location on clock-in.
+    // Hard ban: never invent clock-in outages or gate clock-in behind cash float.
+    // Also: never answer an incident photo/description with a clock-in apology.
     if (
-      /\b(to clock in[,.]?\s*I need to know how much cash|opening float|cash (?:is )?currently in the drawer|how much cash is in the drawer)\b/i.test(
+      /\b(try clocking in again|would you like to try clocking in|clocking in again)\b/i.test(
         formatted,
-      )
+      ) &&
+      !isClockInMessage(userMsg)
     ) {
-      formatted = "Share your location to clock in.";
+      formatted =
+        'Got it — if you\'re reporting something on the floor, send a short description (e.g. "Broken glass at table 44") and I\'ll log it as an incident right away.';
+    } else if (
+      looksLikeFakeClockInOutage(formatted) ||
+      looksLikeCashBeforeClockInAsk(formatted) ||
+      (isClockInMessage(userMsg) &&
+        /\b(cash|float|drawer|comptage|caisse)\b/i.test(formatted))
+    ) {
+      formatted = shareLocationClockInMessage(channel);
     }
 
-    // Never invent fake incident failures (e.g. after wrong_tool on "broken glass")
     if (
       /\b(unable to report the incident|couldn['']t report the incident|failed to report (?:the )?incident|incident at this time)\b/i.test(
         formatted,
@@ -105,7 +108,6 @@ const responseFormatter = new PostProcessor({
         "Please say that again in one short line (e.g. \"Broken glass at table 44\") and I'll log it as a safety report right away. If anyone is hurt, tell a manager on duty now.";
     }
 
-    // Never invent fake "noted for manager / confirmation card" without staff_request
     if (
       /\b(confirmation card will be shown|noted that for your manager|preparing to (?:let your manager know|inform your manager))\b/i.test(
         formatted,
@@ -115,7 +117,6 @@ const responseFormatter = new PostProcessor({
         "Please say that again in one short line (e.g. \"Tell my manager I haven't received last week's wages\") and I'll pass it to your manager right away.";
     }
 
-    // Never invent fake checklist / tasks outages
     if (
       /\b(technical issue trying to (?:fetch|start|load) your (?:tasks|checklist)|unable to (?:fetch|start|load) your (?:tasks|checklist)|trouble (?:fetching|starting|loading) your (?:tasks|checklist)|couldn['']?t get your checklist started|could not get your checklist started|oops!?\s*looks like i couldn['']?t get your checklist)\b/i.test(
         formatted,
@@ -125,7 +126,6 @@ const responseFormatter = new PostProcessor({
         "Say *what are my tasks* to preview, or *start checklist* once you're clocked in — I'll load them right away.";
     }
 
-    // Staff channel: strip manager/dashboard jargon the model may regurgitate
     if (audience === "staff") {
       for (const pattern of MANAGER_JARGON_PATTERNS) {
         formatted = formatted.replace(pattern, "");
@@ -134,14 +134,12 @@ const responseFormatter = new PostProcessor({
       formatted = formatted.replace(/\bcheck your dashboard\b/gi, "I'll keep you posted here");
     }
 
-    // Clean up artifacts from jargon removal (double spaces, empty parens)
     formatted = formatted
       .replace(/\(\s*\)/g, "")
       .replace(/\s{2,}/g, " ")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
 
-    // Channel-specific formatting
     if (audience === "staff") {
       formatted = formatForWhatsApp(formatted);
     } else {
@@ -154,8 +152,6 @@ const responseFormatter = new PostProcessor({
 
 function formatForWhatsApp(text: string): string {
   let result = text;
-
-  // WhatsApp has a practical limit of ~4096 chars
   if (result.length > 3800) {
     const truncatePoint = result.lastIndexOf("\n", 3600);
     if (truncatePoint > 2000) {
@@ -164,21 +160,13 @@ function formatForWhatsApp(text: string): string {
         "\n\n_...reply 'more' for the rest._";
     }
   }
-
-  // Convert markdown headers to WhatsApp bold
   result = result.replace(/^###?\s+(.+)$/gm, "*$1*");
-
-  // Convert markdown bold to WhatsApp bold
   result = result.replace(/\*\*(.+?)\*\*/g, "*$1*");
-
-  // Convert markdown links [text](url) to text: url (WhatsApp doesn't render markdown links)
   result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1: $2");
-
   return result;
 }
 
 function formatForManagerPop(text: string): string {
-  // LuaPop / dashboard embed — operational tone, richer structure OK
   return text;
 }
 

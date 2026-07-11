@@ -67,6 +67,7 @@ def task_follow_up_sweep() -> dict:
             follow_up_max=task.follow_up_max,
             last_follow_up_at=task.last_follow_up_at,
             now=now,
+            follow_up_first_hours=getattr(task, "follow_up_first_hours", None),
         ):
             message = build_task_follow_up_message(task, task.follow_up_count + 1)
             try:

@@ -389,14 +389,20 @@ def agent_ingest_staff_request(request):
     phone_raw = data.get('phone') or data.get('phoneNumber') or data.get('from')
     phone_digits = ''.join(filter(str.isdigit, str(phone_raw or '')))
 
-    staff_name = (data.get('staff_name') or data.get('name') or data.get('sender_name') or '').strip()
-    staff_phone = phone_raw or ''
+    staff_name = (data.get('staff_name') or data.get('name') or data.get('sender_name') or data.get('push_name') or data.get('pushName') or data.get('profile_name') or data.get('profileName') or '').strip()
+    staff_phone = phone_raw or phone_digits or ''
     if staff:
         try:
             staff_name = staff_name or staff.get_full_name() or f"{staff.first_name} {staff.last_name}".strip()
         except Exception:
             staff_name = staff_name or f"{getattr(staff, 'first_name', '')} {getattr(staff, 'last_name', '')}".strip()
         staff_phone = getattr(staff, 'phone', '') or staff_phone
+        if not staff_phone:
+            email = getattr(staff, 'email', '') or ''
+            if email.lower().startswith('wa_') and '@' in email:
+                digits = ''.join(c for c in email.split('@', 1)[0][3:] if c.isdigit())
+                if len(digits) >= 8:
+                    staff_phone = f'+{digits}'
     else:
         # Best-effort link by phone within restaurant
         if phone_digits:
@@ -411,6 +417,9 @@ def agent_ingest_staff_request(request):
                     staff_phone = getattr(staff, 'phone', '') or staff_phone
             except Exception:
                 staff = None
+
+    if not staff_name and staff_phone:
+        staff_name = staff_phone if str(staff_phone).startswith('+') else f'+{"".join(c for c in str(staff_phone) if c.isdigit())}'
 
     # ------------------------------------------------------------------
     # Routing fork: if the intent router decided this is an incident,
@@ -505,6 +514,16 @@ def agent_ingest_staff_request(request):
         'agent_category': (data.get('category') or 'OTHER'),
         'auto_categorised': decision.category != (data.get('category') or 'OTHER').upper(),
     }
+    for key, dest in (
+        ('push_name', 'push_name'),
+        ('pushName', 'push_name'),
+        ('profile_name', 'profile_name'),
+        ('profileName', 'profile_name'),
+        ('sender_name', 'sender_name'),
+    ):
+        val = (data.get(key) or '').strip() if isinstance(data.get(key), str) else ''
+        if val:
+            inbox_metadata[dest] = val
 
     follow_up_enabled = _coerce_bool(
         data.get('follow_up_enabled') or data.get('followUpEnabled'),
@@ -647,7 +666,9 @@ def agent_ingest_staff_request(request):
         'widgets_pinned': widget_pin.get('widgets', []),
         'message_for_user': f"✓ {base_msg}{follow_phrase}",
         'message_for_staff': (
-            f"✓ {staff_base_msg} They'll get back to you as soon as they can."
+            f"✓ {staff_base_msg} "
+            f"Your manager will see it under *{lane_label}* (Pending). "
+            f"They'll get back to you as soon as they can."
         ),
         'follow_up_enabled': follow_up_enabled,
         'assignee': (

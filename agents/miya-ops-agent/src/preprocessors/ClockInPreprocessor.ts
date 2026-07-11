@@ -1,6 +1,6 @@
 /**
  * Detects staff clock-in intent and runs staff_clock_in in the preprocessor so the
- * LLM cannot skip the tool or invent generic clock-in errors.
+ * LLM cannot skip the tool, ask for opening float, or invent generic clock-in errors.
  *
  * Calls ApiService directly (not only via StaffClockInTool) so we never depend on
  * User.get() being available inside the preprocessor runtime.
@@ -17,21 +17,13 @@ import {
     isWebDeliveryChannel,
     resolveStaffIdFromLuaUser,
 } from "../utils/resolveStaffIdFromLuaUser";
-
-const CLOCK_IN_RE =
-    /\b(clock[\s-]?in|clockin|pointer|pointage|start my shift|i['']?m here|arriver|سجل دخول|بغيت نبدا|بغيت نبدا الخدمة|nbeda lkhedma|(?:staff\s+)?(?:wants?|needs?)\s+to\s+clock\s*in)\b/i;
+import {
+    shouldForceStaffClockIn,
+    shareLocationClockInMessage,
+} from "../shared/clockInGuard";
 
 const checklistStarterTool = new ChecklistStarterTool();
 const api = new ApiService();
-
-function isClockInMessage(text: string): boolean {
-    const lower = text.toLowerCase().trim();
-    if (!lower) return false;
-    if (CLOCK_IN_RE.test(lower)) return true;
-    if (lower.includes("want to clock in")) return true;
-    if (lower.includes("hi miya") && lower.includes("clock")) return true;
-    return false;
-}
 
 function asPhoneSource(user: UserDataInstance): LuaUserPhoneSource & { uid?: string } {
     const u = user as unknown as LuaUserPhoneSource & {
@@ -142,15 +134,16 @@ async function runClockIn(
 export const clockInPreprocessor = new PreProcessor({
     name: "clock-in-router",
     description:
-        "Detects staff clock-in intent, runs staff_clock_in, and injects the backend message for verbatim relay.",
-    priority: 95,
+        "Detects staff clock-in intent (and recovers from wrong cash-float asks), runs staff_clock_in, blocks with backend message.",
+    // Above Operations (105) / Invoice (106) so attendance never loses to finance flows.
+    priority: 200,
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
         const lastText = extractLastUserText(messages);
         const { lat, lng } = coordsFromMessages(messages);
         const hasLocation = lat !== undefined && lng !== undefined;
-        const clockInIntent =
-            isClockInMessage(lastText) || (hasLocation && !lastText.trim());
+        const msgs = messages as unknown as Array<Record<string, unknown>>;
+        const clockInIntent = shouldForceStaffClockIn(lastText, msgs, hasLocation);
 
         if (!clockInIntent) {
             return { action: "proceed" as const };
@@ -182,7 +175,7 @@ export const clockInPreprocessor = new PreProcessor({
         if (!response) {
             response =
                 code === "location_required"
-                    ? "Share your live location to clock in."
+                    ? shareLocationClockInMessage(channel)
                     : "We couldn't complete clock-in. Please try again or contact your manager.";
         }
 
