@@ -387,8 +387,14 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             # Calendar-style reminders that should land in the Meetings
             # & Reminders dashboard widget rather than a category lane.
+            # Staff WhatsApp asks ("meeting with the boss") are remapped
+            # to OPERATIONS for StaffRequest — never Team Travel.
             "meeting with", "meet with", "schedule a meeting",
             "set up a meeting", "set up meeting", "book a meeting",
+            "meeting request", "request a meeting", "request meeting",
+            "have a meeting", "want a meeting", "need a meeting",
+            "meet the boss", "meeting the boss", "meeting with the boss",
+            "speak with the boss", "talk to the boss", "see the boss",
             "team meeting", "weekly meeting", "monthly meeting",
             "1:1 with", "one on one", "1 on 1",
             "remind me to", "reminder to", "reminder for",
@@ -629,11 +635,35 @@ def _should_override_agent_category(
 ) -> bool:
     if not keyword_decision or keyword_decision.confidence != "high":
         return False
+    # Staff "meeting with the boss" is often mis-labelled SCHEDULING by Miya,
+    # which dumps it on Team Travel (leave/travel). Meeting phrases win.
+    if keyword_decision.category == "MEETING" and agent_cat in (
+        "SCHEDULING",
+        "OTHER",
+        "OPERATIONS",
+        "HR",
+    ):
+        return True
     if agent_cat in _WEAK_AGENT_CATEGORIES:
         return keyword_decision.category != agent_cat
     if keyword_decision.category in _STRONG_INBOX_CATEGORIES and agent_cat in _WEAK_AGENT_CATEGORIES:
         return True
     return False
+
+
+def staff_request_category(category: str | None) -> str:
+    """
+    Map classifier output onto a valid ``StaffRequest.category``.
+
+    ``MEETING`` is task/calendar-only; staff WhatsApp meeting asks become
+    ``OPERATIONS`` so they land on Operations — never Team Travel.
+    """
+    cat = (category or "OTHER").upper().strip() or "OTHER"
+    if cat == "MEETING":
+        return "OPERATIONS"
+    if cat in STAFF_REQUEST_CATEGORIES:
+        return cat
+    return "OTHER"
 
 
 def classify_request(

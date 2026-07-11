@@ -77,6 +77,7 @@ from .intent_router import (
     DEST_INCIDENT,
     IntentDecision,
     classify_request,
+    staff_request_category,
 )
 from .incident_routing import resolve_default_assignee_for_incident_type
 from dashboard.category_routing import (
@@ -125,6 +126,9 @@ def _normalize_category(raw) -> str:
         'MEDICAL_SERVICE': 'MEDICAL',
         'MEDICAL_SERVICES': 'MEDICAL',
         'HEALTH': 'MEDICAL',
+        # Staff meeting asks must not become SCHEDULING / Team Travel.
+        'MEETING': 'OPERATIONS',
+        'MEETINGS': 'OPERATIONS',
     }
     cat = aliases.get(cat, cat)
     return cat if cat in STAFF_REQUEST_CATEGORIES else 'OTHER'
@@ -369,7 +373,9 @@ def agent_ingest_staff_request(request):
         # initialised so static analyzers don't complain.
         category = _normalize_category(data.get('category'))
     else:
-        category = decision.category
+        # MEETING is task/calendar-only — staff asks become OPERATIONS
+        # so they don't land on Team Travel (SCHEDULING).
+        category = _normalize_category(staff_request_category(decision.category))
 
     external_id = (data.get('external_id') or data.get('inquiryId') or data.get('ticketId') or '').strip()
     source = (data.get('source') or data.get('channel') or 'whatsapp').strip().lower()
