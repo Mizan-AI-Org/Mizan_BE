@@ -123,10 +123,16 @@ export const myShiftsPreprocessor = new PreProcessor({
 
             if (!result.success) {
                 console.error("[MyShiftsPreprocessor] API failed:", result.error);
+                const errLower = String(result.error || "").toLowerCase();
+                const isUnknownStaff =
+                    errLower.includes("unable to resolve staff profile") ||
+                    errLower.includes("staff not found") ||
+                    errLower.includes("unknown phone");
                 return {
                     action: "block" as const,
-                    response:
-                        "I couldn't load your shifts just now. Please try again in a moment, or ask your manager to check the schedule.",
+                    response: isUnknownStaff
+                        ? "I couldn't find a staff profile linked to this chat. Please message from your registered WhatsApp number, or ask your manager to add your number to your profile."
+                        : "I couldn't load your shifts just now. Please try again in a moment, or ask your manager to check the schedule.",
                 };
             }
 

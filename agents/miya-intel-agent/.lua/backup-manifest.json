@@ -1,6 +1,6 @@
 {
-  "lastHash": "2f478ca48e205690ccaa9401dec3c65b97fd9485ba535e9c8327d0da42b61c35",
-  "lastPushedAt": "2026-07-11T17:46:41.487Z",
+  "lastHash": "d1ec8352628df062a6313bdea55750170f04776873be867cf10b2782fee41a46",
+  "lastPushedAt": "2026-07-11T18:27:17.918Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "ac3929d390022da2"
+      "hash": "f7834e507f4fdeee"
     },
     {
       "relativePath": "package.json",
@@ -48,7 +48,7 @@
     },
     {
       "relativePath": "src/preprocessors/MyShiftsPreprocessor.ts",
-      "hash": "8ff3c1290fdd8d7f"
+      "hash": "4aed19a7cc2f16ae"
     },
     {
       "relativePath": "src/preprocessors/StaffRequestPreprocessor.ts",
