@@ -91,6 +91,15 @@ export const clockInPreprocessor = new PreProcessor({
         const staffId = resolveStaffIdFromLuaUser(source);
         const isWeb = isWebDeliveryChannel(channel);
 
+        // WhatsApp without GPS: never call the API or invent failures — ask for location.
+        if (!hasLocation && !isWeb) {
+            return {
+                action: "block" as const,
+                response: shareLocationClockInMessage(channel),
+                metadata: { clock_in_code: "location_required", clock_in_status: "success" },
+            };
+        }
+
         console.log(
             `[ClockInPreprocessor] Running staff_clock_in; phone=${phone || "(from uid)"}, hasLocation=${hasLocation}, channel=${channel}`,
         );

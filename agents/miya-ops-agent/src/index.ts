@@ -10,6 +10,7 @@ import accountActivationPreprocessor from "./preprocessors/AccountActivationPrep
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
 import incidentCommandPreprocessor from "./preprocessors/IncidentCommandPreprocessor";
+import myShiftsPreprocessor from "./preprocessors/MyShiftsPreprocessor";
 import responseFormatter from "./postprocessors/ResponseFormatterPostProcessor";
 import { SCENARIO_OPS, withDailyScenarios } from "./shared/dailyScenariosPersona";
 
@@ -90,6 +91,7 @@ ERRORS: Never show raw technical errors. Translate per miya_directive.`,
     clockInPreprocessor,
     checkinMessagePreprocessor,
     clockOutPreprocessor,
+    myShiftsPreprocessor,
     checklistFlowPreprocessor,
     staffRequestPreprocessor,
     incidentCommandPreprocessor,

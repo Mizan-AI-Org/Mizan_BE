@@ -4,37 +4,43 @@ agent:
 skills:
   - name: operations
     skillId: ac9f814c-6765-47e5-9fe9-d12c07c218d3
-    version: 1.0.32
+    version: 1.0.33
 webhooks: []
 jobs: []
 preprocessors:
   - name: clock-in-router
     preprocessorId: preprocessor_e2042718-ddc2-4582-b27e-17eee36ac2da
-    version: 1.0.26
+    version: 1.0.27
   - name: account-activation-router
     preprocessorId: preprocessor_3c41fd96-8a8e-4ed3-a1b8-15d2fbe1b352
-    version: 1.0.22
+    version: 1.0.23
   - name: operations-command-router
     preprocessorId: preprocessor_e83ca9ab-589f-4d58-a385-ba71200dc1ab
-    version: 1.0.14
+    version: 1.0.15
   - name: clock-out-router
     preprocessorId: preprocessor_001cc534-2081-4208-bbdf-995aa7754bfb
-    version: 1.0.12
+    version: 1.0.13
   - name: checklist-flow-router
     preprocessorId: preprocessor_f3d395dd-a4c7-4771-8d38-5da4d1b89380
-    version: 1.0.12
+    version: 1.0.13
   - name: language-mirror
     preprocessorId: preprocessor_81c5bad3-e1db-438b-b6a7-5eb6518491a6
-    version: 1.0.9
+    version: 1.0.10
   - name: staff-request-router
     preprocessorId: preprocessor_99a708b2-c7b5-4527-9e9d-f757fb4a4463
-    version: 1.0.3
+    version: 1.0.4
+  - name: checkin-message-router
+    preprocessorId: preprocessor_ad54b0db-5534-4d06-be6e-d519321f3e5c
+    version: 1.0.1
+  - name: incident-command-router
+    preprocessorId: preprocessor_29dc9f0b-77b2-468e-9224-12a1777c2ab8
+    version: 1.0.1
 postprocessors:
   - name: miya-response-formatter
     postprocessorId: postprocessor_71534447-2470-454a-8cd0-d4fd1a557d0c
-    version: 1.0.3
+    version: 1.0.4
 mcpServers: []
 backup:
-  activeVersion: 33
-  lastHash: 61a401a80f246e282a3edda559c66bc825d38f975836216e476dbc2e849632dc
-  lastPushedAt: '2026-07-11T13:56:57.225Z'
+  activeVersion: 34
+  lastHash: 6e66c60f7ceef4527e87ab8212b02f90d4f556a9b1b60323c56297d3a67321fc
+  lastPushedAt: '2026-07-11T16:59:48.322Z'

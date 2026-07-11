@@ -1,6 +1,6 @@
 {
-  "lastHash": "289f907f48dc49c748c361165b473d9ddbc4ff345608285bce98ed8bf553c79f",
-  "lastPushedAt": "2026-07-11T13:57:35.618Z",
+  "lastHash": "56cc25b538373f34f11e76d41faa0247eb68a1fe51750cb91133493687c9194e",
+  "lastPushedAt": "2026-07-11T17:00:34.234Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "e6e5373f31278b24"
+      "hash": "a963c86f5fd01854"
     },
     {
       "relativePath": "package.json",
@@ -24,11 +24,11 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "3c8e0a5eaeadb18e"
+      "hash": "4e677c858cc6a208"
     },
     {
       "relativePath": "src/postprocessors/ResponseFormatterPostProcessor.ts",
-      "hash": "528685e793460921"
+      "hash": "b8090f7a3f043440"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
@@ -36,11 +36,15 @@
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "96f66882d31a66a6"
+      "hash": "22a411bbc7e6b721"
     },
     {
       "relativePath": "src/preprocessors/executeOperationsIntent.ts",
-      "hash": "86e753866e1aa064"
+      "hash": "bb7f3449bfdc492f"
+    },
+    {
+      "relativePath": "src/preprocessors/IncidentCommandPreprocessor.ts",
+      "hash": "4cf02599f1e3a192"
     },
     {
       "relativePath": "src/preprocessors/InvoicePhotoPreprocessor.ts",
@@ -52,11 +56,15 @@
     },
     {
       "relativePath": "src/preprocessors/operationIntent.ts",
-      "hash": "f33e10554eaacc9e"
+      "hash": "aa21fe36f0b255f2"
     },
     {
       "relativePath": "src/preprocessors/OperationsCommandPreprocessor.ts",
       "hash": "a6a6a6b851efecdf"
+    },
+    {
+      "relativePath": "src/preprocessors/StaffRequestPreprocessor.ts",
+      "hash": "2d7d74fd2b140cd1"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -67,8 +75,12 @@
       "hash": "881eaa1d834459ba"
     },
     {
+      "relativePath": "src/shared/clockInGuard.ts",
+      "hash": "fd37925614aa3eda"
+    },
+    {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
-      "hash": "a038bfe8c7aee7bb"
+      "hash": "c99cece8e60fe616"
     },
     {
       "relativePath": "src/skills/finance.skill.ts",
@@ -84,7 +96,7 @@
     },
     {
       "relativePath": "src/skills/tools/CashReconciliationTool.ts",
-      "hash": "1f10452cbef9a23f"
+      "hash": "11f9cee414d43f94"
     },
     {
       "relativePath": "src/skills/tools/InvoiceTools.ts",
@@ -133,6 +145,10 @@
     {
       "relativePath": "src/utils/resolveTenantForUser.ts",
       "hash": "5e518f2fd5eab862"
+    },
+    {
+      "relativePath": "src/utils/staffEscalationRouting.ts",
+      "hash": "59aff0625431a403"
     },
     {
       "relativePath": "src/utils/stripSystemContext.ts",

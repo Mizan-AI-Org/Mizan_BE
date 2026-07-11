@@ -5,6 +5,7 @@ import accountActivationPreprocessor from "./preprocessors/AccountActivationPrep
 import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
+import myShiftsPreprocessor from "./preprocessors/MyShiftsPreprocessor";
 import incidentCommandPreprocessor from "./preprocessors/IncidentCommandPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 import invoicePhotoPreprocessor from "./preprocessors/InvoicePhotoPreprocessor";
@@ -65,6 +66,7 @@ ERRORS: Never show raw technical errors. Translate per miya_directive.`,
   skills: [financeSkill],
   preProcessors: [
     languageMirrorPreprocessor,accountActivationPreprocessor, clockInPreprocessor,
+    myShiftsPreprocessor,
     staffRequestPreprocessor,
     incidentCommandPreprocessor, invoicePhotoPreprocessor, operationsCommandPreprocessor],
   postProcessors: [responseFormatter],

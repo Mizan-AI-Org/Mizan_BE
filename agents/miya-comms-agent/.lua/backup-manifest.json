@@ -1,6 +1,6 @@
 {
-  "lastHash": "aec63e4aaae70fac23d5fdcdcacc00c74d572e6fc155a8ccd749bd4dcb9cc3f4",
-  "lastPushedAt": "2026-07-11T13:58:44.471Z",
+  "lastHash": "a891c39f269f94e184a9556a436dd716d3bd28dd0ab4bdd408c8c57589e21180",
+  "lastPushedAt": "2026-07-11T17:01:57.758Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "8fec4283858ec1cd"
+      "hash": "6f0d1374abfa1804"
     },
     {
       "relativePath": "package.json",
@@ -24,11 +24,11 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "b9b618210c653f6c"
+      "hash": "360eaa700f9044ab"
     },
     {
       "relativePath": "src/postprocessors/ResponseFormatterPostProcessor.ts",
-      "hash": "528685e793460921"
+      "hash": "b8090f7a3f043440"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
@@ -36,7 +36,11 @@
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "96f66882d31a66a6"
+      "hash": "22a411bbc7e6b721"
+    },
+    {
+      "relativePath": "src/preprocessors/IncidentCommandPreprocessor.ts",
+      "hash": "4cf02599f1e3a192"
     },
     {
       "relativePath": "src/preprocessors/LanguageMirrorPreprocessor.ts",
@@ -44,7 +48,7 @@
     },
     {
       "relativePath": "src/preprocessors/StaffRequestPreprocessor.ts",
-      "hash": "24df9df63547f741"
+      "hash": "2d7d74fd2b140cd1"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -55,8 +59,12 @@
       "hash": "3e3e35e12af99d5f"
     },
     {
+      "relativePath": "src/shared/clockInGuard.ts",
+      "hash": "fd37925614aa3eda"
+    },
+    {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
-      "hash": "a038bfe8c7aee7bb"
+      "hash": "c99cece8e60fe616"
     },
     {
       "relativePath": "src/skills/communications.skill.ts",

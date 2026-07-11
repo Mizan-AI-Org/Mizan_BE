@@ -1,6 +1,6 @@
 {
-  "lastHash": "61a401a80f246e282a3edda559c66bc825d38f975836216e476dbc2e849632dc",
-  "lastPushedAt": "2026-07-11T13:56:57.226Z",
+  "lastHash": "6e66c60f7ceef4527e87ab8212b02f90d4f556a9b1b60323c56297d3a67321fc",
+  "lastPushedAt": "2026-07-11T16:59:48.323Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "fd6f4eccb8833e99"
+      "hash": "6a58b790abe4b1ad"
     },
     {
       "relativePath": "package.json",
@@ -24,15 +24,19 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "a5d1f69439b0625e"
+      "hash": "85abfb84b2e94854"
     },
     {
       "relativePath": "src/postprocessors/ResponseFormatterPostProcessor.ts",
-      "hash": "528685e793460921"
+      "hash": "b8090f7a3f043440"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
       "hash": "6735ab8c8e15ec79"
+    },
+    {
+      "relativePath": "src/preprocessors/CheckinMessagePreprocessor.ts",
+      "hash": "3e3f656aca418942"
     },
     {
       "relativePath": "src/preprocessors/ChecklistFlowPreprocessor.ts",
@@ -40,7 +44,7 @@
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "09570b2d6b8fa3ac"
+      "hash": "5ac4b0ee0c4c272f"
     },
     {
       "relativePath": "src/preprocessors/ClockOutPreprocessor.ts",
@@ -48,7 +52,11 @@
     },
     {
       "relativePath": "src/preprocessors/executeOperationsIntent.ts",
-      "hash": "86e753866e1aa064"
+      "hash": "bb7f3449bfdc492f"
+    },
+    {
+      "relativePath": "src/preprocessors/IncidentCommandPreprocessor.ts",
+      "hash": "4cf02599f1e3a192"
     },
     {
       "relativePath": "src/preprocessors/LanguageMirrorPreprocessor.ts",
@@ -56,7 +64,7 @@
     },
     {
       "relativePath": "src/preprocessors/operationIntent.ts",
-      "hash": "f33e10554eaacc9e"
+      "hash": "aa21fe36f0b255f2"
     },
     {
       "relativePath": "src/preprocessors/OperationsCommandPreprocessor.ts",
@@ -64,7 +72,7 @@
     },
     {
       "relativePath": "src/preprocessors/StaffRequestPreprocessor.ts",
-      "hash": "24df9df63547f741"
+      "hash": "2d7d74fd2b140cd1"
     },
     {
       "relativePath": "src/services/agentContext.ts",
@@ -72,15 +80,19 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "2a734510868d622b"
+      "hash": "69ebe01f0697bfde"
+    },
+    {
+      "relativePath": "src/shared/clockInGuard.ts",
+      "hash": "fd37925614aa3eda"
     },
     {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
-      "hash": "a038bfe8c7aee7bb"
+      "hash": "c99cece8e60fe616"
     },
     {
       "relativePath": "src/skills/operations.skill.ts",
-      "hash": "10fb6b6bc7ebec3d"
+      "hash": "ec47611d649edd63"
     },
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
@@ -111,6 +123,10 @@
       "hash": "c79d1d1b0e4cb5e9"
     },
     {
+      "relativePath": "src/skills/tools/OpsMemoryTools.ts",
+      "hash": "cbe035ccbf3ece85"
+    },
+    {
       "relativePath": "src/skills/tools/OptimalStaffingTool.ts",
       "hash": "1c59c7ee4cdc0b62"
     },
@@ -121,6 +137,10 @@
     {
       "relativePath": "src/skills/tools/ScheduleOptimizerTool.ts",
       "hash": "5bfe8901496348a3"
+    },
+    {
+      "relativePath": "src/skills/tools/StaffCapturedOrderTool.ts",
+      "hash": "349c26876d0639af"
     },
     {
       "relativePath": "src/skills/tools/StaffClockInTool.ts",

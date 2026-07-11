@@ -6,6 +6,7 @@ import languageMirrorPreprocessor from "./preprocessors/LanguageMirrorPreprocess
 import incidentCommandPreprocessor from "./preprocessors/IncidentCommandPreprocessor";
 import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
+import myShiftsPreprocessor from "./preprocessors/MyShiftsPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 import responseFormatter from "./postprocessors/ResponseFormatterPostProcessor";
 import { SCENARIO_FACILITIES, withDailyScenarios } from "./shared/dailyScenariosPersona";
@@ -59,6 +60,7 @@ ERRORS: Never show raw technical errors. Translate per miya_directive.`,
     incidentCommandPreprocessor,
     accountActivationPreprocessor,
     clockInPreprocessor,
+    myShiftsPreprocessor,
     staffRequestPreprocessor,
     operationsCommandPreprocessor,
   ],

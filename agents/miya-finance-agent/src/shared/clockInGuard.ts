@@ -4,7 +4,7 @@
  */
 
 export const CLOCK_IN_RE =
-  /\b(clock[\s-]?in|clockin|pointer|pointage|start my shift|i['']?m here|arriver|سجل دخول|بغيت نبدا|بغيت نبدا الخدمة|nbeda lkhedma|(?:staff\s+)?(?:wants?|needs?)\s+to\s+clock\s*in)\b/i;
+  /\b(clock\s+me\s+in|clock[\s-]?in|clockin|pointer|pointage|start my shift|i['']?m here|arriver|سجل دخول|بغيت نبدا|بغيت نبدا الخدمة|nbeda lkhedma|(?:staff\s+)?(?:wants?|needs?)\s+to\s+clock\s*in)\b/i;
 
 /** Bot wrongly gating clock-in behind cash drawer / opening float. */
 export const CASH_BEFORE_CLOCK_IN_RE =
@@ -12,13 +12,18 @@ export const CASH_BEFORE_CLOCK_IN_RE =
 
 /** Fake / broken clock-in apologies the model invents. */
 export const FAKE_CLOCK_IN_OUTAGE_RE =
-  /\b(trouble with the clock[- ]?in|temporary system issue preventing clock[- ]?ins?|clock[- ]?in system right now|unable to clock you in|sorry[,.]?\s*I was unable to clock you in|having a bit of trouble with (?:the )?clock|technical issue(?:\s+\w+){0,6}\s+clock|couldn['']t clock you in)\b/i;
+  /\b(trouble with the clock[- ]?in|temporary system issue preventing clock[- ]?ins?|clock[- ]?in system right now|unable to clock you in|sorry[,.]?\s*I was unable to clock you in|having a bit of trouble with (?:the )?clock|technical issue(?:\s+\w+){0,12}\s+clock|couldn['']t clock you in|encountered a technical issue.{0,80}clock|please try again later or contact your manager for assistance)\b/i;
+
+/** Fake shift-fetch apologies (Space invents these instead of calling my_shifts). */
+export const FAKE_SHIFT_FETCH_RE =
+  /\b(trouble fetching your shift|having a little trouble fetching your shift|couldn['']t (?:fetch|load|get) your shift|unable to (?:fetch|load|get) your shift|shift details right now)\b/i;
 
 export function isClockInMessage(text: string): boolean {
   const lower = text.toLowerCase().trim();
   if (!lower) return false;
   if (CLOCK_IN_RE.test(lower)) return true;
   if (lower.includes("want to clock in")) return true;
+  if (lower.includes("clock me in")) return true;
   if (lower.includes("hi miya") && lower.includes("clock")) return true;
   return false;
 }
@@ -29,6 +34,10 @@ export function looksLikeCashBeforeClockInAsk(text: string): boolean {
 
 export function looksLikeFakeClockInOutage(text: string): boolean {
   return FAKE_CLOCK_IN_OUTAGE_RE.test(String(text || ""));
+}
+
+export function looksLikeFakeShiftFetch(text: string): boolean {
+  return FAKE_SHIFT_FETCH_RE.test(String(text || ""));
 }
 
 /** User follow-up after Miya wrongly asked for float (amount / "I don't know"). */

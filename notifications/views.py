@@ -186,6 +186,13 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
         # Safety / maintenance incident reports (broken glass, slips, …)
         if looks_like_whatsapp_incident_report(body):
             return True
+        try:
+            from staff.whatsapp_my_shifts import looks_like_my_shifts_query
+
+            if looks_like_my_shifts_query(body):
+                return True
+        except Exception:
+            pass
         if phone_digits:
             sess = WhatsAppSession.objects.filter(phone=phone_digits).first()
             if sess:
@@ -2148,6 +2155,7 @@ def whatsapp_webhook(request):
                     _text_is_staff_escalation = False
                     _interactive_is_staff_escalation = False
                     _text_is_incident_report = False
+                    _text_is_my_shifts = False
                     _text_is_clock_in = (
                         msg_type == "text"
                         and text_body
@@ -2164,6 +2172,7 @@ def whatsapp_webhook(request):
                             looks_like_staff_manager_escalation,
                             session_has_staff_escalation_context,
                         )
+                        from staff.whatsapp_my_shifts import looks_like_my_shifts_query
 
                         if msg_type == 'text' and text_body:
                             _text_is_staff_escalation = looks_like_staff_manager_escalation(text_body)
@@ -2179,6 +2188,7 @@ def whatsapp_webhook(request):
                                 ctx = getattr(session, "context", None) or {}
                                 if ctx.get("incident_photo_media_id"):
                                     _text_is_incident_report = True
+                            _text_is_my_shifts = looks_like_my_shifts_query(text_body)
                         if msg_type == 'interactive':
                             inter = msg.get('interactive') or {}
                             if inter.get('type') == 'button_reply':
@@ -2205,6 +2215,7 @@ def whatsapp_webhook(request):
                         and not _text_is_clock_in
                         and not _awaiting_clock_in_gps
                         and not _text_is_incident_report
+                        and not _text_is_my_shifts
                     ):
                         logger.info("Session state '%s' for %s — deferring to Lua/Miya.", session.state, phone_digits)
                         continue
@@ -3070,6 +3081,17 @@ def whatsapp_webhook(request):
                         msg=msg,
                     ):
                         continue
+
+                    # My shifts / schedule — Django-owned (never let Space invent fetch failures).
+                    try:
+                        from staff.whatsapp_my_shifts import process_whatsapp_my_shifts
+
+                        if process_whatsapp_my_shifts(
+                            notification_service, user, phone_digits, raw_body
+                        ):
+                            continue
+                    except Exception:
+                        logger.exception("WhatsApp my-shifts handler failed phone=%s", phone_digits)
 
                     # Voice surfaced as placeholder text (no transcript): do not fall through to Lua or incident heuristics.
                     if _looks_like_voice_ui_placeholder(raw_body):

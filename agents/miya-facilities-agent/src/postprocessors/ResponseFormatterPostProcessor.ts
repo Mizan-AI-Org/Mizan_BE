@@ -17,6 +17,7 @@ import {
   isClockInMessage,
   looksLikeCashBeforeClockInAsk,
   looksLikeFakeClockInOutage,
+  looksLikeFakeShiftFetch,
   shareLocationClockInMessage,
 } from "../shared/clockInGuard";
 
@@ -97,6 +98,11 @@ const responseFormatter = new PostProcessor({
         /\b(cash|float|drawer|comptage|caisse)\b/i.test(formatted))
     ) {
       formatted = shareLocationClockInMessage(channel);
+    }
+
+    if (looksLikeFakeShiftFetch(formatted)) {
+      formatted =
+        'Say "when is my shift today and tomorrow?" again and I\'ll look up your schedule right away.';
     }
 
     if (
