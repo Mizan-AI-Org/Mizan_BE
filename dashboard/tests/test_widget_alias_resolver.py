@@ -14,8 +14,10 @@ from django.test import SimpleTestCase
 from dashboard.widget_alias_resolver import (
     DATA_BOUND_BUILTIN_IDS,
     is_alias_for_data_bound_widget,
+    is_explicit_custom_widget_request,
     known_aliases_for,
     resolve_widget_alias,
+    sanitize_widget_user_text,
 )
 
 
@@ -157,15 +159,58 @@ class ResolveWidgetAliasTests(SimpleTestCase):
         )
 
     def test_explicit_custom_widget_request_detected(self):
-        from dashboard.widget_alias_resolver import is_explicit_custom_widget_request
-
         self.assertTrue(
             is_explicit_custom_widget_request(
                 "create a widget called : Gitex Marrakesh",
             )
         )
+        self.assertTrue(
+            is_explicit_custom_widget_request(
+                "create a new widget for next week staff retreat in Bali",
+            )
+        )
+        self.assertTrue(
+            is_explicit_custom_widget_request(
+                "Create a new widget to handle vehicle petrol expenses",
+            )
+        )
         self.assertFalse(
             is_explicit_custom_widget_request("create a Purchases widget"),
+        )
+        self.assertFalse(
+            is_explicit_custom_widget_request("create a Team Travel widget"),
+        )
+
+    def test_sanitize_strips_language_directive_from_title(self):
+        polluted = (
+            "[REPLY LANGUAGE — NON-NEGOTIABLE]\n"
+            "Reply language for THIS turn: English.\n"
+            "The latest user message clearly uses this language — reply in it for THIS turn.\n\n"
+            "Create a new widget to handle vehicle petrol expenses"
+        )
+        clean = sanitize_widget_user_text(polluted)
+        self.assertEqual(
+            clean,
+            "Create a new widget to handle vehicle petrol expenses",
+        )
+        self.assertNotIn("REPLY LANGUAGE", clean)
+        self.assertTrue(
+            is_explicit_custom_widget_request(clean),
+        )
+
+    def test_explicit_custom_topic_does_not_alias_via_substring(self):
+        """Bali retreat is a custom topic — not Team Travel via 'retreat'."""
+        self.assertTrue(
+            is_explicit_custom_widget_request(
+                "create a new widget for next week staff retreat in Bali",
+            )
+        )
+        # Title phrase itself must not exact-match the retreat alias.
+        self.assertIsNone(
+            resolve_widget_alias(
+                "next week staff retreat in Bali",
+                strict=True,
+            )
         )
 
     def test_empty_input_does_not_resolve(self):

@@ -361,9 +361,41 @@ def _normalise(s: str) -> str:
 
 
 _EXPLICIT_CUSTOM_WIDGET_RE = re.compile(
-    r"\bwidget\b[\s\S]{0,40}\b(called|named|titled)\b",
+    r"\bwidget\b[\s\S]{0,40}\b("
+    r"called|named|titled|for|pour|about|"
+    r"to\s+handle|to\s+track|to\s+manage"
+    r")\b",
     re.IGNORECASE,
 )
+
+# LanguageMirror / Space may prefix the user turn; never persist those as titles.
+_LANGUAGE_DIRECTIVE_BLOCK_RE = re.compile(
+    r"\[(?:REPLY LANGUAGE[^\]]*|LANGUAGE DETECTED)\][^\n]*(?:\n(?!\n)[^\n]*)*(?:\n\n)?",
+    re.IGNORECASE,
+)
+_SYSTEM_CONTEXT_BLOCK_RE = re.compile(
+    r"\[SYSTEM: (?:PERSISTENT|PARTIAL) CONTEXT\][\s\S]*?"
+    r"(?:AGENT_IDENTITY_VERIFIED:\s*TRUE|(?=\n\n\[)|$)",
+    re.IGNORECASE,
+)
+
+
+def sanitize_widget_user_text(text: str | None) -> str:
+    """Strip injected language / system blocks before title or alias parsing."""
+    if not text:
+        return ""
+    out = _SYSTEM_CONTEXT_BLOCK_RE.sub("", str(text))
+    out = _LANGUAGE_DIRECTIVE_BLOCK_RE.sub("", out)
+    while True:
+        trimmed = out.strip()
+        if not re.match(r"^\[(?:REPLY LANGUAGE|LANGUAGE DETECTED)", trimmed, re.I):
+            out = trimmed
+            break
+        idx = trimmed.find("\n\n")
+        if idx < 0:
+            return ""
+        out = trimmed[idx + 2 :]
+    return " ".join(out.split()).strip() if out else ""
 
 
 def is_explicit_custom_widget_request(*texts: str | None) -> bool:
@@ -371,9 +403,13 @@ def is_explicit_custom_widget_request(*texts: str | None) -> bool:
 
     Examples:
         "create a widget called Gitex Marrakesh" → True
+        "create a new widget for next week staff retreat in Bali" → True
+        "Create a new widget to handle vehicle petrol expenses" → True
         "create a Purchases widget" → False
     """
-    blob = " ".join(str(t).strip() for t in texts if t and str(t).strip())
+    blob = " ".join(
+        sanitize_widget_user_text(t) for t in texts if t and str(t).strip()
+    )
     if not blob:
         return False
     return bool(_EXPLICIT_CUSTOM_WIDGET_RE.search(blob))

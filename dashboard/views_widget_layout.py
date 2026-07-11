@@ -25,6 +25,7 @@ from .widget_ids import (
 from .widget_alias_resolver import (
     DATA_BOUND_BUILTIN_IDS,
     is_explicit_custom_widget_request,
+    sanitize_widget_user_text,
     resolve_widget_alias,
 )
 from .custom_widget_routing import (
@@ -431,13 +432,19 @@ class AgentDashboardWidgetCreateView(APIView):
             return Response({"success": False, "error": err}, status=status.HTTP_401_UNAUTHORIZED)
 
         data = request.data or {}
-        title = (data.get("title") or "").strip()
+        title = sanitize_widget_user_text(data.get("title") or "")
         if len(title) > 255:
             title = title[:255].rstrip()
         if not title:
             return Response({"success": False, "error": "title is required"}, status=status.HTTP_400_BAD_REQUEST)
+        title_upper = title.lstrip().upper()
+        if title_upper.startswith("[REPLY LANGUAGE") or title_upper.startswith("[LANGUAGE DETECTED"):
+            return Response(
+                {"success": False, "error": "title is invalid"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        subtitle = str(data.get("subtitle") or "")[:2000]
+        subtitle = sanitize_widget_user_text(str(data.get("subtitle") or ""))[:2000]
         link_raw = str(data.get("link_url") or data.get("link") or "")
 
         # ------------------------------------------------------------------
@@ -460,20 +467,27 @@ class AgentDashboardWidgetCreateView(APIView):
         #     the dialog UI when a power user really wants a custom tile.
         force_custom = bool(data.get("force_custom"))
         explicit_link = bool(link_raw and link_raw.strip())
-        source_text = data.get("source_text") or data.get("sourceText")
+        source_text = sanitize_widget_user_text(
+            data.get("source_text") or data.get("sourceText") or ""
+        ) or None
         explicit_custom_name = is_explicit_custom_widget_request(
             title,
             data.get("subtitle"),
             source_text,
         )
         aliased_id: str | None = None
-        if not force_custom and not explicit_link and not explicit_custom_name:
-            aliased_id = resolve_widget_alias(
-                title,
-                data.get("subtitle"),
-                source_text,
-                data.get("category_name") or data.get("categoryName"),
-            )
+        if not force_custom and not explicit_link:
+            if explicit_custom_name:
+                # "create a widget for leave requests" → exact lane title still
+                # redirects; "… for staff retreat in Bali" stays custom.
+                aliased_id = resolve_widget_alias(title, strict=True)
+            else:
+                aliased_id = resolve_widget_alias(
+                    title,
+                    data.get("subtitle"),
+                    source_text,
+                    data.get("category_name") or data.get("categoryName"),
+                )
             if aliased_id and aliased_id not in DATA_BOUND_BUILTIN_IDS:
                 # Resolver returned a built-in id we don't consider data-bound
                 # (shouldn't happen with the current alias table, but guard

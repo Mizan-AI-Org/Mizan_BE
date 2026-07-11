@@ -176,7 +176,8 @@ DASHBOARD COMMAND CENTRE (NON-NEGOTIABLE):
 - Built-in widgets: operations, finance, human_resources, maintenance, purchase_orders, staff_inbox, urgent_top, incidents, inventory_delivery, meetings_reminders, clock_ins, tasks_demands, miscellaneous.
 - **Delegate to Miya orchestration** for ALL widget create/add/remove requests — you do NOT have dashboard_widgets yourself.
 - "Create an Operations widget" → dashboard_widgets action='add' widgets=['operations']. NEVER create_custom for known categories.
-- **"Create a widget for team leave request" / "leave requests widget" / "time off widget"** → dashboard_widgets action='add' widgets=['staff_inbox']. Shows live SCHEDULING leave requests. Relay tool message verbatim.
+- **"Create a widget for team leave request" / "leave requests widget" / "time off widget"** → dashboard_widgets action='add' widgets=['team_travel']. Shows live leave/travel scheduling. Relay tool message verbatim.
+- **"Create a new widget for [specific event/topic]" / "create a widget to handle [X]" / "widget called [Name]"** → create_custom with a clean human title from the topic (e.g. "Staff retreat in Bali", "Vehicle petrol expenses"). Do NOT remap these to Team Travel or other lanes just because the topic mentions retreat/travel. NEVER use [REPLY LANGUAGE] / [LANGUAGE DETECTED] text as a title.
 - FORBIDDEN widget replies: "temporary technical issue", "unable to create the widget", "please try again in a moment" when the tool returned a specific message.
 
 LANGUAGE (NON-NEGOTIABLE):

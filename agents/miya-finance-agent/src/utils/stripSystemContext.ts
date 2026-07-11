@@ -5,9 +5,16 @@ export const PERSISTENT_CONTEXT_BLOCK_RE =
 export const PARTIAL_CONTEXT_BLOCK_RE =
     /\[SYSTEM: PARTIAL CONTEXT\][\s\S]*?(?=\n\n\[|$)/gi;
 
+/** LanguageMirror / Space language-enforcement blocks prefixed onto user turns. */
+export const LANGUAGE_DIRECTIVE_BLOCK_RE =
+    /\[(?:REPLY LANGUAGE[^\]]*|LANGUAGE DETECTED)\][^\n]*(?:\n(?!\n)[^\n]*)*(?:\n\n)?/gi;
+
 export const SYSTEM_CONTEXT_MARKERS = [
     "[SYSTEM: PERSISTENT CONTEXT]",
     "[SYSTEM: PARTIAL CONTEXT]",
+    "[REPLY LANGUAGE — NON-NEGOTIABLE]",
+    "[REPLY LANGUAGE]",
+    "[LANGUAGE DETECTED]",
 ] as const;
 
 export function containsSystemContextBlock(text: string | null | undefined): boolean {
@@ -15,11 +22,26 @@ export function containsSystemContextBlock(text: string | null | undefined): boo
     return SYSTEM_CONTEXT_MARKERS.some((marker) => text.includes(marker));
 }
 
-/** Remove injected system context from text shown to humans (chat UI / replies). */
+/**
+ * Remove injected system / language-mirror context from text shown to humans
+ * or used as widget titles / tool source_text.
+ */
 export function stripSystemContextBlocks(text: string): string {
-    return text
+    let out = text
         .replace(PERSISTENT_CONTEXT_BLOCK_RE, "")
         .replace(PARTIAL_CONTEXT_BLOCK_RE, "")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
+        .replace(LANGUAGE_DIRECTIVE_BLOCK_RE, "");
+
+    // Fallback: directive still leading the string (no clean blank-line split).
+    while (/^\[(?:REPLY LANGUAGE|LANGUAGE DETECTED)/i.test(out.trim())) {
+        const trimmed = out.trim();
+        const idx = trimmed.indexOf("\n\n");
+        if (idx < 0) {
+            out = "";
+            break;
+        }
+        out = trimmed.slice(idx + 2);
+    }
+
+    return out.replace(/\n{3,}/g, "\n\n").trim();
 }
