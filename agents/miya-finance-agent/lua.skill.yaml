@@ -4,34 +4,37 @@ agent:
 skills:
   - name: finance
     skillId: bd44d3c0-0cde-473a-b424-1d5b282b3c8a
-    version: 1.0.28
+    version: 1.0.29
 webhooks: []
 jobs: []
 preprocessors:
   - name: account-activation-router
     preprocessorId: preprocessor_f6b83e37-2259-45ea-8b36-44e5a0d12220
-    version: 1.0.22
+    version: 1.0.23
   - name: clock-in-router
     preprocessorId: preprocessor_2d8f77e3-2589-47ef-9d5e-40e4695ae403
-    version: 1.0.22
+    version: 1.0.23
   - name: operations-command-router
     preprocessorId: preprocessor_28f3b74a-bff2-4a03-99c0-d39f9f77ae93
-    version: 1.0.20
+    version: 1.0.21
   - name: invoice-photo-router
     preprocessorId: preprocessor_c5db2954-17a8-4003-9f67-6e0d55f51406
-    version: 1.0.15
+    version: 1.0.16
   - name: language-mirror
     preprocessorId: preprocessor_357ea869-493d-40a1-8ff6-adc4a6dcff83
-    version: 1.0.10
+    version: 1.0.11
   - name: incident-command-router
     preprocessorId: preprocessor_ca6f00e4-1513-4e82-8856-f9015c868a21
+    version: 1.0.2
+  - name: my-shifts-router
+    preprocessorId: preprocessor_4417f29d-b077-4a58-b985-e7dea64a5273
     version: 1.0.1
 postprocessors:
   - name: miya-response-formatter
     postprocessorId: postprocessor_2d230475-d998-4e44-aa09-36fcc087eb41
-    version: 1.0.3
+    version: 1.0.4
 mcpServers: []
 backup:
-  activeVersion: 29
-  lastHash: 56cc25b538373f34f11e76d41faa0247eb68a1fe51750cb91133493687c9194e
-  lastPushedAt: '2026-07-11T17:00:34.233Z'
+  activeVersion: 30
+  lastHash: f5adc3d943bcbea1aab25d32fbc32a1cfe142ebf278c37c7011c2396c41b0b38
+  lastPushedAt: '2026-07-11T17:18:38.388Z'

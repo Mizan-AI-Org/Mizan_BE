@@ -1,6 +1,6 @@
 {
-  "lastHash": "a891c39f269f94e184a9556a436dd716d3bd28dd0ab4bdd408c8c57589e21180",
-  "lastPushedAt": "2026-07-11T17:01:57.758Z",
+  "lastHash": "48aa6ce5fb8f91caffe76748c2d460cb53d9216867fa346aa94fb3f5702d9cd3",
+  "lastPushedAt": "2026-07-11T17:20:01.005Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "6f0d1374abfa1804"
+      "hash": "faaaa0823a546e61"
     },
     {
       "relativePath": "package.json",
@@ -24,11 +24,11 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "360eaa700f9044ab"
+      "hash": "68a77ba6c2151629"
     },
     {
       "relativePath": "src/postprocessors/ResponseFormatterPostProcessor.ts",
-      "hash": "b8090f7a3f043440"
+      "hash": "939efa9f968f3d99"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
@@ -36,7 +36,7 @@
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "22a411bbc7e6b721"
+      "hash": "7f4ce403ba473ac5"
     },
     {
       "relativePath": "src/preprocessors/IncidentCommandPreprocessor.ts",
@@ -45,6 +45,10 @@
     {
       "relativePath": "src/preprocessors/LanguageMirrorPreprocessor.ts",
       "hash": "246ca85f145a5062"
+    },
+    {
+      "relativePath": "src/preprocessors/MyShiftsPreprocessor.ts",
+      "hash": "8ff3c1290fdd8d7f"
     },
     {
       "relativePath": "src/preprocessors/StaffRequestPreprocessor.ts",
@@ -60,7 +64,7 @@
     },
     {
       "relativePath": "src/shared/clockInGuard.ts",
-      "hash": "fd37925614aa3eda"
+      "hash": "9a6eecf1be5ad02d"
     },
     {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
