@@ -4,28 +4,31 @@ agent:
 skills:
   - name: finance
     skillId: bd44d3c0-0cde-473a-b424-1d5b282b3c8a
-    version: 1.0.24
+    version: 1.0.27
 webhooks: []
 jobs: []
 preprocessors:
   - name: account-activation-router
     preprocessorId: preprocessor_f6b83e37-2259-45ea-8b36-44e5a0d12220
-    version: 1.0.18
+    version: 1.0.21
   - name: clock-in-router
     preprocessorId: preprocessor_2d8f77e3-2589-47ef-9d5e-40e4695ae403
-    version: 1.0.18
+    version: 1.0.21
   - name: operations-command-router
     preprocessorId: preprocessor_28f3b74a-bff2-4a03-99c0-d39f9f77ae93
-    version: 1.0.16
+    version: 1.0.19
   - name: invoice-photo-router
     preprocessorId: preprocessor_c5db2954-17a8-4003-9f67-6e0d55f51406
-    version: 1.0.11
+    version: 1.0.14
   - name: language-mirror
     preprocessorId: preprocessor_357ea869-493d-40a1-8ff6-adc4a6dcff83
-    version: 1.0.6
-postprocessors: []
+    version: 1.0.9
+postprocessors:
+  - name: miya-response-formatter
+    postprocessorId: postprocessor_2d230475-d998-4e44-aa09-36fcc087eb41
+    version: 1.0.2
 mcpServers: []
 backup:
-  activeVersion: 25
-  lastHash: e02992654404a59661b35451391bb0c5fc227e1fdf07923d9a2b9bfb420aa631
-  lastPushedAt: '2026-07-10T20:04:31.417Z'
+  activeVersion: 28
+  lastHash: 289f907f48dc49c748c361165b473d9ddbc4ff345608285bce98ed8bf553c79f
+  lastPushedAt: '2026-07-11T13:57:35.617Z'

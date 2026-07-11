@@ -1,6 +1,6 @@
 {
-  "lastHash": "93dadec195fdfafa058e7a758296a77a5d7e42776c8190f8b0632f4387cc4e09",
-  "lastPushedAt": "2026-07-10T20:06:16.701Z",
+  "lastHash": "b0987c41b6ab4372c4fc784bab5bb50cdda36dac3afcdd584785e27e406192ae",
+  "lastPushedAt": "2026-07-11T13:59:15.802Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "d5583f1651c2015f"
+      "hash": "3819b8e8edec7c81"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "289b987c534c5685"
+      "hash": "3e8c2d7e67cd1916"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
@@ -45,6 +45,10 @@
     {
       "relativePath": "src/services/ApiService.ts",
       "hash": "3e3e35e12af99d5f"
+    },
+    {
+      "relativePath": "src/shared/dailyScenariosPersona.ts",
+      "hash": "a038bfe8c7aee7bb"
     },
     {
       "relativePath": "src/skills/intelligence.skill.ts",

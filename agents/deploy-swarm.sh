@@ -68,6 +68,23 @@ copy_env() {
   fi
 }
 
+# Keep daily scenario persona snippets in sync from agents/shared/
+sync_daily_scenarios() {
+  local shared="$SCRIPT_DIR/shared/dailyScenariosPersona.ts"
+  if [[ ! -f "$shared" ]]; then
+    err "Missing $shared"
+    return 1
+  fi
+  mkdir -p "$MAIN_AGENT/src/shared"
+  cp "$shared" "$MAIN_AGENT/src/shared/dailyScenariosPersona.ts"
+  for entry in "${SPECIALISTS[@]}"; do
+    local dir="${entry%%:*}"
+    mkdir -p "$SCRIPT_DIR/$dir/src/shared"
+    cp "$shared" "$SCRIPT_DIR/$dir/src/shared/dailyScenariosPersona.ts"
+  done
+  ok "Synced dailyScenariosPersona.ts → my-agent + all specialists"
+}
+
 sync_production_env() {
   local agent_dir="$1"
   local label="$2"
@@ -210,6 +227,7 @@ deploy_supervisor() {
 }
 
 ensure_auth
+sync_daily_scenarios
 
 case "$MODE" in
   specialists) deploy_specialists ;;
@@ -227,6 +245,7 @@ esac
 echo ""
 ok "Swarm deployment complete!"
 echo ""
+echo "Daily scenarios source: docs/MIYA_SCENARIO_VISION.md → agents/shared/dailyScenariosPersona.ts"
 echo "Space supervisor persona (paste into Miya Space → Personality tab):"
 echo "  File: $SCRIPT_DIR/miya-space-persona.txt"
 echo "  Quick copy: pbcopy < $SCRIPT_DIR/miya-space-persona.txt"

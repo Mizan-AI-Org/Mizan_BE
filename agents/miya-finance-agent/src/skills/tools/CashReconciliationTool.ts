@@ -13,7 +13,8 @@ export default class CashReconciliationTool implements LuaTool {
         "'open' — open the cash drawer at shift start (specify opening float). " +
         "'close' — staff counts the cash at shift end; system computes variance. " +
         "Use when staff say 'open drawer', 'cash count', 'close cash', 'count the cash', " +
-        "'comptage caisse', 'فتح الصندوق', 'حساب الكاش'.";
+        "'comptage caisse', 'فتح الصندوق', 'حساب الكاش'. " +
+        "NEVER use for 'clock in' / 'I want to clock in' — that is staff_clock_in (location first).";
 
     inputSchema = z.object({
         action: z.enum(["open", "close"]).describe("'open' to start a cash session, 'close' to count and close"),

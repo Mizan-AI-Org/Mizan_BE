@@ -8,7 +8,12 @@
 
 **Audience:** Product, engineering, agent designers, QA, and pilot customers validating coverage.
 
-**Last updated:** June 2026
+**Last updated:** July 2026
+
+**Agent wiring:** The ✅ baseline in Part 1 is injected into Miya + swarm personas via
+`agents/shared/dailyScenariosPersona.ts` (synced on `./deploy-swarm.sh`). Space supervisor
+copy lives in `agents/miya-space-persona.txt` under **DAILY SCENARIO VISION**. Agents must
+execute these daily asks; they must **not** invent ❌ / 🔮 rows as if supported.
 
 ---
 
@@ -576,8 +581,11 @@ When a customer asks for something Miya can’t do:
 2. Tag ✅ / 🟡 / ❌ / 🔮 honestly.
 3. Note which **agent**, **tool**, or **integration** would own it.
 4. Link Linear/Jira ticket if scoped.
+5. If it becomes a **daily ✅ baseline**, also update `agents/shared/dailyScenariosPersona.ts`
+   (and re-deploy the swarm) so Miya + specialists learn it.
 
 **File:** `mizan-backend/docs/MIYA_SCENARIO_VISION.md`
+**Agent persona sync:** `mizan-backend/agents/shared/dailyScenariosPersona.ts`
 
 ---
 
