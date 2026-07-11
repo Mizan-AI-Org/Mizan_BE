@@ -581,6 +581,7 @@ def agent_ingest_staff_request(request):
     # been notified on WhatsApp" hallucinations when the assignee has
     # no phone or the send failed.
     whatsapp_sent_to_assignee = False
+    lane_label_early = widget_lane_label(primary_widget_for_category(category))
     if assignee:
         StaffRequestComment.objects.create(
             request=req,
@@ -614,7 +615,7 @@ def agent_ingest_staff_request(request):
                     (
                         f"📩 New {category.lower()} request from "
                         f"{staff_name or 'a staff member'}: "
-                        f"\"{subject[:80]}\". Open the inbox to review."
+                        f"\"{subject[:80]}\". It's waiting under {lane_label_early} (Pending) in the inbox."
                     ),
                 )
                 whatsapp_sent_to_assignee = bool(wa_ok)
@@ -624,6 +625,39 @@ def agent_ingest_staff_request(request):
             except Exception as exc:
                 logger.warning("StaffRequest assignee WhatsApp ping failed: %s", exc)
                 whatsapp_sent_to_assignee = False
+
+    else:
+        # No category owner — WhatsApp managers directly (mirror whatsapp_request_ingest).
+        manager_ping = (
+            f"📩 New {category.lower()} request from "
+            f"{staff_name or 'a staff member'}: "
+            f"\"{subject[:80]}\". It's waiting under {lane_label_early} (Pending) in the inbox."
+        )
+        try:
+            managers = (
+                CustomUser.objects.filter(
+                    restaurant=restaurant,
+                    role__in=["MANAGER", "ADMIN", "OWNER", "SUPER_ADMIN"],
+                    is_active=True,
+                )
+                .exclude(id=getattr(staff, "id", None))
+                .exclude(phone__isnull=True)
+                .exclude(phone="")
+                .order_by("role", "first_name")[:3]
+            )
+            notified = False
+            for m in managers:
+                try:
+                    wa_ok, _ = notification_service.send_whatsapp_text(m.phone, manager_ping)
+                    notified = notified or bool(wa_ok)
+                except Exception as exc:
+                    logger.warning("StaffRequest manager WhatsApp ping failed: %s", exc)
+            if notified:
+                req.whatsapp_notified_at = timezone.now()
+                req.save(update_fields=["whatsapp_notified_at", "updated_at"])
+                whatsapp_sent_to_assignee = True
+        except Exception as exc:
+            logger.warning("StaffRequest manager fallback ping failed: %s", exc)
 
     _notify_managers_of_staff_request(req)
 

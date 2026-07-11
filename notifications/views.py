@@ -146,6 +146,13 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
         body_l = body.strip().lower().replace("-", " ")
         if body_l in ("clock out", "clockout", "clock out.", "pointer sortie", "pointage sortie"):
             return True
+        try:
+            from staff.whatsapp_escalation import looks_like_cash_clock_in_followup
+
+            if looks_like_cash_clock_in_followup(body):
+                return True
+        except Exception:
+            pass
         # Recover from wrong cash-float clock-in flows: while awaiting GPS, Django
         # owns every text turn (re-prompt Share Location / parse coords). Never
         # let Lua/finance continue a float interrogation.
@@ -2156,6 +2163,7 @@ def whatsapp_webhook(request):
                     _interactive_is_staff_escalation = False
                     _text_is_incident_report = False
                     _text_is_my_shifts = False
+                    _text_is_clock_float_recovery = False
                     _text_is_clock_in = (
                         msg_type == "text"
                         and text_body
@@ -2169,6 +2177,7 @@ def whatsapp_webhook(request):
                             is_cancel_send_reply,
                             is_confirm_send_reply,
                             is_explicit_confirm_send_reply,
+                            looks_like_cash_clock_in_followup,
                             looks_like_staff_manager_escalation,
                             session_has_staff_escalation_context,
                         )
@@ -2189,6 +2198,7 @@ def whatsapp_webhook(request):
                                 if ctx.get("incident_photo_media_id"):
                                     _text_is_incident_report = True
                             _text_is_my_shifts = looks_like_my_shifts_query(text_body)
+                            _text_is_clock_float_recovery = looks_like_cash_clock_in_followup(text_body)
                         if msg_type == 'interactive':
                             inter = msg.get('interactive') or {}
                             if inter.get('type') == 'button_reply':
@@ -2216,6 +2226,7 @@ def whatsapp_webhook(request):
                         and not _awaiting_clock_in_gps
                         and not _text_is_incident_report
                         and not _text_is_my_shifts
+                        and not _text_is_clock_float_recovery
                     ):
                         logger.info("Session state '%s' for %s — deferring to Lua/Miya.", session.state, phone_digits)
                         continue
@@ -3034,6 +3045,22 @@ def whatsapp_webhook(request):
 
                     if not body:
                         continue
+
+                    # Recover from Space/LLM opening-float detours — always re-prompt GPS.
+                    try:
+                        from staff.whatsapp_escalation import looks_like_cash_clock_in_followup
+
+                        if user and looks_like_cash_clock_in_followup(raw_body):
+                            if session.state != 'awaiting_clock_in_location':
+                                session.state = 'awaiting_clock_in_location'
+                                session.save(update_fields=['state'])
+                            notification_service.send_whatsapp_location_request(
+                                phone_digits,
+                                "Share your location to clock in.",
+                            )
+                            continue
+                    except Exception:
+                        logger.exception("WhatsApp cash-float recovery failed phone=%s", phone_digits)
 
                     # Staff → manager escalations (wages, payslip, HR docs) — Django-owned.
                     if _process_whatsapp_staff_escalation(

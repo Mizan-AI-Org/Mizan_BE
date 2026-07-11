@@ -115,12 +115,12 @@ const responseFormatter = new PostProcessor({
     }
 
     if (
-      /\b(confirmation card will be shown|noted that for your manager|preparing to (?:let your manager know|inform your manager))\b/i.test(
+      /\b(confirmation card will be shown|noted that for your manager|preparing to (?:let your manager know|inform your manager)|correct recipient|final approval before anything is sent)\b/i.test(
         formatted,
       )
     ) {
       formatted =
-        "Please say that again in one short line (e.g. \"Tell my manager I haven't received last week's wages\") and I'll pass it to your manager right away.";
+        "Thanks — I've passed that on to your manager. They'll see it under *Human Resources* (Pending) and get back to you as soon as they can.";
     }
 
     if (

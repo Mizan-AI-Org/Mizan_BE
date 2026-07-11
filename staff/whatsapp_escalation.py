@@ -240,6 +240,25 @@ def is_cancel_send_reply(text: str) -> bool:
     return bool(CANCEL_SEND_RE.match(_strip_you_prefix((text or "").strip())))
 
 
+def looks_like_cash_clock_in_followup(text: str) -> bool:
+    """
+    User reply after Space/LLM wrongly asked for opening float before clock-in.
+    Django re-prompts Share Location instead of letting Lua invent technical errors.
+    """
+    t = _strip_you_prefix((text or "").strip())
+    if not t:
+        return False
+    if re.match(r"^(i\s+)?(don['']?t|do\s+not)\s+know\b", t, re.I):
+        return True
+    if re.match(r"^(je\s+)?(ne\s+)?sais\s+pas\b", t, re.I):
+        return True
+    if re.match(r"^\d+([.,]\d+)?\s*(mad|dh|€|\$|eur|usd)?\.?$", t, re.I):
+        return True
+    if re.match(r"^(opening\s+)?float\s*[:=]?\s*\d+", t, re.I):
+        return True
+    return False
+
+
 def session_has_staff_escalation_context(session) -> bool:
     """True when this WhatsApp session has a remembered escalate-to-manager ask."""
     if not session:

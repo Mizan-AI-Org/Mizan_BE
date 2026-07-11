@@ -156,6 +156,13 @@ def ingest_staff_escalation_from_whatsapp(
         metadata={"source": "whatsapp", "phone": phone_digits},
     )
 
+    lane = widget_lane_label(primary_widget_for_category(category))
+    manager_ping = (
+        f"📩 New {category.lower()} request from "
+        f"{staff_name or 'a staff member'}: "
+        f"\"{subject[:80]}\". It's waiting under {lane} (Pending) in the inbox."
+    )
+
     if assignee:
         StaffRequestComment.objects.create(
             request=req,
@@ -174,25 +181,44 @@ def ingest_staff_escalation_from_whatsapp(
         owner_phone = getattr(assignee, "phone", "") or ""
         if owner_phone:
             try:
-                wa_ok, _ = notification_service.send_whatsapp_text(
-                    owner_phone,
-                    (
-                        f"📩 New {category.lower()} request from "
-                        f"{staff_name or 'a staff member'}: "
-                        f"\"{subject[:80]}\". Open the inbox to review."
-                    ),
-                )
+                wa_ok, _ = notification_service.send_whatsapp_text(owner_phone, manager_ping)
                 if wa_ok:
                     req.whatsapp_notified_at = timezone.now()
                     req.save(update_fields=["whatsapp_notified_at", "updated_at"])
             except Exception as exc:
                 logger.warning("StaffRequest assignee WhatsApp ping failed: %s", exc)
+    else:
+        # No category owner configured — WhatsApp the managers directly so the
+        # escalation is never silently parked in the inbox.
+        try:
+            managers = (
+                CustomUser.objects.filter(
+                    restaurant=restaurant,
+                    role__in=["MANAGER", "ADMIN", "OWNER", "SUPER_ADMIN"],
+                    is_active=True,
+                )
+                .exclude(id=staff.id)
+                .exclude(phone__isnull=True)
+                .exclude(phone="")
+                .order_by("role", "first_name")[:3]
+            )
+            notified = False
+            for m in managers:
+                try:
+                    wa_ok, _ = notification_service.send_whatsapp_text(m.phone, manager_ping)
+                    notified = notified or bool(wa_ok)
+                except Exception as exc:
+                    logger.warning("StaffRequest manager WhatsApp ping failed: %s", exc)
+            if notified:
+                req.whatsapp_notified_at = timezone.now()
+                req.save(update_fields=["whatsapp_notified_at", "updated_at"])
+        except Exception as exc:
+            logger.warning("StaffRequest manager fallback ping failed: %s", exc)
 
     _notify_managers_of_staff_request(req)
     ensure_dashboard_widgets_for_managers(restaurant, category=category)
 
     ref = _short_ref(req.id)
-    lane = widget_lane_label(primary_widget_for_category(category))
     logger.info(
         "whatsapp_escalation_ingest: restaurant=%s request=%s category=%s ref=%s lane=%s",
         restaurant.id,
