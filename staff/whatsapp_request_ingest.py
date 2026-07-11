@@ -17,7 +17,7 @@ from dashboard.category_routing import (
 )
 from notifications.services import notification_service
 
-from .intent_router import classify_request
+from .intent_router import classify_request, staff_request_category
 from .models import StaffRequest, StaffRequestComment
 from .request_routing import resolve_default_assignee_for_category
 from .views_agent import (
@@ -71,7 +71,8 @@ def ingest_staff_escalation_from_whatsapp(
     if decision.is_incident():
         category = _normalize_category(agent_category)
     else:
-        category = decision.category
+        # MEETING (task/calendar) → OPERATIONS for StaffRequest lanes
+        category = _normalize_category(staff_request_category(decision.category))
 
     priority = "MEDIUM"
     if category == "MAINTENANCE":

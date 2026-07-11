@@ -359,6 +359,17 @@ class MeetingBucketTests(SimpleTestCase):
         d = classify_request(description="Remind me to call Zoe Karl tomorrow morning.")
         self.assertEqual(d.category, "MEETING")
 
+    def test_staff_meeting_with_boss_not_team_travel(self):
+        """Miya often labels this SCHEDULING → Team Travel; override to MEETING."""
+        from staff.intent_router import staff_request_category
+
+        d = classify_request(
+            description="I would like to have a meeting with the boss.",
+            agent_category="SCHEDULING",
+        )
+        self.assertEqual(d.category, "MEETING")
+        self.assertEqual(staff_request_category(d.category), "OPERATIONS")
+
 
 class AgentOverrideTests(SimpleTestCase):
     """Router should correct common LLM mislabels."""
