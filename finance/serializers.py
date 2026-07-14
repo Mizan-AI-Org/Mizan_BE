@@ -41,6 +41,9 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "paid_amount",
             "payment_method",
             "payment_reference",
+            "purchase_order",
+            "match_status",
+            "match_confidence",
             "created_by",
             "created_by_name",
             "paid_by",
@@ -60,6 +63,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "paid_by_name",
             "attachment_url",
             "has_attachment",
+            "match_status",
+            "match_confidence",
             "created_at",
             "updated_at",
         ]

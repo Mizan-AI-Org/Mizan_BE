@@ -936,6 +936,28 @@ export default class ApiService {
      * Proactive insights: no-shows, understaffed shifts, late patterns, staffing suggestions.
      * Miya uses this to surface alerts and recommendations without being asked.
      */
+
+    async searchPlatformKnowledge(query: string, opts?: { limit?: number; audience?: string }): Promise<any> {
+        const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
+        if (!agentKey) {
+            return { success: false, error: "No agent key configured", results: [] };
+        }
+        try {
+            const response = await this.axiosInstance.get("/api/agent/platform-knowledge/", {
+                headers: { Authorization: `Bearer ${agentKey}` },
+                params: {
+                    q: query,
+                    limit: opts?.limit ?? 5,
+                    audience: opts?.audience,
+                },
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] searchPlatformKnowledge failed:", error.message);
+            return { success: false, error: error?.response?.data?.error || error.message, results: [] };
+        }
+    }
+
     async getProactiveInsightsForAgent(
         restaurantId: string,
         date?: string,
@@ -997,6 +1019,26 @@ export default class ApiService {
             return { items: [], count: 0, restaurant_id: restaurantId };
         }
     }
+
+
+    async getFoodCostForAgent(restaurantId: string, limit: number = 25, sort: string = "food_cost_pct"): Promise<any> {
+        const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
+        if (!agentKey) {
+            console.error("[ApiService] No agent key configured");
+            return { success: false, error: "No agent key configured", items: [] };
+        }
+        try {
+            const response = await this.axiosInstance.get("/api/menu/agent/food-cost/", {
+                headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId),
+                params: { restaurant_id: restaurantId, limit, sort },
+            });
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] Failed to fetch food cost:", error.message);
+            return { success: false, error: error?.response?.data?.error || error.message, items: [] };
+        }
+    }
+
 
     /** Parse schedule from photo (base64). Returns { template_name, shifts } or error. */
     async parseSchedulePhotoForAgent(base64Image: string, contentType?: string, restaurantId?: string): Promise<{ template_name?: string; shifts: any[]; error?: string }> {

@@ -79,39 +79,22 @@ export const managerCopilotPreprocessor = new PreProcessor({
             cachedAudience: u.data?.mizanAudience,
         });
 
-        const gateTool =
-            kind === "sales_today"
-                ? "sales_report"
-                : kind === "recommend_purchases"
-                  ? "supplier_order"
-                  : "list_inventory";
-
-        // Low stock list is readable by staff companions; sales + supplier reorder are manager-only.
-        if (kind !== "low_stock") {
-            const gate = assertManagerToolAccess({
-                toolName: gateTool === "list_inventory" ? "sales_report" : gateTool,
+        // Low stock is readable by staff; sales / purchases / food-cost are manager-only.
+        if (kind === "sales_today" || kind === "recommend_purchases" || kind === "food_cost") {
+            const g = assertManagerToolAccess({
+                toolName:
+                    kind === "sales_today"
+                        ? "sales_report"
+                        : kind === "food_cost"
+                          ? "food_cost"
+                          : "supplier_order",
                 role,
                 channel,
                 cachedAudience: audience,
             });
-            // Force manager check for sales / recommend
-            if (kind === "sales_today" || kind === "recommend_purchases") {
-                const g = assertManagerToolAccess({
-                    toolName: kind === "sales_today" ? "sales_report" : "supplier_order",
-                    role,
-                    channel,
-                    cachedAudience: audience,
-                });
-                if (!g.ok) {
-                    return { action: "block" as const, response: g.message };
-                }
-            } else if (!gate.ok) {
-                return { action: "block" as const, response: gate.message };
+            if (!g.ok) {
+                return { action: "block" as const, response: g.message };
             }
-        } else if (audience === "staff") {
-            // Staff may see low stock for floor awareness
-        } else if (audience === "unknown" && !/luapop|dashboard|web/i.test(channel)) {
-            // WhatsApp unknown → allow low stock read
         }
 
         const tenant = await resolveTenantForUser(user);
@@ -125,6 +108,49 @@ export const managerCopilotPreprocessor = new PreProcessor({
         }
 
         try {
+            if (kind === "food_cost") {
+                const report = await api.getFoodCostForAgent(rid, 12);
+                if (!report?.success && report?.error) {
+                    return {
+                        action: "block" as const,
+                        response:
+                            "I couldn't load recipe food-cost just now. Please try again — I won't invent margins.",
+                    };
+                }
+                const items = report?.items || [];
+                if (!items.length) {
+                    return {
+                        action: "block" as const,
+                        response:
+                            report?.message_for_user ||
+                            "No recipes with costed ingredients yet. Add recipes + ingredient costs, then ask again.",
+                        metadata: { manager_copilot: "food_cost", count: 0 },
+                    };
+                }
+                const lines = items.slice(0, 10).map(
+                    (i: {
+                        name?: string;
+                        food_cost_pct?: number;
+                        portion_cost?: number;
+                        price?: number;
+                        margin?: number;
+                    }) =>
+                        `• *${i.name}* — food cost ${i.food_cost_pct ?? "?"}%` +
+                        ` (portion ${i.portion_cost ?? "?"}, sell ${i.price ?? "?"}, margin ${i.margin ?? "?"})`,
+                );
+                const avg =
+                    report?.avg_food_cost_pct != null
+                        ? `\nAverage food cost: *${report.avg_food_cost_pct}%* across ${report.total_with_recipes} recipes.`
+                        : "";
+                return {
+                    action: "block" as const,
+                    response:
+                        `*Food cost / margin* (highest food-cost % first):\n${lines.join("\n")}${avg}` +
+                        `\n\nWant me to recommend purchases for low stock next?`,
+                    metadata: { manager_copilot: "food_cost", count: items.length },
+                };
+            }
+
             if (kind === "sales_today") {
                 const date = todayIso();
                 const summary = await api.getPosSalesSummary(rid, date);

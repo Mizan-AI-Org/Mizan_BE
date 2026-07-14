@@ -143,6 +143,90 @@ export class MarkInvoicePaidTool implements LuaTool {
 }
 
 
+export class MatchInvoicePoTool implements LuaTool {
+    name = "match_invoice_po";
+    description =
+        "Suggest purchase orders that may match an accounts-payable invoice (vendor name + amount). " +
+        "Use when the manager says 'match this invoice to a PO', 'which PO is this bill for?', or after recording a supplier invoice.";
+
+    inputSchema = z.object({
+        invoice_id: z.string().optional().describe("Invoice UUID when known."),
+        vendor: z.string().optional().describe("Vendor name if id unknown."),
+        invoice_number: z.string().optional().describe("Invoice number on the bill."),
+        restaurantId: z.string().optional().describe("ALWAYS pass the Restaurant ID from [SYSTEM: PERSISTENT CONTEXT]."),
+    });
+
+    constructor(private apiService: ApiService = _financeApi) {}
+
+    async execute(input: z.infer<typeof this.inputSchema>) {
+        const user = await User.get();
+        if (!user) return { status: "error", message: "No context." };
+        const ctx = await resolveAgentContext(input.restaurantId);
+        const rid = ctx.restaurantId;
+        if (!rid) return noContextError();
+        if (!input.invoice_id && !input.vendor && !input.invoice_number) {
+            return { status: "error", message: "Tell me the invoice id, or vendor + invoice number." };
+        }
+        const data = await this.apiService.matchInvoicePo(rid, {
+            invoice_id: input.invoice_id,
+            vendor: input.vendor,
+            invoice_number: input.invoice_number,
+        });
+        if (data?.success === false) {
+            return { status: "error", message: data?.message_for_user || data?.error || "Couldn't match invoice." };
+        }
+        return {
+            status: "success",
+            message: data?.message_for_user || "PO suggestions ready.",
+            suggestions: data?.suggestions || [],
+            match_status: data?.match_status,
+            invoice: data?.invoice,
+            miya_directive:
+                "Present the top suggestions. Ask the manager to confirm before calling confirm_invoice_po_match.",
+        };
+    }
+}
+
+
+export class ConfirmInvoicePoMatchTool implements LuaTool {
+    name = "confirm_invoice_po_match";
+    description =
+        "Confirm linking an invoice to a purchase order after match_invoice_po. Use when the manager says 'yes link that PO' or 'confirm PO match'.";
+
+    inputSchema = z.object({
+        invoice_id: z.string().optional(),
+        purchase_order_id: z.string().describe("PO UUID to link."),
+        vendor: z.string().optional(),
+        invoice_number: z.string().optional(),
+        restaurantId: z.string().optional().describe("ALWAYS pass the Restaurant ID from [SYSTEM: PERSISTENT CONTEXT]."),
+    });
+
+    constructor(private apiService: ApiService = _financeApi) {}
+
+    async execute(input: z.infer<typeof this.inputSchema>) {
+        const user = await User.get();
+        if (!user) return { status: "error", message: "No context." };
+        const ctx = await resolveAgentContext(input.restaurantId);
+        const rid = ctx.restaurantId;
+        if (!rid) return noContextError();
+        const data = await this.apiService.confirmInvoicePoMatch(rid, {
+            invoice_id: input.invoice_id,
+            purchase_order_id: input.purchase_order_id,
+            vendor: input.vendor,
+            invoice_number: input.invoice_number,
+        });
+        if (data?.success === false) {
+            return { status: "error", message: data?.message_for_user || data?.error || "Couldn't confirm PO match." };
+        }
+        return {
+            status: "success",
+            message: data?.message_for_user || "Invoice linked to PO.",
+            invoice: data?.invoice,
+        };
+    }
+}
+
+
 export class ListInvoicesTool implements LuaTool {
     name = "list_invoices";
     description =

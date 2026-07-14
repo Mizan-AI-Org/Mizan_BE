@@ -10,14 +10,7 @@ import {
     type LuaUserPhoneSource,
 } from "../utils/resolveStaffPhoneFromLuaUser";
 import { resolveStaffIdFromLuaUser } from "../utils/resolveStaffIdFromLuaUser";
-
-const MY_SHIFTS_RE =
-    /\b(my\s+shifts?|my\s+schedule|when\s+(?:is|are)\s+my\s+shifts?|what(?:'s|\s+is|\s+are)\s+my\s+(?:shift|schedule)|shifts?\s+(?:today|tomorrow)|schedule\s+(?:today|tomorrow)|do\s+i\s+(?:work|have\s+(?:a\s+)?shift)|am\s+i\s+(?:working|scheduled)|horaire|mes\s+shifts?|mon\s+planning|شيفت|دوامي|جدول)\b/i;
-
-function isMyShiftsAsk(text: string): boolean {
-    const t = text.trim();
-    return Boolean(t && t.length >= 5 && MY_SHIFTS_RE.test(t));
-}
+import { isMyShiftsAsk } from "../shared/myShiftsIntent";
 
 function parseRange(text: string): { start_date: string; end_date: string } {
     const today = new Date();
@@ -67,8 +60,8 @@ function formatShiftsReply(
 export const myShiftsPreprocessor = new PreProcessor({
     name: "my-shifts-router",
     description: "Answers staff 'when is my shift' asks via the scheduling API.",
-    // Below ClockIn (200) / StaffRequest (190); above Operations (105).
-    priority: 175,
+    // High — must win over Space inventing "technical hiccup" before tools run.
+    priority: 195,
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
         const lastText = extractLastUserText(messages);

@@ -596,3 +596,144 @@ def agent_update_invoice_bank_payment_status(request):
             ),
         }
     )
+
+
+def _find_invoice(restaurant, data: dict) -> Invoice | None:
+    invoice_id = _get_first(data, "invoice_id", "invoiceId", "id")
+    if invoice_id:
+        inv = Invoice.objects.filter(restaurant=restaurant, id=invoice_id).first()
+        if inv:
+            return inv
+    vendor = str(_get_first(data, "vendor", "vendor_name") or "").strip()
+    invoice_number = str(_get_first(data, "invoice_number", "invoiceNumber") or "").strip()
+    qs = Invoice.objects.filter(restaurant=restaurant).exclude(status=Invoice.STATUS_VOIDED)
+    if vendor:
+        qs = qs.filter(vendor_name__icontains=vendor)
+    if invoice_number:
+        qs = qs.filter(invoice_number__iexact=invoice_number)
+    if vendor or invoice_number:
+        return qs.order_by("-due_date").first()
+    return None
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_match_invoice_po(request):
+    """
+    POST /api/finance/agent/invoices/match-po/
+
+    Suggest purchase orders that may match an invoice (vendor + amount).
+    Body: invoice_id OR vendor + invoice_number
+    """
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+    from .po_match import suggest_and_record_status
+
+    restaurant, _, err = _resolve_restaurant_for_agent(request)
+    if err:
+        return Response({"success": False, "error": err["error"]}, status=err["status"])
+
+    data = request.data if isinstance(getattr(request, "data", None), dict) else {}
+    invoice = _find_invoice(restaurant, data)
+    if invoice is None:
+        return Response(
+            {
+                "success": False,
+                "message_for_user": "I couldn't find that invoice to match against POs.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    result = suggest_and_record_status(invoice)
+    suggestions = result.get("suggestions") or []
+    if invoice.purchase_order_id:
+        msg = (
+            f"Invoice from {invoice.vendor_name} is already linked to PO "
+            f"{str(invoice.purchase_order_id)[:8]}."
+        )
+    elif not suggestions:
+        msg = (
+            f"No close PO matches for {invoice.vendor_name} "
+            f"({invoice.amount} {invoice.currency}). "
+            "Create or receive the purchase order first, then try again."
+        )
+    else:
+        top = suggestions[0]
+        msg = (
+            f"Best match for {invoice.vendor_name}: PO {top['purchase_order_id'][:8]}… "
+            f"({top['supplier_name']}, {top['total_amount']}, score {top['score']}). "
+            "Say confirm to link it, or pick another suggestion."
+        )
+
+    return Response(
+        {
+            "success": True,
+            "invoice": InvoiceSerializer(invoice).data,
+            "message_for_user": msg,
+            **result,
+        }
+    )
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_confirm_invoice_po_match(request):
+    """
+    POST /api/finance/agent/invoices/confirm-po-match/
+
+    Body: invoice_id, purchase_order_id
+    """
+    from inventory.models import PurchaseOrder
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+    from .po_match import apply_po_match
+
+    restaurant, _, err = _resolve_restaurant_for_agent(request)
+    if err:
+        return Response({"success": False, "error": err["error"]}, status=err["status"])
+
+    data = request.data if isinstance(getattr(request, "data", None), dict) else {}
+    invoice = _find_invoice(restaurant, data)
+    po_id = _get_first(data, "purchase_order_id", "purchaseOrderId", "po_id", "poId")
+    if invoice is None or not po_id:
+        return Response(
+            {
+                "success": False,
+                "message_for_user": "I need the invoice and the purchase_order_id to confirm.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    po = PurchaseOrder.objects.filter(restaurant=restaurant, id=po_id).first()
+    if po is None:
+        return Response(
+            {
+                "success": False,
+                "message_for_user": "I couldn't find that purchase order.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    try:
+        conf = _coerce_decimal(_get_first(data, "confidence", "match_confidence"))
+        apply_po_match(
+            invoice,
+            po,
+            confidence=float(conf) if conf is not None else 1.0,
+        )
+    except ValueError as e:
+        return Response(
+            {"success": False, "message_for_user": str(e)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    return Response(
+        {
+            "success": True,
+            "invoice": InvoiceSerializer(invoice).data,
+            "message_for_user": (
+                f"✓ Linked {invoice.vendor_name} invoice to PO "
+                f"{str(po.id)[:8]}… ({po.supplier.name if po.supplier_id else 'supplier'})."
+            ),
+        }
+    )

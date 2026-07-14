@@ -152,6 +152,37 @@ class Invoice(models.Model):
     )
     bank_payment_note = models.CharField(max_length=255, blank=True, default="")
 
+    # Light PO ↔ invoice reconciliation (manager copilot / finance agent)
+    MATCH_UNMATCHED = "UNMATCHED"
+    MATCH_SUGGESTED = "SUGGESTED"
+    MATCH_CONFIRMED = "CONFIRMED"
+    MATCH_STATUS_CHOICES = (
+        (MATCH_UNMATCHED, "Unmatched"),
+        (MATCH_SUGGESTED, "Suggested"),
+        (MATCH_CONFIRMED, "Confirmed"),
+    )
+    purchase_order = models.ForeignKey(
+        "inventory.PurchaseOrder",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invoices",
+        help_text="Linked purchase order when AP invoice is reconciled to a PO.",
+    )
+    match_status = models.CharField(
+        max_length=12,
+        choices=MATCH_STATUS_CHOICES,
+        default=MATCH_UNMATCHED,
+        db_index=True,
+    )
+    match_confidence = models.DecimalField(
+        max_digits=4,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        help_text="0–1 score from the matcher when status is SUGGESTED/CONFIRMED.",
+    )
+
     created_by = models.ForeignKey(
         CustomUser,
         on_delete=models.SET_NULL,

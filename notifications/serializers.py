@@ -149,7 +149,9 @@ class NotificationPreferenceSerializer(serializers.ModelSerializer):
             'id', 'user', 'email_enabled', 'push_enabled', 'whatsapp_enabled',
             'shift_notifications', 'task_notifications', 'availability_notifications',
             'compliance_notifications', 'emergency_notifications', 'announcement_notifications',
-            'quiet_hours_start', 'quiet_hours_end', 'created_at', 'updated_at'
+            'quiet_hours_start', 'quiet_hours_end',
+            'digest_enabled', 'digest_time', 'whatsapp_number',
+            'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'user', 'created_at', 'updated_at']
 

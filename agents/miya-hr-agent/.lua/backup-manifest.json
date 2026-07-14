@@ -1,6 +1,6 @@
 {
-  "lastHash": "79aaf6b1cd62e4f89f9be72a01b8d81179c9b39e7a7f36e983b252b69c634225",
-  "lastPushedAt": "2026-07-14T17:08:42.409Z",
+  "lastHash": "c346851d1f23f2c266c9d9308df8ec147f4defd61b351498b82b813c4bccde67",
+  "lastPushedAt": "2026-07-14T17:57:47.555Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "20f6f42fadec56f7"
+      "hash": "74ce075b9dc60d56"
     },
     {
       "relativePath": "package.json",
@@ -56,7 +56,7 @@
     },
     {
       "relativePath": "src/preprocessors/ManagerCopilotPreprocessor.ts",
-      "hash": "fae8da3e95956b6c"
+      "hash": "1a160b200b11dcf1"
     },
     {
       "relativePath": "src/preprocessors/MyShiftsPreprocessor.ts",
@@ -80,7 +80,7 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "21fa17ec798f66d6"
+      "hash": "48d6e01e196ec767"
     },
     {
       "relativePath": "src/shared/checklistIntent.ts",
@@ -100,7 +100,7 @@
     },
     {
       "relativePath": "src/shared/managerCopilotIntent.ts",
-      "hash": "67036cd2979f80cb"
+      "hash": "0b0abf57ef239c3a"
     },
     {
       "relativePath": "src/shared/myShiftsIntent.ts",
@@ -108,7 +108,7 @@
     },
     {
       "relativePath": "src/shared/roleGate.ts",
-      "hash": "ca1021ac83d963d9"
+      "hash": "d74aa1b5b769c88f"
     },
     {
       "relativePath": "src/shared/staffCompanionIntent.ts",

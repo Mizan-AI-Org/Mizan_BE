@@ -1,5 +1,11 @@
 import { LuaSkill } from "lua-cli";
-import { ListInvoicesTool, RecordInvoiceTool, MarkInvoicePaidTool } from "./tools/InvoiceTools";
+import {
+  ListInvoicesTool,
+  RecordInvoiceTool,
+  MarkInvoicePaidTool,
+  MatchInvoicePoTool,
+  ConfirmInvoicePoMatchTool,
+} from "./tools/InvoiceTools";
 import SalesReportTool from "./tools/SalesReportTool";
 import SquarePosTool from "./tools/SquarePosTool";
 import CashReconciliationTool from "./tools/CashReconciliationTool";
@@ -21,6 +27,8 @@ export const financeSkill = new LuaSkill({
     new ListInvoicesTool(),
     new RecordInvoiceTool(),
     new MarkInvoicePaidTool(),
+    new MatchInvoicePoTool(),
+    new ConfirmInvoicePoMatchTool(),
     new SalesReportTool(),
     new SquarePosTool(),
     new CashReconciliationTool(),

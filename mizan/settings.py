@@ -574,6 +574,15 @@ CELERY_BEAT_SCHEDULE = {
         "task": "scheduling.memory_tasks.serendipity_sweep",
         "schedule": crontab(minute=0, hour=18, day_of_week=0),  # Sunday 18:00
     },
+    # Manager ops digests (WhatsApp) — staffing + open requests + invoices
+    "manager_ops_digest_daily": {
+        "task": "scheduling.tasks_digest.manager_ops_digest_sweep",
+        "schedule": crontab(minute=0, hour=21),  # 21:00 local
+    },
+    "manager_ops_digest_weekly": {
+        "task": "scheduling.tasks_digest.manager_ops_digest_weekly",
+        "schedule": crontab(minute=0, hour=18, day_of_week=0),  # Sunday 18:00
+    },
 }
 
 # Shrink Celery's chatty defaults — each idle worker still logs heartbeats and
