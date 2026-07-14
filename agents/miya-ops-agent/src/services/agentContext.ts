@@ -45,7 +45,11 @@ export interface AgentContext {
     token: string | undefined;
     agentKey: string | undefined;
     userId: string | undefined;
+    email: string | undefined;
     phone: string | undefined;
+    /** Dashboard JWT from LuaPop (distinct from stable agent key used as `token`). */
+    userToken: string | undefined;
+    sessionId: string | undefined;
 }
 
 /**
@@ -153,6 +157,27 @@ export async function resolveAgentContext(inputRestaurantId?: string): Promise<A
     // --- User ID (Mizan CustomUser UUID, not Lua's internal id) ---
     const userId = resolveMizanUserIdFromUser(user);
 
+    // --- Email (dashboard LuaPop passes emailAddress) ---
+    const email =
+        (typeof userData.email === "string" && userData.email.trim()) ||
+        (typeof userData.emailAddress === "string" && userData.emailAddress.trim()) ||
+        (typeof profile.email === "string" && profile.email.trim()) ||
+        (typeof profile.emailAddress === "string" && profile.emailAddress.trim()) ||
+        (typeof (metadata as any).email === "string" && (metadata as any).email.trim()) ||
+        (typeof (metadata as any).emailAddress === "string" && (metadata as any).emailAddress.trim()) ||
+        undefined;
+
+    // --- Session id (tenant-<restaurant>-user-<user>) for backend user resolution ---
+    const sessionIdRaw =
+        (metadata as any).sessionId ||
+        profile.sessionId ||
+        userData.sessionId ||
+        (user as any)?.sessionId;
+    const sessionId =
+        typeof sessionIdRaw === "string" && sessionIdRaw.trim().length > 0
+            ? sessionIdRaw.trim()
+            : undefined;
+
     // --- Phone (critical for WhatsApp users) ---
     const uid = (user as any)?.uid;
     const phoneFromUid = uid && String(uid).includes(":") ? String(uid).split(":")[1] : uid;
@@ -216,5 +241,5 @@ export async function resolveAgentContext(inputRestaurantId?: string): Promise<A
         }
     }
 
-    return { restaurantId, token, agentKey, userId, phone };
+    return { restaurantId, token, agentKey, userId, email, phone, userToken, sessionId };
 }

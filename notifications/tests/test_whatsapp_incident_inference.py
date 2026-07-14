@@ -7,6 +7,7 @@ from notifications.utils import (
     infer_incident_type,
     infer_severity,
     looks_like_whatsapp_incident_report,
+    mentions_glass_hazard,
 )
 
 
@@ -23,3 +24,11 @@ class WhatsAppIncidentInferenceTests(SimpleTestCase):
 
     def test_slip_is_safety(self):
         self.assertEqual(infer_incident_type("Customer slipped near the bar"), "Safety")
+
+    def test_broke_glass_at_bar_is_safety(self):
+        msg = "Broke glass at the bar area"
+        self.assertTrue(mentions_glass_hazard(msg))
+        self.assertEqual(infer_incident_type(msg), "Safety")
+        self.assertEqual(infer_severity(msg), "HIGH")
+        self.assertTrue(looks_like_whatsapp_incident_report(msg))
+        self.assertEqual(extract_incident_location(msg), "Bar")

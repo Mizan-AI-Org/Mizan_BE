@@ -111,6 +111,23 @@ t2 = latest_ticket()
 assert t2 and t2.id not in before2, "Scenario 2: no ticket created!"
 summarize(t2)
 assert t2.incident_type == "Safety"
+sess2 = WhatsAppSession.objects.get(phone=PHONE)
+assert sess2.state == "awaiting_incident_photo", f"expected photo prompt state, got {sess2.state}"
+assert any("photo" in m[1].lower() for m in sent_messages[-2:]), "expected photo ask message"
+
+print("\n=== Scenario 2b: 'Broke glass at the bar area' (typo-tolerant) ===")
+reset_session()
+sent_messages.clear()
+before2b = set(SafetyConcernReport.objects.values_list("id", flat=True))
+post_webhook({
+    "from": PHONE, "id": f"wamid.{uuid.uuid4().hex}", "type": "text",
+    "text": {"body": "Broke glass at the bar area"},
+})
+t2b = latest_ticket()
+assert t2b and t2b.id not in before2b, "Scenario 2b: no ticket created!"
+summarize(t2b)
+assert t2b.incident_type == "Safety"
+assert t2b.location == "Bar"
 
 print("\n=== Scenario 3: photo WITHOUT caption, then text description ===")
 reset_session()
@@ -139,7 +156,7 @@ notification_service.download_media_bytes = orig_download
 notification_service.send_lua_incident = orig_lua
 
 print("\nCleanup: deleting test tickets + notifications...")
-for t in (t1, t2, t3):
+for t in (t1, t2, t2b, t3):
     Notification.objects.filter(data__incident_id=str(t.id)).delete()
     if t.photo:
         t.photo.delete(save=False)

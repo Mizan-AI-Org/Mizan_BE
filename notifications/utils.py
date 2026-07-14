@@ -2,13 +2,31 @@
 Multilingual incident inference helpers for voice/text reporting.
 Supports English, Arabic, and French keywords.
 """
+import re
 from datetime import timedelta
 from django.utils import timezone as tz
+
+# Catches "broke glass", "glass broke at the bar", shards, etc. — not bare "broken" equipment.
+_GLASS_HAZARD_RE = re.compile(
+    r"\b(?:(?:broke|broken|shatter(?:ed)?|smash(?:ed)?)\s+glass|"
+    r"glass\s+(?:broke|broken|shatter(?:ed)?|on\s+(?:the\s+)?(?:floor|ground)|"
+    r"(?:at|in|by|near)\s+the)|"
+    r"glass\s+shard|shards?\s+of\s+glass|"
+    r"verre\s+(?:cassé|brisé)|bris\s+de\s+verre)\b",
+    re.I,
+)
+
+
+def mentions_glass_hazard(text: str) -> bool:
+    """True when text describes broken/shattered glass (safety hazard)."""
+    return bool(_GLASS_HAZARD_RE.search(text or ""))
+
 
 SAFETY_KEYWORDS = [
     # Broken glass / shards are SAFETY hazards (not routine maintenance), even though
     # "broken" alone often means equipment repair.
-    'broken glass', 'glass shard', 'glass shards', 'shattered glass', 'shatter glass',
+    'broke glass', 'broken glass', 'glass broke', 'glass broken', 'glass on the floor',
+    'glass shard', 'glass shards', 'shattered glass', 'shatter glass', 'smashed glass',
     'wet floor', 'slip', 'slipped', 'fell', 'fall', 'injury', 'hurt', 'bleed', 'bleeding',
     'burn', 'fire', 'smoke', 'unsafe', 'hazard', 'accident', 'gas leak',
     'إصابة', 'انزلاق', 'سقوط', 'حرق', 'حادث', 'خطر', 'نار', 'زجاج مكسور',  # Arabic
@@ -36,7 +54,7 @@ CRITICAL_KEYWORDS = [
     'critique', 'menaçant', 'feu', 'fuite de gaz',  # French
 ]
 HIGH_KEYWORDS = [
-    'injury', 'bleeding', 'severe', 'danger', 'urgent', 'broken glass', 'shard', 'wet floor',
+    'injury', 'bleeding', 'severe', 'danger', 'urgent', 'broke glass', 'broken glass', 'shard', 'wet floor',
     'إصابة', 'نزيف', 'خطير', 'خطر', 'عاجل',  # Arabic
     'blessure', 'saignement', 'sévère', 'danger', 'urgent',  # French
 ]
@@ -153,8 +171,8 @@ def infer_incident_type(text):
     t_norm = (text or '').lower()
     if t_low in ['safety', 'maintenance', 'hr', 'service', 'other', 'general']:
         return t_low.title() if t_low != 'hr' else 'HR'
-    # Safety before maintenance so "broken glass" is never Maintenance.
-    if any(k in t_norm for k in SAFETY_KEYWORDS):
+    # Safety before maintenance so "broken/broke glass" is never Maintenance.
+    if mentions_glass_hazard(t_norm) or any(k in t_norm for k in SAFETY_KEYWORDS):
         return 'Safety'
     if any(k in t_norm for k in MAINTENANCE_KEYWORDS):
         return 'Maintenance'
@@ -201,11 +219,11 @@ def looks_like_whatsapp_incident_report(text: str) -> bool:
         return False
     if looks_like_guest_order_intent(t):
         return False
-    if infer_incident_type(t):
+    if mentions_glass_hazard(t) or infer_incident_type(t):
         return True
     if re.search(
-        r"\b(report(\s+an?)?\s+incident|safety\s+(issue|concern|report)|broken\s+glass|"
-        r"verre\s+cass|بلاغ|signalement)\b",
+        r"\b(report(\s+an?)?\s+incident|safety\s+(issue|concern|report)|"
+        r"(?:broke|broken)\s+glass|verre\s+cass|بلاغ|signalement)\b",
         t,
         re.I,
     ):

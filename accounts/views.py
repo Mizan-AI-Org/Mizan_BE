@@ -33,7 +33,7 @@ from notifications.services import notification_service
 from .models import InvitationDeliveryLog
 from .services import sync_user_to_lua_agent, UserManagementService, _find_active_user_by_phone, apply_invitation_locations
 from .permissions import IsAdminOrManager
-from core.permissions import IsOwnerOrSuperAdmin
+from core.permissions import IsOwnerOrSuperAdmin, IsRestaurantOwnerOrManager
 
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
@@ -1232,7 +1232,7 @@ class StaffListAPIView(generics.ListAPIView):
     bypass the page-size cap with ``?page_size=500`` (matches
     ``MAX_PAGE_SIZE`` in settings).
     """
-    permission_classes = [permissions.IsAuthenticated, IsManagerOrAdmin]
+    permission_classes = [permissions.IsAuthenticated, IsRestaurantOwnerOrManager]
     serializer_class = StaffSerializer
 
     def get_queryset(self):
@@ -1257,12 +1257,20 @@ class StaffListAPIView(generics.ListAPIView):
                 | Q(restaurant_links__restaurant_id=rid, restaurant_links__is_active=True),
                 is_active=True,
             )
-            .exclude(role='SUPER_ADMIN')
             .select_related('profile', 'primary_location')
             .prefetch_related('allowed_locations', 'managed_locations')
             .order_by('first_name', 'last_name')
             .distinct()
         )
+
+        # Operational pickers hide platform super-admins by default. The
+        # Staff Messages widget passes ``for_messaging=1`` so managers can
+        # reach every active account on the tenant roster.
+        for_messaging = (
+            self.request.query_params.get('for_messaging') or ''
+        ).strip().lower() in ('1', 'true', 'yes')
+        if not for_messaging:
+            qs = qs.exclude(role='SUPER_ADMIN')
 
         # ``?all_branches=1`` is an explicit opt-out for the escalate /
         # reassign modal. Branch scope is the right default for the

@@ -10,14 +10,7 @@ import {
     type LuaUserPhoneSource,
 } from "../utils/resolveStaffPhoneFromLuaUser";
 import { resolveStaffIdFromLuaUser } from "../utils/resolveStaffIdFromLuaUser";
-
-const MY_SHIFTS_RE =
-    /\b(my\s+shifts?|my\s+schedule|when\s+(?:is|are)\s+my\s+shifts?|what(?:'s|\s+is|\s+are)\s+my\s+(?:shift|schedule)|shifts?\s+(?:today|tomorrow)|schedule\s+(?:today|tomorrow)|do\s+i\s+(?:work|have\s+(?:a\s+)?shift)|am\s+i\s+(?:working|scheduled)|horaire|mes\s+shifts?|mon\s+planning|شيفت|دوامي|جدول)\b/i;
-
-function isMyShiftsAsk(text: string): boolean {
-    const t = text.trim();
-    return Boolean(t && t.length >= 5 && MY_SHIFTS_RE.test(t));
-}
+import { isMyShiftsAsk } from "../shared/myShiftsIntent";
 
 function parseRange(text: string): { start_date: string; end_date: string } {
     const today = new Date();

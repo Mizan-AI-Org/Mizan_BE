@@ -7,6 +7,7 @@ import clockInPreprocessor from "./preprocessors/ClockInPreprocessor";
 import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
 import myShiftsPreprocessor from "./preprocessors/MyShiftsPreprocessor";
 import incidentCommandPreprocessor from "./preprocessors/IncidentCommandPreprocessor";
+import checklistFlowPreprocessor from "./preprocessors/ChecklistFlowPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 import invoicePhotoPreprocessor from "./preprocessors/InvoicePhotoPreprocessor";
 import responseFormatter from "./postprocessors/ResponseFormatterPostProcessor";
@@ -67,6 +68,7 @@ ERRORS: Never show raw technical errors. Translate per miya_directive.`,
   preProcessors: [
     languageMirrorPreprocessor,accountActivationPreprocessor, clockInPreprocessor,
     myShiftsPreprocessor,
+    checklistFlowPreprocessor,
     staffRequestPreprocessor,
     incidentCommandPreprocessor, invoicePhotoPreprocessor, operationsCommandPreprocessor],
   postProcessors: [responseFormatter],

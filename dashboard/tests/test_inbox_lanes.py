@@ -23,9 +23,9 @@ class InboxLanesForWidgetOrderTests(SimpleTestCase):
         lanes = inbox_lanes_for_widget_order(order)
         self.assertEqual([lane["lane_id"] for lane in lanes], ["finance", "team_travel", "human_resources"])
 
-    def test_finance_lane_aggregates_payroll_and_finance(self):
+    def test_finance_lane_aggregates_finance_only(self):
         lane = WIDGET_INBOX_LANES["finance"]
-        self.assertEqual(set(lane.categories), {"FINANCE", "PAYROLL"})
+        self.assertEqual(set(lane.categories), {"FINANCE"})
 
 
 class ResolveLaneIdTests(SimpleTestCase):
@@ -49,8 +49,15 @@ class ResolveLaneIdTests(SimpleTestCase):
             "team_medical_service",
         )
 
-    def test_resolve_multi_category_bucket(self):
+    def test_resolve_finance_lane_by_category(self):
         self.assertEqual(
-            resolve_lane_id(categories=["FINANCE", "PAYROLL"], enabled_lanes=self.lanes),
+            resolve_lane_id(categories=["FINANCE"], enabled_lanes=self.lanes),
             "finance",
+        )
+
+    def test_payroll_resolves_to_human_resources_not_finance(self):
+        lanes = inbox_lanes_for_widget_order(["finance", "human_resources"])
+        self.assertEqual(
+            resolve_lane_id(categories=["PAYROLL"], enabled_lanes=lanes),
+            "human_resources",
         )

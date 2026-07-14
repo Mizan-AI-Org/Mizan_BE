@@ -30,7 +30,7 @@ _CATEGORY_TO_SLUGS: dict[str, tuple[str, ...]] = {
     "DOCUMENT": ("request.document",),
     "HR": ("request.hr", "incident.hr"),
     "SCHEDULING": ("request.scheduling",),
-    "PAYROLL": ("request.payroll", "task.finance"),
+    "PAYROLL": ("request.payroll", "request.hr"),
     "OPERATIONS": ("task.foh", "task.boh", "task.bar"),
     "MAINTENANCE": ("request.maintenance", "incident.equipment"),
     "RESERVATIONS": ("request.reservations",),

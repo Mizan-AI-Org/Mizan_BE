@@ -1,6 +1,6 @@
 {
-  "lastHash": "e5a8965c104ca63b9e736347f3c4776c20e7411b37761f9b4c91acf790239771",
-  "lastPushedAt": "2026-07-11T19:41:29.131Z",
+  "lastHash": "b19eac83ac4e411717cbdcc633d576e347bb95eb9a1d772c8bb429c82852ff2b",
+  "lastPushedAt": "2026-07-14T13:15:38.247Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "c34178ec933882ed"
+      "hash": "3d49d853981d5ab6"
     },
     {
       "relativePath": "package.json",
@@ -24,15 +24,19 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "4511a43e96251b4f"
+      "hash": "1ac588b2d17bf498"
     },
     {
       "relativePath": "src/postprocessors/ResponseFormatterPostProcessor.ts",
-      "hash": "8a0b6970d10170e8"
+      "hash": "0ef7e7a73a314727"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
       "hash": "6735ab8c8e15ec79"
+    },
+    {
+      "relativePath": "src/preprocessors/ChecklistFlowPreprocessor.ts",
+      "hash": "c7b721fb277f46bc"
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
@@ -44,7 +48,7 @@
     },
     {
       "relativePath": "src/preprocessors/IncidentCommandPreprocessor.ts",
-      "hash": "845cb7fbc3206f6b"
+      "hash": "4735bf5d681015d8"
     },
     {
       "relativePath": "src/preprocessors/LanguageMirrorPreprocessor.ts",
@@ -52,7 +56,7 @@
     },
     {
       "relativePath": "src/preprocessors/MyShiftsPreprocessor.ts",
-      "hash": "4aed19a7cc2f16ae"
+      "hash": "d266739644bb1d90"
     },
     {
       "relativePath": "src/preprocessors/operationIntent.ts",
@@ -68,19 +72,31 @@
     },
     {
       "relativePath": "src/services/agentContext.ts",
-      "hash": "b562bc58de80ae93"
+      "hash": "77ac1f58a0e855f1"
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "de789e0aa1b6b87d"
+      "hash": "21fa17ec798f66d6"
+    },
+    {
+      "relativePath": "src/shared/checklistIntent.ts",
+      "hash": "0b0972934d18eaff"
     },
     {
       "relativePath": "src/shared/clockInGuard.ts",
-      "hash": "9a6eecf1be5ad02d"
+      "hash": "9ba64fa7badee8fa"
     },
     {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
       "hash": "c99cece8e60fe616"
+    },
+    {
+      "relativePath": "src/shared/incidentIntent.ts",
+      "hash": "0180b5f4da78e217"
+    },
+    {
+      "relativePath": "src/shared/myShiftsIntent.ts",
+      "hash": "e24dc3f40ab91967"
     },
     {
       "relativePath": "src/skills/hr.skill.ts",
@@ -93,6 +109,14 @@
     {
       "relativePath": "src/skills/tools/AccountActivationTool.ts",
       "hash": "a23623e4ae9994d0"
+    },
+    {
+      "relativePath": "src/skills/tools/ChecklistRespondTool.ts",
+      "hash": "26907748c61274c6"
+    },
+    {
+      "relativePath": "src/skills/tools/ChecklistStarterTool.ts",
+      "hash": "912212728c963866"
     },
     {
       "relativePath": "src/skills/tools/HrLifecycleTool.ts",
@@ -121,6 +145,10 @@
     {
       "relativePath": "src/skills/tools/StaffReportPdfTool.ts",
       "hash": "ad93f3cf9b153957"
+    },
+    {
+      "relativePath": "src/utils/checklistMessages.ts",
+      "hash": "074b18ba2460ea9b"
     },
     {
       "relativePath": "src/utils/detectReplyLanguage.ts",

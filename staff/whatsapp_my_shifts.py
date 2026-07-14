@@ -15,23 +15,51 @@ from django.utils import timezone
 
 MY_SHIFTS_RE = re.compile(
     r"\b("
-    r"my\s+shifts?|my\s+schedule|when\s+(?:is|are)\s+my\s+shifts?|"
-    r"what(?:'s|\s+is|\s+are)\s+my\s+(?:shift|schedule)|"
-    r"shifts?\s+(?:today|tomorrow)|schedule\s+(?:today|tomorrow)|"
+    r"my\s+sh(?:i[fpt]|it)s?|my\s+schedule|"
+    r"when\s+(?:is|are|was)\s+my\s+(?:sh(?:i[fpt]|it)s?|work|schedule)|"
+    r"what(?:'s|\s+is|\s+are)\s+my\s+(?:sh(?:i[fpt]|it)s?|schedule|work)|"
+    r"what\s+time\s+(?:is\s+)?(?:my\s+)?(?:sh(?:i[fpt]|it)s?|work)|"
+    r"when\s+do\s+i\s+work|"
+    r"sh(?:i[fpt]|it)s?\s+(?:today|tomorrow)|schedule\s+(?:today|tomorrow)|"
     r"do\s+i\s+(?:work|have\s+(?:a\s+)?shift)|"
     r"am\s+i\s+(?:working|scheduled)|"
-    r"horaire|mes\s+shifts?|mon\s+planning|"
+    r"horaire|mes\s+sh(?:i[fpt]|it)s?|mon\s+planning|"
     r"شيفت|دوامي|جدول"
     r")\b",
     re.I,
 )
+
+_SHIFT_TYPO_WORDS = frozenset({
+    "shift", "shifts", "shit", "shif", "shiift", "work", "schedule",
+    "duty", "rota", "service", "turn",
+})
+
+
+def _looks_like_shift_typo_query(text: str) -> bool:
+    """Catch 'when is my shit today' and similar autocorrect typos."""
+    m = re.search(
+        r"\bwhen\s+(?:is|are)\s+my\s+(\w+)\s+(?:today|tomorrow|tonight)\b",
+        text,
+        re.I,
+    )
+    if m and m.group(1).lower() in _SHIFT_TYPO_WORDS:
+        return True
+    if re.search(
+        r"\bwhat\s+time\s+(?:am\s+)?i\s+(?:working|on)\s+(?:today|tomorrow)\b",
+        text,
+        re.I,
+    ):
+        return True
+    return False
 
 
 def looks_like_my_shifts_query(text: str) -> bool:
     t = (text or "").strip()
     if not t or len(t) < 5:
         return False
-    return bool(MY_SHIFTS_RE.search(t))
+    if MY_SHIFTS_RE.search(t):
+        return True
+    return _looks_like_shift_typo_query(t)
 
 
 def _parse_shift_range(text: str):

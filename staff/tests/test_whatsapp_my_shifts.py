@@ -14,3 +14,9 @@ class WhatsAppMyShiftsTests(SimpleTestCase):
 
     def test_clock_me_in_not_shifts(self):
         self.assertFalse(looks_like_my_shifts_query("Clock me in"))
+
+    def test_shift_typo_shit_today(self):
+        self.assertTrue(looks_like_my_shifts_query("When is my shit today?"))
+
+    def test_what_time_working_today(self):
+        self.assertTrue(looks_like_my_shifts_query("what time am I working today?"))

@@ -8,6 +8,17 @@ class IsRestaurantOwnerOrManager(permissions.BasePermission):
     """
     Custom permission to check if user is restaurant owner or manager
     """
+    _ALLOWED_ROLES = frozenset({'SUPER_ADMIN', 'ADMIN', 'MANAGER', 'OWNER'})
+
+    def has_permission(self, request, view):
+        user = getattr(request, 'user', None)
+        return bool(
+            user
+            and user.is_authenticated
+            and getattr(user, 'restaurant', None)
+            and user.role in self._ALLOWED_ROLES
+        )
+
     def has_object_permission(self, request, view, obj):
         if not hasattr(request.user, 'restaurant'):
             return False

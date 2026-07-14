@@ -23,8 +23,7 @@ for _widget_id, _cats in BUCKET_TO_CATEGORIES.items():
     for _cat in _cats:
         _CATEGORY_TO_WIDGET.setdefault(_cat, _widget_id)
 
-# PAYROLL appears in both Finance and HR widgets for visibility; staff wage /
-# payslip escalations surface on Human Resources first (manager expectation).
+# Employee wage / payslip escalations belong on Human Resources only.
 _CATEGORY_TO_WIDGET["PAYROLL"] = "human_resources"
 
 _CATEGORY_TO_WIDGET.setdefault("INVENTORY", "inventory_delivery")
@@ -56,13 +55,19 @@ def primary_widget_for_category(category: str | None) -> str:
 def dashboard_widgets_for_category(category: str | None) -> list[str]:
     """Built-in widgets to pin when a request lands in ``category``."""
     primary = primary_widget_for_category(category)
-    widgets: list[str] = ["staff_inbox"]
-    if primary not in widgets:
-        widgets.append(primary)
-    # PAYROLL also appears on the Finance widget — pin it too.
-    if (category or "").upper().strip() == "PAYROLL" and "finance" not in widgets:
-        widgets.append("finance")
+    widgets: list[str] = [primary]
     return [w for w in widgets if w in DASHBOARD_WIDGET_IDS]
+
+
+def categories_with_dedicated_lane() -> frozenset[str]:
+    """StaffRequest categories owned by a named operational dashboard lane."""
+    cats: set[str] = set()
+    for bucket, bucket_cats in BUCKET_TO_CATEGORIES.items():
+        if bucket in ("urgent", "meetings", "operations"):
+            continue
+        cats.update(bucket_cats)
+    cats.update(_CATEGORY_TO_WIDGET.keys())
+    return frozenset(cats)
 
 
 def dashboard_widgets_for_incident() -> list[str]:
@@ -86,9 +91,9 @@ def ensure_dashboard_widgets_for_managers(
     incident: bool = False,
 ) -> dict:
     """
-    Best-effort: add staff_inbox + the relevant lane widget to every
-    manager/admin/owner layout for this tenant so incoming requests
-    surface immediately without a manual "Add widget" step.
+    Best-effort: add the relevant lane widget to every manager/admin/owner
+    layout for this tenant so incoming requests surface immediately without
+    a manual "Add widget" step.
     """
     from accounts.models import CustomUser
     from dashboard.views_widget_layout import _can_customize_dashboard, _clean_order

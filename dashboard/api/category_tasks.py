@@ -51,10 +51,11 @@ BUCKET_TO_CATEGORIES: dict[str, tuple[str, ...]] = {
     "human_resources": ("HR", "DOCUMENT", "PAYROLL"),
     # Leave, travel, and other scheduling asks from staff (WhatsApp /
     # voice). Powers the "Team Travel" dashboard lane — distinct from
-    # the general staff_inbox (all categories) and HR (people/docs).
+    # the general staff_inbox (uncategorized / cross-lane preview) and HR.
     "team_travel": ("SCHEDULING",),
     "team_medical_service": ("MEDICAL",),
-    "finance": ("FINANCE", "PAYROLL"),
+    # Vendor invoices, supplier bills, taxes — not employee wages (PAYROLL).
+    "finance": ("FINANCE",),
     "maintenance": ("MAINTENANCE",),
     "meetings": ("MEETING",),
     # Procurement asks — "we need to buy 6 bottles of vodka", "place a
