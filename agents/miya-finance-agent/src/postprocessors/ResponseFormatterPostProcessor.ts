@@ -103,8 +103,9 @@ const responseFormatter = new PostProcessor({
     }
 
     if (looksLikeFakeShiftFetch(formatted)) {
+      // Don't leave invent copy — ask them to retry so the my-shifts preprocessor runs.
       formatted =
-        'Say "when is my shift today and tomorrow?" again and I\'ll look up your schedule right away.';
+        'Let me pull that up — please send: *When is my shift today and tomorrow?* and I\'ll check your schedule right away.';
     }
 
     if (looksLikeFakeIncidentReport(formatted)) {

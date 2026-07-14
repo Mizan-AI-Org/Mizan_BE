@@ -60,8 +60,8 @@ function formatShiftsReply(
 export const myShiftsPreprocessor = new PreProcessor({
     name: "my-shifts-router",
     description: "Answers staff 'when is my shift' asks via the scheduling API.",
-    // Below ClockIn (200) / StaffRequest (190); above Operations (105).
-    priority: 175,
+    // High — must win over Space inventing "technical hiccup" before tools run.
+    priority: 195,
 
     execute: async (user: UserDataInstance, messages: ChatMessage[], channel: string) => {
         const lastText = extractLastUserText(messages);

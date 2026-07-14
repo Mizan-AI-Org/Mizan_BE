@@ -13,17 +13,20 @@ from typing import Optional
 from django.db.models import Q
 from django.utils import timezone
 
+# shifts? / shit / shif typos — avoid sh(?:i[fpt]|it) which never matches "shift"
+_SHIFT = r"(?:shifts?|shits?|shifs?|shiifts?)"
+
 MY_SHIFTS_RE = re.compile(
     r"\b("
-    r"my\s+sh(?:i[fpt]|it)s?|my\s+schedule|"
-    r"when\s+(?:is|are|was)\s+my\s+(?:sh(?:i[fpt]|it)s?|work|schedule)|"
-    r"what(?:'s|\s+is|\s+are)\s+my\s+(?:sh(?:i[fpt]|it)s?|schedule|work)|"
-    r"what\s+time\s+(?:is\s+)?(?:my\s+)?(?:sh(?:i[fpt]|it)s?|work)|"
+    rf"my\s+{_SHIFT}|my\s+schedule|"
+    rf"when\s+(?:is|are|was)\s+my\s+(?:{_SHIFT}|work|schedule)|"
+    rf"what(?:'s|\s+is|\s+are)\s+my\s+(?:{_SHIFT}|schedule|work)|"
+    rf"what\s+time\s+(?:is\s+)?(?:my\s+)?(?:{_SHIFT}|work)|"
     r"when\s+do\s+i\s+work|"
-    r"sh(?:i[fpt]|it)s?\s+(?:today|tomorrow)|schedule\s+(?:today|tomorrow)|"
+    rf"{_SHIFT}\s+(?:today|tomorrow)|schedule\s+(?:today|tomorrow)|"
     r"do\s+i\s+(?:work|have\s+(?:a\s+)?shift)|"
     r"am\s+i\s+(?:working|scheduled)|"
-    r"horaire|mes\s+sh(?:i[fpt]|it)s?|mon\s+planning|"
+    rf"horaire|mes\s+{_SHIFT}|mon\s+planning|"
     r"شيفت|دوامي|جدول"
     r")\b",
     re.I,

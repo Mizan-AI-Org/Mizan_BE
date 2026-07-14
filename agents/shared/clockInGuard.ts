@@ -16,7 +16,7 @@ export const FAKE_CLOCK_IN_OUTAGE_RE =
 
 /** Fake shift-fetch apologies (Space invents these instead of calling my_shifts). */
 export const FAKE_SHIFT_FETCH_RE =
-  /\b(trouble fetching your shift|having a little trouble fetching your shift|couldn['']t (?:fetch|load|get|access) your shift|unable to (?:fetch|load|get|access) your shift|shift details right now|cannot access your schedule|can['']t access your schedule|check your staff portal|contact your manager for your shift|try again in a bit.{0,40}shift)\b/i;
+  /\b(trouble fetching your shift|having a little trouble fetching your shift|couldn['']t (?:fetch|load|get|access|retrieve) your shift|unable to (?:fetch|load|get|access|retrieve) your shift|could not (?:fetch|load|get|access|retrieve) your shift|shift details right now|technical hiccup|cannot access your schedule|can['']t access your schedule|check your staff portal|contact your manager for your shift|try again (?:in )?a bit(?:\s+later)?.{0,40}shift|retrieve your shifts)\b/i;
 
 export function isClockInMessage(text: string): boolean {
   const lower = text.toLowerCase().trim();

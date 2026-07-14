@@ -1,22 +1,36 @@
 /**
  * Shared "when is my shift" intent detection for WhatsApp + Lua preprocessors.
  * Tolerates common typos (e.g. "shit" → shift) so staff still get real schedule data.
+ *
+ * Use RegExp literals only — never build `\s` via normal JS strings (they become `s`).
  */
 
-export const MY_SHIFTS_WORD = String.raw`sh(?:i[fpt]|it)s?`;
+/** shift / shifts / shit / shif typos */
+const SHIFT = String.raw`(?:shifts?|shits?|shifs?|shiifts?)`;
 
 export const MY_SHIFTS_RE = new RegExp(
   String.raw`\b(` +
-    `my\s+${MY_SHIFTS_WORD}|my\s+schedule|` +
-    `when\s+(?:is|are|was)\s+my\s+(?:${MY_SHIFTS_WORD}|work|schedule)|` +
-    `what(?:'s|\s+is|\s+are)\s+my\s+(?:${MY_SHIFTS_WORD}|schedule|work)|` +
-    `what\s+time\s+(?:is\s+)?(?:my\s+)?(?:${MY_SHIFTS_WORD}|work)|` +
-    `when\s+do\s+i\s+work|` +
-    `${MY_SHIFTS_WORD}\s+(?:today|tomorrow)|schedule\s+(?:today|tomorrow)|` +
-    `do\s+i\s+(?:work|have\s+(?:a\s+)?shift)|` +
-    `am\s+i\s+(?:working|scheduled)|` +
-    `horaire|mes\s+${MY_SHIFTS_WORD}|mon\s+planning|شيفت|دوامي|جدول` +
-    `)\b`,
+    String.raw`my\s+` +
+    SHIFT +
+    String.raw`|my\s+schedule|` +
+    String.raw`when\s+(?:is|are|was)\s+my\s+(?:` +
+    SHIFT +
+    String.raw`|work|schedule)|` +
+    String.raw`what(?:'s|\s+is|\s+are)\s+my\s+(?:` +
+    SHIFT +
+    String.raw`|schedule|work)|` +
+    String.raw`what\s+time\s+(?:is\s+)?(?:my\s+)?(?:` +
+    SHIFT +
+    String.raw`|work)|` +
+    String.raw`when\s+do\s+i\s+work|` +
+    SHIFT +
+    String.raw`\s+(?:today|tomorrow)|schedule\s+(?:today|tomorrow)|` +
+    String.raw`do\s+i\s+(?:work|have\s+(?:a\s+)?shift)|` +
+    String.raw`am\s+i\s+(?:working|scheduled)|` +
+    String.raw`horaire|mes\s+` +
+    SHIFT +
+    String.raw`|mon\s+planning|شيفت|دوامي|جدول` +
+    String.raw`)\b`,
   "i",
 );
 
@@ -48,6 +62,14 @@ export function isMyShiftsAsk(text: string): boolean {
 
   if (
     /\bwhat\s+time\s+(?:am\s+)?i\s+(?:working|on)\s+(?:today|tomorrow)\b/i.test(t)
+  ) {
+    return true;
+  }
+
+  // Soft match: "okay. when is my shift today and tomorrow"
+  if (
+    /\bwhen\s+(?:is|are)\s+my\s+\w+/i.test(t) &&
+    /\b(today|tomorrow|tonight|this\s+week|next\s+week)\b/i.test(t)
   ) {
     return true;
   }
