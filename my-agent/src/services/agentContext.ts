@@ -19,6 +19,8 @@ export interface AgentContext {
     userId: string | undefined;
     phone: string | undefined;
     email: string | undefined;
+    userToken: string | undefined;
+    sessionId: string | undefined;
 }
 
 /**
@@ -166,6 +168,16 @@ export async function resolveAgentContext(inputRestaurantId?: string): Promise<A
     // Prefer the agent key for API calls; only fall back to user JWT
     const token = agentKey || userToken || env("MIZAN_SERVICE_TOKEN");
 
+    const sessionIdRaw =
+        (metadata as any).sessionId ||
+        profile.sessionId ||
+        userData.sessionId ||
+        (user as any)?.sessionId;
+    const sessionId =
+        typeof sessionIdRaw === "string" && sessionIdRaw.trim().length > 0
+            ? sessionIdRaw.trim()
+            : undefined;
+
     // Fallback: resolve tenant from Mizan user identity when Lua metadata
     // omitted restaurantId (common on WhatsApp). Same resolution rules as
     // dashboard widget agent endpoints.
@@ -198,5 +210,5 @@ export async function resolveAgentContext(inputRestaurantId?: string): Promise<A
         }
     }
 
-    return { restaurantId, token, agentKey, userId, phone, email: emailGuess || undefined };
+    return { restaurantId, token, agentKey, userId, phone, email: emailGuess || undefined, userToken, sessionId };
 }

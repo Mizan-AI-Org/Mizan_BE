@@ -11,23 +11,7 @@ import {
     resolveStaffPhoneForByPhoneTools,
     type LuaUserPhoneSource,
 } from "../utils/resolveStaffPhoneFromLuaUser";
-
-/** Clear safety / hazard reports — NOT routine equipment repairs. */
-const SAFETY_INCIDENT_RE =
-    /\b(broken\s+glass|glass\s+(on|at|by|near|under|broken|shatter)|shatter(?:ed)?\s+glass|shard|shards|verre\s+cass[eé]?|bris\s+de\s+verre|verre\s+bris[eé]?|wet\s+floor|spill(?:ed)?\s+(?:on\s+)?(?:the\s+)?floor|customer\s+slipp?ed|guest\s+slipp?ed|someone\s+slipp?ed|slipp?ed\s+on|fell\s+(?:down|on)|injur(?:y|ed)|bleed(?:ing)?|burn(?:ed|t)?|fire|smoke|gas\s+(?:leak|smell)|food\s+poison|harass(?:ment)?|theft|robbery|unconscious|table\s+\d+.{0,60}glass)\b/i;
-
-function isSafetyIncidentMessage(text: string): boolean {
-    const t = text.trim();
-    if (!t || t.length < 6) return false;
-    // Exclude clear equipment-repair phrasing without hazard cues
-    if (
-        /\b(fridge|freezer|oven|dishwasher|ac\b|air\s*con|wc|toilet|plumbing)\b/i.test(t) &&
-        !/\b(glass|slip|injur|fire|smoke|bleed|burn|gas\s+leak)\b/i.test(t)
-    ) {
-        return false;
-    }
-    return SAFETY_INCIDENT_RE.test(t);
-}
+import { isSafetyIncidentMessage } from "../shared/incidentIntent";
 
 function phoneFromUser(user: UserDataInstance): string {
     const u = user as unknown as LuaUserPhoneSource & { uid?: string };

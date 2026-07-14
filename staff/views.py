@@ -71,13 +71,9 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
         # (HR / Maintenance / Reservations / etc.) without client-side
         # post-filtering.
         #
-        # Also accepts a comma-separated list (``?category=FINANCE,PAYROLL``)
-        # so the dashboard "bucket" widgets — which aggregate multiple inbox
-        # categories under one card (see ``dashboard.api.category_tasks
-        # .BUCKET_TO_CATEGORIES``) — can deep-link into the inbox and still
-        # show every row they counted. Without this, clicking the Finance
-        # widget would land on ``?category=FINANCE`` and hide any PAYROLL
-        # rows that were counted in the widget.
+        # Also accepts a comma-separated list (``?category=FINANCE,HR``)
+        # so dashboard bucket widgets can deep-link into the inbox and show
+        # every row they counted.
         category_q = self.request.query_params.get('category')
         if category_q:
             parts = [p.strip().upper() for p in str(category_q).split(',') if p.strip()]
@@ -85,6 +81,13 @@ class StaffRequestViewSet(viewsets.ModelViewSet):
                 qs = qs.filter(category=parts[0])
             elif parts:
                 qs = qs.filter(category__in=parts)
+
+        # Team Inbox preview should not duplicate rows that already belong
+        # to a named operational lane (HR, Finance, Maintenance, etc.).
+        exclude_laned = self.request.query_params.get('exclude_laned')
+        if str(exclude_laned or '').lower() in ('1', 'true', 'yes'):
+            from dashboard.category_routing import categories_with_dedicated_lane
+            qs = qs.exclude(category__in=categories_with_dedicated_lane())
 
         # Priority filter — used by the dashboard "Urgent TOP 5" widget's
         # deep-link (?priority=URGENT). Server-side so the response is

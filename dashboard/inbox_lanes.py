@@ -72,8 +72,8 @@ WIDGET_INBOX_LANES: dict[str, InboxLaneDef] = {
         widget_id="finance",
         label="Finance",
         page_title="Finance",
-        page_subtitle="Invoices, bills, payroll, and money-out requests.",
-        categories=("FINANCE", "PAYROLL"),
+        page_subtitle="Invoices, bills, and money-out requests.",
+        categories=("FINANCE",),
         icon="wallet",
     ),
     "maintenance": InboxLaneDef(

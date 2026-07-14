@@ -20,6 +20,8 @@ import {
   looksLikeFakeShiftFetch,
   shareLocationClockInMessage,
 } from "../shared/clockInGuard";
+import { looksLikeFakeIncidentReport } from "../shared/incidentIntent";
+import { looksLikeFakeChecklistStart } from "../shared/checklistIntent";
 
 const JARGON_PATTERNS = [
   /\baccess token\b/gi,
@@ -105,11 +107,7 @@ const responseFormatter = new PostProcessor({
         'Say "when is my shift today and tomorrow?" again and I\'ll look up your schedule right away.';
     }
 
-    if (
-      /\b(unable to report the incident|couldn['']t report the incident|failed to report (?:the )?incident|incident at this time)\b/i.test(
-        formatted,
-      )
-    ) {
+    if (looksLikeFakeIncidentReport(formatted)) {
       formatted =
         "Please say that again in one short line (e.g. \"Broken glass at table 44\") and I'll log it as a safety report right away. If anyone is hurt, tell a manager on duty now.";
     }
@@ -123,11 +121,7 @@ const responseFormatter = new PostProcessor({
         "Thanks — I've passed that on to your manager. They'll see it under *Human Resources* (Pending) and get back to you as soon as they can.";
     }
 
-    if (
-      /\b(technical issue trying to (?:fetch|start|load) your (?:tasks|checklist)|unable to (?:fetch|start|load) your (?:tasks|checklist)|trouble (?:fetching|starting|loading) your (?:tasks|checklist)|couldn['']?t get your checklist started|could not get your checklist started|oops!?\s*looks like i couldn['']?t get your checklist)\b/i.test(
-        formatted,
-      )
-    ) {
+    if (looksLikeFakeChecklistStart(formatted)) {
       formatted =
         "Say *what are my tasks* to preview, or *start checklist* once you're clocked in — I'll load them right away.";
     }

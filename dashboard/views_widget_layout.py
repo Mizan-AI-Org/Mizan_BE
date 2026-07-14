@@ -128,7 +128,8 @@ def _can_customize_dashboard(user: CustomUser) -> bool:
     return user.role in ("SUPER_ADMIN", "ADMIN", "MANAGER", "OWNER")
 
 
-def _resolve_user_from_agent_payload(data: dict) -> CustomUser | None:
+def _resolve_user_from_explicit_fields(data: dict) -> CustomUser | None:
+    """Resolve user from flat user_id / email / phone fields (body or metadata)."""
     user = None
     uid = data.get("user_id") or data.get("userId")
     if uid:
@@ -136,8 +137,12 @@ def _resolve_user_from_agent_payload(data: dict) -> CustomUser | None:
             user = CustomUser.objects.filter(id=uid, is_active=True).first()
         except Exception:
             user = None
-    if user is None and data.get("email"):
-        user = CustomUser.objects.filter(email__iexact=str(data["email"]).strip(), is_active=True).first()
+    if user is None:
+        email = data.get("email") or data.get("emailAddress")
+        if email:
+            user = CustomUser.objects.filter(
+                email__iexact=str(email).strip(), is_active=True
+            ).first()
     if user is None and data.get("phone"):
         from staff.views_agent import _resolve_restaurant_and_staff_by_phone
 
@@ -153,6 +158,85 @@ def _resolve_user_from_agent_payload(data: dict) -> CustomUser | None:
         )
         user = staff
     return user
+
+
+def _resolve_user_from_session_or_jwt(data: dict, request=None) -> CustomUser | None:
+    """Resolve user from LuaPop sessionId or dashboard JWT without restaurant-only short-circuit."""
+    import re
+
+    from core.agent_resolve import _get_first, _merge_agent_request_data
+    from django.conf import settings
+
+    merged, meta = _merge_agent_request_data(request, data)
+
+    session_id = _get_first(merged, meta, "sessionId", "session_id")
+    if session_id:
+        match = re.search(
+            r"tenant-([0-9a-fA-F-]{8,})-user-([0-9a-fA-F-]{8,})",
+            str(session_id),
+        )
+        if match:
+            user_id = match.group(2)
+            try:
+                user = CustomUser.objects.filter(id=user_id, is_active=True).first()
+                if user:
+                    return user
+            except Exception:
+                pass
+
+    token = _get_first(merged, meta, "token", "accessToken", "access_token")
+    if token:
+        expected_key = getattr(settings, "LUA_WEBHOOK_API_KEY", None)
+        if not (expected_key and str(token) == expected_key):
+            try:
+                from rest_framework_simplejwt.authentication import JWTAuthentication
+
+                jwt_auth = JWTAuthentication()
+                validated = jwt_auth.get_validated_token(str(token))
+                user = jwt_auth.get_user(validated)
+                if user and getattr(user, "is_active", True):
+                    return user
+            except Exception:
+                pass
+
+    return None
+
+
+def _resolve_user_from_agent_payload(data: dict | None, request=None) -> CustomUser | None:
+    """
+    Resolve the dashboard owner for Miya widget agent endpoints.
+
+    Accepts explicit user_id / email / phone in the JSON body, nested
+    ``metadata`` from LuaPop, and falls back to the shared agent resolver
+    (sessionId, JWT via X-User-Token, etc.) so admin LuaPop works without the
+    LLM passing user_id on every tool call.
+    """
+    data = data or {}
+
+    user = _resolve_user_from_explicit_fields(data)
+    if user is not None:
+        return user
+
+    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    if meta:
+        user = _resolve_user_from_explicit_fields(meta)
+        if user is not None:
+            return user
+
+    user = _resolve_user_from_session_or_jwt(data, request)
+    if user is not None:
+        return user
+
+    if request is not None:
+        from core.agent_resolve import resolve_agent_restaurant_and_user
+
+        _restaurant, resolved_user = resolve_agent_restaurant_and_user(
+            request=request, payload=data
+        )
+        if resolved_user is not None:
+            return resolved_user
+
+    return None
 
 
 class DashboardWidgetOrderView(APIView):
@@ -354,7 +438,7 @@ class AgentDashboardWidgetsAddView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user = _resolve_user_from_agent_payload(data)
+        user = _resolve_user_from_agent_payload(data, request)
 
         if user is None:
             return Response(
@@ -496,6 +580,7 @@ class AgentDashboardWidgetCreateView(APIView):
 
         if aliased_id:
             return self._redirect_to_builtin_add(
+                request=request,
                 data=data,
                 builtin_id=aliased_id,
                 requested_title=title,
@@ -511,7 +596,7 @@ class AgentDashboardWidgetCreateView(APIView):
         if isinstance(add_to_dashboard, str):
             add_to_dashboard = add_to_dashboard.lower() in ("1", "true", "yes")
 
-        user = _resolve_user_from_agent_payload(data)
+        user = _resolve_user_from_agent_payload(data, request)
         if user is None:
             return Response(
                 {"success": False, "error": "Could not resolve user; pass user_id, email, or phone"},
@@ -616,6 +701,7 @@ class AgentDashboardWidgetCreateView(APIView):
     def _redirect_to_builtin_add(
         self,
         *,
+        request,
         data: dict,
         builtin_id: str,
         requested_title: str,
@@ -641,7 +727,7 @@ class AgentDashboardWidgetCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user = _resolve_user_from_agent_payload(data)
+        user = _resolve_user_from_agent_payload(data, request)
         if user is None:
             return Response(
                 {"success": False, "error": "Could not resolve user; pass user_id, email, or phone"},
@@ -777,7 +863,7 @@ class AgentDashboardWidgetListView(APIView):
             return Response({"success": False, "error": err}, status=status.HTTP_401_UNAUTHORIZED)
 
         data = request.data or {}
-        user = _resolve_user_from_agent_payload(data)
+        user = _resolve_user_from_agent_payload(data, request)
         if user is None:
             return Response(
                 {"success": False, "error": "Could not resolve user; pass user_id, email, or phone"},
@@ -855,7 +941,7 @@ class AgentTenantBootstrapView(APIView):
             return Response({"success": False, "error": err}, status=status.HTTP_401_UNAUTHORIZED)
 
         data = request.data or {}
-        user = _resolve_user_from_agent_payload(data)
+        user = _resolve_user_from_agent_payload(data, request)
         if user is None:
             return Response(
                 {
@@ -915,7 +1001,7 @@ class AgentDashboardWidgetsRemoveView(APIView):
 
         widgets = [normalize_agent_widget_id(w) if isinstance(w, str) else w for w in widgets]
 
-        user = _resolve_user_from_agent_payload(data)
+        user = _resolve_user_from_agent_payload(data, request)
         if user is None:
             return Response(
                 {"success": False, "error": "Could not resolve user; pass user_id, email, or phone"},
@@ -984,7 +1070,7 @@ class AgentDashboardWidgetsReorderView(APIView):
 
         order = [normalize_agent_widget_id(w) if isinstance(w, str) else w for w in order]
 
-        user = _resolve_user_from_agent_payload(data)
+        user = _resolve_user_from_agent_payload(data, request)
         if user is None:
             return Response(
                 {"success": False, "error": "Could not resolve user; pass user_id, email, or phone"},
@@ -1061,7 +1147,7 @@ class AgentDashboardCustomWidgetDeleteView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        user = _resolve_user_from_agent_payload(data)
+        user = _resolve_user_from_agent_payload(data, request)
         if user is None:
             return Response(
                 {"success": False, "error": "Could not resolve user; pass user_id, email, or phone"},
@@ -1150,7 +1236,7 @@ class AgentDashboardCategoryCreateView(APIView):
         except (TypeError, ValueError):
             order_index = 0
 
-        user = _resolve_user_from_agent_payload(data)
+        user = _resolve_user_from_agent_payload(data, request)
         if user is None:
             return Response(
                 {"success": False, "error": "Could not resolve user; pass user_id, email, or phone"},

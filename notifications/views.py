@@ -163,6 +163,8 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
             sess = WhatsAppSession.objects.filter(phone=phone_digits).first()
             if sess and getattr(sess, "state", None) == "awaiting_clock_in_location":
                 return True
+            if sess and getattr(sess, "state", None) == "awaiting_incident_photo":
+                return True
         # Staff → manager escalations (wages, payslip, HR docs) must land as
         # StaffRequest on the dashboard — never Lua/Space inform_staff confirm flows.
         try:
@@ -200,6 +202,8 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
                 return True
         except Exception:
             pass
+        if _normalize_start_checklist_intent(body):
+            return True
         if phone_digits:
             sess = WhatsAppSession.objects.filter(phone=phone_digits).first()
             if sess:
@@ -208,6 +212,7 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
                 if st in (
                     "awaiting_incident_text",
                     "awaiting_incident_clarification",
+                    "awaiting_incident_photo",
                 ) or ctx.get("incident_photo_media_id"):
                     return True
         pair = _parse_lat_lon_from_clock_in_text(body)
@@ -1316,6 +1321,86 @@ def _finalize_whatsapp_incident(notification_service, ticket, session, raw_body,
     _notify_managers_of_whatsapp_incident(ticket)
 
 
+def _looks_like_skip_incident_photo(text: str) -> bool:
+    """Staff opts out of sending incident photo evidence."""
+    import re
+
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    if t in {"skip", "no", "later", "non", "pass", "passer", "cancel"}:
+        return True
+    return bool(
+        re.search(
+            r"\b(no\s+photo|skip\s+photo|without\s+photo|can'?t\s+(?:send|take)|"
+            r"pas\s+de\s+photo|sans\s+photo)\b",
+            t,
+            re.I,
+        )
+    )
+
+
+def _ticket_has_photo(ticket) -> bool:
+    try:
+        return bool(ticket and ticket.photo and ticket.photo.name)
+    except Exception:
+        return False
+
+
+def _finish_whatsapp_incident_turn(
+    notification_service,
+    ticket,
+    session,
+    raw_body,
+    user,
+    phone_digits,
+    *,
+    incident_type: str,
+    occurred_at=None,
+    R=None,
+):
+    """
+    Finalize incident, notify managers, confirm to staff.
+    If no photo is attached yet, prompt for one (awaiting_incident_photo).
+    """
+    _finalize_whatsapp_incident(
+        notification_service,
+        ticket,
+        session,
+        raw_body,
+        user,
+        phone_digits,
+        incident_type=incident_type,
+    )
+    ticket.refresh_from_db()
+
+    when = occurred_at or getattr(ticket, "occurred_at", None) or timezone.now()
+    occurred_str = when.strftime("%Y-%m-%d %H:%M") if when else "—"
+    notification_service.send_whatsapp_text(
+        phone_digits,
+        R(
+            user,
+            "incident_recorded",
+            ticket_id=str(ticket.id)[:8],
+            incident_type=ticket.incident_type,
+            occurred_at=occurred_str,
+        ),
+    )
+
+    if not _ticket_has_photo(ticket):
+        session.state = "awaiting_incident_photo"
+        session.context["incident_ticket_id"] = str(ticket.id)
+        session.context.pop("pending_incident", None)
+        session.save(update_fields=["state", "context"])
+        notification_service.send_whatsapp_text(phone_digits, R(user, "incident_ask_photo"))
+        return
+
+    session.state = "idle"
+    session.context.pop("pending_incident", None)
+    session.context.pop("incident_ticket_id", None)
+    session.save(update_fields=["state", "context"])
+
+
 def _create_safety_concern_from_whatsapp(
     *,
     user,
@@ -1869,6 +1954,12 @@ def whatsapp_webhook(request):
                     'If you ever feel unsafe in the moment, use your local emergency number or ask a manager on the floor '
                     'for immediate help.'
                 ),
+                'incident_ask_photo': (
+                    '📷 If you can, please send a photo of the incident so we can attach it to the report. '
+                    'Reply *skip* if you can\'t right now.'
+                ),
+                'incident_photo_attached': '📷 Photo attached — thank you. Management has the full report.',
+                'incident_photo_skipped': 'No problem — your report is already logged. Tell a manager on duty if the situation gets worse.',
                 'incident_failed': 'Failed to record incident. Please try again.',
                 'order_voice_prompt': (
                     '📋 *Guest order*\n\n'
@@ -1922,6 +2013,12 @@ def whatsapp_webhook(request):
                     'إذا تذكرت تفاصيل إضافية أو تغيّر الوضع، يمكنك التواصل مرة أخرى في أي وقت.\n\n'
                     'إذا شعرت بخطر مباشر، اتصل بخدمات الطوارئ في منطقتك أو أبلغ مديراً في المكان فوراً.'
                 ),
+                'incident_ask_photo': (
+                    '📷 إن أمكن، أرسل صورة للحادث لنرفقها بالبلاغ. '
+                    'رد *تخطي* إذا لم تستطع الآن.'
+                ),
+                'incident_photo_attached': '📷 تم إرفاق الصورة — شكراً. الإدارة لديها التقرير الكامل.',
+                'incident_photo_skipped': 'لا مشكلة — تم تسجيل بلاغك. أبلغ مديراً في المكان إذا ساء الوضع.',
                 'incident_failed': 'فشل تسجيل الحادث. يرجى المحاولة مرة أخرى.',
                 'order_voice_prompt': (
                     '📋 *طلب زبون*\n\n'
@@ -1974,6 +2071,12 @@ def whatsapp_webhook(request):
                     'nous écrire à tout moment.\n\n'
                     'En cas de danger immédiat, contactez les secours locaux ou parlez immédiatement à un responsable sur place.'
                 ),
+                'incident_ask_photo': (
+                    '📷 Si possible, envoyez une photo de l\'incident pour l\'ajouter au rapport. '
+                    'Répondez *passer* si vous ne pouvez pas maintenant.'
+                ),
+                'incident_photo_attached': '📷 Photo ajoutée — merci. La direction a le rapport complet.',
+                'incident_photo_skipped': 'Pas de souci — votre signalement est déjà enregistré. Prévenez un responsable si la situation empire.',
                 'incident_failed': 'Échec de l\'enregistrement. Veuillez réessayer.',
                 'order_voice_prompt': (
                     '📋 *Commande invité*\n\n'
@@ -2147,6 +2250,7 @@ def whatsapp_webhook(request):
                         'awaiting_clock_in_location',
                         'awaiting_task_photo', 'awaiting_feedback',
                         'awaiting_incident_text', 'awaiting_incident_clarification',
+                        'awaiting_incident_photo',
                         'awaiting_order_voice',
                         'awaiting_order_clarification',
                     }
@@ -2163,6 +2267,7 @@ def whatsapp_webhook(request):
                     _interactive_is_staff_escalation = False
                     _text_is_incident_report = False
                     _text_is_my_shifts = False
+                    _text_is_checklist_start = False
                     _text_is_clock_float_recovery = False
                     _text_is_clock_in = (
                         msg_type == "text"
@@ -2199,6 +2304,7 @@ def whatsapp_webhook(request):
                                     _text_is_incident_report = True
                             _text_is_my_shifts = looks_like_my_shifts_query(text_body)
                             _text_is_clock_float_recovery = looks_like_cash_clock_in_followup(text_body)
+                            _text_is_checklist_start = _normalize_start_checklist_intent(text_body)
                         if msg_type == 'interactive':
                             inter = msg.get('interactive') or {}
                             if inter.get('type') == 'button_reply':
@@ -2226,6 +2332,7 @@ def whatsapp_webhook(request):
                         and not _awaiting_clock_in_gps
                         and not _text_is_incident_report
                         and not _text_is_my_shifts
+                        and not _text_is_checklist_start
                         and not _text_is_clock_float_recovery
                     ):
                         logger.info("Session state '%s' for %s — deferring to Lua/Miya.", session.state, phone_digits)
@@ -2500,6 +2607,36 @@ def whatsapp_webhook(request):
                             else:
                                 session.state = 'idle'
                                 session.save(update_fields=['context', 'state'])
+                        elif user and session.state == 'awaiting_incident_photo':
+                            from staff.models_task import SafetyConcernReport
+
+                            image_obj = msg.get('image') or {}
+                            media_id_img = image_obj.get('id')
+                            mime_type_img = image_obj.get('mime_type')
+                            ticket_id = (session.context or {}).get('incident_ticket_id')
+                            ticket = None
+                            if ticket_id:
+                                ticket = SafetyConcernReport.objects.filter(
+                                    id=ticket_id, reporter=user
+                                ).first()
+                            if ticket and media_id_img:
+                                _attach_whatsapp_photo_to_incident(
+                                    notification_service, ticket, media_id_img, mime_type_img
+                                )
+                                session.state = 'idle'
+                                session.context.pop('incident_ticket_id', None)
+                                session.context.pop('incident_photo_media_id', None)
+                                session.context.pop('incident_photo_mime_type', None)
+                                session.save(update_fields=['state', 'context'])
+                                notification_service.send_whatsapp_text(
+                                    phone_digits, R(user, 'incident_photo_attached')
+                                )
+                            else:
+                                notification_service.send_whatsapp_text(
+                                    phone_digits,
+                                    R(user, 'incident_ask_photo'),
+                                )
+                            continue
                         elif user and (session.state == 'awaiting_incident_text' or session.state == 'awaiting_incident_clarification'):
                             # Incident report with photo (text + photo or photo with caption)
                             image_obj = msg.get('image') or {}
@@ -2552,7 +2689,7 @@ def whatsapp_webhook(request):
                                             occurred_at=occurred_at,
                                             shift=shift_obj,
                                         )
-                                        _finalize_whatsapp_incident(
+                                        _finish_whatsapp_incident_turn(
                                             notification_service,
                                             ticket,
                                             session,
@@ -2560,15 +2697,9 @@ def whatsapp_webhook(request):
                                             user,
                                             phone_digits,
                                             incident_type=ticket.incident_type,
+                                            occurred_at=occurred_at,
+                                            R=R,
                                         )
-                                        occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
-                                        notification_service.send_whatsapp_text(
-                                            phone_digits,
-                                            R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=ticket.incident_type, occurred_at=occurred_str)
-                                        )
-                                        session.state = 'idle'
-                                        session.context.pop('pending_incident', None)
-                                        session.save(update_fields=['state', 'context'])
                                     except Exception as e:
                                         logger.exception("Failed to create incident from image caption: %s", e)
                                         notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
@@ -2625,7 +2756,7 @@ def whatsapp_webhook(request):
                                         shift=shift_obj,
                                         audio_evidence=[pending.get('audio_url')] if pending.get('audio_url') else [],
                                     )
-                                    _finalize_whatsapp_incident(
+                                    _finish_whatsapp_incident_turn(
                                         notification_service,
                                         ticket,
                                         session,
@@ -2633,15 +2764,9 @@ def whatsapp_webhook(request):
                                         user,
                                         phone_digits,
                                         incident_type=ticket.incident_type,
+                                        occurred_at=occurred_at,
+                                        R=R,
                                     )
-                                    occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
-                                    notification_service.send_whatsapp_text(
-                                        phone_digits,
-                                        R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=ticket.incident_type, occurred_at=occurred_str)
-                                    )
-                                    session.state = 'idle'
-                                    session.context.pop('pending_incident', None)
-                                    session.save(update_fields=['state', 'context'])
                                 except Exception as e:
                                     logger.exception("Failed to create incident from clarification+photo: %s", e)
                                     notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
@@ -2685,7 +2810,7 @@ def whatsapp_webhook(request):
                                         occurred_at=now,
                                         shift=shift_obj_fb,
                                     )
-                                    _finalize_whatsapp_incident(
+                                    _finish_whatsapp_incident_turn(
                                         notification_service,
                                         ticket_fb,
                                         session,
@@ -2693,21 +2818,9 @@ def whatsapp_webhook(request):
                                         user,
                                         phone_digits,
                                         incident_type=ticket_fb.incident_type,
+                                        occurred_at=now,
+                                        R=R,
                                     )
-                                    occurred_str_fb = now.strftime('%Y-%m-%d %H:%M')
-                                    notification_service.send_whatsapp_text(
-                                        phone_digits,
-                                        R(
-                                            user,
-                                            'incident_recorded',
-                                            ticket_id=str(ticket_fb.id)[:8],
-                                            incident_type=ticket_fb.incident_type,
-                                            occurred_at=occurred_str_fb,
-                                        ),
-                                    )
-                                    session.state = 'idle'
-                                    session.context.pop('pending_incident', None)
-                                    session.save(update_fields=['state', 'context'])
                                     continue
                                 except Exception as e:
                                     logger.exception("Failed to create incident from image+caption fallback: %s", e)
@@ -2953,7 +3066,7 @@ def whatsapp_webhook(request):
                             shift=shift_obj,
                             audio_evidence=[media_url] if media_url else [],
                         )
-                        _finalize_whatsapp_incident(
+                        _finish_whatsapp_incident_turn(
                             notification_service,
                             ticket,
                             session,
@@ -2961,12 +3074,8 @@ def whatsapp_webhook(request):
                             user,
                             phone_digits,
                             incident_type=ticket.incident_type,
-                        )
-
-                        occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
-                        notification_service.send_whatsapp_text(
-                            phone_digits,
-                            R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=ticket.incident_type, occurred_at=occurred_str)
+                            occurred_at=occurred_at,
+                            R=R,
                         )
 
                         # Notify Manager (best-effort)
@@ -3277,6 +3386,22 @@ def whatsapp_webhook(request):
                             session.save(update_fields=['state'])
                         continue
 
+                    # Optional photo evidence after a text/voice incident was logged
+                    if session.state == 'awaiting_incident_photo':
+                        if not user:
+                            notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
+                            continue
+                        if _looks_like_skip_incident_photo(raw_body):
+                            session.state = 'idle'
+                            session.context.pop('incident_ticket_id', None)
+                            session.save(update_fields=['state', 'context'])
+                            notification_service.send_whatsapp_text(
+                                phone_digits, R(user, 'incident_photo_skipped')
+                            )
+                            continue
+                        notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_ask_photo'))
+                        continue
+
                     # Handle clarification flow for incidents (voice or incomplete report)
                     if session.state == 'awaiting_incident_clarification':
                         if not user:
@@ -3337,7 +3462,7 @@ def whatsapp_webhook(request):
                             shift=shift_obj,
                             audio_evidence=[pending.get('audio_url')] if pending.get('audio_url') else [],
                         )
-                        _finalize_whatsapp_incident(
+                        _finish_whatsapp_incident_turn(
                             notification_service,
                             ticket,
                             session,
@@ -3345,18 +3470,9 @@ def whatsapp_webhook(request):
                             user,
                             phone_digits,
                             incident_type=ticket.incident_type,
+                            occurred_at=occurred_at,
+                            R=R,
                         )
-
-                        occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
-                        notification_service.send_whatsapp_text(
-                            phone_digits,
-                            R(user, 'incident_recorded', ticket_id=str(ticket.id)[:8], incident_type=ticket.incident_type, occurred_at=occurred_str)
-                        )
-
-                        # reset session state
-                        session.state = 'idle'
-                        session.context.pop('pending_incident', None)
-                        session.save(update_fields=['state', 'context'])
                         continue
                     
 
@@ -3603,7 +3719,7 @@ def whatsapp_webhook(request):
                                 occurred_at=occurred_at,
                                 shift=shift_obj,
                             )
-                            _finalize_whatsapp_incident(
+                            _finish_whatsapp_incident_turn(
                                 notification_service,
                                 ticket,
                                 session,
@@ -3611,22 +3727,9 @@ def whatsapp_webhook(request):
                                 user,
                                 phone_digits,
                                 incident_type=ticket.incident_type,
+                                occurred_at=occurred_at,
+                                R=R,
                             )
-
-                            occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M') if occurred_at else '—'
-                            notification_service.send_whatsapp_text(
-                                phone_digits,
-                                R(
-                                    user,
-                                    'incident_recorded',
-                                    ticket_id=str(ticket.id)[:8],
-                                    incident_type=ticket.incident_type,
-                                    occurred_at=occurred_str,
-                                ),
-                            )
-                            session.state = 'idle'
-                            session.context.pop('pending_incident', None)
-                            session.save(update_fields=['state', 'context'])
                         except Exception as e:
                             logger.exception("Failed to create incident from text: %s", e)
                             notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed'))
@@ -3666,7 +3769,7 @@ def whatsapp_webhook(request):
                                     occurred_at=occurred_at,
                                     shift=shift_obj,
                                 )
-                                _finalize_whatsapp_incident(
+                                _finish_whatsapp_incident_turn(
                                     notification_service,
                                     ticket,
                                     session,
@@ -3674,22 +3777,9 @@ def whatsapp_webhook(request):
                                     user,
                                     phone_digits,
                                     incident_type=ticket.incident_type,
+                                    occurred_at=occurred_at,
+                                    R=R,
                                 )
-
-                                occurred_str = occurred_at.strftime('%Y-%m-%d %H:%M')
-                                notification_service.send_whatsapp_text(
-                                    phone_digits,
-                                    R(
-                                        user,
-                                        'incident_recorded',
-                                        ticket_id=str(ticket.id)[:8],
-                                        incident_type=ticket.incident_type,
-                                        occurred_at=occurred_str,
-                                    ),
-                                )
-                                session.state = 'idle'
-                                session.context.pop('pending_incident', None)
-                                session.save(update_fields=['state', 'context'])
                                 continue
                             except Exception:
                                 logger.exception("Failed to create incident from fallback text")

@@ -1,5 +1,6 @@
 import axios from "axios";
 import { env } from "lua-cli";
+import { resolveAgentContext } from "./agentContext";
 
 /** Normalize tokens/keys read from env or JWT slots — avoids axios/internal Buffer.from(undefined). */
 function coerceBearerLike(v: unknown): string | null {
@@ -78,13 +79,23 @@ function agentAuthHeadersWithRestaurant(restaurantId: string, userToken?: string
     return headers;
 }
 
-/** Bearer agent key + X-Restaurant-Id only when restaurant id is non-empty (avoids undefined header values). */
-function agentKeyBearerHeadersWithRestaurant(agentKey: string, restaurantId?: string | null): Record<string, string> {
+/** Bearer agent key + optional restaurant / dashboard user context headers. */
+function agentKeyBearerHeadersWithRestaurant(
+    agentKey: string,
+    restaurantId?: string | null,
+    extras?: { userToken?: string; sessionId?: string }
+): Record<string, string> {
     const k = (agentKey || "").trim();
     const headers: Record<string, string> = { Authorization: `Bearer ${k}` };
     const rid =
         restaurantId !== undefined && restaurantId !== null ? String(restaurantId).trim() : "";
     if (rid) headers["X-Restaurant-Id"] = rid;
+    const jwt = (extras?.userToken || "").trim();
+    if (jwt && jwt !== k && jwt.length > 20) {
+        headers["X-User-Token"] = jwt.startsWith("Bearer ") ? jwt : `Bearer ${jwt}`;
+    }
+    const sid = (extras?.sessionId || "").trim();
+    if (sid) headers["X-Session-Id"] = sid;
     return headers;
 }
 
@@ -1533,23 +1544,35 @@ export default class ApiService {
         };
 
         if (action === "create_category") {
+            const ctx = await resolveAgentContext(restaurantId);
             return this.createDashboardCategoryForAgent(restaurantId, {
                 name: (input.category_name || "").trim(),
                 order_index: typeof input.order_index === "number" ? input.order_index : 0,
-                user_id: input.user_id,
-                email: input.email,
-                phone: input.phone,
+                user_id: input.user_id || ctx.userId,
+                email: input.email || ctx.email,
+                phone: input.phone || ctx.phone,
             });
         }
+
+        const ctx = await resolveAgentContext(restaurantId);
+        const userId = input.user_id || ctx.userId;
+        const email = input.email || ctx.email;
+        const phone = input.phone || ctx.phone;
+        const widgetHeaders = agentKeyBearerHeadersWithRestaurant(agentKey, rid, {
+            userToken: ctx.userToken,
+            sessionId: ctx.sessionId,
+        });
 
         try {
             const response = await this.axiosInstance.post(
                 pathByAction[action],
                 {
                     restaurant_id: rid,
-                    user_id: input.user_id,
-                    email: input.email,
-                    phone: input.phone,
+                    user_id: userId,
+                    email,
+                    phone,
+                    session_id: ctx.sessionId,
+                    sessionId: ctx.sessionId,
                     widgets: input.widgets,
                     order: input.order,
                     title: input.title,
@@ -1562,7 +1585,7 @@ export default class ApiService {
                     widget_id: input.widget_id,
                 },
                 {
-                    headers: agentKeyBearerHeadersWithRestaurant(agentKey, rid),
+                    headers: widgetHeaders,
                 }
             );
             return response.data;

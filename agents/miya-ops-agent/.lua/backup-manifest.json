@@ -1,6 +1,6 @@
 {
-  "lastHash": "7ca7c3a85a7d97fd73e1c31765c7d718c0b02d552800c0da2a93c284e21bf884",
-  "lastPushedAt": "2026-07-11T19:40:09.040Z",
+  "lastHash": "66c0110fb9627ef8ea7c946fd2228ecfb59c02ff270e36cb6d494240c04d3a1f",
+  "lastPushedAt": "2026-07-14T13:14:23.904Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "0bda14a75c833fac"
+      "hash": "711e90dac4048815"
     },
     {
       "relativePath": "package.json",
@@ -28,7 +28,7 @@
     },
     {
       "relativePath": "src/postprocessors/ResponseFormatterPostProcessor.ts",
-      "hash": "8a0b6970d10170e8"
+      "hash": "0ef7e7a73a314727"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
@@ -40,7 +40,7 @@
     },
     {
       "relativePath": "src/preprocessors/ChecklistFlowPreprocessor.ts",
-      "hash": "2d198a459be88cd2"
+      "hash": "c7b721fb277f46bc"
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
@@ -56,7 +56,7 @@
     },
     {
       "relativePath": "src/preprocessors/IncidentCommandPreprocessor.ts",
-      "hash": "845cb7fbc3206f6b"
+      "hash": "4735bf5d681015d8"
     },
     {
       "relativePath": "src/preprocessors/LanguageMirrorPreprocessor.ts",
@@ -64,7 +64,7 @@
     },
     {
       "relativePath": "src/preprocessors/MyShiftsPreprocessor.ts",
-      "hash": "4aed19a7cc2f16ae"
+      "hash": "d266739644bb1d90"
     },
     {
       "relativePath": "src/preprocessors/operationIntent.ts",
@@ -80,19 +80,31 @@
     },
     {
       "relativePath": "src/services/agentContext.ts",
-      "hash": "b562bc58de80ae93"
+      "hash": "77ac1f58a0e855f1"
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "69ebe01f0697bfde"
+      "hash": "8ae21fc68be40c21"
+    },
+    {
+      "relativePath": "src/shared/checklistIntent.ts",
+      "hash": "0b0972934d18eaff"
     },
     {
       "relativePath": "src/shared/clockInGuard.ts",
-      "hash": "9a6eecf1be5ad02d"
+      "hash": "9ba64fa7badee8fa"
     },
     {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
       "hash": "c99cece8e60fe616"
+    },
+    {
+      "relativePath": "src/shared/incidentIntent.ts",
+      "hash": "0180b5f4da78e217"
+    },
+    {
+      "relativePath": "src/shared/myShiftsIntent.ts",
+      "hash": "e24dc3f40ab91967"
     },
     {
       "relativePath": "src/skills/operations.skill.ts",
