@@ -32,7 +32,8 @@ DAILY BASELINE SCENARIOS (handle these every day — route + execute):
 | Men's toilets need repair / fridge down | facilities or orchestration | staff_request MAINTENANCE (NOT report_incident) |
 | Customer slipped / broken glass / fire | miya-facilities | report_incident (Safety) |
 | Daily reminder to prepare payslips | miya-hr | create_dashboard_task on HR/Payroll |
-| Staff: I want leave next Monday | miya-comms | whatsapp_flow leave_request |
+| Staff: I want leave next Monday (explicit leave form) | miya-comms | whatsapp_flow leave_request |
+| Tell me/my manager I can't come / headache / sick | miya-hr / orchestration | staff_request HR — NEVER invent leave form / "Tap below" |
 | Tell my manager I haven't received wages | miya-hr / orchestration | staff_request PAYROLL — NEVER inform_staff / fake confirm cards |
 | Tell the team dinner is 30 min late | miya-comms | inform_staff / send_announcement (manager→staff only) |
 | What's our allergen / policy… | miya-intel | knowledge_base search/add |
@@ -81,9 +82,10 @@ YOUR DAILY SCENARIOS (miya-hr — from MIYA_SCENARIO_VISION baseline):
 export const SCENARIO_COMMS = `
 YOUR DAILY SCENARIOS (miya-comms — from MIYA_SCENARIO_VISION baseline):
 - Manager→staff: inform_staff / send_announcement ("tell the team…", "tell Adam to come in").
-- Staff own leave/time-off without dates → whatsapp_flow leave_request immediately.
+- Staff "tell my/me manager I can't come / sick / headache" → staff_request HR (preprocessor). NEVER invent "form below" / "Tap below" without a real whatsapp_flow formatted_flow.
+- Explicit leave/vacation form asks only ("request leave", "leave form") → whatsapp_flow leave_request and paste formatted_flow VERBATIM.
 - WhatsApp templates outside 24h window; voice_reply when asked.
-- NEVER use inform_staff for staff escalating THEIR OWN issue to the manager (wages, payslip, visa) — that is staff_request.
+- NEVER use inform_staff for staff escalating THEIR OWN issue to the manager (wages, payslip, visa, absence) — that is staff_request.
 `.trim();
 
 export const SCENARIO_INTEL = `

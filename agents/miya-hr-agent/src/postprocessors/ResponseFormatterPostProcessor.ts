@@ -113,7 +113,7 @@ const responseFormatter = new PostProcessor({
     }
 
     if (
-      /\b(confirmation card will be shown|noted that for your manager|preparing to (?:let your manager know|inform your manager)|correct recipient|final approval before anything is sent)\b/i.test(
+      /\b(confirmation card will be shown|noted that for your manager|preparing to (?:let your manager know|inform your manager)|correct recipient|final approval before anything is sent|submit a leave request using the form below|tap below to submit your leave request|fill in the dates and reason)\b/i.test(
         formatted,
       )
     ) {

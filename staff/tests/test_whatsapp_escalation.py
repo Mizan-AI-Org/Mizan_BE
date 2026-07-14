@@ -64,3 +64,32 @@ class WhatsAppEscalationTests(SimpleTestCase):
         self.assertIsNotNone(routed)
         assert routed is not None
         self.assertEqual(routed["category"], "PAYROLL")
+
+    def test_absence_tell_me_manager_classifies_hr(self):
+        msg = (
+            "Tell me manager that I can not come to work tomorrow. "
+            "I have a slight headache"
+        )
+        routed = classify_whatsapp_escalation(msg)
+        self.assertIsNotNone(routed)
+        assert routed is not None
+        self.assertEqual(routed["category"], "HR")
+        self.assertTrue(looks_like_staff_manager_escalation(msg))
+
+    def test_early_pay_request_classifies_payroll(self):
+        msg = (
+            "Thanks, also request an early page for this month "
+            "so that I can pay my medical bills"
+        )
+        routed = classify_whatsapp_escalation(msg)
+        self.assertIsNotNone(routed)
+        assert routed is not None
+        self.assertEqual(routed["category"], "PAYROLL")
+        self.assertTrue(looks_like_staff_manager_escalation(msg))
+
+    def test_weekswages_typo_classifies_payroll(self):
+        msg = "Now Tell my manager that I'm yet to receive my last 2 weekswages"
+        routed = classify_whatsapp_escalation(msg)
+        self.assertIsNotNone(routed)
+        assert routed is not None
+        self.assertEqual(routed["category"], "PAYROLL")

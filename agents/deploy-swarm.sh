@@ -68,21 +68,29 @@ copy_env() {
   fi
 }
 
-# Keep daily scenario persona snippets in sync from agents/shared/
+# Keep shared intent helpers + persona snippets in sync from agents/shared/
 sync_daily_scenarios() {
-  local shared="$SCRIPT_DIR/shared/dailyScenariosPersona.ts"
-  if [[ ! -f "$shared" ]]; then
-    err "Missing $shared"
+  local shared_dir="$SCRIPT_DIR/shared"
+  if [[ ! -f "$shared_dir/dailyScenariosPersona.ts" ]]; then
+    err "Missing $shared_dir/dailyScenariosPersona.ts"
     return 1
   fi
   mkdir -p "$MAIN_AGENT/src/shared"
-  cp "$shared" "$MAIN_AGENT/src/shared/dailyScenariosPersona.ts"
+  cp "$shared_dir/dailyScenariosPersona.ts" "$MAIN_AGENT/src/shared/dailyScenariosPersona.ts"
   for entry in "${SPECIALISTS[@]}"; do
     local dir="${entry%%:*}"
-    mkdir -p "$SCRIPT_DIR/$dir/src/shared"
-    cp "$shared" "$SCRIPT_DIR/$dir/src/shared/dailyScenariosPersona.ts"
+    mkdir -p "$SCRIPT_DIR/$dir/src/shared" "$SCRIPT_DIR/$dir/src/utils"
+    cp "$shared_dir/dailyScenariosPersona.ts" "$SCRIPT_DIR/$dir/src/shared/dailyScenariosPersona.ts"
+    for f in clockInGuard.ts incidentIntent.ts checklistIntent.ts myShiftsIntent.ts; do
+      if [[ -f "$shared_dir/$f" ]]; then
+        cp "$shared_dir/$f" "$SCRIPT_DIR/$dir/src/shared/$f"
+      fi
+    done
+    if [[ -f "$shared_dir/staffEscalationRouting.ts" ]]; then
+      cp "$shared_dir/staffEscalationRouting.ts" "$SCRIPT_DIR/$dir/src/utils/staffEscalationRouting.ts"
+    fi
   done
-  ok "Synced dailyScenariosPersona.ts → my-agent + all specialists"
+  ok "Synced shared persona + intent helpers → my-agent + all specialists"
 }
 
 sync_production_env() {

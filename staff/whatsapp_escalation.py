@@ -18,8 +18,9 @@ class EscalationRoute(TypedDict):
 
 
 TELL_MANAGER_RE = re.compile(
-    r"\b(tell\s+(my\s+)?manager|pass\s+(this\s+)?(to|on\s+to)\s+(my\s+)?manager|"
-    r"let\s+(my\s+)?manager\s+know|inform\s+(my\s+)?manager|"
+    r"\b(tell\s+(me\s+)?(the\s+)?(my\s+)?manager|pass\s+(this\s+)?(to|on\s+to)\s+(my\s+)?manager|"
+    r"let\s+(the\s+)?(my\s+)?manager\s+know|inform\s+(the\s+)?(my\s+)?manager|"
+    r"message\s+(the\s+)?(my\s+)?manager|ask\s+(the\s+)?(my\s+)?manager|"
     r"dis\s+[àa]\s+(mon\s+)?(manager|responsable|patron)|"
     r"قل\s+(ل|لـ)?(المدير|المانجر|المسؤول))\b",
     re.I,
@@ -37,7 +38,10 @@ PAYROLL_RE = re.compile(
     r"haven['']?t\s+received\s+(my\s+)?(pay|wages?|salary|last)|"
     r"yet\s+to\s+receive\s+(my\s+)?(pay|wages?|salary|last)|"
     r"didn['']?t\s+(get|receive)\s+(my\s+)?(pay|wages?|salary)|"
-    r"last\s+week['']?s?\s+wages?|paie|salaire|أجرى|راتبي)\b",
+    r"last\s+week['']?s?\s+wages?|last\s+\d+\s+weeks?\s*wages?|weekswages|"
+    r"early\s+(pay|page|payment|salary)|salary\s+advance|advance\s+(pay|payment|salary)|"
+    r"pay\s+(me\s+)?early|avance\s+sur\s+salaire|paie\s+anticipée|"
+    r"paie|salaire|أجرى|راتبي)\b",
     re.I,
 )
 
@@ -48,6 +52,16 @@ DOCUMENT_RE = re.compile(
 
 HR_RE = re.compile(
     r"\b(leave\s+request|time\s+off|vacation|holiday|sick\s+day|hr\s+request|cong[eé]|arrêt\s+maladie|إجازة)\b",
+    re.I,
+)
+
+ABSENCE_RE = re.compile(
+    r"\b(can\s*['']?t|cannot|can\s+not|won['']?t)\s+(come|make\s+it|be\s+at\s+work|work)|"
+    r"\b(not\s+coming|not\s+able\s+to\s+(come|work)|off\s+(work|today|tomorrow)|"
+    r"call\s+in\s+sick|sick\s+leave|absen(t|ce)|"
+    r"headache|not\s+feeling\s+well|feeling\s+(sick|unwell|ill)|"
+    r"mal\s+de\s+tête|malade|je\s+ne\s+peux\s+pas\s+venir|"
+    r"صداع|مريض|ما\s+نقدرش\s+نجي)\b",
     re.I,
 )
 
@@ -106,7 +120,7 @@ def classify_whatsapp_escalation(text: str) -> Optional[EscalationRoute]:
     )
     is_payroll = bool(PAYROLL_RE.search(t))
     is_doc = bool(DOCUMENT_RE.search(t))
-    is_hr = bool(HR_RE.search(t))
+    is_hr = bool(HR_RE.search(t)) or bool(ABSENCE_RE.search(t))
     is_sched = bool(SCHEDULING_RE.search(t))
     is_maint = bool(MAINTENANCE_RE.search(t))
 
@@ -139,6 +153,14 @@ def classify_whatsapp_escalation(text: str) -> Optional[EscalationRoute]:
         re.I,
     ):
         return {"category": "DOCUMENT", "subject": t[:200], "description": t}
+
+    if is_hr and re.search(
+        r"\b(need|want|ask|request|can\s*['']?t|cannot|can\s+not|won['']?t|please|"
+        r"بغيت|خاصني|je\s+veux|demande)\b",
+        t,
+        re.I,
+    ):
+        return {"category": "HR", "subject": t[:200], "description": t}
 
     return None
 

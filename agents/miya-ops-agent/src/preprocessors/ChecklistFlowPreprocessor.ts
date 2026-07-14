@@ -121,17 +121,18 @@ export const checklistFlowPreprocessor = new PreProcessor({
                 };
             }
             const message = String(toolResult.message || "").trim();
-            if (message) {
-                return {
-                    action: "block" as const,
-                    response: message,
-                    metadata: {
-                        checklist_status: toolResult.status,
-                        checklist_mode: mode,
-                    },
-                };
-            }
-            return { action: "proceed" as const };
+            return {
+                action: "block" as const,
+                response:
+                    message ||
+                    (mode === "preview"
+                        ? "I couldn't load your tasks right now. Please try again in a moment."
+                        : "I couldn't start your checklist right now. Make sure you're clocked in, then say *start checklist* again."),
+                metadata: {
+                    checklist_status: toolResult.status,
+                    checklist_mode: mode,
+                },
+            };
         }
 
         return { action: "proceed" as const };

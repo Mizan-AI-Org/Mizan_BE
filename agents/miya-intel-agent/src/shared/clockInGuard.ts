@@ -12,11 +12,11 @@ export const CASH_BEFORE_CLOCK_IN_RE =
 
 /** Fake / broken clock-in apologies the model invents. */
 export const FAKE_CLOCK_IN_OUTAGE_RE =
-  /\b(trouble with the clock[- ]?in|temporary system issue preventing clock[- ]?ins?|clock[- ]?in system right now|unable to clock you in|sorry[,.]?\s*I was unable to clock you in|having a bit of trouble with (?:the )?clock|technical issue(?:\s+\w+){0,12}\s+clock|couldn['']t clock you in|encountered a technical issue.{0,80}clock|please try again later or contact your manager for assistance)\b/i;
+  /\b(trouble with the clock[- ]?in|temporary system issue preventing clock[- ]?ins?|clock[- ]?in system right now|unable to clock you in|sorry[,.]?\s*I was unable to clock you in|having a bit of trouble with (?:the )?clock|technical issue(?:\s+\w+){0,20}clock|couldn['']t clock you in|could not clock you in|encountered a technical issue.{0,100}clock|due to a technical issue.{0,40}clock|clock.{0,40}technical issue|please try again (?:in a bit|later)(?:\s+or\s+contact your manager)?)\b/i;
 
 /** Fake shift-fetch apologies (Space invents these instead of calling my_shifts). */
 export const FAKE_SHIFT_FETCH_RE =
-  /\b(trouble fetching your shift|having a little trouble fetching your shift|couldn['']t (?:fetch|load|get|access) your shift|unable to (?:fetch|load|get|access) your shift|shift details right now|cannot access your schedule|can['']t access your schedule|check your staff portal|contact your manager for your shift)\b/i;
+  /\b(trouble fetching your shift|having a little trouble fetching your shift|couldn['']t (?:fetch|load|get|access) your shift|unable to (?:fetch|load|get|access) your shift|shift details right now|cannot access your schedule|can['']t access your schedule|check your staff portal|contact your manager for your shift|try again in a bit.{0,40}shift)\b/i;
 
 export function isClockInMessage(text: string): boolean {
   const lower = text.toLowerCase().trim();
@@ -85,13 +85,19 @@ export function shouldForceStaffClockIn(
   messages: Array<Record<string, unknown>>,
   hasLocation: boolean,
 ): boolean {
-  if (hasLocation && !String(lastUserText || "").trim()) return true;
+  // WhatsApp location pins are clock-in GPS — even when the pin has a place name caption.
+  if (hasLocation) return true;
   if (isClockInMessage(lastUserText)) return true;
 
   const assistants = extractAssistantTexts(messages);
   const recentAsk = [...assistants].reverse().find((t) => looksLikeCashBeforeClockInAsk(t));
   if (recentAsk && looksLikeCashClockInFollowUp(lastUserText)) return true;
   if (recentAsk && isClockInMessage(lastUserText)) return true;
+
+  const askedForLocation = [...assistants]
+    .reverse()
+    .some((t) => /\bshare your location\b|\blocation to clock in\b/i.test(t));
+  if (askedForLocation && looksLikeCashClockInFollowUp(lastUserText)) return true;
   return false;
 }
 
