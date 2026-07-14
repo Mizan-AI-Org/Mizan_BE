@@ -68,21 +68,38 @@ copy_env() {
   fi
 }
 
-# Keep daily scenario persona snippets in sync from agents/shared/
+# Keep shared intent helpers + persona snippets in sync from agents/shared/
 sync_daily_scenarios() {
-  local shared="$SCRIPT_DIR/shared/dailyScenariosPersona.ts"
-  if [[ ! -f "$shared" ]]; then
-    err "Missing $shared"
+  local shared_dir="$SCRIPT_DIR/shared"
+  if [[ ! -f "$shared_dir/dailyScenariosPersona.ts" ]]; then
+    err "Missing $shared_dir/dailyScenariosPersona.ts"
     return 1
   fi
   mkdir -p "$MAIN_AGENT/src/shared"
-  cp "$shared" "$MAIN_AGENT/src/shared/dailyScenariosPersona.ts"
+  cp "$shared_dir/dailyScenariosPersona.ts" "$MAIN_AGENT/src/shared/dailyScenariosPersona.ts"
   for entry in "${SPECIALISTS[@]}"; do
     local dir="${entry%%:*}"
-    mkdir -p "$SCRIPT_DIR/$dir/src/shared"
-    cp "$shared" "$SCRIPT_DIR/$dir/src/shared/dailyScenariosPersona.ts"
+    mkdir -p "$SCRIPT_DIR/$dir/src/shared" "$SCRIPT_DIR/$dir/src/utils"
+    cp "$shared_dir/dailyScenariosPersona.ts" "$SCRIPT_DIR/$dir/src/shared/dailyScenariosPersona.ts"
+    for f in clockInGuard.ts incidentIntent.ts checklistIntent.ts myShiftsIntent.ts \
+             roleGate.ts managerCopilotIntent.ts staffCompanionIntent.ts dailyScenariosPersona.ts; do
+      if [[ -f "$shared_dir/$f" ]]; then
+        cp "$shared_dir/$f" "$SCRIPT_DIR/$dir/src/shared/$f"
+      fi
+    done
+    if [[ -f "$shared_dir/staffEscalationRouting.ts" ]]; then
+      cp "$shared_dir/staffEscalationRouting.ts" "$SCRIPT_DIR/$dir/src/utils/staffEscalationRouting.ts"
+    fi
+    # Manager copilot preprocessor lives on finance (canonical) — copy to other specialists if present
+    if [[ -f "$SCRIPT_DIR/miya-finance-agent/src/preprocessors/ManagerCopilotPreprocessor.ts" ]]; then
+      mkdir -p "$SCRIPT_DIR/$dir/src/preprocessors"
+      if [[ "$dir" != "miya-finance-agent" ]]; then
+        cp "$SCRIPT_DIR/miya-finance-agent/src/preprocessors/ManagerCopilotPreprocessor.ts" \
+          "$SCRIPT_DIR/$dir/src/preprocessors/ManagerCopilotPreprocessor.ts" 2>/dev/null || true
+      fi
+    fi
   done
-  ok "Synced dailyScenariosPersona.ts → my-agent + all specialists"
+  ok "Synced shared persona + intent helpers → my-agent + all specialists"
 }
 
 sync_production_env() {

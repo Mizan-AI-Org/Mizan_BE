@@ -106,6 +106,27 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
     """
     if not isinstance(msg, dict):
         return False
+
+    # Any message while a staff flow is mid-flight stays in Django — including
+    # location pins, interactive replies, and follow-up text after an incident photo.
+    from_phone = msg.get("from")
+    phone_digits = "".join(filter(str.isdigit, str(from_phone or "")))
+    phone_digits = normalize_activation_phone_inbound(phone_digits) or phone_digits
+    if phone_digits:
+        sess = WhatsAppSession.objects.filter(phone=phone_digits).first()
+        if sess:
+            st = getattr(sess, "state", None) or ""
+            ctx = getattr(sess, "context", None) or {}
+            if st in (
+                "awaiting_clock_in_location",
+                "awaiting_incident_text",
+                "awaiting_incident_clarification",
+                "awaiting_incident_photo",
+                "awaiting_task_photo",
+                "awaiting_feedback",
+            ) or ctx.get("incident_photo_media_id"):
+                return True
+
     t = msg.get("type")
     if t in lua_skip_types:
         return True
@@ -114,7 +135,16 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
     if t == "interactive":
         inter = msg.get("interactive") or {}
         if inter.get("type") == "button_reply":
-            title = ((inter.get("button_reply") or {}).get("title") or "").strip()
+            btn = inter.get("button_reply") or {}
+            btn_id = (btn.get("id") or "").strip()
+            title = (btn.get("title") or "").strip()
+            if btn_id in ("clock_in_now", "clock_out_now"):
+                return True
+            if _normalize_clock_in_intent(title):
+                return True
+            title_l = title.strip().lower().replace("-", " ")
+            if title_l in ("clock out", "clockout", "clock out.", "pointer sortie", "pointage sortie"):
+                return True
             try:
                 from staff.whatsapp_escalation import (
                     is_cancel_send_reply,
@@ -129,7 +159,8 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
                 ):
                     return True
             except Exception:
-                pass
+                # Fail closed: keep escalations/confirm buttons out of Lua.
+                return True
     _, lat_raw, lon_raw = _extract_whatsapp_inbound_location(msg)
     lat_c, lon_c = _coerce_whatsapp_location_lat_lon(lat_raw, lon_raw)
     if lat_c is not None and lon_c is not None:
@@ -139,8 +170,7 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
         if _looks_like_voice_ui_placeholder(body):
             return True
         # Clock-in / clock-out are owned by Django (Share Location + geofence).
-        # Never forward to Lua/Space — Space has no clock-in preprocessor and invents
-        # "trouble with the clock-in system" / "opening float" instead of the location button.
+        # Never forward to Lua/Space — Space invents "technical issue" / "opening float".
         if _normalize_clock_in_intent(body):
             return True
         body_l = body.strip().lower().replace("-", " ")
@@ -153,20 +183,8 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
                 return True
         except Exception:
             pass
-        # Recover from wrong cash-float clock-in flows: while awaiting GPS, Django
-        # owns every text turn (re-prompt Share Location / parse coords). Never
-        # let Lua/finance continue a float interrogation.
-        from_phone = msg.get("from")
-        phone_digits = "".join(filter(str.isdigit, str(from_phone or "")))
-        phone_digits = normalize_activation_phone_inbound(phone_digits) or phone_digits
-        if phone_digits:
-            sess = WhatsAppSession.objects.filter(phone=phone_digits).first()
-            if sess and getattr(sess, "state", None) == "awaiting_clock_in_location":
-                return True
-            if sess and getattr(sess, "state", None) == "awaiting_incident_photo":
-                return True
-        # Staff → manager escalations (wages, payslip, HR docs) must land as
-        # StaffRequest on the dashboard — never Lua/Space inform_staff confirm flows.
+        # Staff → manager escalations (wages, payslip, absence) must land as
+        # StaffRequest on the dashboard — never Lua leave-form / confirm invents.
         try:
             from staff.whatsapp_escalation import (
                 is_cancel_send_reply,
@@ -191,7 +209,8 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
             ):
                 return True
         except Exception:
-            pass
+            # Fail closed on escalation detection errors.
+            return True
         # Safety / maintenance incident reports (broken glass, slips, …)
         if looks_like_whatsapp_incident_report(body):
             return True
@@ -204,26 +223,11 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
             pass
         if _normalize_start_checklist_intent(body):
             return True
-        if phone_digits:
-            sess = WhatsAppSession.objects.filter(phone=phone_digits).first()
-            if sess:
-                st = getattr(sess, "state", None) or ""
-                ctx = getattr(sess, "context", None) or {}
-                if st in (
-                    "awaiting_incident_text",
-                    "awaiting_incident_clarification",
-                    "awaiting_incident_photo",
-                ) or ctx.get("incident_photo_media_id"):
-                    return True
         pair = _parse_lat_lon_from_clock_in_text(body)
         if pair:
             if _text_looks_like_shared_gps_clock_in(body):
                 return True
-            # Bare coordinates while we've asked for GPS — Django owns this turn; do not
-            # forward to Lua or Miya races staff_clock_in without coords / wrong args.
-            from_phone = msg.get("from")
-            phone_digits = "".join(filter(str.isdigit, str(from_phone or "")))
-            phone_digits = normalize_activation_phone_inbound(phone_digits) or phone_digits
+            # Bare coordinates while we've asked for GPS — Django owns this turn.
             if phone_digits:
                 sess = WhatsAppSession.objects.filter(phone=phone_digits).first()
                 if sess and getattr(sess, "state", None) == "awaiting_clock_in_location":
@@ -251,7 +255,9 @@ def _payload_should_skip_lua_forward(payload: dict, lua_skip_types: set) -> bool
             return False
         return True
     except Exception:
-        return False
+        # Fail closed: never race Lua when ownership detection itself errors.
+        logger.exception("WhatsApp Lua-skip ownership check failed — skipping Lua forward")
+        return True
 
 
 def _create_staff_captured_order_parsed(restaurant, user, text, channel):
@@ -745,6 +751,30 @@ def _normalize_clock_in_intent(body):
     return exact or any(p in normalized for p in phrases)
 
 
+def _normalize_what_next_intent(body):
+    """Staff companion: 'what should I do next?' / 'what's next?'"""
+    if not body or not isinstance(body, str):
+        return False
+    raw = body.strip().lower()
+    normalized = "".join(c for c in raw if c.isalnum() or c.isspace())
+    normalized = " ".join(normalized.split())
+    if not normalized:
+        return False
+    phrases = (
+        "what should i do next",
+        "whats next",
+        "what next",
+        "what do i do next",
+        "what are my tasks",
+        "what are my tasks today",
+        "show my tasks",
+        "my tasks today",
+        "que faire maintenant",
+        "que faire ensuite",
+    )
+    return any(p in normalized for p in phrases)
+
+
 def _normalize_start_checklist_intent(body):
     """
     Detect start-checklist intent: case-insensitive, variation tolerant.
@@ -752,6 +782,8 @@ def _normalize_start_checklist_intent(body):
     """
     if not body or not isinstance(body, str):
         return False
+    if _normalize_what_next_intent(body):
+        return True
     raw = body.strip().lower()
     normalized = ''.join(c for c in raw if c.isalnum() or c.isspace())
     normalized = ' '.join(normalized.split())
@@ -2265,6 +2297,7 @@ def whatsapp_webhook(request):
                     )
                     _text_is_staff_escalation = False
                     _interactive_is_staff_escalation = False
+                    _interactive_is_clock = False
                     _text_is_incident_report = False
                     _text_is_my_shifts = False
                     _text_is_checklist_start = False
@@ -2276,6 +2309,18 @@ def whatsapp_webhook(request):
                     )
                     _awaiting_clock_in_gps = bool(
                         session and getattr(session, "state", None) == "awaiting_clock_in_location"
+                    )
+                    _awaiting_incident = bool(
+                        session
+                        and (
+                            getattr(session, "state", None)
+                            in (
+                                "awaiting_incident_text",
+                                "awaiting_incident_clarification",
+                                "awaiting_incident_photo",
+                            )
+                            or (getattr(session, "context", None) or {}).get("incident_photo_media_id")
+                        )
                     )
                     try:
                         from staff.whatsapp_escalation import (
@@ -2308,7 +2353,13 @@ def whatsapp_webhook(request):
                         if msg_type == 'interactive':
                             inter = msg.get('interactive') or {}
                             if inter.get('type') == 'button_reply':
-                                btn_title = ((inter.get('button_reply') or {}).get('title') or '').strip()
+                                btn = inter.get('button_reply') or {}
+                                btn_id = (btn.get('id') or '').strip()
+                                btn_title = (btn.get('title') or '').strip()
+                                if btn_id in ('clock_in_now', 'clock_out_now') or _normalize_clock_in_intent(
+                                    btn_title
+                                ):
+                                    _interactive_is_clock = True
                                 _interactive_is_staff_escalation = (
                                     looks_like_staff_manager_escalation(btn_title)
                                     or is_explicit_confirm_send_reply(btn_title)
@@ -2317,6 +2368,8 @@ def whatsapp_webhook(request):
                                         and session_has_staff_escalation_context(session)
                                     )
                                 )
+                            elif inter.get('type') == 'location_reply':
+                                _interactive_is_clock = True
                     except Exception:
                         pass
                     if (
@@ -2328,8 +2381,10 @@ def whatsapp_webhook(request):
                         and not _text_is_voice_placeholder
                         and not _text_is_staff_escalation
                         and not _interactive_is_staff_escalation
+                        and not _interactive_is_clock
                         and not _text_is_clock_in
                         and not _awaiting_clock_in_gps
+                        and not _awaiting_incident
                         and not _text_is_incident_report
                         and not _text_is_my_shifts
                         and not _text_is_checklist_start

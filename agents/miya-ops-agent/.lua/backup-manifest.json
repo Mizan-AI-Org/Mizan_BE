@@ -1,6 +1,6 @@
 {
-  "lastHash": "66c0110fb9627ef8ea7c946fd2228ecfb59c02ff270e36cb6d494240c04d3a1f",
-  "lastPushedAt": "2026-07-14T13:14:23.904Z",
+  "lastHash": "2d3d170a096596a4a67fc37f0cac51ee420cbadd238d98e46b02e3bd14bfe52d",
+  "lastPushedAt": "2026-07-14T17:07:16.901Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "711e90dac4048815"
+      "hash": "ada16d9779311d3a"
     },
     {
       "relativePath": "package.json",
@@ -24,11 +24,11 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "c53776f99a79a8bf"
+      "hash": "54a3f52016e8f22a"
     },
     {
       "relativePath": "src/postprocessors/ResponseFormatterPostProcessor.ts",
-      "hash": "0ef7e7a73a314727"
+      "hash": "71797a0f95aa9b1d"
     },
     {
       "relativePath": "src/preprocessors/AccountActivationPreprocessor.ts",
@@ -40,11 +40,11 @@
     },
     {
       "relativePath": "src/preprocessors/ChecklistFlowPreprocessor.ts",
-      "hash": "c7b721fb277f46bc"
+      "hash": "d8acb63160de2aa0"
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "f94cfb3d266c17e3"
+      "hash": "ac836dfeff7fd5f8"
     },
     {
       "relativePath": "src/preprocessors/ClockOutPreprocessor.ts",
@@ -63,8 +63,12 @@
       "hash": "246ca85f145a5062"
     },
     {
+      "relativePath": "src/preprocessors/ManagerCopilotPreprocessor.ts",
+      "hash": "fae8da3e95956b6c"
+    },
+    {
       "relativePath": "src/preprocessors/MyShiftsPreprocessor.ts",
-      "hash": "d266739644bb1d90"
+      "hash": "cef0c9e9659cbd40"
     },
     {
       "relativePath": "src/preprocessors/operationIntent.ts",
@@ -88,23 +92,35 @@
     },
     {
       "relativePath": "src/shared/checklistIntent.ts",
-      "hash": "0b0972934d18eaff"
+      "hash": "eec81c33e9831c91"
     },
     {
       "relativePath": "src/shared/clockInGuard.ts",
-      "hash": "9ba64fa7badee8fa"
+      "hash": "5055ad457b23a2d4"
     },
     {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
-      "hash": "c99cece8e60fe616"
+      "hash": "43bf539a08ce2f49"
     },
     {
       "relativePath": "src/shared/incidentIntent.ts",
-      "hash": "0180b5f4da78e217"
+      "hash": "586da2f1f8376844"
+    },
+    {
+      "relativePath": "src/shared/managerCopilotIntent.ts",
+      "hash": "67036cd2979f80cb"
     },
     {
       "relativePath": "src/shared/myShiftsIntent.ts",
-      "hash": "e24dc3f40ab91967"
+      "hash": "9f35ee4eea0fea5d"
+    },
+    {
+      "relativePath": "src/shared/roleGate.ts",
+      "hash": "ca1021ac83d963d9"
+    },
+    {
+      "relativePath": "src/shared/staffCompanionIntent.ts",
+      "hash": "798820f8d5e6927b"
     },
     {
       "relativePath": "src/skills/operations.skill.ts",
@@ -208,7 +224,7 @@
     },
     {
       "relativePath": "src/utils/staffEscalationRouting.ts",
-      "hash": "59aff0625431a403"
+      "hash": "57829afa2a82f05f"
     },
     {
       "relativePath": "src/utils/stripSystemContext.ts",

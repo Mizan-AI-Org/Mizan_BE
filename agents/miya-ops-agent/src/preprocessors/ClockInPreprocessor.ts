@@ -4,6 +4,10 @@
  *
  * Calls ApiService directly (not only via StaffClockInTool) so we never depend on
  * User.get() being available inside the preprocessor runtime.
+ *
+ * CRITICAL: On WhatsApp without GPS, ALWAYS call the API (do not short-circuit with
+ * plain text). Django's clock-in-by-phone sets awaiting_clock_in_location and sends
+ * the Share Location button — without that, the next pin never reaches Django geofence.
  */
 import { ChatMessage, PreProcessor, UserDataInstance } from "lua-cli";
 import ApiService from "../services/ApiService";
@@ -20,6 +24,8 @@ import {
 import {
     shouldForceStaffClockIn,
     shareLocationClockInMessage,
+    extractCoordsDeep,
+    assistantAskedForClockInLocation,
 } from "../shared/clockInGuard";
 
 const checklistStarterTool = new ChecklistStarterTool();
@@ -38,30 +44,13 @@ function asPhoneSource(user: UserDataInstance): LuaUserPhoneSource & { uid?: str
     };
 }
 
-function peelCoord(v: unknown): number | undefined {
-    if (v === null || v === undefined || v === "") return undefined;
-    const n =
-        typeof v === "number" ? v : Number(String(v).trim().replace(/\u2212/g, "-").replace(/−/g, "-"));
-    return Number.isFinite(n) ? n : undefined;
-}
-
 function coordsFromMessages(messages: ChatMessage[]): { lat?: number; lng?: number } {
-    for (const msg of messages) {
-        const m = msg as unknown as Record<string, unknown>;
-        if (m.type === "location" || m.latitude != null || m.longitude != null) {
-            const lat =
-                peelCoord(m.latitude) ??
-                peelCoord(m.lat) ??
-                peelCoord(m.degreesLatitude);
-            const lng =
-                peelCoord(m.longitude) ??
-                peelCoord(m.lng) ??
-                peelCoord(m.lon) ??
-                peelCoord(m.degreesLongitude);
-            if (lat !== undefined && lng !== undefined) return { lat, lng };
-        }
+    // Prefer newest messages first — the pin is usually the last turn.
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const found = extractCoordsDeep(messages[i] as unknown as Record<string, unknown>);
+        if (found.lat !== undefined && found.lng !== undefined) return found;
     }
-    return {};
+    return extractCoordsDeep(messages as unknown);
 }
 
 function mapErrorToCode(rawError: string | undefined | null): string {
@@ -100,7 +89,7 @@ async function runClockIn(
 
     const useStaffId = (isWeb && !!staffId) || (!phone && !!staffId);
     console.log(
-        `[ClockInPreprocessor] API clock-in channel=${channel || "-"} phone=${phone ? "***" + phone.slice(-4) : "-"} staff=${useStaffId ? "yes" : "no"} loc=${hasLocation}`,
+        `[ClockInPreprocessor] API clock-in channel=${channel || "-"} phone=${phone ? "***" + phone.slice(-4) : "-"} staff=${useStaffId ? "yes" : "no"} loc=${hasLocation} lat=${hasLocation ? coords.lat : "-"} lng=${hasLocation ? coords.lng : "-"}`,
     );
 
     const result = await api.clockInByPhone({
@@ -149,31 +138,29 @@ export const clockInPreprocessor = new PreProcessor({
             return { action: "proceed" as const };
         }
 
-        // WhatsApp without GPS: never call the API or invent failures — ask for location.
-        if (!hasLocation && !isWebDeliveryChannel(channel)) {
-            return {
-                action: "block" as const,
-                response: shareLocationClockInMessage(channel),
-                metadata: { clock_in_code: "location_required", clock_in_status: "success" },
-            };
-        }
-
         const phone = resolveStaffPhoneForByPhoneTools(asPhoneSource(user), null);
         console.log(
-            `[ClockInPreprocessor] Running staff_clock_in; phone=${phone || "(from uid)"}, hasLocation=${hasLocation}, channel=${channel}, lastText=${JSON.stringify(lastText.slice(0, 80))}`,
+            `[ClockInPreprocessor] Running staff_clock_in; phone=${phone || "(from uid)"}, hasLocation=${hasLocation}, askedLoc=${assistantAskedForClockInLocation(msgs)}, channel=${channel}, lastText=${JSON.stringify(lastText.slice(0, 80))}`,
         );
 
+        // Always call the API — even without GPS on WhatsApp. Django must:
+        // 1) set awaiting_clock_in_location, 2) send the Share Location button.
+        // Short-circuiting with plain text left session idle, so the next pin
+        // was never owned by Django and Space invented "technical issue".
         let toolResult: { status: string; code: string; message: string };
         try {
             toolResult = await runClockIn(user, channel, { lat, lng });
         } catch (err: unknown) {
             const em = err instanceof Error ? err.message : String(err);
             console.error("[ClockInPreprocessor] staff_clock_in threw:", em);
+            // After a location ask, never invent a technical outage — re-prompt.
             toolResult = {
                 status: "error",
-                code: "server_error",
+                code: hasLocation || assistantAskedForClockInLocation(msgs) ? "server_error" : "location_required",
                 message:
-                    "We couldn't reach the clock-in service right now. Please try again in a moment.",
+                    hasLocation || assistantAskedForClockInLocation(msgs)
+                        ? "We couldn't complete clock-in with that location. Please tap Share Location again (use Current Location, not a map pin)."
+                        : shareLocationClockInMessage(channel),
             };
         }
 
@@ -186,6 +173,16 @@ export const clockInPreprocessor = new PreProcessor({
                 code === "location_required"
                     ? shareLocationClockInMessage(channel)
                     : "We couldn't complete clock-in. Please try again or contact your manager.";
+        }
+
+        // Never surface invent-style copy from a bad API payload.
+        if (
+            /\btechnical issue\b|\btrouble with the clock\b/i.test(response) &&
+            code !== "outside_geofence"
+        ) {
+            response = hasLocation
+                ? "We couldn't complete clock-in with that location. Please move closer to your workplace and share your *current* location again."
+                : shareLocationClockInMessage(channel);
         }
 
         if (code === "clocked_in") {

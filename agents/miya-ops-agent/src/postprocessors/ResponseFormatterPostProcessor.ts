@@ -103,8 +103,9 @@ const responseFormatter = new PostProcessor({
     }
 
     if (looksLikeFakeShiftFetch(formatted)) {
+      // Don't leave invent copy — ask them to retry so the my-shifts preprocessor runs.
       formatted =
-        'Say "when is my shift today and tomorrow?" again and I\'ll look up your schedule right away.';
+        'Let me pull that up — please send: *When is my shift today and tomorrow?* and I\'ll check your schedule right away.';
     }
 
     if (looksLikeFakeIncidentReport(formatted)) {
@@ -113,7 +114,7 @@ const responseFormatter = new PostProcessor({
     }
 
     if (
-      /\b(confirmation card will be shown|noted that for your manager|preparing to (?:let your manager know|inform your manager)|correct recipient|final approval before anything is sent)\b/i.test(
+      /\b(confirmation card will be shown|noted that for your manager|preparing to (?:let your manager know|inform your manager)|correct recipient|final approval before anything is sent|submit a leave request using the form below|tap below to submit your leave request|fill in the dates and reason)\b/i.test(
         formatted,
       )
     ) {

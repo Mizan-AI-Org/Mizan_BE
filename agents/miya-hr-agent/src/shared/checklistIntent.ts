@@ -2,6 +2,8 @@
  * Shared checklist intent detection for WhatsApp + Lua preprocessors.
  */
 
+export { isWhatShouldIDoNextAsk } from "./staffCompanionIntent";
+
 export const START_CHECKLIST_RE =
   /\b(start\s+(my\s+)?(check\s*lists?|tasks|checklists?)|begin\s+(my\s+)?(check\s*lists?|tasks|checklists?)|checklists?\s+start|get\s+(my\s+)?checklist\s+started|load\s+(my\s+)?(checklist|tasks)|(?:staff\s+)?(?:wants?|needs?)\s+to\s+start\s+(?:their\s+)?(?:checklist|tasks)|ابدأ\s*(المهام|القائمة)|demarrer\s+(la\s+)?checklists?|commencer\s+(la\s+)?checklists?)\b/i;
 
@@ -10,7 +12,7 @@ export const PREVIEW_TASKS_RE =
 
 /** Fake checklist-start apologies the model invents instead of calling checklist_starter. */
 export const FAKE_CHECKLIST_START_RE =
-  /\b(wasn['']?t able to start your checklist|was not able to start your checklist|unable to start your checklist|couldn['']?t start your checklist|could not start your checklist|technical issue.{0,40}checklist|checklist.{0,40}technical issue|having trouble.{0,30}checklist|trouble starting your checklist)\b/i;
+  /\b(wasn['']?t able to start your checklist|was not able to start your checklist|unable to start your checklist|couldn['']?t start your checklist|could not start your checklist|technical (?:issue|snag).{0,60}checklist|checklist.{0,40}technical (?:issue|snag)|having trouble.{0,30}checklist|trouble starting your checklist|try again in a moment.{0,40}checklist)\b/i;
 
 export function isStartChecklistMessage(text: string): boolean {
   const t = (text || "").trim();

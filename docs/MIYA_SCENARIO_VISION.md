@@ -1,5 +1,7 @@
 # Miya Scenario Vision — What Managers & Staff Will Ask For
 
+**Platform north star:** [`MIYA_PLATFORM_VISION.md`](./MIYA_PLATFORM_VISION.md) — Manager Copilot + Staff Companion, RBAC, live data, phased delivery.
+
 **Purpose:** A living catalog of real-world requests managers, staff, owners, suppliers, and guests will make to Miya — across industries, languages, and levels of ambition. Each scenario is tagged by **current capability** so product, engineering, and agent design can converge on one north star:
 
 > **Say it once on WhatsApp (or voice). Miya understands, executes, confirms with proof — or asks exactly one clarifying question.**

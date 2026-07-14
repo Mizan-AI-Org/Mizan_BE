@@ -26,7 +26,7 @@ export function isSafetyIncidentMessage(text: string): boolean {
 
 /** Fake incident-denial apologies the model invents instead of calling the API. */
 export const FAKE_INCIDENT_REPORT_RE =
-  /\b(unable to report the incident|couldn['']t report the incident|failed to report (?:the )?incident|incident at this (?:time|moment)|cannot report the incident|can['']t report the incident|contact your manager directly about)\b/i;
+  /\b(unable to report the incident|couldn['']t report the incident|could not report the incident|failed to report (?:the )?incident|incident at this (?:time|moment)|cannot report the incident|can['']t report the incident|due to a technical issue.{0,80}(?:incident|broken|glass)|technical issue.{0,80}(?:incident|broken|glass)|contact your manager (?:directly about|for assistance))\b/i;
 
 export function looksLikeFakeIncidentReport(text: string): boolean {
   return FAKE_INCIDENT_REPORT_RE.test(String(text || ""));
