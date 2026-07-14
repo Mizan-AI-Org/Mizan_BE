@@ -13,6 +13,7 @@ import {
 import {
     isPreviewTasksMessage,
     isStartChecklistMessage,
+    isWhatShouldIDoNextAsk,
 } from "../shared/checklistIntent";
 
 const respondTool = new ChecklistRespondTool();
@@ -100,10 +101,15 @@ export const checklistFlowPreprocessor = new PreProcessor({
             return { action: "proceed" as const };
         }
 
-        if (isStartChecklist(lastText) || isPreviewChecklist(lastText)) {
-            const mode = isPreviewChecklist(lastText) && !isStartChecklist(lastText) ? "preview" : "start";
+        // Staff companion: "what should I do next?" → preview tasks (never invent empty coaching).
+        const whatNext = isWhatShouldIDoNextAsk(lastText);
+        if (isStartChecklist(lastText) || isPreviewChecklist(lastText) || whatNext) {
+            const mode =
+                whatNext || (isPreviewChecklist(lastText) && !isStartChecklist(lastText))
+                    ? "preview"
+                    : "start";
             console.log(
-                `[ChecklistFlowPreprocessor] starter mode=${mode} phone=${phone || "(uid)"} channel=${channel}`,
+                `[ChecklistFlowPreprocessor] starter mode=${mode} whatNext=${whatNext} phone=${phone || "(uid)"} channel=${channel}`,
             );
             let toolResult: Record<string, unknown> = {};
             try {
@@ -121,16 +127,33 @@ export const checklistFlowPreprocessor = new PreProcessor({
                 };
             }
             const message = String(toolResult.message || "").trim();
+            let response =
+                message ||
+                (mode === "preview"
+                    ? "I couldn't load your tasks right now. Please try again in a moment."
+                    : "I couldn't start your checklist right now. Make sure you're clocked in, then say *start checklist* again.");
+            if (
+                whatNext &&
+                message &&
+                !/clock/i.test(message) &&
+                /no (active )?checklist|no tasks|nothing to do|0 tasks/i.test(message)
+            ) {
+                response =
+                    `${message}\n\n` +
+                    `If you're on shift, say *Clock me in* then *Start checklist*. ` +
+                    `Or ask *When is my shift today?*`;
+            } else if (whatNext && message) {
+                response =
+                    `Here's what to do next:\n\n${message}\n\n` +
+                    `Reply *Start checklist* when you're ready, or *Yes* / *No* / *N/A* on each step.`;
+            }
             return {
                 action: "block" as const,
-                response:
-                    message ||
-                    (mode === "preview"
-                        ? "I couldn't load your tasks right now. Please try again in a moment."
-                        : "I couldn't start your checklist right now. Make sure you're clocked in, then say *start checklist* again."),
+                response,
                 metadata: {
                     checklist_status: toolResult.status,
                     checklist_mode: mode,
+                    staff_companion_what_next: whatNext,
                 },
             };
         }
