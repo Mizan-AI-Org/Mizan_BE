@@ -1,6 +1,6 @@
 {
-  "lastHash": "1bbea2fad3e1f970eb4f62f67cf5886b3da8d26aebade7e33fb4e5d80b30d087",
-  "lastPushedAt": "2026-07-14T16:16:28.921Z",
+  "lastHash": "88460bcc0d9423c5386fa724cf92a8aac7550e45352f654cd31d343189f8e848",
+  "lastPushedAt": "2026-07-14T16:38:02.938Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "843a9c94e88dc991"
+      "hash": "dba430786174ab7d"
     },
     {
       "relativePath": "package.json",
@@ -44,7 +44,7 @@
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
-      "hash": "f94cfb3d266c17e3"
+      "hash": "ac836dfeff7fd5f8"
     },
     {
       "relativePath": "src/preprocessors/ClockOutPreprocessor.ts",
@@ -92,7 +92,7 @@
     },
     {
       "relativePath": "src/shared/clockInGuard.ts",
-      "hash": "d5e7a06297920bc2"
+      "hash": "c46797e0500f3380"
     },
     {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
