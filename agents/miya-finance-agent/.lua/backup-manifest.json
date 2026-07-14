@@ -1,6 +1,6 @@
 {
-  "lastHash": "fc8dd744da0a6b127fa40fffa40c54e489c1f505227cb1dee651bc23e62e0172",
-  "lastPushedAt": "2026-07-14T16:48:28.475Z",
+  "lastHash": "dad4968b3812a1eb0b68a28e445f7b864e21bbb1aa3ba0cdd070d00c042f7838",
+  "lastPushedAt": "2026-07-14T17:08:02.390Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "5743e7902593052b"
+      "hash": "638391c8744773ca"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "294a2e2417260809"
+      "hash": "adbabf54ee372f0c"
     },
     {
       "relativePath": "src/postprocessors/ResponseFormatterPostProcessor.ts",
@@ -36,7 +36,7 @@
     },
     {
       "relativePath": "src/preprocessors/ChecklistFlowPreprocessor.ts",
-      "hash": "4153e9d82345295b"
+      "hash": "d8acb63160de2aa0"
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
@@ -57,6 +57,10 @@
     {
       "relativePath": "src/preprocessors/LanguageMirrorPreprocessor.ts",
       "hash": "246ca85f145a5062"
+    },
+    {
+      "relativePath": "src/preprocessors/ManagerCopilotPreprocessor.ts",
+      "hash": "fae8da3e95956b6c"
     },
     {
       "relativePath": "src/preprocessors/MyShiftsPreprocessor.ts",
@@ -84,7 +88,7 @@
     },
     {
       "relativePath": "src/shared/checklistIntent.ts",
-      "hash": "7fcc70c8a358436a"
+      "hash": "eec81c33e9831c91"
     },
     {
       "relativePath": "src/shared/clockInGuard.ts",
@@ -92,15 +96,27 @@
     },
     {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
-      "hash": "e477a0eee4b3231b"
+      "hash": "43bf539a08ce2f49"
     },
     {
       "relativePath": "src/shared/incidentIntent.ts",
       "hash": "586da2f1f8376844"
     },
     {
+      "relativePath": "src/shared/managerCopilotIntent.ts",
+      "hash": "67036cd2979f80cb"
+    },
+    {
       "relativePath": "src/shared/myShiftsIntent.ts",
       "hash": "9f35ee4eea0fea5d"
+    },
+    {
+      "relativePath": "src/shared/roleGate.ts",
+      "hash": "ca1021ac83d963d9"
+    },
+    {
+      "relativePath": "src/shared/staffCompanionIntent.ts",
+      "hash": "798820f8d5e6927b"
     },
     {
       "relativePath": "src/skills/finance.skill.ts",
@@ -132,7 +148,7 @@
     },
     {
       "relativePath": "src/skills/tools/SalesReportTool.ts",
-      "hash": "e53fe8ce30e14371"
+      "hash": "4be5c3a09ca48058"
     },
     {
       "relativePath": "src/skills/tools/SquarePosTool.ts",

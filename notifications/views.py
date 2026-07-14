@@ -751,6 +751,30 @@ def _normalize_clock_in_intent(body):
     return exact or any(p in normalized for p in phrases)
 
 
+def _normalize_what_next_intent(body):
+    """Staff companion: 'what should I do next?' / 'what's next?'"""
+    if not body or not isinstance(body, str):
+        return False
+    raw = body.strip().lower()
+    normalized = "".join(c for c in raw if c.isalnum() or c.isspace())
+    normalized = " ".join(normalized.split())
+    if not normalized:
+        return False
+    phrases = (
+        "what should i do next",
+        "whats next",
+        "what next",
+        "what do i do next",
+        "what are my tasks",
+        "what are my tasks today",
+        "show my tasks",
+        "my tasks today",
+        "que faire maintenant",
+        "que faire ensuite",
+    )
+    return any(p in normalized for p in phrases)
+
+
 def _normalize_start_checklist_intent(body):
     """
     Detect start-checklist intent: case-insensitive, variation tolerant.
@@ -758,6 +782,8 @@ def _normalize_start_checklist_intent(body):
     """
     if not body or not isinstance(body, str):
         return False
+    if _normalize_what_next_intent(body):
+        return True
     raw = body.strip().lower()
     normalized = ''.join(c for c in raw if c.isalnum() or c.isspace())
     normalized = ' '.join(normalized.split())

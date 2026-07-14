@@ -5,6 +5,10 @@ import { LuaTool, User } from "lua-cli";
 import { z } from "zod";
 import ApiService from "../../services/ApiService";
 import { noContextError } from "./_common/errors";
+import {
+    assertManagerToolAccess,
+    readCachedRole,
+} from "../../shared/roleGate";
 
 function getRestaurantId(user: any) {
     const userData = user?.data || {};
@@ -27,6 +31,15 @@ export default class SalesReportTool implements LuaTool {
     async execute(input: z.infer<typeof this.inputSchema>) {
         const user = await User.get();
         if (!user) return { status: "error", message: "No context." };
+        const u = user as unknown as { data?: Record<string, unknown>; _luaProfile?: Record<string, unknown> };
+        const gate = assertManagerToolAccess({
+            toolName: "sales_report",
+            role: readCachedRole(u),
+            cachedAudience: u.data?.mizanAudience,
+        });
+        if (!gate.ok) {
+            return { status: "error", message: gate.message, miya_directive: "Relay message_for_user verbatim." };
+        }
         const rid = input.restaurantId || getRestaurantId(user);
         if (!rid) return noContextError();
 

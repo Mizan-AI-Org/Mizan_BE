@@ -10,6 +10,7 @@ import incidentCommandPreprocessor from "./preprocessors/IncidentCommandPreproce
 import checklistFlowPreprocessor from "./preprocessors/ChecklistFlowPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
 import invoicePhotoPreprocessor from "./preprocessors/InvoicePhotoPreprocessor";
+import managerCopilotPreprocessor from "./preprocessors/ManagerCopilotPreprocessor";
 import responseFormatter from "./postprocessors/ResponseFormatterPostProcessor";
 import { SCENARIO_FINANCE, withDailyScenarios } from "./shared/dailyScenariosPersona";
 
@@ -35,11 +36,13 @@ INVOICE RULES:
 - If a photo was parsed, use the extracted values. If parse_photo returned needs_user_input, ask for missing fields.
 
 SALES & POS:
+- Manager copilot preprocessor handles "today's sales", "what's running low", "recommend purchases" — relay its numbers VERBATIM; never invent totals.
 - sales_report = summary + top items. square_pos sales_analysis = trends + recommendations.
 - square_pos prep_list = 4-week forecast + recipes + inventory needs.
 - Custom API: MUST sync_orders first before analysis works.
 - If analysis returns empty, offer to sync.
 - POS disconnected = PRIORITY 1 alert.
+- sales_report / supplier_order / cash_reconciliation are MANAGER-ONLY — if staff ask, redirect politely.
 
 CASH:
 - NEVER handle "clock in" / "I want to clock in" / "pointer" — that is miya-ops staff_clock_in (location share + geofence first).
@@ -66,11 +69,17 @@ ERRORS: Never show raw technical errors. Translate per miya_directive.`,
 
   skills: [financeSkill],
   preProcessors: [
-    languageMirrorPreprocessor,accountActivationPreprocessor, clockInPreprocessor,
+    languageMirrorPreprocessor,
+    accountActivationPreprocessor,
+    clockInPreprocessor,
     myShiftsPreprocessor,
+    managerCopilotPreprocessor,
     checklistFlowPreprocessor,
     staffRequestPreprocessor,
-    incidentCommandPreprocessor, invoicePhotoPreprocessor, operationsCommandPreprocessor],
+    incidentCommandPreprocessor,
+    invoicePhotoPreprocessor,
+    operationsCommandPreprocessor,
+  ],
   postProcessors: [responseFormatter],
 });
 

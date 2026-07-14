@@ -1,6 +1,6 @@
 {
-  "lastHash": "31f4fa9d5945f9fe2f6b577ace996695d5e8e7e6ea4c8575f570df17367e9371",
-  "lastPushedAt": "2026-07-14T16:49:05.075Z",
+  "lastHash": "79aaf6b1cd62e4f89f9be72a01b8d81179c9b39e7a7f36e983b252b69c634225",
+  "lastPushedAt": "2026-07-14T17:08:42.409Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "ead5ba24deb17757"
+      "hash": "20f6f42fadec56f7"
     },
     {
       "relativePath": "package.json",
@@ -36,7 +36,7 @@
     },
     {
       "relativePath": "src/preprocessors/ChecklistFlowPreprocessor.ts",
-      "hash": "4153e9d82345295b"
+      "hash": "d8acb63160de2aa0"
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
@@ -53,6 +53,10 @@
     {
       "relativePath": "src/preprocessors/LanguageMirrorPreprocessor.ts",
       "hash": "246ca85f145a5062"
+    },
+    {
+      "relativePath": "src/preprocessors/ManagerCopilotPreprocessor.ts",
+      "hash": "fae8da3e95956b6c"
     },
     {
       "relativePath": "src/preprocessors/MyShiftsPreprocessor.ts",
@@ -80,7 +84,7 @@
     },
     {
       "relativePath": "src/shared/checklistIntent.ts",
-      "hash": "7fcc70c8a358436a"
+      "hash": "eec81c33e9831c91"
     },
     {
       "relativePath": "src/shared/clockInGuard.ts",
@@ -88,15 +92,27 @@
     },
     {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
-      "hash": "e477a0eee4b3231b"
+      "hash": "43bf539a08ce2f49"
     },
     {
       "relativePath": "src/shared/incidentIntent.ts",
       "hash": "586da2f1f8376844"
     },
     {
+      "relativePath": "src/shared/managerCopilotIntent.ts",
+      "hash": "67036cd2979f80cb"
+    },
+    {
       "relativePath": "src/shared/myShiftsIntent.ts",
       "hash": "9f35ee4eea0fea5d"
+    },
+    {
+      "relativePath": "src/shared/roleGate.ts",
+      "hash": "ca1021ac83d963d9"
+    },
+    {
+      "relativePath": "src/shared/staffCompanionIntent.ts",
+      "hash": "798820f8d5e6927b"
     },
     {
       "relativePath": "src/skills/hr.skill.ts",

@@ -81,13 +81,22 @@ sync_daily_scenarios() {
     local dir="${entry%%:*}"
     mkdir -p "$SCRIPT_DIR/$dir/src/shared" "$SCRIPT_DIR/$dir/src/utils"
     cp "$shared_dir/dailyScenariosPersona.ts" "$SCRIPT_DIR/$dir/src/shared/dailyScenariosPersona.ts"
-    for f in clockInGuard.ts incidentIntent.ts checklistIntent.ts myShiftsIntent.ts; do
+    for f in clockInGuard.ts incidentIntent.ts checklistIntent.ts myShiftsIntent.ts \
+             roleGate.ts managerCopilotIntent.ts staffCompanionIntent.ts dailyScenariosPersona.ts; do
       if [[ -f "$shared_dir/$f" ]]; then
         cp "$shared_dir/$f" "$SCRIPT_DIR/$dir/src/shared/$f"
       fi
     done
     if [[ -f "$shared_dir/staffEscalationRouting.ts" ]]; then
       cp "$shared_dir/staffEscalationRouting.ts" "$SCRIPT_DIR/$dir/src/utils/staffEscalationRouting.ts"
+    fi
+    # Manager copilot preprocessor lives on finance (canonical) — copy to other specialists if present
+    if [[ -f "$SCRIPT_DIR/miya-finance-agent/src/preprocessors/ManagerCopilotPreprocessor.ts" ]]; then
+      mkdir -p "$SCRIPT_DIR/$dir/src/preprocessors"
+      if [[ "$dir" != "miya-finance-agent" ]]; then
+        cp "$SCRIPT_DIR/miya-finance-agent/src/preprocessors/ManagerCopilotPreprocessor.ts" \
+          "$SCRIPT_DIR/$dir/src/preprocessors/ManagerCopilotPreprocessor.ts" 2>/dev/null || true
+      fi
     fi
   done
   ok "Synced shared persona + intent helpers → my-agent + all specialists"
