@@ -232,6 +232,209 @@ def agent_compliance_reminders(request):
     return Response({"success": True, "count": len(rows), "reminders": rows})
 
 
+@api_view(["GET", "POST", "PATCH"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_compliance_documents(request):
+    """
+    Restaurant compliance docs with expiry (insurance, hygiene, extinguishers, registration).
+
+    GET  /api/payroll/agent/compliance-documents/?expiring_within_days=60
+    POST /api/payroll/agent/compliance-documents/  — create or seed
+         body: { action: "seed" } OR { title, document_type, expires_at, ... }
+    PATCH /api/payroll/agent/compliance-documents/ — update by id
+         body: { id, expires_at?, title?, ... }
+    """
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+    from payroll.models import ComplianceDocument
+    from payroll.services.compliance_documents import (
+        DOCUMENT_TYPE_IDS,
+        documents_needing_attention,
+        seed_starter_documents,
+        serialize_document,
+    )
+
+    restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+    if err:
+        return Response({"success": False, "error": err["error"]}, status=err["status"])
+
+    data = request.data if isinstance(getattr(request, "data", None), dict) else {}
+
+    if request.method == "GET":
+        try:
+            within = int(
+                request.query_params.get("expiring_within_days")
+                or data.get("expiring_within_days")
+                or 90
+            )
+        except (TypeError, ValueError):
+            within = 90
+        within = max(0, min(365, within))
+        attention_only = str(
+            request.query_params.get("attention_only") or data.get("attention_only") or ""
+        ).lower() in ("1", "true", "yes")
+        if attention_only or within < 365:
+            docs = documents_needing_attention(restaurant, within_days=within)
+        else:
+            docs = list(
+                ComplianceDocument.objects.filter(
+                    restaurant=restaurant,
+                    status=ComplianceDocument.STATUS_ACTIVE,
+                ).order_by("expires_at", "title")[:40]
+            )
+        rows = [serialize_document(d) for d in docs[:40]]
+        expired = sum(1 for r in rows if r["urgency"] == "expired")
+        soon = sum(1 for r in rows if r["urgency"] in ("critical", "soon"))
+        unset = sum(1 for r in rows if r["urgency"] == "unset")
+        return Response(
+            {
+                "success": True,
+                "count": len(rows),
+                "expired": expired,
+                "expiring_soon": soon,
+                "missing_date": unset,
+                "documents": rows,
+                "message_for_user": (
+                    f"{len(rows)} compliance document(s)"
+                    + (f" — {expired} expired" if expired else "")
+                    + (f", {soon} due soon" if soon else "")
+                    + (f", {unset} need an expiry date" if unset else "")
+                    + "."
+                ),
+            }
+        )
+
+    action = str(_get_first(data, "action") or "").strip().lower()
+    if action == "seed" or request.path.rstrip("/").endswith("/seed"):
+        created = seed_starter_documents(restaurant)
+        return Response(
+            {
+                "success": True,
+                "created": len(created),
+                "documents": [serialize_document(d) for d in created],
+                "message_for_user": (
+                    f"✓ Added {len(created)} suggested compliance document(s). "
+                    "Tell me the expiry dates and I'll remind you before they lapse."
+                    if created
+                    else "Suggested compliance documents are already set up. "
+                    "Share an expiry date to start reminders."
+                ),
+            }
+        )
+
+    if request.method == "PATCH" or action == "update":
+        doc_id = str(_get_first(data, "id", "document_id") or "").strip()
+        if not doc_id:
+            return Response(
+                {"success": False, "error": "id is required", "message_for_user": "Which document should I update?"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        doc = ComplianceDocument.objects.filter(restaurant=restaurant, id=doc_id).first()
+        if not doc:
+            return Response(
+                {"success": False, "error": "Not found", "message_for_user": "I couldn't find that document."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if "title" in data and str(data.get("title") or "").strip():
+            doc.title = str(data["title"]).strip()[:255]
+        if "description" in data:
+            doc.description = str(data.get("description") or "")[:2000]
+        if "reference_number" in data:
+            doc.reference_number = str(data.get("reference_number") or "")[:128]
+        if "document_type" in data:
+            dtype = str(data.get("document_type") or "").upper()
+            if dtype in DOCUMENT_TYPE_IDS:
+                doc.document_type = dtype
+        if "expires_at" in data or "expiry_date" in data or "due_date" in data:
+            raw = _get_first(data, "expires_at", "expiry_date", "due_date")
+            parsed = parse_date(str(raw)) if raw else None
+            doc.expires_at = parsed
+            if parsed and parsed >= timezone.now().date():
+                doc.status = ComplianceDocument.STATUS_ACTIVE
+                doc.last_notified_at = None
+        if "remind_days_before" in data and data.get("remind_days_before") not in (None, ""):
+            try:
+                doc.remind_days_before = max(1, min(365, int(data["remind_days_before"])))
+            except (TypeError, ValueError):
+                pass
+        if str(data.get("status") or "").upper() == "ARCHIVED":
+            doc.status = ComplianceDocument.STATUS_ARCHIVED
+        doc.save()
+        return Response(
+            {
+                "success": True,
+                "document": serialize_document(doc),
+                "message_for_user": (
+                    f"✓ Updated *{doc.title}*"
+                    + (
+                        f" — expires {doc.expires_at.isoformat()}. I'll remind you beforehand."
+                        if doc.expires_at
+                        else "."
+                    )
+                ),
+            }
+        )
+
+    # Create
+    title = str(_get_first(data, "title", "name") or "").strip()
+    if not title:
+        return Response(
+            {
+                "success": False,
+                "error": "title required",
+                "message_for_user": "What should I call this document? (e.g. Business insurance)",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    dtype = str(_get_first(data, "document_type", "type") or "OTHER").upper()
+    if dtype not in DOCUMENT_TYPE_IDS:
+        # Heuristic from title
+        low = title.lower()
+        if "insur" in low or "assurance" in low:
+            dtype = "INSURANCE"
+        elif "hygien" in low or "food safety" in low or "haccp" in low:
+            dtype = "HYGIENE"
+        elif "extinguish" in low or "fire" in low:
+            dtype = "FIRE_EXTINGUISHER"
+        elif "regist" in low or "patente" in low or "licence" in low or "license" in low:
+            dtype = "BUSINESS_REGISTRATION"
+        else:
+            dtype = "OTHER"
+    expires_raw = _get_first(data, "expires_at", "expiry_date", "due_date")
+    expires_at = parse_date(str(expires_raw)) if expires_raw else None
+    try:
+        remind_days = int(_get_first(data, "remind_days_before", "remind_days") or 30)
+        remind_days = max(1, min(365, remind_days))
+    except (TypeError, ValueError):
+        remind_days = 30
+    doc = ComplianceDocument.objects.create(
+        restaurant=restaurant,
+        title=title[:255],
+        document_type=dtype,
+        description=str(_get_first(data, "description", "notes") or "")[:2000],
+        reference_number=str(_get_first(data, "reference_number", "reference") or "")[:128],
+        expires_at=expires_at,
+        remind_days_before=remind_days,
+        created_by=acting_user,
+    )
+    return Response(
+        {
+            "success": True,
+            "document": serialize_document(doc),
+            "message_for_user": (
+                f"✓ Tracking *{doc.title}*"
+                + (
+                    f" — expires {doc.expires_at.isoformat()}. "
+                    f"I'll remind you about {doc.remind_days_before} days before."
+                    if doc.expires_at
+                    else ". Add an expiry date whenever you have it and I'll remind you."
+                )
+            ),
+        },
+        status=status.HTTP_201_CREATED,
+    )
+
+
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([permissions.AllowAny])

@@ -37,7 +37,7 @@ function parseChecklistResponse(text: string): "yes" | "no" | "n_a" | null {
     // Button payloads / short answers only — avoid hijacking longer messages
     if (/^(yes|y|oui|نعم|اه|أيوه|ايوه|✅)$/i.test(t)) return "yes";
     if (/^(no|n|non|لا|❌)$/i.test(t)) return "no";
-    if (/^(n\/?a|n a|na|skip|➖|غير\s*معني|pas\s*applicable)$/i.test(t)) return "n_a";
+    if (/^(n\/?a|n a|na|skip|➖|غير\s*معني|غير\s*منطبق|pas\s*applicable)$/i.test(t)) return "n_a";
     return null;
 }
 

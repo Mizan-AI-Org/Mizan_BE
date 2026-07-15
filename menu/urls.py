@@ -11,8 +11,10 @@ from .views import (
     RecipeIngredientListCreateAPIView,
     RecipeIngredientRetrieveUpdateDestroyAPIView,
 )
+from .views_agent import agent_food_cost
 
 urlpatterns = [
+    path("agent/food-cost/", agent_food_cost, name="menu-agent-food-cost"),
     # Menu Categories
     path('categories/', MenuCategoryListCreateAPIView.as_view(), name='menu-category-list-create'),
     path('categories/<uuid:pk>/', MenuCategoryRetrieveUpdateDestroyAPIView.as_view(), name='menu-category-detail'),

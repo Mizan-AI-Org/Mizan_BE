@@ -378,6 +378,14 @@ class ShiftTask(models.Model):
     # Location and Context
     location_specific = models.CharField(max_length=255, blank=True, null=True, help_text="Specific location where task should be performed")
     environmental_conditions = models.JSONField(default=dict, help_text="Required environmental conditions (temperature, humidity, etc.)")
+
+    # Processes & Tasks condition flow (copied from TaskTemplate.tasks item at instantiate)
+    # Shape: {template_task_id, response_type, branches: {yes|no: {type, message?, assignees?, task_id?}}}
+    branch_config = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Yes/No condition flow from the process template (alert/goto/end).",
+    )
     
     # Recurring Task Information
     is_recurring = models.BooleanField(default=False)

@@ -2299,10 +2299,16 @@ export default class ApiService {
         notes?: string
     ): Promise<{
         success: boolean;
-        status?: string;
+        status?: "completed" | "next_task" | "awaiting_photo" | string;
         answered?: number;
         total?: number;
-        current_task?: { id: string; index: number; title: string; description: string };
+        current_task?: {
+            id: string;
+            index?: number;
+            title: string;
+            description: string;
+            requires_photo?: boolean;
+        };
         summary?: { yes: number; no: number; n_a: number };
         message_for_user?: string;
         error?: string;

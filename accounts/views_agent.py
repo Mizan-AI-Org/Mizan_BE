@@ -291,6 +291,74 @@ def agent_miya_instructions(request):
     return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
 
 
+@api_view(["GET", "POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_platform_knowledge(request):
+    """
+    GET|POST /api/agent/platform-knowledge/
+
+    Search curated platform feature / workflow help (not tenant SOPs).
+    Query/body: q|query, limit, audience=manager|staff
+    Auth: agent key or JWT via _resolve_restaurant_for_agent (tenant optional).
+    """
+    from .platform_knowledge import search_platform_knowledge
+
+    # Soft auth — allow agent key; restaurant resolution optional
+    is_valid, _ = _validate_agent_key(request)
+    if not is_valid:
+        try:
+            from rest_framework_simplejwt.authentication import JWTAuthentication
+
+            jwt_auth = JWTAuthentication()
+            result = jwt_auth.authenticate(request)
+            if not (result and result[0]):
+                return Response({"error": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED)
+        except Exception:
+            return Response({"error": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED)
+
+    data = {}
+    if request.method == "POST" and isinstance(getattr(request, "data", None), dict):
+        data = request.data
+    q = (
+        data.get("q")
+        or data.get("query")
+        or request.query_params.get("q")
+        or request.query_params.get("query")
+        or ""
+    )
+    try:
+        limit = int(data.get("limit") or request.query_params.get("limit") or 5)
+    except (TypeError, ValueError):
+        limit = 5
+    audience = str(data.get("audience") or request.query_params.get("audience") or "").strip().lower() or None
+    if audience not in ("manager", "staff", None):
+        audience = None
+
+    results = search_platform_knowledge(str(q), limit=limit, audience=audience)
+    if not results:
+        msg = (
+            "No platform help matched that question. Try asking about sales, stock, "
+            "food cost, invoices, checklists, or tell-manager."
+        )
+    else:
+        msg = f"Found {len(results)} platform guide(s)."
+
+    return Response(
+        {
+            "success": True,
+            "query": q,
+            "count": len(results),
+            "results": results,
+            "message_for_user": msg,
+            "miya_directive": (
+                "Answer from these platform guides. For tenant-specific SOPs use knowledge_base. "
+                "Never invent live restaurant numbers from these docs."
+            ),
+        }
+    )
+
+
 def send_whatsapp(phone, message, template_name, language_code="en_US"):
     token = settings.WHATSAPP_ACCESS_TOKEN
     phone_id = settings.WHATSAPP_PHONE_NUMBER_ID

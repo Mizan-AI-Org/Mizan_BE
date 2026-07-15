@@ -365,7 +365,7 @@ Mizan has **housekeeping tags** and room-ready language but is **not yet a PMS**
 | Request | Status | Notes |
 |---------|--------|-------|
 | Supplier receives PO on WhatsApp — confirms delivery window | 🟡 | PO send exists; two-way confirm weak |
-| “Invoice attached — match to PO #442” | 🟡 | record_invoice; PO matching ❌ |
+| “Invoice attached — match to PO #442” | 🟢 | `match_invoice_po` / `confirm_invoice_po_match` + Invoice.purchase_order FK |
 | “Price list updated — apply from 1 July” | ❌ | Supplier catalog sync |
 | Vendor portal: update delivery status | ❌ | External supplier app / Flow |
 
@@ -552,7 +552,7 @@ To cover this vision without one monolithic prompt:
 - [ ] Celery Beat running in production (`task_follow_up_sweep`, `staff_request_follow_up_sweep`, `staff_request_sla_sweep`)
 - [ ] Expense claim + shift swap Flows configured in production
 - [ ] Google Calendar connect UX stable
-- [ ] PO ↔ invoice matching (light)
+- [x] PO ↔ invoice matching (light)
 - [ ] Leave balance read API
 - [ ] Proof links in every success reply · relay `whatsapp_sent` + follow-up count honestly
 
@@ -570,7 +570,7 @@ To cover this vision without one monolithic prompt:
 - [ ] Guest reservation Flow + allergy flags
 - [ ] Franchise SOP push + acknowledgment
 - [ ] Supplier two-way WhatsApp confirm
-- [ ] Owner nightly digest (configurable)
+- [x] Owner nightly digest (configurable) — `manager_ops_digest_sweep` @ 21:00 + weekly Sunday; honor `digest_time` / WhatsApp off
 
 ### P3 — North star
 

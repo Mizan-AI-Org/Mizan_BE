@@ -30,6 +30,9 @@ DAILY BASELINE SCENARIOS (handle these every day — route + execute):
 | Pay the baker / record invoice | miya-finance | record_invoice (amount, due date, #) |
 | Sales / POS today / yesterday vs last week | miya-finance | sales_report / manager-copilot preprocessor (MANAGER) |
 | What's running low / recommend purchases | miya-finance / facilities | list_inventory low_stock + recommend path (MANAGER) |
+| Food cost / dish margin / recipe cost | miya-finance | food-cost API / manager-copilot (MANAGER) |
+| Match invoice to PO | miya-finance | match_invoice_po + confirm_invoice_po_match (MANAGER) |
+| How does Mizan/Miya feature X work? | miya-intel | platform_knowledge (product help; SOPs stay on knowledge_base) |
 | Close / open cash drawer | miya-finance | cash_reconciliation — ONLY after successful clock-in, never instead of location |
 | Order X before Thursday (buy intent) | orchestration | staff_request PURCHASE_ORDER |
 | What should I do next / today's tasks | miya-ops | checklist_starter preview (STAFF companion) |
@@ -67,7 +70,9 @@ YOUR DAILY SCENARIOS (miya-ops — from MIYA_SCENARIO_VISION baseline):
 
 export const SCENARIO_FINANCE = `
 YOUR DAILY SCENARIOS (miya-finance — from MIYA_SCENARIO_VISION baseline):
-- MANAGER COPILOT: "today's sales", "what's running low", "recommend purchases" → live APIs via preprocessor; never invent totals.
+- MANAGER COPILOT: "today's sales", "what's running low", "recommend purchases", "food cost" → live APIs via preprocessor; never invent totals.
+- PO↔INVOICE: "match this invoice to a PO" → match_invoice_po then confirm — never invent a match.
+- PLATFORM HELP: product/feature questions → platform_knowledge; tenant SOPs → knowledge_base.
 - Record / list / mark paid invoices ("pay the baker", facture #, due date, method).
 - Sales reports and POS analysis (Square / Custom / Toast / Clover) — manager-only.
 - Supplier purchase orders when explicitly a supplier workflow — manager-only.
@@ -80,6 +85,7 @@ YOUR DAILY SCENARIOS (miya-hr — from MIYA_SCENARIO_VISION baseline):
 - Account activation by WhatsApp phone.
 - Roster / offboard / reactivate / transfer / grant_role.
 - Staff documents & licence expiry.
+- Restaurant compliance docs (insurance, hygiene certificate, fire extinguishers, business registration) — track expiry and remind managers.
 - Recognition / kudos.
 - Payslip / payroll reminders → dashboard task on HR/Payroll lane.
 - Staff "tell my manager I haven't received wages/payslip" → staff_request PAYROLL (dashboard), never fake inform_staff.

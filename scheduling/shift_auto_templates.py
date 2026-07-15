@@ -274,14 +274,31 @@ def find_relevant_task_templates(
 
 def _normalize_task_item(item: dict) -> dict:
     """
-    Normalize JSON task item from a TaskTemplate.tasks list into title/description/priority.
+    Normalize JSON task item from a TaskTemplate.tasks list into title/description/priority
+    plus condition-flow metadata (branches / response_type) for runtime Yes/No handling.
     """
     title = _safe_text(item.get("title") or item.get("name") or item.get("task") or "")
     description = _safe_text(item.get("description") or item.get("details") or "")
     priority = _safe_text(item.get("priority") or "").upper() or "MEDIUM"
     if priority not in {"LOW", "MEDIUM", "HIGH", "URGENT"}:
         priority = "MEDIUM"
-    return {"title": title, "description": description, "priority": priority}
+    template_task_id = _safe_text(item.get("id") or item.get("task_id") or "")
+    response_type = _safe_text(item.get("response_type") or "").lower() or "check"
+    branches = item.get("branches") if isinstance(item.get("branches"), dict) else {}
+    from scheduling.checklist_photo import verification_fields_from_item
+
+    vfields = verification_fields_from_item(item if isinstance(item, dict) else {})
+    return {
+        "title": title,
+        "description": description,
+        "priority": priority,
+        "template_task_id": template_task_id,
+        "response_type": response_type,
+        "branches": branches,
+        "verification_required": vfields["verification_required"],
+        "verification_type": vfields["verification_type"],
+        "requires_photo": vfields["requires_photo"],
+    }
 
 
 def _template_i18n_block(task_template: TaskTemplate, lang: str) -> dict:
@@ -327,6 +344,22 @@ def instantiate_shift_tasks_from_template(
         t = _normalize_task_item(raw)
         if not t["title"]:
             continue
+        branch_config = {}
+        if (
+            t.get("branches")
+            or t.get("response_type") == "yes_no"
+            or t.get("template_task_id")
+            or t.get("requires_photo")
+        ):
+            branch_config = {
+                "template_task_id": t.get("template_task_id") or "",
+                "response_type": t.get("response_type") or "check",
+                "branches": t.get("branches") or {},
+                "template_id": str(getattr(task_template, "id", "") or ""),
+                "template_name": _safe_text(getattr(task_template, "name", "")) or "",
+                "requires_photo": bool(t.get("requires_photo")),
+                "verification_type": t.get("verification_type") or "NONE",
+            }
         ShiftTask.objects.create(
             shift=shift,
             title=t["title"],
@@ -339,6 +372,9 @@ def instantiate_shift_tasks_from_template(
             sop_document=getattr(task_template, "sop_document", None) or None,
             sop_steps=getattr(task_template, "sop_steps", None) or [],
             is_critical=getattr(task_template, "is_critical", False) or False,
+            branch_config=branch_config,
+            verification_required=bool(t.get("verification_required") or t.get("requires_photo")),
+            verification_type=t.get("verification_type") or "NONE",
         )
         created += 1
     return created

@@ -3,7 +3,12 @@
  * Deterministic so Space cannot invent KPI numbers.
  */
 
-export type ManagerCopilotKind = "sales_today" | "low_stock" | "recommend_purchases" | null;
+export type ManagerCopilotKind =
+  | "sales_today"
+  | "low_stock"
+  | "recommend_purchases"
+  | "food_cost"
+  | null;
 
 export function classifyManagerCopilotAsk(text: string): ManagerCopilotKind {
   const t = (text || "").trim();
@@ -15,6 +20,14 @@ export function classifyManagerCopilotAsk(text: string): ManagerCopilotKind {
     )
   ) {
     return "sales_today";
+  }
+
+  if (
+    /\b(food\s*cost|recipe\s+cost|portion\s+cost|worst\s+margin|best\s+margin|dish\s+margin|menu\s+margin|co[uû]t\s+matiere|marge\s+(?:des\s+)?plats?|which\s+dishes?\s+(?:have\s+)?(?:the\s+)?(?:worst|highest)\s+(?:food\s+)?cost)\b/i.test(
+      t,
+    )
+  ) {
+    return "food_cost";
   }
 
   if (

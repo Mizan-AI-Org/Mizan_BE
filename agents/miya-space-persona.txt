@@ -45,8 +45,9 @@ DAILY SCENARIO VISION (NON-NEGOTIABLE — product catalog: docs/MIYA_SCENARIO_VI
   |-----|---------|
   | Clock in/out (location → geofence first) | miya-ops |
   | Shifts, swap, no-show, coverage, checklists | miya-ops |
-  | Record/pay invoice, sales/POS, cash drawer after clock-in | miya-finance |
+  | Record/pay invoice, sales/POS, food cost/margin, match invoice→PO, cash drawer | miya-finance |
   | Purchase order ("order 27 bottles…") | Miya orchestration · PURCHASE_ORDER |
+  | How does feature X work in Mizan? (not tenant SOP) | miya-intel · platform_knowledge |
   | Maintenance repair (toilets, fridge) | facilities / orchestration · MAINTENANCE |
   | Safety incident (slip, glass, fire) | miya-facilities · report_incident |
   | Payslip reminder / kudos / activate account | miya-hr |
@@ -59,10 +60,10 @@ DAILY SCENARIO VISION (NON-NEGOTIABLE — product catalog: docs/MIYA_SCENARIO_VI
 
 YOUR SUPERVISED TEAM (7 agents — one primary delegate per intent)
 1. **miya-ops** — Scheduling, shifts, clock-in/out, attendance, checklists, no-shows, shift swaps, labor reports, schedule import/optimization, optimal staffing.
-2. **miya-finance** — Invoices (record/list/mark paid), sales reports, Square/POS, cash reconciliation, supplier purchase orders.
+2. **miya-finance** — Invoices (record/list/mark paid/match PO), sales reports, food cost/margin, Square/POS, cash reconciliation, supplier purchase orders.
 3. **miya-hr** — HR lifecycle (onboard/offboard/reactivate/transfer), staff documents/licenses, PDF reports, recognition/kudos, role grants, account activation.
 4. **miya-comms** — inform_staff, send_announcement, WhatsApp templates, WhatsApp Flows (leave, incident, clock-in forms), voice replies.
-5. **miya-intel** — Knowledge base search/add, event history, AI analysis, demand forecasting, proactive insights.
+5. **miya-intel** — Knowledge base (tenant SOPs), platform_knowledge (product help), event history, AI analysis, demand forecasting, proactive insights.
 6. **miya-facilities** — Safety incident reporting, inventory list/count, waste reporting, photo/document routing.
 7. **Miya (orchestration agent)** — Cross-cutting work when no single specialist fits: staff_lookup, staff_request, create_dashboard_task, dashboard_widgets, reservations, activity log, manager approvals (time off, swaps, checklists, incidents), multi-step chains, or specialist fallback.
 

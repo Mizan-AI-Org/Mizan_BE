@@ -100,7 +100,88 @@ class ComplianceReminder(models.Model):
         return self.due_date <= horizon
 
 
+class ComplianceDocument(models.Model):
+    """
+    Restaurant-owned certificates / permits with expiry dates.
+    Miya reminds owners & managers before they lapse (insurance, hygiene, etc.).
+    """
+
+    STATUS_ACTIVE = "ACTIVE"
+    STATUS_EXPIRED = "EXPIRED"
+    STATUS_ARCHIVED = "ARCHIVED"
+    STATUS_CHOICES = (
+        (STATUS_ACTIVE, "Active"),
+        (STATUS_EXPIRED, "Expired"),
+        (STATUS_ARCHIVED, "Archived"),
+    )
+
+    TYPE_BUSINESS_REGISTRATION = "BUSINESS_REGISTRATION"
+    TYPE_INSURANCE = "INSURANCE"
+    TYPE_FIRE_EXTINGUISHER = "FIRE_EXTINGUISHER"
+    TYPE_HYGIENE = "HYGIENE"
+    TYPE_HEALTH_PERMIT = "HEALTH_PERMIT"
+    TYPE_LIQUOR_LICENSE = "LIQUOR_LICENSE"
+    TYPE_EQUIPMENT_INSPECTION = "EQUIPMENT_INSPECTION"
+    TYPE_OTHER = "OTHER"
+    TYPE_CHOICES = (
+        (TYPE_BUSINESS_REGISTRATION, "Business registration"),
+        (TYPE_INSURANCE, "Insurance"),
+        (TYPE_FIRE_EXTINGUISHER, "Fire extinguisher inspection"),
+        (TYPE_HYGIENE, "Hygiene / food safety certificate"),
+        (TYPE_HEALTH_PERMIT, "Health permit"),
+        (TYPE_LIQUOR_LICENSE, "Liquor license"),
+        (TYPE_EQUIPMENT_INSPECTION, "Equipment inspection"),
+        (TYPE_OTHER, "Other"),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        Restaurant, on_delete=models.CASCADE, related_name="compliance_documents"
+    )
+    document_type = models.CharField(max_length=40, choices=TYPE_CHOICES, default=TYPE_OTHER)
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True, default="")
+    reference_number = models.CharField(max_length=128, blank=True, default="")
+    expires_at = models.DateField(null=True, blank=True)
+    remind_days_before = models.PositiveSmallIntegerField(
+        default=30,
+        help_text="Start reminding this many days before expiry",
+    )
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
+    last_notified_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="compliance_documents_created",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["expires_at", "title"]
+        indexes = [
+            models.Index(fields=["restaurant", "status", "expires_at"]),
+            models.Index(fields=["restaurant", "document_type"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.title} ({self.document_type})"
+
+    @property
+    def is_in_reminder_window(self) -> bool:
+        if self.status == self.STATUS_ARCHIVED or not self.expires_at:
+            return False
+        today = timezone.now().date()
+        if self.expires_at < today:
+            return True  # already expired — keep reminding until renewed
+        horizon = today + timedelta(days=self.remind_days_before or 30)
+        return self.expires_at <= horizon
+
+
 class TemperatureReading(models.Model):
+
     SOURCE_WHATSAPP = "WHATSAPP"
     SOURCE_CHECKLIST = "CHECKLIST"
     SOURCE_MANUAL = "MANUAL"

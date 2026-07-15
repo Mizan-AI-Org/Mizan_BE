@@ -2,7 +2,8 @@
  * ChecklistRespondTool
  *
  * Records Yes/No/N/A for the current shift checklist task and returns the next
- * prompt (or a warm completion). Miya owns WhatsApp delivery.
+ * prompt (or a photo-proof request). Miya owns WhatsApp delivery for text;
+ * inbound photos are handled by the Django webhook after awaiting_photo.
  */
 
 import { LuaTool, User, env } from "lua-cli";
@@ -11,6 +12,7 @@ import ApiService from "../../services/ApiService";
 import {
     formatChecklistComplete,
     formatChecklistTaskPrompt,
+    formatPhotoAwaitPrompt,
 } from "../../utils/checklistMessages";
 import { resolveStaffPhoneForByPhoneTools } from "../../utils/resolveStaffPhoneFromLuaUser";
 
@@ -18,7 +20,8 @@ export default class ChecklistRespondTool implements LuaTool {
     name = "checklist_respond";
     description =
         "Record a staff member's response (Yes, No, or N/A) to their current checklist task " +
-        "and get the next task. Call this EVERY TIME a staff member replies to a checklist task. " +
+        "and get the next step. After Yes, some tasks return status=awaiting_photo — SEND that " +
+        "photo request and wait; do NOT invent the next task until they send the photo. " +
         "Phone is auto-resolved from WhatsApp context.";
 
     inputSchema = z.object({
@@ -113,21 +116,44 @@ export default class ChecklistRespondTool implements LuaTool {
                 };
             }
 
+            if (r.status === "awaiting_photo") {
+                const t = r.current_task || {};
+                return {
+                    status: "awaiting_photo",
+                    answered: r.answered,
+                    total: r.total,
+                    current_task: t,
+                    message:
+                        r.message_for_user ||
+                        formatPhotoAwaitPrompt({
+                            title: t.title,
+                            description: t.description,
+                        }),
+                    instruction:
+                        "SEND this photo request. Wait for the staff to send an image. " +
+                        "Do not call checklist_respond again until after the photo is received " +
+                        "(the system will continue the checklist when they send the photo).",
+                };
+            }
+
             if (r.status === "next_task" && r.current_task) {
                 const t = r.current_task;
                 const task = {
                     index: t.index,
                     title: t.title,
                     description: t.description || "",
+                    requires_photo: Boolean(t.requires_photo),
                 };
                 return {
                     status: "next_task",
                     answered: r.answered,
                     total: r.total,
                     current_task: { id: t.id, ...task },
-                    message: formatChecklistTaskPrompt(task, r.total, {
-                        answered: r.answered,
-                    }),
+                    message:
+                        r.message_for_user ||
+                        formatChecklistTaskPrompt(task, r.total, {
+                            answered: r.answered,
+                        }),
                     instruction: "SEND this next task to the staff and wait for their reply.",
                 };
             }

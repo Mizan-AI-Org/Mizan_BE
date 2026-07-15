@@ -374,23 +374,38 @@ def _resolve_staff_and_shift(request_data):
             status=status.HTTP_404_NOT_FOUND,
         )
 
-    active_shift = _get_shift_for_checklist(user)
+    active_shift = _get_shift_for_checklist(user, allow_standing=True)
     if not active_shift:
         today = timezone.localdate()
         from scheduling.models import AssignedShift
         from django.db.models import Q
+        from scheduling.standing_checklist import get_standing_templates_for_staff
+
         any_shifts = AssignedShift.objects.filter(
             Q(staff=user) | Q(staff_members=user),
             shift_date=today,
         ).values_list('id', 'status', 'start_time', 'end_time')
+        standing = get_standing_templates_for_staff(user)
         logger.warning(
             "agent_checklist: no active shift for user %s (%s %s, phone %s) on %s. "
-            "All shifts today: %s",
+            "All shifts today: %s standing_templates=%s",
             user.id, user.first_name, user.last_name, clean_phone, today, list(any_shifts),
+            len(standing),
         )
+        if standing:
+            msg = (
+                "I couldn't start your checklist yet. Please *clock in* first, "
+                "then say *start checklist*."
+            )
+        else:
+            msg = (
+                "You don't have a checklist assigned right now. "
+                "Ask your manager to assign a process to you in Processes & Tasks, "
+                "or to put you on today's schedule."
+            )
         return user, None, clean_phone, Response(
             {"success": False, "error": "No shift",
-             "message_for_user": "You do not have a scheduled shift at this time. If you believe this is wrong, please ask your manager to check your shift assignment."},
+             "message_for_user": msg},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -414,6 +429,13 @@ def _is_staff_clocked_in(user):
 @api_view(["POST"])
 @authentication_classes([])
 @permission_classes([AllowAny])
+
+def _cl_tr(user, key, **kwargs):
+    """Translate checklist/PayGuard-adjacent agent strings for the staff user."""
+    from core.i18n import get_effective_language, tr
+    lang = get_effective_language(user=user, restaurant=getattr(user, "restaurant", None))
+    return tr(key, lang, **kwargs)
+
 def agent_preview_checklist(request):
     """
     Miya/Lua endpoint: preview OR auto-start the checklist for a staff member's shift.
@@ -449,7 +471,7 @@ def agent_preview_checklist(request):
             "shift": {"start": shift_start, "end": shift_end},
             "tasks": [],
             "total_items": 0,
-            "message_for_user": "No tasks or checklists are assigned to your shift right now. You're all set!",
+            "message_for_user": _cl_tr(user, "checklist.none"),
         })
 
     # If staff is clocked in, auto-start the conversational checklist
@@ -466,7 +488,7 @@ def agent_preview_checklist(request):
                 "shift": {"start": shift_start, "end": shift_end},
                 "tasks": all_items,
                 "total_items": len(all_items),
-                "message_for_user": "Your checklist is already complete. Great work!",
+                "message_for_user": _cl_tr(user, "checklist.already_complete"),
             })
 
         if existing_prog and existing_prog.status == 'IN_PROGRESS':
@@ -517,9 +539,11 @@ def agent_preview_checklist(request):
                 "shift": {"start": shift_start, "end": shift_end},
                 "tasks": all_items,
                 "total_items": len(all_items),
-                "message_for_user": (
-                    f"📋 *Your shift has {len(all_items)} task(s):*\n\n{task_list_text}\n\n"
-                    "Reply *Yes*, *No*, or *N/A* for each task as I send them."
+                "message_for_user": _cl_tr(
+                    user,
+                    "checklist.shift_list",
+                    count=len(all_items),
+                    list=task_list_text,
                 ),
             })
 
@@ -578,10 +602,15 @@ def _collect_shift_task_items(active_shift):
                 desc = ""
             if not title:
                 title = getattr(tpl, "name", "Task") or "Task"
-            requires_photo = bool(
-                (step.get("verification_type") if isinstance(step, dict) else None) == "PHOTO"
-                or getattr(tpl, "verification_type", "NONE") == "PHOTO"
-            )
+            requires_photo = False
+            if isinstance(step, dict):
+                requires_photo = bool(
+                    step.get("requires_photo")
+                    or step.get("verification_required")
+                    or str(step.get("verification_type") or "").upper() == "PHOTO"
+                )
+            if not requires_photo:
+                requires_photo = str(getattr(tpl, "verification_type", "NONE") or "").upper() == "PHOTO"
             template_items.append({
                 "title": title,
                 "description": desc,
@@ -600,7 +629,10 @@ def _collect_shift_task_items(active_shift):
             "description": t.description or "",
             "source": "custom_task",
             "priority": t.priority or "MEDIUM",
-            "requires_photo": getattr(t, "verification_type", "NONE") == "PHOTO",
+            "requires_photo": (
+                getattr(t, "verification_type", "NONE") == "PHOTO"
+                or bool(getattr(t, "verification_required", False))
+            ),
             "status": t.status,
         })
 
@@ -641,7 +673,7 @@ def agent_start_whatsapp_checklist(request):
                 "success": False,
                 "error": "Not clocked in",
                 "clocked_in": False,
-                "message_for_user": "You need to clock in before starting your checklist. Please clock in first, then ask me to start your checklist.",
+                "message_for_user": _cl_tr(user, "checklist.need_clock_in"),
             },
             status=status.HTTP_400_BAD_REQUEST,
         )
@@ -657,10 +689,12 @@ def agent_start_whatsapp_checklist(request):
             "success": True,
             "status": "completed",
             "clocked_in": True,
-            "message_for_user": "Your checklist is already complete. Have a productive shift!",
+            "message_for_user": _cl_tr(user, "checklist.already_complete_shift"),
         })
 
     if existing_prog and existing_prog.status == 'IN_PROGRESS':
+        from scheduling.checklist_photo import photo_prompt_for_task, task_requires_photo
+
         task_ids = existing_prog.task_ids or []
         responses = existing_prog.responses or {}
         current_id = existing_prog.current_task_id or (task_ids[0] if task_ids else None)
@@ -675,9 +709,46 @@ def agent_start_whatsapp_checklist(request):
                     "description": t.description or "",
                     "status": t.status,
                     "response": responses.get(tid),
+                    "requires_photo": task_requires_photo(t),
                 })
         current_task = tasks_map.get(current_id)
         current_idx = (task_ids.index(current_id) + 1) if current_id and current_id in task_ids else 1
+
+        # Resume mid photo-proof
+        try:
+            from notifications.models import WhatsAppSession
+
+            sess = WhatsAppSession.objects.filter(phone=clean_phone).first()
+            awaiting_id = (
+                (sess.context or {}).get("awaiting_verification_for_task_id")
+                if sess and isinstance(sess.context, dict)
+                else None
+            )
+            if (
+                sess
+                and sess.state == "awaiting_task_photo"
+                and awaiting_id
+                and current_task
+                and str(awaiting_id) == str(current_task.id)
+            ):
+                return Response({
+                    "success": True,
+                    "status": "awaiting_photo",
+                    "clocked_in": True,
+                    "tasks": tasks_out,
+                    "total": len(task_ids),
+                    "current_task": {
+                        "id": current_id,
+                        "index": current_idx,
+                        "title": current_task.title,
+                        "description": current_task.description or "",
+                        "requires_photo": True,
+                    },
+                    "message_for_user": photo_prompt_for_task(current_task, user=user),
+                })
+        except Exception:
+            logger.exception("checklist start: awaiting_photo resume check failed")
+
         return Response({
             "success": True,
             "status": "in_progress",
@@ -689,6 +760,7 @@ def agent_start_whatsapp_checklist(request):
                 "index": current_idx,
                 "title": current_task.title if current_task else "",
                 "description": (current_task.description or "") if current_task else "",
+                "requires_photo": task_requires_photo(current_task) if current_task else False,
             } if current_id else None,
         })
 
@@ -700,14 +772,14 @@ def agent_start_whatsapp_checklist(request):
         logger.exception("agent_start_whatsapp_checklist failed for user %s: %s", user.id, e)
         return Response(
             {"success": False, "error": str(e),
-             "message_for_user": "I'm having trouble loading your checklist. Please try again."},
+             "message_for_user": _cl_tr(user, "checklist.load_error")},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
     if result is None:
         return Response(
             {"success": False, "error": "No checklist items",
-             "message_for_user": "No tasks are assigned to your shift right now. You're all set!"},
+             "message_for_user": _cl_tr(user, "checklist.none")},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -735,7 +807,7 @@ def agent_checklist_respond(request):
     if response_value not in ("yes", "no", "n_a"):
         return Response(
             {"success": False, "error": "Invalid response",
-             "message_for_user": "Please reply Yes, No, or N/A."},
+             "message_for_user": _cl_tr(user, "checklist.reply_yes_no")},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -747,7 +819,7 @@ def agent_checklist_respond(request):
     if not prog:
         return Response(
             {"success": False, "error": "No active checklist",
-             "message_for_user": "You don't have an active checklist. Say 'Start checklist' to begin."},
+             "message_for_user": _cl_tr(user, "checklist.no_active")},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -767,6 +839,90 @@ def agent_checklist_respond(request):
             status=status.HTTP_404_NOT_FOUND,
         )
 
+    from scheduling.checklist_photo import (
+        arm_whatsapp_photo_await,
+        photo_prompt_for_task,
+        task_requires_photo,
+    )
+
+    # Already waiting for a photo on this task — remind them
+    try:
+        from notifications.models import WhatsAppSession
+
+        sess = WhatsAppSession.objects.filter(phone=clean_phone).first()
+        awaiting_id = (
+            (sess.context or {}).get("awaiting_verification_for_task_id")
+            if sess and isinstance(sess.context, dict)
+            else None
+        )
+        if (
+            sess
+            and sess.state == "awaiting_task_photo"
+            and awaiting_id
+            and str(awaiting_id) == str(task.id)
+            and response_value == "yes"
+        ):
+            return Response({
+                "success": True,
+                "status": "awaiting_photo",
+                "answered": len(responses),
+                "total": len(task_ids),
+                "current_task": {
+                    "id": str(task.id),
+                    "title": task.title,
+                    "description": task.description or "",
+                    "requires_photo": True,
+                },
+                "message_for_user": photo_prompt_for_task(task, user=user),
+            })
+    except Exception:
+        logger.exception("checklist awaiting_photo remind failed")
+
+    # Yes + photo proof required → arm WA image handler; do not complete yet
+    if response_value == "yes" and task_requires_photo(task):
+        arm_whatsapp_photo_await(
+            phone=clean_phone,
+            user=user,
+            task=task,
+            shift_id=str(active_shift.id),
+        )
+        # Keep task open; mark started so Live Board shows progress
+        task.status = "IN_PROGRESS"
+        task.started_at = task.started_at or timezone.now()
+        task.save(update_fields=["status", "started_at"])
+        prog.current_task_id = str(task.id)
+        prog.responses = responses
+        prog.save(update_fields=["current_task_id", "responses", "updated_at"])
+        try:
+            TaskVerificationRecord.objects.get_or_create(
+                task=task,
+                submitted_by=user,
+                defaults={
+                    "checklist_responses": {
+                        "response": "yes",
+                        "awaiting_photo": True,
+                        "checklist_item_id": str(task.id),
+                        "shift_id": str(active_shift.id),
+                    },
+                    "photo_evidence": [],
+                },
+            )
+        except Exception:
+            pass
+        return Response({
+            "success": True,
+            "status": "awaiting_photo",
+            "answered": len(responses),
+            "total": len(task_ids),
+            "current_task": {
+                "id": str(task.id),
+                "title": task.title,
+                "description": task.description or "",
+                "requires_photo": True,
+            },
+            "message_for_user": photo_prompt_for_task(task, user=user),
+        })
+
     # Record the response
     responses[current_id] = response_value
     if response_value == "yes":
@@ -781,6 +937,22 @@ def agent_checklist_respond(request):
         task.status = "CANCELLED"
     task.save(update_fields=["status", "completed_at", "started_at", "notes"])
 
+    # Processes & Tasks condition flow (Flag for manager / goto / end)
+    branch_outcome = {"action": None, "result": None, "flow": "next"}
+    if response_value in ("yes", "no"):
+        try:
+            from scheduling.checklist_branch_actions import apply_checklist_branch
+
+            branch_outcome = apply_checklist_branch(
+                shift_task=task,
+                staff_user=user,
+                answer=response_value,
+            )
+        except Exception:
+            logger.exception(
+                "checklist branch action failed task=%s answer=%s", task.id, response_value
+            )
+
     try:
         TaskVerificationRecord.objects.create(
             task=task,
@@ -789,39 +961,114 @@ def agent_checklist_respond(request):
                 "response": response_value,
                 "checklist_item_id": str(task.id),
                 "shift_id": str(active_shift.id),
+                "branch": branch_outcome.get("action"),
             },
         )
     except Exception:
         pass
 
-    # Find next unanswered task
+    # End process early when branch says so
+    if branch_outcome.get("flow") == "end":
+        prog.status = "COMPLETED"
+        prog.completed_at = timezone.now()
+        prog.responses = responses
+        prog.save(update_fields=["status", "completed_at", "responses", "updated_at"])
+        alert_note = ""
+        if (branch_outcome.get("result") or {}).get("executed") and (
+            branch_outcome.get("action") or {}
+        ).get("type") == "alert":
+            alert_note = _cl_tr(user, "checklist.flagged_generic")
+        elif branch_outcome.get("result") and branch_outcome["result"].get("notified"):
+            alert_note = _cl_tr(user, "checklist.flagged_generic")
+        # If end came after alert on same answer — handle via action type end only
+        return Response({
+            "success": True,
+            "status": "completed",
+            "answered": len(responses),
+            "total": len(task_ids),
+            "branch": branch_outcome.get("action"),
+            "branch_result": branch_outcome.get("result"),
+            "message_for_user": _cl_tr(
+                user, "checklist.stopped", title=task.title, note=alert_note
+            ),
+        })
+
+    # Find next unanswered task (respect goto target when present)
     next_task = None
     next_idx = None
-    for i, tid in enumerate(task_ids):
-        if tid not in responses:
-            next_task_obj = ShiftTask.objects.filter(id=tid).first()
-            if next_task_obj and next_task_obj.status not in ("COMPLETED", "CANCELLED"):
-                next_task = next_task_obj
-                next_idx = i + 1
-                break
+    goto_id = str(branch_outcome.get("goto_task_id") or "").strip()
+    if goto_id and branch_outcome.get("flow") == "goto":
+        # Prefer matching template_task_id in branch_config, else ShiftTask id
+        for i, tid in enumerate(task_ids):
+            cand = ShiftTask.objects.filter(id=tid).first()
+            if not cand:
+                continue
+            cfg = getattr(cand, "branch_config", None) or {}
+            tmpl_tid = str(cfg.get("template_task_id") or "")
+            if str(cand.id) == goto_id or tmpl_tid == goto_id:
+                if tid not in responses and cand.status not in ("COMPLETED", "CANCELLED"):
+                    next_task = cand
+                    next_idx = i + 1
+                    break
+
+    if next_task is None:
+        for i, tid in enumerate(task_ids):
+            if tid not in responses:
+                next_task_obj = ShiftTask.objects.filter(id=tid).first()
+                if next_task_obj and next_task_obj.status not in ("COMPLETED", "CANCELLED"):
+                    next_task = next_task_obj
+                    next_idx = i + 1
+                    break
 
     answered = len(responses)
     total = len(task_ids)
 
+    alert_suffix = ""
+    br_result = branch_outcome.get("result") or {}
+    if br_result.get("executed") and (branch_outcome.get("action") or {}).get("type") == "alert":
+        names = [n.get("name") for n in (br_result.get("notified") or []) if n.get("name")]
+        if names:
+            alert_suffix = _cl_tr(user, "checklist.flagged_named", names=", ".join(names))
+        else:
+            alert_suffix = _cl_tr(user, "checklist.flagged_generic")
+
     if next_task:
+        from core.i18n import format_checklist_task_message, get_effective_language
+
         prog.current_task_id = str(next_task.id)
         prog.responses = responses
         prog.save(update_fields=["current_task_id", "responses", "updated_at"])
+        lang = get_effective_language(
+            user=user, restaurant=getattr(user, "restaurant", None)
+        )
+        noted = _cl_tr(
+            user, "checklist.noted_next", title=task.title, suffix=alert_suffix
+        )
+        next_body = format_checklist_task_message(
+            lang,
+            title=next_task.title,
+            index=next_idx or answered + 1,
+            total=total,
+            description=next_task.description or "",
+            requires_photo=task_requires_photo(next_task),
+            is_first=False,
+        )
+        # Prefixed "Noted…" then the next task prompt (skip duplicate ack head)
+        message = f"{noted}\n\n" + "\n".join(next_body.split("\n")[2:]).lstrip()
         return Response({
             "success": True,
             "status": "next_task",
             "answered": answered,
             "total": total,
+            "branch": branch_outcome.get("action"),
+            "branch_result": br_result or None,
+            "message_for_user": message,
             "current_task": {
                 "id": str(next_task.id),
                 "index": next_idx,
                 "title": next_task.title,
                 "description": next_task.description or "",
+                "requires_photo": task_requires_photo(next_task),
             },
         })
 
@@ -855,10 +1102,13 @@ def agent_checklist_respond(request):
             "no": no_count,
             "n_a": na_count,
         },
-        "message_for_user": (
-            f"Nice work — checklist complete! "
-            f"{yes_count} done, {no_count} still open, {na_count} skipped "
-            f"out of {total} tasks. Have a great shift!"
+        "message_for_user": _cl_tr(
+            user,
+            "checklist.complete",
+            yes=yes_count,
+            no=no_count,
+            na=na_count,
+            total=total,
         ),
     })
 

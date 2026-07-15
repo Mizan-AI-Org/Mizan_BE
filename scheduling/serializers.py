@@ -6,6 +6,7 @@ from .models import (
 )
 from .task_templates import TaskTemplate, Task
 from .audit import AuditLog
+from accounts.models import CustomUser
 from django.utils import timezone
 from datetime import datetime
 from django.db.models import Q
@@ -127,12 +128,19 @@ class TaskTemplateSerializer(serializers.ModelSerializer):
     localized_name = serializers.SerializerMethodField()
     localized_description = serializers.SerializerMethodField()
     localized_tasks = serializers.SerializerMethodField()
+    # Writable list of CustomUser UUIDs — staff who get this checklist without a shift
+    standing_assignees = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=CustomUser.objects.filter(is_active=True),
+        required=False,
+    )
+    standing_assignee_count = serializers.SerializerMethodField()
 
     class Meta:
         model = TaskTemplate
         fields = '__all__'
         # Ensure server sets these so clients don't need to send them
-        read_only_fields = ['id', 'restaurant', 'created_by', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'restaurant', 'created_by', 'created_at', 'updated_at', 'standing_assignee_count']
 
     def _lang(self) -> str:
         request = self.context.get("request")
@@ -164,6 +172,29 @@ class TaskTemplateSerializer(serializers.ModelSerializer):
         block = self._i18n_block(obj, lang)
         tasks = block.get("tasks")
         return tasks if isinstance(tasks, list) else obj.tasks
+
+    def get_standing_assignee_count(self, obj: TaskTemplate):
+        try:
+            return obj.standing_assignees.count()
+        except Exception:
+            return 0
+
+    def validate_standing_assignees(self, value):
+        """Keep assignees in the same restaurant as the template / manager."""
+        request = self.context.get("request")
+        restaurant = None
+        if self.instance is not None:
+            restaurant = getattr(self.instance, "restaurant", None)
+        if restaurant is None and request and getattr(request.user, "restaurant", None):
+            restaurant = request.user.restaurant
+        if restaurant is None:
+            return value
+        bad = [u for u in value if getattr(u, "restaurant_id", None) != restaurant.id]
+        if bad:
+            raise serializers.ValidationError(
+                "Standing assignees must belong to the same workspace."
+            )
+        return value
 
     def validate_frequency(self, value):
         """Normalize frequency to match backend choices (uppercase keys).
@@ -204,6 +235,7 @@ class TaskTemplateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         # Inject restaurant and created_by from request context
         request = self.context.get('request')
+        standing = validated_data.pop("standing_assignees", None)
         if request and hasattr(request, 'user'):
             restaurant = getattr(request.user, 'restaurant', None)
             if restaurant is None:
@@ -211,7 +243,17 @@ class TaskTemplateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'restaurant': 'User has no associated restaurant.'})
             validated_data['restaurant'] = restaurant
             validated_data['created_by'] = request.user
-        return super().create(validated_data)
+        instance = super().create(validated_data)
+        if standing is not None:
+            instance.standing_assignees.set(standing)
+        return instance
+
+    def update(self, instance, validated_data):
+        standing = validated_data.pop("standing_assignees", None)
+        instance = super().update(instance, validated_data)
+        if standing is not None:
+            instance.standing_assignees.set(standing)
+        return instance
 
 class TaskSerializer(serializers.ModelSerializer):
     assigned_to_details = serializers.SerializerMethodField()

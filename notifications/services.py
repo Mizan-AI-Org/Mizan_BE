@@ -1564,6 +1564,17 @@ class NotificationService:
         if len(phone_digits_clean) < 6:
             return None
 
+        # Ad-hoc checklist containers start as SCHEDULED; mark live when checklist begins
+        try:
+            from scheduling.standing_checklist import ADHOC_CHECKLIST_MARKER
+
+            notes = getattr(active_shift, "notes", "") or ""
+            if ADHOC_CHECKLIST_MARKER in notes and active_shift.status == "SCHEDULED":
+                active_shift.status = "IN_PROGRESS"
+                active_shift.save(update_fields=["status"])
+        except Exception:
+            pass
+
         self._ensure_shift_tasks_from_templates(user, active_shift)
 
         tasks_qs = ShiftTask.objects.filter(shift=active_shift).exclude(
@@ -1598,36 +1609,60 @@ class NotificationService:
         session.state = "in_checklist"
         session.save(update_fields=["state"])
 
+        from scheduling.checklist_photo import task_requires_photo
+
         tasks_out = []
         for t in tasks:
             tasks_out.append({
                 "id": str(t.id),
                 "title": t.title,
                 "description": t.description or "",
+                "requires_photo": task_requires_photo(t),
             })
 
+        from core.i18n import format_checklist_task_message, get_effective_language
+
         first = tasks[0]
+        lang = get_effective_language(
+            user=user, restaurant=getattr(user, "restaurant", None)
+        )
         return {
             "success": True,
             "status": "started",
             "clocked_in": True,
             "tasks": tasks_out,
             "total": len(tasks),
+            "language": lang,
             "current_task": {
                 "id": str(first.id),
                 "index": 1,
                 "title": first.title,
                 "description": first.description or "",
+                "requires_photo": task_requires_photo(first),
             },
+            "message_for_user": format_checklist_task_message(
+                lang,
+                title=first.title,
+                index=1,
+                total=len(tasks),
+                description=first.description or "",
+                requires_photo=task_requires_photo(first),
+                is_first=True,
+            ),
         }
 
     def _ensure_shift_tasks_from_templates(self, user, active_shift):
-        """Create ShiftTasks from task templates if they don't already exist."""
+        """Create ShiftTasks from task templates (including standing assignees)."""
         try:
             from scheduling.models import ShiftTask
+            from scheduling.shift_auto_templates import _normalize_task_item
+            from scheduling.standing_checklist import attach_standing_templates_to_shift
+
+            attach_standing_templates_to_shift(active_shift, user)
             templates = list(active_shift.task_templates.all())
         except Exception:
             return
+
         existing_titles = set(
             ShiftTask.objects.filter(shift=active_shift)
             .values_list("title", flat=True)
@@ -1648,21 +1683,47 @@ class NotificationService:
                 if isinstance(step, str):
                     title = (step.strip()[:255] or getattr(tpl, "name", "Task")).strip()
                     desc = ""
+                    raw = {"title": title, "description": desc}
                 elif isinstance(step, dict):
                     title = (step.get("title") or step.get("name") or step.get("task") or getattr(tpl, "name", "Task"))[:255].strip()
                     desc = (step.get("description") or step.get("details") or "").strip()
+                    raw = step
                 else:
                     title = (getattr(tpl, "name", "Task") or "Task").strip()
                     desc = ""
+                    raw = {"title": title, "description": desc}
                 if not title:
                     title = getattr(tpl, "name", "Task") or "Task"
                 if title in existing_titles:
                     continue
                 existing_titles.add(title)
                 try:
+                    t = _normalize_task_item(raw if isinstance(raw, dict) else {"title": title, "description": desc})
+                    branch_config = {}
+                    if (
+                        t.get("branches")
+                        or t.get("response_type") == "yes_no"
+                        or t.get("template_task_id")
+                        or t.get("requires_photo")
+                    ):
+                        branch_config = {
+                            "template_task_id": t.get("template_task_id") or "",
+                            "response_type": t.get("response_type") or "check",
+                            "branches": t.get("branches") or {},
+                            "template_id": str(getattr(tpl, "id", "") or ""),
+                            "template_name": getattr(tpl, "name", "") or "",
+                            "requires_photo": bool(t.get("requires_photo")),
+                            "verification_type": t.get("verification_type") or "NONE",
+                        }
                     ShiftTask.objects.create(
-                        shift=active_shift, title=title, description=desc,
-                        status="TODO", assigned_to=user,
+                        shift=active_shift,
+                        title=title,
+                        description=desc,
+                        status="TODO",
+                        assigned_to=user,
+                        branch_config=branch_config,
+                        verification_required=bool(t.get("verification_required") or t.get("requires_photo")),
+                        verification_type=t.get("verification_type") or "NONE",
                     )
                 except Exception as e:
                     logger.warning("_ensure_shift_tasks_from_templates: %s", e)

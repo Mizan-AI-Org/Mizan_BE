@@ -75,3 +75,49 @@ def invoice_overdue_reminder_sweep() -> dict:
     if summary["notified"]:
         logger.info("invoice_overdue_reminder_sweep: %s", summary)
     return summary
+
+
+@shared_task(name="finance.tasks.payment_approval_stuck_sweep")
+def payment_approval_stuck_sweep() -> dict:
+    """
+    Nudge approvers when a PayGuard rung is stuck (Miya WhatsApp reminders).
+
+    Example: "Hi Hamza, Driss is waiting for the approval to pay an invoice of 150,000 MAD…"
+    """
+    from datetime import timedelta
+
+    from finance.models import InvoicePaymentApproval
+    from finance.payment_approval import get_policy, notify_current_step
+
+    now = timezone.now()
+    summary = {"checked": 0, "reminded": 0}
+
+    qs = InvoicePaymentApproval.objects.filter(
+        status=InvoicePaymentApproval.STATUS_PENDING
+    ).select_related("invoice", "restaurant", "requested_by")
+
+    for approval in qs.iterator(chunk_size=50):
+        summary["checked"] += 1
+        policy = get_policy(approval.restaurant)
+        if not policy.get("enabled"):
+            continue
+        stuck_hours = int(policy.get("stuck_hours") or 4)
+        max_reminders = int(policy.get("max_reminders") or 3)
+        if (approval.reminder_count or 0) >= max_reminders:
+            continue
+        # First nudge after stuck_hours from start (or last reminder)
+        anchor = approval.last_reminded_at or approval.started_at
+        if not anchor:
+            continue
+        if now - anchor < timedelta(hours=stuck_hours):
+            continue
+        try:
+            n = notify_current_step(approval, is_reminder=True)
+            if n:
+                summary["reminded"] += 1
+        except Exception:
+            logger.exception("PayGuard stuck sweep failed approval=%s", approval.pk)
+
+    if summary["reminded"]:
+        logger.info("payment_approval_stuck_sweep: %s", summary)
+    return summary

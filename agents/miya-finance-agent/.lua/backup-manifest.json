@@ -1,6 +1,6 @@
 {
-  "lastHash": "dad4968b3812a1eb0b68a28e445f7b864e21bbb1aa3ba0cdd070d00c042f7838",
-  "lastPushedAt": "2026-07-14T17:08:02.390Z",
+  "lastHash": "70732ca9accb1d5095875a77e99f956296036f245aaae2693c3a890127f3429b",
+  "lastPushedAt": "2026-07-14T17:57:09.215Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "638391c8744773ca"
+      "hash": "00e24e53cd239780"
     },
     {
       "relativePath": "package.json",
@@ -60,7 +60,7 @@
     },
     {
       "relativePath": "src/preprocessors/ManagerCopilotPreprocessor.ts",
-      "hash": "fae8da3e95956b6c"
+      "hash": "1a160b200b11dcf1"
     },
     {
       "relativePath": "src/preprocessors/MyShiftsPreprocessor.ts",
@@ -84,7 +84,7 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "4e3c8950773d10a0"
+      "hash": "5fec5437512671cb"
     },
     {
       "relativePath": "src/shared/checklistIntent.ts",
@@ -104,7 +104,7 @@
     },
     {
       "relativePath": "src/shared/managerCopilotIntent.ts",
-      "hash": "67036cd2979f80cb"
+      "hash": "0b0abf57ef239c3a"
     },
     {
       "relativePath": "src/shared/myShiftsIntent.ts",
@@ -112,7 +112,7 @@
     },
     {
       "relativePath": "src/shared/roleGate.ts",
-      "hash": "ca1021ac83d963d9"
+      "hash": "d74aa1b5b769c88f"
     },
     {
       "relativePath": "src/shared/staffCompanionIntent.ts",
@@ -120,7 +120,7 @@
     },
     {
       "relativePath": "src/skills/finance.skill.ts",
-      "hash": "6e983fbf5c4489f4"
+      "hash": "567543cb03baaad6"
     },
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
@@ -144,7 +144,7 @@
     },
     {
       "relativePath": "src/skills/tools/InvoiceTools.ts",
-      "hash": "1dcb5380aa3d5368"
+      "hash": "69aca847a506d4eb"
     },
     {
       "relativePath": "src/skills/tools/SalesReportTool.ts",
