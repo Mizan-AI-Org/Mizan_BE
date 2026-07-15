@@ -1,6 +1,6 @@
 {
-  "lastHash": "70732ca9accb1d5095875a77e99f956296036f245aaae2693c3a890127f3429b",
-  "lastPushedAt": "2026-07-14T17:57:09.215Z",
+  "lastHash": "4318e2814daabc75641130dba8a4bbdc0527b22863c83400d3a401075c91cc28",
+  "lastPushedAt": "2026-07-15T17:05:10.538Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "00e24e53cd239780"
+      "hash": "1db0fda35debaa5f"
     },
     {
       "relativePath": "package.json",
@@ -36,7 +36,7 @@
     },
     {
       "relativePath": "src/preprocessors/ChecklistFlowPreprocessor.ts",
-      "hash": "d8acb63160de2aa0"
+      "hash": "21e70ce636ed481a"
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
@@ -84,11 +84,11 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "5fec5437512671cb"
+      "hash": "9af5f676ddf3aa88"
     },
     {
       "relativePath": "src/shared/checklistIntent.ts",
-      "hash": "eec81c33e9831c91"
+      "hash": "1b455def43d55a12"
     },
     {
       "relativePath": "src/shared/clockInGuard.ts",
@@ -96,7 +96,7 @@
     },
     {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
-      "hash": "43bf539a08ce2f49"
+      "hash": "323a3b7726abc46b"
     },
     {
       "relativePath": "src/shared/incidentIntent.ts",
@@ -112,7 +112,7 @@
     },
     {
       "relativePath": "src/shared/roleGate.ts",
-      "hash": "d74aa1b5b769c88f"
+      "hash": "b98eb4cfb25e49d4"
     },
     {
       "relativePath": "src/shared/staffCompanionIntent.ts",
@@ -120,7 +120,7 @@
     },
     {
       "relativePath": "src/skills/finance.skill.ts",
-      "hash": "567543cb03baaad6"
+      "hash": "cd91f5cecfec2d32"
     },
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
@@ -136,15 +136,19 @@
     },
     {
       "relativePath": "src/skills/tools/ChecklistRespondTool.ts",
-      "hash": "26907748c61274c6"
+      "hash": "3b9a2a6fc144b6ac"
     },
     {
       "relativePath": "src/skills/tools/ChecklistStarterTool.ts",
-      "hash": "912212728c963866"
+      "hash": "e10c830a4223607f"
     },
     {
       "relativePath": "src/skills/tools/InvoiceTools.ts",
       "hash": "69aca847a506d4eb"
+    },
+    {
+      "relativePath": "src/skills/tools/PaymentApprovalTool.ts",
+      "hash": "84bba365303dcbe2"
     },
     {
       "relativePath": "src/skills/tools/SalesReportTool.ts",
@@ -164,7 +168,7 @@
     },
     {
       "relativePath": "src/utils/checklistMessages.ts",
-      "hash": "074b18ba2460ea9b"
+      "hash": "4071445fefda8331"
     },
     {
       "relativePath": "src/utils/detectReplyLanguage.ts",

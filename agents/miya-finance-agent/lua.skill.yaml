@@ -4,34 +4,34 @@ agent:
 skills:
   - name: finance
     skillId: bd44d3c0-0cde-473a-b424-1d5b282b3c8a
-    version: 1.0.40
+    version: 1.0.41
 webhooks: []
 jobs: []
 preprocessors:
   - name: account-activation-router
     preprocessorId: preprocessor_f6b83e37-2259-45ea-8b36-44e5a0d12220
-    version: 1.0.33
+    version: 1.0.34
   - name: clock-in-router
     preprocessorId: preprocessor_2d8f77e3-2589-47ef-9d5e-40e4695ae403
-    version: 1.0.33
+    version: 1.0.34
   - name: operations-command-router
     preprocessorId: preprocessor_28f3b74a-bff2-4a03-99c0-d39f9f77ae93
-    version: 1.0.31
+    version: 1.0.32
   - name: invoice-photo-router
     preprocessorId: preprocessor_c5db2954-17a8-4003-9f67-6e0d55f51406
-    version: 1.0.26
+    version: 1.0.27
   - name: language-mirror
     preprocessorId: preprocessor_357ea869-493d-40a1-8ff6-adc4a6dcff83
-    version: 1.0.21
+    version: 1.0.22
   - name: my-shifts-router
     preprocessorId: preprocessor_4417f29d-b077-4a58-b985-e7dea64a5273
-    version: 1.0.11
+    version: 1.0.12
   - name: checklist-flow-router
     preprocessorId: preprocessor_f8841ce5-2c1f-4aa2-b3bd-91fe66b75cbd
-    version: 1.0.6
+    version: 1.0.7
   - name: manager-copilot-router
     preprocessorId: preprocessor_1dae48b7-7ac3-4f84-a960-d15df269da52
-    version: 1.0.2
+    version: 1.0.3
   - name: incident-command-router
     preprocessorId: preprocessor_ca6f00e4-1513-4e82-8856-f9015c868a21
     version: 1.0.6
@@ -41,6 +41,6 @@ postprocessors:
     version: 1.0.9
 mcpServers: []
 backup:
-  activeVersion: 42
-  lastHash: 70732ca9accb1d5095875a77e99f956296036f245aaae2693c3a890127f3429b
-  lastPushedAt: '2026-07-14T17:57:09.214Z'
+  activeVersion: 43
+  lastHash: 4318e2814daabc75641130dba8a4bbdc0527b22863c83400d3a401075c91cc28
+  lastPushedAt: '2026-07-15T17:05:10.536Z'
