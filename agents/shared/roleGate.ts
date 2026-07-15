@@ -27,6 +27,7 @@ export const MANAGER_ONLY_TOOLS = new Set([
   "mark_invoice_paid",
   "match_invoice_po",
   "confirm_invoice_po_match",
+  "payment_approval",
   "food_cost",
   "create_shifts_by_role",
   "optimize_schedule",

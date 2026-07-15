@@ -92,6 +92,8 @@ Miya is the **primary interface** between every user and Mizan AI. She understan
 | **5b** | Platform RAG | `GET /api/agent/platform-knowledge/` + intel `platform_knowledge` tool | Done |
 | **5c** | Proactive digests | Celery ops digest (staffing + requests + invoices) → WhatsApp | Done |
 | **5d** | PO ↔ invoice | Invoice FK + match/confirm agent APIs + finance tools | Done |
+| **5e** | Compliance doc expiry | Restaurant `ComplianceDocument` + Celery sweep + Settings UI + Miya `compliance_documents` tool | Done |
+| **5f** | PayGuard | Amount-tiered invoice payment approvals + stuck WhatsApp nudges + Settings ladder UI | Done |
 
 ---
 

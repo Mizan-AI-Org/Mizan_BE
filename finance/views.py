@@ -174,6 +174,20 @@ class InvoiceViewSet(ModelViewSet):
                 {"success": True, "message": "Invoice already marked paid", "invoice": InvoiceSerializer(invoice).data}
             )
 
+        from finance.payment_approval import payment_allowed, start_payment_approval
+
+        ok, block_msg = payment_allowed(invoice)
+        if not ok:
+            if invoice.approval_status == Invoice.APPROVAL_NONE:
+                start_payment_approval(invoice=invoice, requested_by=request.user)
+                invoice.refresh_from_db()
+                ok, block_msg = payment_allowed(invoice)
+            if not ok:
+                return Response(
+                    {"success": False, "error": "approval_required", "message": block_msg},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         raw_paid_on = request.data.get("paid_on") or request.data.get("paid_at")
         paid_on = None
         if raw_paid_on:

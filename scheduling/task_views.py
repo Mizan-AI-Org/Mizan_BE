@@ -25,7 +25,9 @@ class TaskTemplateViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         restaurant = user.restaurant
-        return TaskTemplate.objects.filter(restaurant=restaurant)
+        return TaskTemplate.objects.filter(restaurant=restaurant).prefetch_related(
+            "standing_assignees"
+        )
     
     def perform_create(self, serializer):
         serializer.save(
@@ -69,7 +71,7 @@ class TaskTemplateViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def generate_tasks(self, request, pk=None):
-        """Generate tasks from a template"""
+        """Generate Tasks & Demands rows from a template (manager one-off tasks)."""
         template = self.get_object()
         assigned_to_ids = request.data.get('assigned_to', [])
         due_date = request.data.get('due_date')
@@ -94,6 +96,53 @@ class TaskTemplateViewSet(viewsets.ModelViewSet):
         
         serializer = TaskSerializer(tasks, many=True)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='start_process')
+    def start_process(self, request, pk=None):
+        """
+        Start a Process & Tasks checklist for selected staff (Live Board / Miya).
+
+        Does NOT create dashboard Tasks & Demands rows — those are for single
+        manager-assigned tasks. Body: { staff_ids: [uuid, ...], notify?: bool }
+        """
+        from accounts.models import CustomUser
+        from scheduling.standing_checklist import start_process_for_staff
+
+        template = self.get_object()
+        staff_ids = request.data.get('staff_ids') or request.data.get('assigned_to') or []
+        if not isinstance(staff_ids, list) or not staff_ids:
+            return Response(
+                {'detail': 'Select at least one staff member (staff_ids).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        restaurant = getattr(request.user, 'restaurant', None)
+        staff_qs = CustomUser.objects.filter(
+            id__in=staff_ids,
+            is_active=True,
+        )
+        if restaurant:
+            staff_qs = staff_qs.filter(restaurant=restaurant)
+        staff_users = list(staff_qs)
+        if not staff_users:
+            return Response(
+                {'detail': 'No matching staff found for this restaurant.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        notify = request.data.get('notify', True)
+        if isinstance(notify, str):
+            notify = notify.lower() in ('1', 'true', 'yes')
+
+        result = start_process_for_staff(
+            template=template,
+            staff_users=staff_users,
+            created_by=request.user,
+            notify_whatsapp=bool(notify),
+        )
+        if not result.get('success'):
+            return Response(result, status=status.HTTP_400_BAD_REQUEST)
+        return Response(result, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=['post'])
     def run_recurring(self, request):

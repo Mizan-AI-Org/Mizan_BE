@@ -557,9 +557,17 @@ CELERY_BEAT_SCHEDULE = {
         "task": "payroll.tasks.compliance_reminder_sweep",
         "schedule": crontab(minute=0, hour=7),
     },
+    "compliance_document_expiry_sweep_daily": {
+        "task": "payroll.tasks.compliance_document_expiry_sweep",
+        "schedule": crontab(minute=15, hour=7),
+    },
     "invoice_overdue_reminder_daily": {
         "task": "finance.tasks.invoice_overdue_reminder_sweep",
         "schedule": crontab(minute=30, hour=8),
+    },
+    "payment_approval_stuck_sweep": {
+        "task": "finance.tasks.payment_approval_stuck_sweep",
+        "schedule": crontab(minute="*/20"),
     },
     # WhatsApp-first memory layer (Memorae-parity)
     "personal_reminder_sweep": {

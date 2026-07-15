@@ -28,6 +28,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "issue_date",
             "due_date",
             "status",
+            "approval_status",
             "category",
             "notes",
             "photo",
@@ -56,6 +57,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "restaurant",
+            "approval_status",
             "is_overdue",
             "days_until_due",
             "location_name",

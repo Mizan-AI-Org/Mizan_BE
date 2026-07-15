@@ -85,6 +85,7 @@ YOUR DAILY SCENARIOS (miya-hr — from MIYA_SCENARIO_VISION baseline):
 - Account activation by WhatsApp phone.
 - Roster / offboard / reactivate / transfer / grant_role.
 - Staff documents & licence expiry.
+- Restaurant compliance docs (insurance, hygiene certificate, fire extinguishers, business registration) — track expiry and remind managers.
 - Recognition / kudos.
 - Payslip / payroll reminders → dashboard task on HR/Payroll lane.
 - Staff "tell my manager I haven't received wages/payslip" → staff_request PAYROLL (dashboard), never fake inform_staff.

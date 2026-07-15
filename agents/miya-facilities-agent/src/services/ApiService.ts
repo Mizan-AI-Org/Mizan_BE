@@ -1950,10 +1950,16 @@ export default class ApiService {
         notes?: string
     ): Promise<{
         success: boolean;
-        status?: string;
+        status?: "completed" | "next_task" | "awaiting_photo" | string;
         answered?: number;
         total?: number;
-        current_task?: { id: string; index: number; title: string; description: string };
+        current_task?: {
+            id: string;
+            index?: number;
+            title: string;
+            description: string;
+            requires_photo?: boolean;
+        };
         summary?: { yes: number; no: number; n_a: number };
         message_for_user?: string;
         error?: string;
@@ -2870,6 +2876,104 @@ export default class ApiService {
                 "/api/payroll/agent/compliance-reminders/seed/",
                 { restaurant_id: restaurantId },
                 { headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId) },
+            );
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                error: error.response?.data?.error || error.message,
+                message_for_user: error.response?.data?.message_for_user,
+            };
+        }
+    }
+
+    async listComplianceDocumentsForAgent(
+        restaurantId: string,
+        options?: { expiring_within_days?: number },
+    ) {
+        const agentKey = env("LUA_WEBHOOK_API_KEY") || env("WEBHOOK_API_KEY") || env("MIZAN_SERVICE_TOKEN");
+        if (!agentKey) return { success: false, error: "No agent key configured" };
+        try {
+            const response = await this.axiosInstance.get("/api/payroll/agent/compliance-documents/", {
+                headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId),
+                params: {
+                    restaurant_id: restaurantId,
+                    expiring_within_days: options?.expiring_within_days ?? 90,
+                },
+            });
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                error: error.response?.data?.error || error.message,
+                documents: [],
+            };
+        }
+    }
+
+    async seedComplianceDocumentsForAgent(restaurantId: string) {
+        const agentKey = env("LUA_WEBHOOK_API_KEY") || env("WEBHOOK_API_KEY") || env("MIZAN_SERVICE_TOKEN");
+        if (!agentKey) return { success: false, error: "No agent key configured" };
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/payroll/agent/compliance-documents/seed/",
+                { restaurant_id: restaurantId, action: "seed" },
+                { headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId) },
+            );
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                error: error.response?.data?.error || error.message,
+                message_for_user: error.response?.data?.message_for_user,
+            };
+        }
+    }
+
+    async createComplianceDocumentForAgent(data: {
+        restaurant_id: string;
+        title: string;
+        document_type?: string;
+        expires_at?: string;
+        remind_days_before?: number;
+        description?: string;
+        reference_number?: string;
+    }) {
+        const agentKey = env("LUA_WEBHOOK_API_KEY") || env("WEBHOOK_API_KEY") || env("MIZAN_SERVICE_TOKEN");
+        if (!agentKey) return { success: false, error: "No agent key configured" };
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/payroll/agent/compliance-documents/",
+                data,
+                { headers: agentKeyBearerHeadersWithRestaurant(agentKey, data.restaurant_id) },
+            );
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                error: error.response?.data?.error || error.message,
+                message_for_user: error.response?.data?.message_for_user,
+            };
+        }
+    }
+
+    async updateComplianceDocumentForAgent(data: {
+        restaurant_id: string;
+        id: string;
+        title?: string;
+        document_type?: string;
+        expires_at?: string;
+        remind_days_before?: number;
+        description?: string;
+        reference_number?: string;
+    }) {
+        const agentKey = env("LUA_WEBHOOK_API_KEY") || env("WEBHOOK_API_KEY") || env("MIZAN_SERVICE_TOKEN");
+        if (!agentKey) return { success: false, error: "No agent key configured" };
+        try {
+            const response = await this.axiosInstance.patch(
+                "/api/payroll/agent/compliance-documents/",
+                data,
+                { headers: agentKeyBearerHeadersWithRestaurant(agentKey, data.restaurant_id) },
             );
             return response.data;
         } catch (error: any) {

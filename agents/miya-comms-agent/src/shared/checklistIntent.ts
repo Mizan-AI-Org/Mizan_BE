@@ -5,10 +5,10 @@
 export { isWhatShouldIDoNextAsk } from "./staffCompanionIntent";
 
 export const START_CHECKLIST_RE =
-  /\b(start\s+(my\s+)?(check\s*lists?|tasks|checklists?)|begin\s+(my\s+)?(check\s*lists?|tasks|checklists?)|checklists?\s+start|get\s+(my\s+)?checklist\s+started|load\s+(my\s+)?(checklist|tasks)|(?:staff\s+)?(?:wants?|needs?)\s+to\s+start\s+(?:their\s+)?(?:checklist|tasks)|ابدأ\s*(المهام|القائمة)|demarrer\s+(la\s+)?checklists?|commencer\s+(la\s+)?checklists?)\b/i;
+  /\b(start\s+(my\s+)?(check\s*lists?|tasks|checklists?)|begin\s+(my\s+)?(check\s*lists?|tasks|checklists?)|checklists?\s+start|get\s+(my\s+)?checklist\s+started|load\s+(my\s+)?(checklist|tasks)|(?:staff\s+)?(?:wants?|needs?)\s+to\s+start\s+(?:their\s+)?(?:checklist|tasks)|ابدأ\s*(المهام|القائمة|checklist)?|ابدء\s*(المهام|القائمة)?|بد[اأ]ية\s*(المهام|القائمة)?|d[eé]marrer\s+(la\s+)?(checklist|t[aâ]ches?)|commencer\s+(la\s+)?(checklist|t[aâ]ches?)|lancer\s+(la\s+)?checklist)\b/i;
 
 export const PREVIEW_TASKS_RE =
-  /\b(what\s+(?:are\s+)+(?:my\s+)?tasks(?:\s+today)?|(?:my\s+)?tasks\s+today|show\s+(?:my\s+)?(?:tasks|check\s*lists?)|my\s+(?:tasks|check\s*lists?)|list\s+(?:my\s+)?(?:tasks|check\s*lists?)|ما\s+هي\s+مهامي|شنو\s+المهام|mes\s+t[aâ]ches(?:\s+aujourd['']?hui)?|voir\s+(?:ma\s+)?checklists?)\b/i;
+  /\b(what\s+(?:are\s+)+(?:my\s+)?tasks(?:\s+today)?|(?:my\s+)?tasks\s+today|show\s+(?:my\s+)?(?:tasks|check\s*lists?)|my\s+(?:tasks|check\s*lists?)|list\s+(?:my\s+)?(?:tasks|check\s*lists?)|ما\s+هي\s+مهامي|شنو\s+(?:هما?\s+)?المهام|mes\s+t[aâ]ches(?:\s+aujourd['']?hui)?|voir\s+(?:ma\s+)?checklists?|quelles?\s+(?:sont\s+)?(?:mes\s+)?t[aâ]ches)\b/i;
 
 /** Fake checklist-start apologies the model invents instead of calling checklist_starter. */
 export const FAKE_CHECKLIST_START_RE =
@@ -18,8 +18,22 @@ export function isStartChecklistMessage(text: string): boolean {
   const t = (text || "").trim();
   if (!t) return false;
   if (START_CHECKLIST_RE.test(t)) return true;
-  const normalized = t
-    .toLowerCase()
+  // Keep Arabic / French phrases that strip poorly under ASCII-only normalize
+  const lower = t.toLowerCase();
+  const multilingual = [
+    "démarrer la checklist",
+    "demarrer la checklist",
+    "commencer la checklist",
+    "lancer la checklist",
+    "démarrer les tâches",
+    "commencer les tâches",
+    "ابدأ المهام",
+    "ابدأ القائمة",
+    "ابدا المهام",
+    "شنو المهام",
+  ];
+  if (multilingual.some((p) => lower.includes(p) || t.includes(p))) return true;
+  const normalized = lower
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();

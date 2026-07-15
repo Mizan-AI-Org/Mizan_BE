@@ -290,11 +290,23 @@ def agent_record_invoice(request):
         + f", due {when}."
     )
 
+    payguard = None
+    try:
+        from finance.payment_approval import get_policy, start_payment_approval
+
+        if get_policy(restaurant).get("enabled"):
+            payguard = start_payment_approval(invoice=invoice, requested_by=acting_user)
+            if payguard.get("approval_required"):
+                msg += " " + (payguard.get("message_for_user") or "PayGuard approval started.")
+    except Exception:
+        logger.exception("PayGuard auto-start failed for invoice %s", invoice.id)
+
     return Response(
         {
             "success": True,
             "created": True,
             "invoice": InvoiceSerializer(invoice).data,
+            "payguard": payguard,
             "message_for_user": msg,
         },
         status=status.HTTP_201_CREATED,
@@ -368,6 +380,34 @@ def agent_mark_invoice_paid(request):
                 ),
             },
             status=status.HTTP_200_OK,
+        )
+
+    from finance.payment_approval import payment_allowed, start_payment_approval
+
+    # If PayGuard is on and approval never started, kick it off instead of paying
+    ok, block_msg = payment_allowed(invoice)
+    if not ok:
+        if invoice.approval_status == Invoice.APPROVAL_NONE:
+            started = start_payment_approval(invoice=invoice, requested_by=acting_user)
+            return Response(
+                {
+                    "success": False,
+                    "error": "approval_required",
+                    "payguard": started,
+                    "message_for_user": (
+                        started.get("message_for_user")
+                        or "PayGuard needs approval before this can be paid."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            {
+                "success": False,
+                "error": "approval_required",
+                "message_for_user": block_msg,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     paid_on = _coerce_date(_get_first(data, "paid_on", "paidOn", "paid_at"))
@@ -736,4 +776,153 @@ def agent_confirm_invoice_po_match(request):
                 f"{str(po.id)[:8]}… ({po.supplier.name if po.supplier_id else 'supplier'})."
             ),
         }
+    )
+
+
+# ---------------------------------------------------------------------------
+# PayGuard — payment approval ladder
+# ---------------------------------------------------------------------------
+
+@api_view(["GET", "POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_payment_approval(request):
+    """
+    GET  — list pending approvals / policy
+    POST — action: start | approve | reject | get_policy | set_policy
+    """
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+    from finance.models import InvoicePaymentApproval
+    from finance.payment_approval import (
+        act_on_approval,
+        get_policy,
+        save_policy,
+        serialize_approval,
+        serialize_policy_for_ui,
+        start_payment_approval,
+    )
+
+    restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+    if err:
+        return Response({"success": False, "error": err["error"]}, status=err["status"])
+
+    data = request.data if isinstance(getattr(request, "data", None), dict) else {}
+    action = str(_get_first(data, "action") or "").strip().lower()
+
+    if request.method == "GET" or action in ("list", "pending", ""):
+        if action in ("get_policy", "policy"):
+            return Response(
+                {"success": True, "policy": serialize_policy_for_ui(get_policy(restaurant))}
+            )
+        qs = (
+            InvoicePaymentApproval.objects.filter(
+                restaurant=restaurant, status=InvoicePaymentApproval.STATUS_PENDING
+            )
+            .select_related("invoice", "requested_by")
+            .prefetch_related("steps")
+            .order_by("started_at")[:20]
+        )
+        rows = []
+        for a in qs:
+            row = serialize_approval(a)
+            inv = a.invoice
+            row["invoice"] = {
+                "id": str(inv.id),
+                "vendor_name": inv.vendor_name,
+                "amount": str(inv.amount),
+                "currency": inv.currency,
+                "invoice_number": inv.invoice_number,
+            }
+            row["requested_by_name"] = (
+                f"{a.requested_by.first_name} {a.requested_by.last_name}".strip()
+                if a.requested_by
+                else None
+            )
+            rows.append(row)
+        return Response(
+            {
+                "success": True,
+                "count": len(rows),
+                "approvals": rows,
+                "policy_enabled": bool(get_policy(restaurant).get("enabled")),
+                "message_for_user": (
+                    f"{len(rows)} payment(s) waiting on the PayGuard ladder."
+                    if rows
+                    else "No payments waiting for approval right now."
+                ),
+            }
+        )
+
+    if action == "set_policy":
+        policy_in = data.get("policy") if isinstance(data.get("policy"), dict) else data
+        saved = save_policy(restaurant, policy_in)
+        return Response(
+            {
+                "success": True,
+                "policy": saved,
+                "message_for_user": "✓ PayGuard ladder updated.",
+            }
+        )
+
+    if action == "get_policy":
+        return Response(
+            {"success": True, "policy": serialize_policy_for_ui(get_policy(restaurant))}
+        )
+
+    invoice = None
+    try:
+        invoice = _find_invoice(restaurant, data)
+    except Exception:
+        invoice = None
+    if invoice is None:
+        invoice_id = _get_first(data, "invoice_id", "invoiceId", "id")
+        if invoice_id:
+            invoice = Invoice.objects.filter(restaurant=restaurant, id=invoice_id).first()
+
+    if action == "start":
+        if invoice is None:
+            return Response(
+                {
+                    "success": False,
+                    "message_for_user": "Which invoice should I submit for PayGuard approval?",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        result = start_payment_approval(invoice=invoice, requested_by=acting_user)
+        return Response(result, status=200 if result.get("success") else 400)
+
+    if action in ("approve", "reject"):
+        if invoice is None:
+            # Try first pending the actor can clear
+            pending = (
+                InvoicePaymentApproval.objects.filter(
+                    restaurant=restaurant, status=InvoicePaymentApproval.STATUS_PENDING
+                )
+                .select_related("invoice")
+                .order_by("started_at")
+                .first()
+            )
+            invoice = pending.invoice if pending else None
+        if invoice is None:
+            return Response(
+                {
+                    "success": False,
+                    "message_for_user": "I couldn't find a pending payment approval.",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        result = act_on_approval(
+            invoice=invoice,
+            actor=acting_user,
+            action=action,
+            note=str(_get_first(data, "note", "notes") or ""),
+        )
+        return Response(result, status=200 if result.get("success") else 400)
+
+    return Response(
+        {
+            "success": False,
+            "message_for_user": "Use action start, approve, reject, list, or get_policy.",
+        },
+        status=status.HTTP_400_BAD_REQUEST,
     )

@@ -481,9 +481,14 @@ def web_clock_in(request):
     except Exception:
         pass
 
-    # Find and mark the correct shift as IN_PROGRESS, then start the checklist
+    # Find and mark the correct shift as IN_PROGRESS, then start the checklist.
+    # If no scheduled shift, standing Process & Tasks assignments still get an ad-hoc container.
     try:
-        active_shift = _find_shift_for_clock_in(user)
+        from scheduling.standing_checklist import ensure_checklist_shift_for_staff
+
+        active_shift = _find_shift_for_clock_in(user) or ensure_checklist_shift_for_staff(
+            user, create_adhoc=True
+        )
         if active_shift and getattr(user, 'phone', None):
             notification_service.start_conversational_checklist_after_clock_in(user, active_shift)
     except Exception:
@@ -1370,7 +1375,11 @@ def agent_clock_in(request):
 
         # Find and mark the correct shift as IN_PROGRESS, then start the checklist
         try:
-            active_shift = _find_shift_for_clock_in(user)
+            from scheduling.standing_checklist import ensure_checklist_shift_for_staff
+
+            active_shift = _find_shift_for_clock_in(user) or ensure_checklist_shift_for_staff(
+                user, create_adhoc=True
+            )
             if active_shift and getattr(user, 'phone', None):
                 notification_service.start_conversational_checklist_after_clock_in(user, active_shift)
         except Exception:
@@ -1656,6 +1665,8 @@ def agent_clock_in_by_phone(request):
         try:
             now_today = timezone.now()
             today_local = timezone.localdate()
+            from scheduling.standing_checklist import ensure_checklist_shift_for_staff
+
             active_qs = AssignedShift.objects.filter(
                 Q(staff=user) | Q(staff_members=user),
                 shift_date=today_local,
@@ -1666,6 +1677,7 @@ def agent_clock_in_by_phone(request):
                 active_qs.filter(end_time__gt=now_today).order_by('start_time').first()
                 or active_qs.filter(start_time__lte=now_today, end_time__gte=now_today).first()
                 or active_qs.order_by('start_time').first()
+                or ensure_checklist_shift_for_staff(user, create_adhoc=True)
             )
             if active_shift:
                 lua_url = (getattr(settings, "LUA_WHATSAPP_WEBHOOK_URL", None) or "").strip()

@@ -126,6 +126,15 @@ class TaskTemplate(models.Model):
     # Usage Statistics
     usage_count = models.IntegerField(default=0, help_text="Number of times this template has been used")
     last_used = models.DateTimeField(null=True, blank=True, help_text="When this template was last used")
+
+    # Standing assignees — staff who get this process checklist after clock-in
+    # even when they have no scheduled shift (Processes & Tasks → Assign to staff).
+    standing_assignees = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        blank=True,
+        related_name="standing_task_templates",
+        help_text="Staff who can run this checklist after clock-in without a scheduled shift.",
+    )
     
     class Meta:
         db_table = 'task_templates'

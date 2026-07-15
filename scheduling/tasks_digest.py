@@ -79,8 +79,31 @@ def _compose_ops_digest(restaurant, target_date) -> str:
     ).count()
     lines.append(f"• Invoices: {overdue_inv} overdue, {due_soon} due in 3 days")
 
+    try:
+        from payroll.services.compliance_documents import documents_needing_attention
+
+        docs = documents_needing_attention(restaurant, within_days=30)
+        expired = [d for d in docs if d.expires_at and d.expires_at < target_date]
+        soon = [
+            d
+            for d in docs
+            if d.expires_at and target_date <= d.expires_at <= target_date + timedelta(days=30)
+        ]
+        unset = [d for d in docs if not d.expires_at]
+        if expired or soon or unset:
+            bits = []
+            if expired:
+                bits.append(f"{len(expired)} expired")
+            if soon:
+                bits.append(f"{len(soon)} due in 30 days")
+            if unset:
+                bits.append(f"{len(unset)} missing dates")
+            lines.append(f"• Compliance docs: {', '.join(bits)}")
+    except Exception:
+        pass
+
     lines.append(
-        "\nReply in chat: *what's running low?* · *today's sales* · *match invoice to PO*"
+        "\nReply in chat: *what's running low?* · *today's sales* · *expiring documents*"
     )
     return "\n".join(lines)
 

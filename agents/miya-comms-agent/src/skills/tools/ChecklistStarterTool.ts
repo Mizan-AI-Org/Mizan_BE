@@ -13,6 +13,7 @@ import {
     formatChecklistComplete,
     formatChecklistStartIntro,
     formatChecklistTaskPrompt,
+    formatPhotoAwaitPrompt,
 } from "../../utils/checklistMessages";
 import { resolveStaffPhoneForByPhoneTools } from "../../utils/resolveStaffPhoneFromLuaUser";
 
@@ -157,10 +158,28 @@ export default class ChecklistStarterTool implements LuaTool {
                 };
             }
 
+            if (result.status === "awaiting_photo") {
+                return {
+                    status: "awaiting_photo",
+                    total,
+                    current_task: t,
+                    message:
+                        result.message_for_user ||
+                        formatPhotoAwaitPrompt({
+                            title: t.title,
+                            description: t.description,
+                        }),
+                    instruction:
+                        "SEND this photo request and wait for the staff to send an image.",
+                    next_action: "await_photo",
+                };
+            }
+
             const task = {
                 index: t.index || 1,
                 title: t.title || "Task",
                 description: t.description || "",
+                requires_photo: Boolean(t.requires_photo),
             };
             const isResume = result.status === "in_progress";
             const message = isResume
