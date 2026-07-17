@@ -108,6 +108,16 @@ class Subscription(models.Model):
     # webhook so the UI knows which toggle position to render.
     billing_interval = models.CharField(max_length=10, blank=True, default="")
 
+    # Upgrade intent when the payment wall for this tenant/country is not ready yet.
+    pending_plan = models.ForeignKey(
+        SubscriptionPlan,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="pending_subscriptions",
+    )
+    pending_billing_interval = models.CharField(max_length=10, blank=True, default="")
+
     current_period_start = models.DateTimeField(null=True, blank=True)
     current_period_end = models.DateTimeField(null=True, blank=True)
     cancel_at_period_end = models.BooleanField(default=False)
@@ -122,19 +132,25 @@ class Subscription(models.Model):
     # ----- entitlement helpers ------------------------------------------------
     @property
     def is_paid(self) -> bool:
+        """Entitled to paid-tier features (includes local / provider trial)."""
         return self.status in {"active", "trialing"}
+
+    @property
+    def has_provider_subscription(self) -> bool:
+        """True when a real payment-provider subscription exists (e.g. Stripe)."""
+        return bool(self.stripe_subscription_id)
 
     @property
     def effective_tier(self) -> str:
         """Return the currently entitled tier.
 
-        During the pilot we grant ``GROWTH`` to any tenant without an active
-        paid subscription so nothing breaks while pricing rolls out. Flip
-        ``settings.BILLING_PILOT_DEFAULT_TIER`` to ``FREE`` / ``STARTER`` to
-        tighten the default later.
+        Prefer the assigned plan when present; otherwise use
+        ``settings.BILLING_PILOT_DEFAULT_TIER`` (defaults to Starter).
         """
         from django.conf import settings
 
         if self.is_paid and self.plan:
             return self.plan.tier
-        return getattr(settings, "BILLING_PILOT_DEFAULT_TIER", SubscriptionPlan.Tier.GROWTH)
+        if self.plan:
+            return self.plan.tier
+        return getattr(settings, "BILLING_PILOT_DEFAULT_TIER", SubscriptionPlan.Tier.STARTER)

@@ -69,11 +69,12 @@ INSTALLED_APPS = [
     'pos',  # Point of Sale app
     'core',  # Core utilities app
     'checklists',  # Checklist management app
-    'billing',     # Billing & Subscriptions
+    'billing.apps.BillingConfig',     # Billing & Subscriptions
     'menu',
     'inventory',
     'finance',
     'payroll',
+    'platform_admin',
 ]
 
 # ---------------------------
@@ -447,15 +448,26 @@ STRIPE_SECRET_KEY = config('STRIPE_SECRET_KEY', default='')
 STRIPE_PUBLISHABLE_KEY = config('STRIPE_PUBLISHABLE_KEY', default='')
 STRIPE_WEBHOOK_SECRET = config('STRIPE_WEBHOOK_SECRET', default='')
 
+# Tenant payment walls are country-specific. Map ISO country → provider id.
+# Unknown countries fall back to DEFAULT_PAYMENT_PROVIDER. Providers beyond
+# "stripe" will be wired when payment-wall details are provided.
+DEFAULT_PAYMENT_PROVIDER = config('DEFAULT_PAYMENT_PROVIDER', default='stripe')
+# Optional JSON override, e.g. {"MA":"none","US":"stripe"}
+try:
+    import json as _json
+    _pp_raw = config('PAYMENT_PROVIDER_BY_COUNTRY', default='')
+    PAYMENT_PROVIDER_BY_COUNTRY = _json.loads(_pp_raw) if _pp_raw.strip() else None
+except Exception:
+    PAYMENT_PROVIDER_BY_COUNTRY = None
+
 # Currency used by the seed_subscription_plans management command. Pricing
 # cards on the frontend read currency from the plan rows, so switching this
 # (and re-running the command) is enough to re-launch in a new market.
 BILLING_CURRENCY = config('BILLING_CURRENCY', default='USD')
 
-# Tier granted to tenants without an active paid subscription. During the
-# pilot this is 'GROWTH' so nothing breaks as pricing rolls out. Set to
-# 'STARTER' (or 'FREE') once enforcement should kick in.
-BILLING_PILOT_DEFAULT_TIER = config('BILLING_PILOT_DEFAULT_TIER', default='GROWTH')
+# Tier granted to tenants without an active paid subscription.
+# New signups land on Starter by default.
+BILLING_PILOT_DEFAULT_TIER = config('BILLING_PILOT_DEFAULT_TIER', default='STARTER')
 
 # ---------------------------
 # Square POS Configuration

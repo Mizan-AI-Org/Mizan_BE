@@ -271,6 +271,12 @@ class RestaurantOwnerSignupView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+        try:
+            from billing.services import ensure_starter_subscription
+            ensure_starter_subscription(restaurant)
+        except Exception:
+            logger.exception("Register: failed to assign Starter subscription for %s", restaurant.id)
+
         refresh = RefreshToken.for_user(user)
         return Response({
             'user': UserSerializer(user).data,
@@ -727,15 +733,21 @@ class StaffActivationUploadView(APIView):
 
 
 class StaffActivationInviteLinkView(APIView):
-    """Return the ONE-TAP WhatsApp invite link (same for all staff). Prefer sharing the short link."""
+    """Return WhatsApp links to Miya (activation + chat). Prefer sharing the short link for invites."""
     permission_classes = [permissions.IsAuthenticated, IsAdminOrManager]
 
     def get(self, request):
         link = UserManagementService.get_activation_invite_link()
+        chat_link = UserManagementService.get_miya_whatsapp_link("Hi Miya")
         short_link = request.build_absolute_uri('/api/go/wa')
         if not link or 'localhost' in short_link or '127.0.0.1' in short_link:
             short_link = link or ''
-        return Response({'invite_link': link, 'invite_short_link': short_link or link})
+        return Response({
+            'invite_link': link,
+            'invite_short_link': short_link or link,
+            # For already-active managers/staff who just need to open WhatsApp to Miya
+            'chat_link': chat_link or link,
+        })
 
 
 def redirect_to_wa_activation(request):
