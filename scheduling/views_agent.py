@@ -27,6 +27,7 @@ from .services import SchedulingService
 import logging
 from core.utils import resolve_agent_restaurant_and_user
 from core.read_through_cache import get_or_set
+from django.core.cache import cache
 from .shift_auto_templates import (
     AutoAttachResult,
     auto_attach_templates_and_tasks,
@@ -592,10 +593,23 @@ def agent_create_task_template(request):
             })
         if not tasks:
             return Response({'error': 'tasks must contain at least one item with a title'}, status=status.HTTP_400_BAD_REQUEST)
-        template_type = (data.get('template_type') or 'CUSTOM').upper()
+        template_type = (data.get('template_type') or '').upper().strip()
         valid_types = [c[0] for c in TaskTemplate.TEMPLATE_TYPES]
         if template_type not in valid_types:
-            template_type = 'CUSTOM'
+            # Infer from name so "Runner Opening Checklist" lands as OPENING, not only CUSTOM
+            n = name.lower()
+            if any(k in n for k in ("opening", "open checklist", "mise en place", "démarrage", "ouverture")):
+                template_type = "OPENING"
+            elif any(k in n for k in ("closing", "close checklist", "fermeture", "close-down")):
+                template_type = "CLOSING"
+            elif any(k in n for k in ("clean", "hygiene", "nettoyage")):
+                template_type = "CLEANING"
+            elif any(k in n for k in ("maintenance", "equipment", "entretien")):
+                template_type = "MAINTENANCE"
+            elif any(k in n for k in ("safety", "haccp", "health", "sécurité")):
+                template_type = "SAFETY"
+            else:
+                template_type = "CUSTOM"
         acting_user = None
         try:
             _, acting_user = _try_jwt_restaurant_and_user(request)
@@ -613,6 +627,11 @@ def agent_create_task_template(request):
             created_by=acting_user,
             is_active=True,
         )
+        # Drop stale agent list cache so list_task_templates sees the new row immediately
+        try:
+            cache.delete(f"agent:sched:task_templates:{restaurant.id}")
+        except Exception:
+            pass
         return Response({
             'success': True,
             'task_template': {
@@ -621,7 +640,11 @@ def agent_create_task_template(request):
                 'template_type': template.template_type,
                 'tasks_count': len(tasks),
             },
-            'message': f"Created template '{template.name}' with {len(tasks)} task(s). Use task_template_ids=[{template.id}] when creating shifts.",
+            'message': (
+                f"Created template '{template.name}' with {len(tasks)} task(s). "
+                f"It appears under Processes & Tasks → Templates on the dashboard. "
+                f"Use task_template_ids=[{template.id}] when creating shifts."
+            ),
         }, status=status.HTTP_201_CREATED)
     except Exception as e:
         logger.exception("Agent create task template error")
@@ -1073,9 +1096,11 @@ def agent_create_shift(request):
             defaults={'week_end': week_end}
         )
         
-        # Create datetime objects for start and end
+        # Create datetime objects for start and end (overnight end → next day)
         start_datetime = datetime.combine(shift_date, start_time)
         end_datetime = datetime.combine(shift_date, end_time)
+        if end_datetime <= start_datetime:
+            end_datetime = end_datetime + timedelta(days=1)
         
         # Make timezone-aware if needed
         if timezone.is_naive(start_datetime):
@@ -1543,6 +1568,8 @@ def agent_create_shifts_by_role(request):
                 )
                 start_dt = timezone.make_aware(datetime.combine(shift_date, start_time))
                 end_dt = timezone.make_aware(datetime.combine(shift_date, end_time))
+                if end_dt <= start_dt:
+                    end_dt = end_dt + timedelta(days=1)
 
                 if individual_flag:
                     # Back-compat path: one AssignedShift per staff per date.

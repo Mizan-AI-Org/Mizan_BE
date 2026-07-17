@@ -39,6 +39,7 @@ urlpatterns = [
     path('api/billing/', include('billing.urls')),
     path('api/finance/', include('finance.urls')),
     path('api/payroll/', include('payroll.urls')),
+    path('api/platform/', include('platform_admin.urls')),
 
     # SWAGGER URLS
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

@@ -12,7 +12,13 @@ from rest_framework.views import APIView
 
 from .models import Subscription, SubscriptionPlan
 from .serializers import SubscriptionPlanSerializer, SubscriptionSerializer
-from .services import StripeService
+from .services import (
+    StripeService,
+    clear_upgrade_intent,
+    ensure_starter_subscription,
+    start_plan_upgrade,
+)
+from .providers import resolve_payment_provider
 
 logger = logging.getLogger(__name__)
 stripe.api_key = getattr(settings, "STRIPE_SECRET_KEY", "") or ""
@@ -36,7 +42,7 @@ class SubscriptionViewSet(viewsets.ViewSet):
         if not restaurant:
             return Response({"error": "User does not belong to a restaurant"}, status=400)
 
-        subscription, _ = Subscription.objects.get_or_create(restaurant=restaurant)
+        subscription = ensure_starter_subscription(restaurant)
 
         # Lazily create a Stripe customer so the portal button always works.
         if not subscription.stripe_customer_id and stripe.api_key:
@@ -59,7 +65,7 @@ class SubscriptionViewSet(viewsets.ViewSet):
         if not restaurant:
             return Response({"error": "User does not belong to a restaurant"}, status=400)
 
-        subscription, _ = Subscription.objects.get_or_create(restaurant=restaurant)
+        subscription = ensure_starter_subscription(restaurant)
         plan = subscription.plan if subscription.is_paid else None
 
         # Fall back to the published plan for the effective tier — so pilot
@@ -87,48 +93,70 @@ class SubscriptionViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=["post"])
     def checkout(self, request):
-        """Create a Stripe checkout session for the selected price."""
+        """Start a plan upgrade via the tenant's payment provider."""
         restaurant = request.user.restaurant
         if not restaurant:
             return Response({"error": "User does not belong to a restaurant"}, status=400)
 
-        price_id = request.data.get("price_id")
-        success_url = request.data.get("success_url")
-        cancel_url = request.data.get("cancel_url")
+        price_id = (request.data.get("price_id") or "").strip()
+        plan_id = request.data.get("plan_id")
+        success_url = request.data.get("success_url") or ""
+        cancel_url = request.data.get("cancel_url") or ""
+        billing_interval = (request.data.get("billing_interval") or "month").strip().lower()
+        if billing_interval not in {"month", "year"}:
+            billing_interval = "month"
 
-        if not price_id or not success_url or not cancel_url:
+        plan = None
+        if price_id:
+            plan = (
+                SubscriptionPlan.objects.filter(is_active=True, stripe_price_id_monthly=price_id).first()
+                or SubscriptionPlan.objects.filter(is_active=True, stripe_price_id_yearly=price_id).first()
+                or SubscriptionPlan.objects.filter(is_active=True, stripe_price_id=price_id).first()
+            )
+            if not plan:
+                return Response({"error": "Unknown price_id."}, status=400)
+        elif plan_id:
+            plan = SubscriptionPlan.objects.filter(is_active=True, pk=plan_id).first()
+            if not plan:
+                return Response({"error": "Unknown plan_id."}, status=400)
+            # Prefer interval-specific Stripe price when present.
+            if billing_interval == "year":
+                price_id = (plan.stripe_price_id_yearly or plan.stripe_price_id_monthly or plan.stripe_price_id or "")
+            else:
+                price_id = (plan.stripe_price_id_monthly or plan.stripe_price_id or "")
+        else:
             return Response(
-                {"error": "Missing price_id, success_url, or cancel_url"},
+                {"error": "Missing price_id or plan_id"},
                 status=400,
             )
 
-        if not stripe.api_key:
+        choice = resolve_payment_provider(restaurant)
+        # Hosted checkout / plan change needs success+cancel URLs and a price id.
+        needs_checkout = choice.provider == "stripe" and choice.configured and bool(price_id)
+        if needs_checkout and (not success_url or not cancel_url):
             return Response(
-                {"error": "Billing is not configured on this environment."},
-                status=503,
+                {"error": "Missing success_url or cancel_url"},
+                status=400,
             )
+        if choice.provider == "stripe" and choice.configured and not price_id:
+            # Provider ready but this plan has no Stripe price — queue intent.
+            pass
 
-        # Guard against bad price IDs by ensuring the price maps to a known plan.
-        known = SubscriptionPlan.objects.filter(
-            is_active=True,
-        ).filter(
-            stripe_price_id_monthly=price_id,
-        ).exists() or SubscriptionPlan.objects.filter(
-            is_active=True,
-        ).filter(
-            stripe_price_id_yearly=price_id,
-        ).exists() or SubscriptionPlan.objects.filter(
-            is_active=True, stripe_price_id=price_id,
-        ).exists()
-        if not known:
-            return Response({"error": "Unknown price_id."}, status=400)
-
-        service = StripeService()
         try:
-            url = service.create_checkout_session(restaurant, price_id, success_url, cancel_url)
-            return Response({"url": url})
+            result = start_plan_upgrade(
+                restaurant,
+                price_id=price_id or "",
+                plan=plan,
+                billing_interval=billing_interval,
+                success_url=success_url,
+                cancel_url=cancel_url,
+            )
+            status_code = 200
+            if result.get("action") == "queued":
+                status_code = 202
+            return Response(result, status=status_code)
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Stripe checkout failed")
+            logger.exception("Plan upgrade failed")
             return Response({"error": str(exc)}, status=500)
 
     @action(detail=False, methods=["post"])
@@ -141,16 +169,25 @@ class SubscriptionViewSet(viewsets.ViewSet):
         if not return_url:
             return Response({"error": "Missing return_url"}, status=400)
 
-        if not stripe.api_key:
+        choice = resolve_payment_provider(restaurant)
+        if not (choice.provider == "stripe" and choice.configured):
             return Response(
-                {"error": "Billing is not configured on this environment."},
-                status=503,
+                {
+                    "action": "unavailable",
+                    "url": None,
+                    "provider": choice.provider,
+                    "message": (
+                        "Billing portal is not available yet for your location. "
+                        f"{choice.reason}"
+                    ),
+                },
+                status=200,
             )
 
         service = StripeService()
         try:
             url = service.create_portal_session(restaurant, return_url)
-            return Response({"url": url})
+            return Response({"action": "redirect", "url": url, "provider": "stripe"})
         except Exception as exc:  # noqa: BLE001
             logger.exception("Stripe portal failed")
             return Response({"error": str(exc)}, status=500)
@@ -246,6 +283,7 @@ class StripeWebhookView(APIView):
         if stripe_sub_id:
             stripe_sub = stripe.Subscription.retrieve(stripe_sub_id)
             self._apply_stripe_subscription(sub_record, stripe_sub)
+            clear_upgrade_intent(sub_record)
 
     def _handle_subscription_update(self, stripe_sub):
         sub_record = self._subscription_for_customer(stripe_sub.get("customer"))
@@ -253,6 +291,7 @@ class StripeWebhookView(APIView):
             logger.warning("subscription event for unknown customer %s", stripe_sub.get("customer"))
             return
         self._apply_stripe_subscription(sub_record, stripe_sub)
+        clear_upgrade_intent(sub_record)
 
     def _handle_subscription_deleted(self, stripe_sub):
         sub_record = self._subscription_for_customer(stripe_sub.get("customer"))

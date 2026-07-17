@@ -1,6 +1,6 @@
 {
-  "lastHash": "c346851d1f23f2c266c9d9308df8ec147f4defd61b351498b82b813c4bccde67",
-  "lastPushedAt": "2026-07-14T17:57:47.555Z",
+  "lastHash": "7d43d76f0472205baaaca6ba735856efc76b4583fa0557fcbc9c2f70bf381946",
+  "lastPushedAt": "2026-07-15T17:05:50.018Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "74ce075b9dc60d56"
+      "hash": "935fe84de41e60a0"
     },
     {
       "relativePath": "package.json",
@@ -36,7 +36,7 @@
     },
     {
       "relativePath": "src/preprocessors/ChecklistFlowPreprocessor.ts",
-      "hash": "d8acb63160de2aa0"
+      "hash": "21e70ce636ed481a"
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
@@ -80,11 +80,11 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "48d6e01e196ec767"
+      "hash": "4b2f7c838d92f171"
     },
     {
       "relativePath": "src/shared/checklistIntent.ts",
-      "hash": "eec81c33e9831c91"
+      "hash": "1b455def43d55a12"
     },
     {
       "relativePath": "src/shared/clockInGuard.ts",
@@ -92,7 +92,7 @@
     },
     {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
-      "hash": "43bf539a08ce2f49"
+      "hash": "323a3b7726abc46b"
     },
     {
       "relativePath": "src/shared/incidentIntent.ts",
@@ -108,7 +108,7 @@
     },
     {
       "relativePath": "src/shared/roleGate.ts",
-      "hash": "d74aa1b5b769c88f"
+      "hash": "b98eb4cfb25e49d4"
     },
     {
       "relativePath": "src/shared/staffCompanionIntent.ts",
@@ -116,7 +116,7 @@
     },
     {
       "relativePath": "src/skills/hr.skill.ts",
-      "hash": "47ecbb223b02a5c5"
+      "hash": "ccc7a2785ec27670"
     },
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
@@ -128,11 +128,15 @@
     },
     {
       "relativePath": "src/skills/tools/ChecklistRespondTool.ts",
-      "hash": "26907748c61274c6"
+      "hash": "3b9a2a6fc144b6ac"
     },
     {
       "relativePath": "src/skills/tools/ChecklistStarterTool.ts",
-      "hash": "912212728c963866"
+      "hash": "e10c830a4223607f"
+    },
+    {
+      "relativePath": "src/skills/tools/ComplianceDocumentTool.ts",
+      "hash": "f7fa772023319c1c"
     },
     {
       "relativePath": "src/skills/tools/HrLifecycleTool.ts",
@@ -164,7 +168,7 @@
     },
     {
       "relativePath": "src/utils/checklistMessages.ts",
-      "hash": "074b18ba2460ea9b"
+      "hash": "4071445fefda8331"
     },
     {
       "relativePath": "src/utils/detectReplyLanguage.ts",

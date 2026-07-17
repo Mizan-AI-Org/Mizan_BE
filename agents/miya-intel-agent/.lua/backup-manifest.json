@@ -1,6 +1,6 @@
 {
-  "lastHash": "7fc04afbc658eee0ddef0db3739052d7d6ad26b1f94ea4632bcbdc18ec76660f",
-  "lastPushedAt": "2026-07-14T17:58:59.417Z",
+  "lastHash": "47639955442275956a9f6523fddedb098c8bbae077313846c04b5d582bff288b",
+  "lastPushedAt": "2026-07-15T17:07:04.886Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "9ce61d57cf65e172"
+      "hash": "2433b6a8e95c13f3"
     },
     {
       "relativePath": "package.json",
@@ -36,7 +36,7 @@
     },
     {
       "relativePath": "src/preprocessors/ChecklistFlowPreprocessor.ts",
-      "hash": "d8acb63160de2aa0"
+      "hash": "21e70ce636ed481a"
     },
     {
       "relativePath": "src/preprocessors/ClockInPreprocessor.ts",
@@ -68,11 +68,11 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "72a233aeac6ee82c"
+      "hash": "bb6904a791e9314f"
     },
     {
       "relativePath": "src/shared/checklistIntent.ts",
-      "hash": "eec81c33e9831c91"
+      "hash": "1b455def43d55a12"
     },
     {
       "relativePath": "src/shared/clockInGuard.ts",
@@ -80,7 +80,7 @@
     },
     {
       "relativePath": "src/shared/dailyScenariosPersona.ts",
-      "hash": "43bf539a08ce2f49"
+      "hash": "323a3b7726abc46b"
     },
     {
       "relativePath": "src/shared/incidentIntent.ts",
@@ -96,7 +96,7 @@
     },
     {
       "relativePath": "src/shared/roleGate.ts",
-      "hash": "d74aa1b5b769c88f"
+      "hash": "b98eb4cfb25e49d4"
     },
     {
       "relativePath": "src/shared/staffCompanionIntent.ts",
@@ -120,11 +120,11 @@
     },
     {
       "relativePath": "src/skills/tools/ChecklistRespondTool.ts",
-      "hash": "26907748c61274c6"
+      "hash": "3b9a2a6fc144b6ac"
     },
     {
       "relativePath": "src/skills/tools/ChecklistStarterTool.ts",
-      "hash": "912212728c963866"
+      "hash": "e10c830a4223607f"
     },
     {
       "relativePath": "src/skills/tools/DemandForecastTool.ts",
@@ -152,7 +152,7 @@
     },
     {
       "relativePath": "src/utils/checklistMessages.ts",
-      "hash": "074b18ba2460ea9b"
+      "hash": "4071445fefda8331"
     },
     {
       "relativePath": "src/utils/detectReplyLanguage.ts",

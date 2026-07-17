@@ -770,19 +770,31 @@ class UserManagementService:
         return results
 
     @staticmethod
+    def get_miya_whatsapp_link(text: str | None = None):
+        """
+        wa.me deep link to Miya's WhatsApp number with optional prefilled text.
+        Uses WHATSAPP_ACTIVATION_WA_PHONE only (E.164 digits). Do not use Meta Phone Number ID.
+        """
+        base = "https://wa.me/"
+        phone = getattr(settings, "WHATSAPP_ACTIVATION_WA_PHONE", None) or ""
+        phone = "".join(filter(str.isdigit, str(phone))) if phone else ""
+        if not phone:
+            return ""
+        msg = "Hi Miya" if text is None else text
+        import urllib.parse
+        query = urllib.parse.urlencode({"text": msg})
+        return f"{base}{phone}?{query}"
+
+    @staticmethod
     def get_activation_invite_link():
         """
-        ONE-TAP invite link: same link for all staff. Opens WhatsApp with prefilled message.
+        ONE-TAP invite link: same link for all staff. Opens WhatsApp with prefilled activation message.
         Uses WHATSAPP_ACTIVATION_WA_PHONE only (E.164 digits, e.g. 212784476751).
         Do not use WHATSAPP_PHONE_NUMBER_ID here — that is Meta's internal ID, not the WhatsApp number.
         """
-        base = "https://wa.me/"
-        phone = getattr(settings, 'WHATSAPP_ACTIVATION_WA_PHONE', None) or ''
-        phone = "".join(filter(str.isdigit, str(phone))) if phone else ""
-        text = "Hi Mizan AI, I am ready to activate my account!"
-        import urllib.parse
-        query = urllib.parse.urlencode({"text": text})
-        return f"{base}{phone}?{query}" if phone else ""
+        return UserManagementService.get_miya_whatsapp_link(
+            "Hi Mizan AI, I am ready to activate my account!"
+        )
 
     @staticmethod
     def bulk_create_staff_activation_records(restaurant, invited_by=None, csv_content=None, staff_list=None):

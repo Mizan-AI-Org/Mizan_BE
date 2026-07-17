@@ -330,6 +330,12 @@ class CustomUser(AbstractUser):
     phone = models.CharField(max_length=20, blank=True, null=True)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE, related_name='staff', null=True, blank=True)
     is_verified = models.BooleanField(default=False)
+    # Explicit Mizan platform ops flag — restaurant SUPER_ADMIN / is_staff alone is not enough for /admin.
+    is_platform_operator = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="May access SPA Platform Admin (/admin). Independent of restaurant SUPER_ADMIN role.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     

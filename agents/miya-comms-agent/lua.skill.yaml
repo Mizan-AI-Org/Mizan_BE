@@ -4,28 +4,28 @@ agent:
 skills:
   - name: communications
     skillId: bbb1f04e-32a1-46d5-927e-84461527ac73
-    version: 1.0.42
+    version: 1.0.43
 webhooks: []
 jobs: []
 preprocessors:
   - name: account-activation-router
     preprocessorId: preprocessor_741a268b-ac4b-4dda-8e2a-7dac5da0cffe
-    version: 1.0.33
+    version: 1.0.34
   - name: clock-in-router
     preprocessorId: preprocessor_b2e5cba9-906e-43d4-bf3f-055c75202fab
-    version: 1.0.33
+    version: 1.0.34
   - name: language-mirror
     preprocessorId: preprocessor_084f30d2-c482-4ccd-8bc8-9706056a03d8
-    version: 1.0.21
+    version: 1.0.22
   - name: staff-request-router
     preprocessorId: preprocessor_33f225ca-b86c-44a1-adea-d299bf70559e
-    version: 1.0.19
+    version: 1.0.20
   - name: my-shifts-router
     preprocessorId: preprocessor_14b1916e-92ef-4922-8ee1-a83b9d2800ef
-    version: 1.0.11
+    version: 1.0.12
   - name: checklist-flow-router
     preprocessorId: preprocessor_2ccf653c-57f7-48d0-a974-e7696a5d2ed7
-    version: 1.0.6
+    version: 1.0.7
   - name: incident-command-router
     preprocessorId: preprocessor_9378a8ab-0ea9-4fd2-b4c8-d99e662f7593
     version: 1.0.6
@@ -35,6 +35,6 @@ postprocessors:
     version: 1.0.10
 mcpServers: []
 backup:
-  activeVersion: 44
-  lastHash: a5f11e5032eaea1408bbb25a6496b3826fbe517b0d2b8726db5392674d462bcd
-  lastPushedAt: '2026-07-14T17:58:24.503Z'
+  activeVersion: 45
+  lastHash: 5892b1d9df6fff2b6bc6e951fce3aa6e8edab6728363c6d88b63838f1790781a
+  lastPushedAt: '2026-07-15T17:06:26.495Z'

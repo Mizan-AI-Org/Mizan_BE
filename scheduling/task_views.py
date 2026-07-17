@@ -25,9 +25,11 @@ class TaskTemplateViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         restaurant = user.restaurant
+        # Newest first so Miya-created / recently edited processes appear in the list
+        # (default PAGE_SIZE is 10 — clients should also pass page_size).
         return TaskTemplate.objects.filter(restaurant=restaurant).prefetch_related(
             "standing_assignees"
-        )
+        ).order_by("-created_at", "name")
     
     def perform_create(self, serializer):
         serializer.save(

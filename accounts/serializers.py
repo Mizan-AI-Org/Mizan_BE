@@ -145,6 +145,18 @@ class CustomUserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("A user with this email address already exists.")
         return value
 
+    def validate_phone(self, value):
+        """Store WhatsApp-ready digits (international, no +/spaces) so Miya can match inbound chats."""
+        if value is None or value == "":
+            return value
+        from .services import normalize_activation_phone_inbound
+        digits = normalize_activation_phone_inbound(value)
+        if not digits or len(digits) < 7:
+            raise serializers.ValidationError(
+                "Enter a valid WhatsApp number with country code (digits only), e.g. 2203736808."
+            )
+        return digits
+
     def validate(self, attrs):
         restaurant = attrs.get('restaurant') or getattr(self.instance, 'restaurant', None)
         primary = attrs.get('primary_location')
@@ -293,13 +305,15 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'email', 'first_name', 'last_name', 'role', 'role_display', 'custom_role_label',
             'phone', 'restaurant', 'restaurant_name', 'restaurant_data', 'is_verified', 'is_active',
+            'is_staff', 'is_superuser', 'is_platform_operator',
             'created_at', 'updated_at', 'profile', 'preferred_language',
             'primary_location', 'primary_location_data',
             'allowed_locations', 'allowed_locations_data',
             'managed_locations', 'managed_locations_data',
         ]
         read_only_fields = [
-            'id', 'is_verified', 'created_at', 'updated_at', 'restaurant_name', 'role_display', 'restaurant_data',
+            'id', 'is_verified', 'is_staff', 'is_superuser', 'is_platform_operator',
+            'created_at', 'updated_at', 'restaurant_name', 'role_display', 'restaurant_data',
             'primary_location_data', 'allowed_locations_data', 'managed_locations_data',
         ]
 
