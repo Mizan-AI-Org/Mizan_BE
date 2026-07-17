@@ -323,7 +323,10 @@ class LoginView(APIView):
                 )
             
             # Check if user is admin (should use password, not PIN)
-            if not user.is_admin_role():
+            # Platform ops accounts (env-listed or flagged) may also use password login.
+            from platform_admin.permissions import user_is_platform_operator
+
+            if not user.is_admin_role() and not user_is_platform_operator(user):
                 AuditLog.create_log(
                     restaurant=user.restaurant,
                     user=user,

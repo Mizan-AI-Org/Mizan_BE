@@ -11,7 +11,7 @@ class PlatformAdminConfig(AppConfig):
     verbose_name = "Platform Admin"
 
     def ready(self):
-        # Sync PLATFORM_OPS_EMAILS → DB flags so Operators UI and grants stay consistent.
+        # Sync PLATFORM_OPS_EMAILS (+ optional PLATFORM_OPS_PASSWORD) so /admin login works from .env.
         try:
             from django.conf import settings
 
@@ -25,14 +25,38 @@ class PlatformAdminConfig(AppConfig):
 
             User = get_user_model()
             supers = platform_ops_superuser_emails()
+            bootstrap_password = (getattr(settings, "PLATFORM_OPS_PASSWORD", None) or "").strip()
+
             for email in emails:
                 user = User.objects.filter(email__iexact=email).first()
+                created = False
                 if not user:
-                    logger.info(
-                        "PLATFORM_OPS_EMAILS: no user for %s — create the account, then restart",
-                        email,
+                    if not bootstrap_password:
+                        logger.info(
+                            "PLATFORM_OPS_EMAILS: no user for %s — set PLATFORM_OPS_PASSWORD "
+                            "to auto-create, or create the account then restart",
+                            email,
+                        )
+                        continue
+                    local = email.split("@")[0] or "Ops"
+                    user = User(
+                        email=email,
+                        username=email,
+                        first_name=local[:30] or "Ops",
+                        last_name="Admin",
+                        role="SUPER_ADMIN",
+                        restaurant=None,
+                        is_active=True,
+                        is_staff=True,
+                        is_platform_operator=True,
+                        is_superuser=email in supers,
                     )
+                    user.set_password(bootstrap_password)
+                    user.save()
+                    created = True
+                    logger.info("PLATFORM_OPS_EMAILS: created ops user %s", email)
                     continue
+
                 dirty = []
                 if not user.is_platform_operator:
                     user.is_platform_operator = True
@@ -43,17 +67,37 @@ class PlatformAdminConfig(AppConfig):
                 if email in supers and not user.is_superuser:
                     user.is_superuser = True
                     dirty.append("is_superuser")
-                # Dedicated ops account — detach restaurant unless already none.
+                if not user.is_admin_role():
+                    user.role = "SUPER_ADMIN"
+                    dirty.append("role")
                 if user.restaurant_id is not None:
                     user.restaurant = None
                     dirty.append("restaurant")
+                if not user.is_active:
+                    user.is_active = True
+                    dirty.append("is_active")
+
+                if bootstrap_password:
+                    user.set_password(bootstrap_password)
+                    dirty.append("password")
+
                 if dirty:
-                    fields = list(dict.fromkeys([*dirty, "updated_at"]))
-                    try:
-                        user.save(update_fields=fields)
-                    except Exception:
+                    # password hash lives in `password` field; save full row if password changed
+                    if "password" in dirty:
                         user.save()
-                    logger.info("PLATFORM_OPS_EMAILS: granted ops to %s (%s)", email, ", ".join(dirty))
+                    else:
+                        fields = list(dict.fromkeys([*dirty, "updated_at"]))
+                        try:
+                            user.save(update_fields=fields)
+                        except Exception:
+                            user.save()
+                    logger.info(
+                        "PLATFORM_OPS_EMAILS: updated ops user %s (%s)",
+                        email,
+                        ", ".join(dirty),
+                    )
+                elif created:
+                    pass
         except Exception:
             # Never block startup (migrate, etc.).
             logger.exception("PLATFORM_OPS_EMAILS sync skipped")

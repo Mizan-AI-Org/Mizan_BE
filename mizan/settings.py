@@ -471,12 +471,10 @@ PLATFORM_OPS_EMAILS = [
     for e in config("PLATFORM_OPS_EMAILS", default="").split(",")
     if e.strip()
 ]
-# Optional: subset (or same list) that should also be Django superusers.
-PLATFORM_OPS_SUPERUSER_EMAILS = [
-    e.strip().lower()
-    for e in config("PLATFORM_OPS_SUPERUSER_EMAILS", default="").split(",")
-    if e.strip()
-]
+# Optional: bootstrap password for PLATFORM_OPS_EMAILS accounts.
+# When set, missing users are created and the password is applied on startup
+# (so you can sign in at /admin with email + this password).
+PLATFORM_OPS_PASSWORD = config("PLATFORM_OPS_PASSWORD", default="")
 
 # Currency used by the seed_subscription_plans management command. Pricing
 # cards on the frontend read currency from the plan rows, so switching this
