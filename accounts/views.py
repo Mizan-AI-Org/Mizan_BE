@@ -303,7 +303,7 @@ class LoginView(APIView):
             )
 
         try:
-            user = CustomUser.objects.get(email=email, is_active=True)
+            user = CustomUser.objects.get(email__iexact=str(email).strip(), is_active=True)
             
             # Check if account is locked
             if user.is_account_locked():
