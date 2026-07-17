@@ -18,7 +18,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import Restaurant, AuditLog, CustomUser
 from billing.models import Subscription, SubscriptionPlan
-from .permissions import IsPlatformOperator, IsPlatformSuperuser
+from .permissions import IsPlatformOperator, IsPlatformSuperuser, user_is_platform_superuser
 from .serializers import (
     PlatformTenantListSerializer,
     PlatformTenantDetailSerializer,
@@ -137,15 +137,17 @@ def _log_platform_action(request, action_type, entity_type, entity_id, descripti
 @permission_classes([IsAuthenticated, IsPlatformOperator])
 def platform_me(request):
     u = request.user
+    from .permissions import user_is_platform_operator, user_is_platform_superuser
+
     return Response(
         {
             "id": str(u.id),
             "email": u.email,
             "first_name": u.first_name,
             "last_name": u.last_name,
-            "is_staff": u.is_staff,
-            "is_superuser": u.is_superuser,
-            "is_platform_operator": bool(getattr(u, "is_platform_operator", False)),
+            "is_staff": bool(getattr(u, "is_staff", False) or user_is_platform_operator(u)),
+            "is_superuser": user_is_platform_superuser(u),
+            "is_platform_operator": user_is_platform_operator(u),
         }
     )
 
@@ -444,7 +446,7 @@ def platform_user_detail(request, user_id):
     data = ser.validated_data
 
     if "is_staff" in data:
-        if not request.user.is_superuser:
+        if not user_is_platform_superuser(request.user):
             return Response(
                 {"error": "Only platform superusers can change is_staff"},
                 status=403,
@@ -455,7 +457,7 @@ def platform_user_detail(request, user_id):
             user.is_platform_operator = False
 
     if "is_platform_operator" in data:
-        if not request.user.is_superuser:
+        if not user_is_platform_superuser(request.user):
             return Response(
                 {"error": "Only platform superusers can change platform operator access"},
                 status=403,
@@ -570,7 +572,7 @@ def platform_operators(request):
         )
 
     # Create — superuser only (must already be a platform operator)
-    if not request.user.is_superuser:
+    if not user_is_platform_superuser(request.user):
         return Response(
             {"error": "Only platform superusers can create operators"},
             status=403,

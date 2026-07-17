@@ -74,7 +74,7 @@ INSTALLED_APPS = [
     'inventory',
     'finance',
     'payroll',
-    'platform_admin',
+    'platform_admin.apps.PlatformAdminConfig',
 ]
 
 # ---------------------------
@@ -459,6 +459,24 @@ try:
     PAYMENT_PROVIDER_BY_COUNTRY = _json.loads(_pp_raw) if _pp_raw.strip() else None
 except Exception:
     PAYMENT_PROVIDER_BY_COUNTRY = None
+
+# ---------------------------
+# Platform Admin (/admin SPA)
+# ---------------------------
+# Comma-separated emails that may access Platform Admin. Synced to
+# is_platform_operator on startup; also honored at permission-check time.
+# Example: PLATFORM_OPS_EMAILS=you@heymizan.ai,ops@heymizan.ai
+PLATFORM_OPS_EMAILS = [
+    e.strip().lower()
+    for e in config("PLATFORM_OPS_EMAILS", default="").split(",")
+    if e.strip()
+]
+# Optional: subset (or same list) that should also be Django superusers.
+PLATFORM_OPS_SUPERUSER_EMAILS = [
+    e.strip().lower()
+    for e in config("PLATFORM_OPS_SUPERUSER_EMAILS", default="").split(",")
+    if e.strip()
+]
 
 # Currency used by the seed_subscription_plans management command. Pricing
 # cards on the frontend read currency from the plan rows, so switching this

@@ -1,18 +1,48 @@
+from django.conf import settings
 from rest_framework.permissions import BasePermission
 
 
+def platform_ops_emails() -> set[str]:
+    return {e.lower() for e in (getattr(settings, "PLATFORM_OPS_EMAILS", None) or [])}
+
+
+def platform_ops_superuser_emails() -> set[str]:
+    return {e.lower() for e in (getattr(settings, "PLATFORM_OPS_SUPERUSER_EMAILS", None) or [])}
+
+
+def email_is_platform_ops(email: str | None) -> bool:
+    if not email:
+        return False
+    return email.strip().lower() in platform_ops_emails()
+
+
 def user_is_platform_operator(user) -> bool:
-    """True only for explicit platform ops — never restaurant SUPER_ADMIN alone."""
+    """True for explicit platform ops — never restaurant SUPER_ADMIN alone.
+
+    Honors either the DB flag ``is_platform_operator`` or membership in
+    ``PLATFORM_OPS_EMAILS`` from the environment.
+    """
     if not user or not getattr(user, "is_authenticated", False):
         return False
+    if email_is_platform_ops(getattr(user, "email", None)):
+        return True
     if not getattr(user, "is_platform_operator", False):
         return False
     # Keep is_staff as a secondary guard (Django convention for back-office).
     return bool(getattr(user, "is_staff", False))
 
 
+def user_is_platform_superuser(user) -> bool:
+    if not user_is_platform_operator(user):
+        return False
+    email = (getattr(user, "email", None) or "").strip().lower()
+    if email and email in platform_ops_superuser_emails():
+        return True
+    return bool(getattr(user, "is_superuser", False))
+
+
 class IsPlatformOperator(BasePermission):
-    """Internal Mizan operators only — explicit is_platform_operator, not restaurant SUPER_ADMIN."""
+    """Internal Mizan operators only — explicit is_platform_operator / PLATFORM_OPS_EMAILS."""
 
     message = "Platform operator access required."
 
@@ -26,7 +56,4 @@ class IsPlatformSuperuser(BasePermission):
     message = "Platform superuser access required."
 
     def has_permission(self, request, view):
-        user = getattr(request, "user", None)
-        return bool(
-            user_is_platform_operator(user) and getattr(user, "is_superuser", False)
-        )
+        return user_is_platform_superuser(getattr(request, "user", None))
