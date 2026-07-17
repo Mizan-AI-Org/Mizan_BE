@@ -150,10 +150,8 @@ def batch_create_recurring_shifts(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
     if end_time <= start_time:
-        return Response(
-            {"detail": "end_time must be after start_time."},
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        # Overnight shift (e.g. 22:00–01:30) — allowed; end datetime is bumped below.
+        pass
 
     staff_ids = [str(x).strip() for x in staff_members_raw if x]
     staff_users = list(
@@ -202,6 +200,8 @@ def batch_create_recurring_shifts(request):
                 )
                 start_dt = datetime.combine(shift_date, start_time)
                 end_dt = datetime.combine(shift_date, end_time)
+                if end_dt <= start_dt:
+                    end_dt = end_dt + timedelta(days=1)
                 if timezone.is_naive(start_dt):
                     start_dt = timezone.make_aware(start_dt)
                 if timezone.is_naive(end_dt):

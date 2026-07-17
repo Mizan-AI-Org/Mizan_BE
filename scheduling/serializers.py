@@ -502,9 +502,30 @@ class AssignedShiftSerializer(serializers.ModelSerializer):
             if schedule is None:
                 schedule = self.instance.schedule
 
-        # Basic time range validation
-        if start and end and end <= start:
-            raise serializers.ValidationError("Shift end time must be after start time.")
+        # Overnight shifts (e.g. 22:00–01:30): re-anchor times onto shift_date and
+        # bump end by one day when the end clock is <= start clock.
+        if shift_date and start and end:
+            from datetime import datetime as _dt_cls, time as _time_cls, timedelta as _td
+            from django.utils import timezone as _tz
+
+            def _on_shift_date(val):
+                if isinstance(val, _dt_cls):
+                    clock = val.time()
+                elif isinstance(val, _time_cls):
+                    clock = val
+                else:
+                    return val
+                combined = _dt_cls.combine(shift_date, clock)
+                if _tz.is_naive(combined):
+                    combined = _tz.make_aware(combined)
+                return combined
+
+            start = _on_shift_date(start)
+            end = _on_shift_date(end)
+            if isinstance(start, _dt_cls) and isinstance(end, _dt_cls) and end <= start:
+                end = end + _td(days=1)
+            attrs['start_time'] = start
+            attrs['end_time'] = end
 
         # Resolve schedule if not provided but in initial_data
         if schedule is None and isinstance(getattr(self, 'initial_data', {}), dict):
@@ -739,10 +760,12 @@ class CombinedTaskItemSerializer(serializers.Serializer):
         return value
     
     def validate(self, data):
-        """Cross-field validation"""
+        """Cross-field validation — overnight end <= start is OK (bumped on save)."""
         if 'start_time' in data and 'end_time' in data:
-            if data['start_time'] >= data['end_time']:
-                raise serializers.ValidationError("end_time must be after start_time.")
+            start, end = data['start_time'], data['end_time']
+            # Only reject zero-length when both are on the same clock (identical)
+            if start == end:
+                raise serializers.ValidationError("end_time must differ from start_time.")
         return data
 
 class WeeklyScheduleSerializer(serializers.ModelSerializer):

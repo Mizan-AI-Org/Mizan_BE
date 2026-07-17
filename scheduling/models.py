@@ -180,6 +180,8 @@ class AssignedShift(models.Model):
             shift_end = self.end_time
         else:
             shift_end = _dt.combine(self.shift_date, self.end_time)
+        if shift_end <= shift_start:
+            shift_end = shift_end + timezone.timedelta(days=1)
 
         for staff_member in staff_list:
             overlapping = AssignedShift.objects.filter(
@@ -204,6 +206,8 @@ class AssignedShift(models.Model):
                     existing_end = existing_shift.end_time
                 else:
                     existing_end = _dt.combine(existing_shift.shift_date, existing_shift.end_time)
+                if existing_end <= existing_start:
+                    existing_end = existing_end + timezone.timedelta(days=1)
                 if shift_start < existing_end and shift_end > existing_start:
                     staff_name = f"{staff_member.first_name} {staff_member.last_name}" or str(staff_member)
                     ex_start_str = existing_start.strftime('%H:%M') if hasattr(existing_start, 'strftime') else str(existing_shift.start_time)
@@ -218,7 +222,16 @@ class AssignedShift(models.Model):
             self.start_time = _dt.combine(self.shift_date, self.start_time)
         if self.end_time and isinstance(self.end_time, _time) and not isinstance(self.end_time, _dt):
             self.end_time = _dt.combine(self.shift_date, self.end_time)
-            
+        # Overnight: end clock on/before start → spill into next calendar day
+        if (
+            self.start_time
+            and self.end_time
+            and isinstance(self.start_time, _dt)
+            and isinstance(self.end_time, _dt)
+            and self.end_time <= self.start_time
+        ):
+            self.end_time = self.end_time + timezone.timedelta(days=1)
+
         self.clean()
         super().save(*args, **kwargs)
 
