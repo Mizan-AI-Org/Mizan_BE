@@ -2,6 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from accounts.models import Restaurant, BusinessLocation, AuditLog
 from billing.models import Subscription, SubscriptionPlan
+from .lifecycle import tenant_is_deactivated, tenant_is_suspended
 
 User = get_user_model()
 
@@ -39,12 +40,10 @@ class PlatformTenantListSerializer(serializers.ModelSerializer):
         ]
 
     def get_suspended(self, obj):
-        gs = obj.general_settings or {}
-        return bool(gs.get("platform_suspended"))
+        return tenant_is_suspended(obj.general_settings)
 
     def get_deactivated(self, obj):
-        gs = obj.general_settings or {}
-        return bool(gs.get("platform_deactivated"))
+        return tenant_is_deactivated(obj.general_settings)
 
     def get_onboarding_done(self, obj):
         return bool(obj.onboarding_completed_at)
@@ -180,14 +179,38 @@ class PlatformTenantWriteSerializer(serializers.ModelSerializer):
         deactivated = validated_data.pop("deactivated", None)
         for k, v in validated_data.items():
             setattr(instance, k, v)
+
+        gs = dict(instance.general_settings or {})
+        will_be_suspended = (
+            bool(suspended)
+            if suspended is not None
+            else tenant_is_suspended(gs)
+        )
+
+        if deactivated is True and not will_be_suspended and not tenant_is_deactivated(gs):
+            raise serializers.ValidationError(
+                {
+                    "deactivated": (
+                        "Suspend the tenant before deactivating accounts."
+                    )
+                }
+            )
+
         if suspended is not None or deactivated is not None:
-            gs = dict(instance.general_settings or {})
             if suspended is not None:
                 gs["platform_suspended"] = bool(suspended)
             if deactivated is not None:
                 gs["platform_deactivated"] = bool(deactivated)
             instance.general_settings = gs
+
         instance.save()
+
+        # Deactivate / reactivate every login on this tenant.
+        if deactivated is True:
+            User.objects.filter(restaurant=instance).update(is_active=False)
+        elif deactivated is False:
+            User.objects.filter(restaurant=instance).update(is_active=True)
+
         return instance
 
 

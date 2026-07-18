@@ -18,6 +18,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import Restaurant, AuditLog, CustomUser
 from billing.models import Subscription, SubscriptionPlan
+from .lifecycle import tenant_lifecycle
 from .permissions import (
     IsPlatformOperator,
     IsPlatformSuperuser,
@@ -383,39 +384,26 @@ def platform_tenants(request):
         #   Suspended / Deactivated flags → not active
         #   everything else (incl. onboarding, trialing) → active
         # Default: active only.
-        #
-        # Important: do NOT use exclude(json__key=True). On Postgres, missing
-        # JSON keys make that exclude drop every row (NULL comparison).
         if not status_filter and not suspended:
             status_filter = "active"
+        if suspended in ("1", "true") and not status_filter:
+            status_filter = "suspended"
+        elif suspended in ("0", "false") and not status_filter:
+            status_filter = "active"
 
-        suspended_flag = Q(general_settings__platform_suspended=True) | Q(
-            general_settings__platform_suspended="true"
-        )
-        deactivated_flag = Q(general_settings__platform_deactivated=True) | Q(
-            general_settings__platform_deactivated="true"
-        )
-        # Active = flag absent OR explicitly false.
-        not_suspended = ~Q(general_settings__has_key="platform_suspended") | Q(
-            general_settings__platform_suspended=False
-        )
-        not_deactivated = ~Q(general_settings__has_key="platform_deactivated") | Q(
-            general_settings__platform_deactivated=False
-        )
-
-        if status_filter == "active" or suspended in ("0", "false"):
-            qs = qs.filter(not_suspended & not_deactivated)
-        elif status_filter == "suspended" or suspended in ("1", "true"):
-            qs = qs.filter(suspended_flag)
-        elif status_filter == "deactivated":
-            qs = qs.filter(deactivated_flag)
+        # Match serializer badge semantics exactly. Postgres JSONField lookups
+        # miss some truthy shapes (e.g. "True", 1) and exclude(json=True)
+        # drops rows with missing keys — so filter IDs in Python.
+        if status_filter in {"active", "suspended", "deactivated"}:
+            matching_ids = [
+                rid
+                for rid, gs in qs.values_list("id", "general_settings")
+                if tenant_lifecycle(gs) == status_filter
+            ]
+            qs = qs.filter(id__in=matching_ids)
         elif status_filter == "all":
-            pass  # no lifecycle filter
-        elif suspended:
-            if suspended in ("1", "true"):
-                qs = qs.filter(suspended_flag)
-            elif suspended in ("0", "false"):
-                qs = qs.filter(not_suspended)
+            pass
+        # unknown status values → no extra filter (same as all)
 
         try:
             limit = min(int(request.query_params.get("page_size") or 50), 200)
@@ -427,7 +415,7 @@ def platform_tenants(request):
             page = 1
         total = qs.count()
         start = (page - 1) * limit
-        rows = qs[start : start + limit]
+        rows = list(qs[start : start + limit])
         return Response(
             {
                 "count": total,
@@ -538,11 +526,18 @@ def platform_users(request):
     role = (request.query_params.get("role") or "").strip()
     if role:
         qs = qs.filter(role__iexact=role)
+    # Prefer status=active|inactive|all; fall back to is_active=true|false.
+    # Default: active only.
+    status_filter = (request.query_params.get("status") or "").strip().lower()
     active = (request.query_params.get("is_active") or "").strip().lower()
-    if active in ("1", "true"):
+    if not status_filter and not active:
+        status_filter = "active"
+    if status_filter == "active" or active in ("1", "true"):
         qs = qs.filter(is_active=True)
-    elif active in ("0", "false"):
+    elif status_filter == "inactive" or active in ("0", "false"):
         qs = qs.filter(is_active=False)
+    elif status_filter == "all":
+        pass
 
     try:
         limit = min(int(request.query_params.get("page_size") or 50), 200)
@@ -795,21 +790,42 @@ def platform_operators(request):
 @api_view(["GET", "PATCH"])
 @permission_classes([IsAuthenticated, IsPlatformOperator])
 def platform_operator_detail(request, user_id):
-    """Get / update a platform operator account."""
+    """Get / update a platform operator account.
+
+    Deactivate (``is_active=False``) keeps ``is_platform_operator`` so the
+    account stays listed under Operators and can be reactivated. Use
+    ``is_platform_operator=False`` to fully revoke ops access.
+    """
     try:
-        user = User.objects.select_related("restaurant").get(
-            pk=user_id, is_platform_operator=True
-        )
+        user = User.objects.select_related("restaurant").get(pk=user_id)
     except User.DoesNotExist:
         return Response({"error": "Operator not found"}, status=404)
 
     if request.method == "GET":
+        if not user.is_platform_operator:
+            return Response(
+                {
+                    "error": "This account is no longer a platform operator.",
+                    "code": "not_an_operator",
+                },
+                status=404,
+            )
         return Response(PlatformUserSerializer(user).data)
 
     ser = PlatformOperatorPatchSerializer(data=request.data, partial=True)
     ser.is_valid(raise_exception=True)
     data = ser.validated_data
     actor_is_super = user_is_platform_superuser(request.user)
+
+    restoring_ops = bool(data.get("is_platform_operator")) is True
+    if not user.is_platform_operator and not restoring_ops:
+        return Response(
+            {
+                "error": "This account is no longer a platform operator.",
+                "code": "not_an_operator",
+            },
+            status=404,
+        )
 
     if "is_superuser" in data or "is_platform_operator" in data:
         if not actor_is_super:
@@ -827,6 +843,7 @@ def platform_operator_detail(request, user_id):
     if "is_active" in data:
         if str(user.id) == str(request.user.id) and not data["is_active"]:
             return Response({"error": "You cannot deactivate your own account"}, status=400)
+        # Deactivate/reactivate login only — do not strip ops membership.
         user.is_active = bool(data["is_active"])
 
     if "is_superuser" in data:
@@ -837,15 +854,19 @@ def platform_operator_detail(request, user_id):
             )
         user.is_superuser = bool(data["is_superuser"])
 
-    if "is_platform_operator" in data and not data["is_platform_operator"]:
-        if str(user.id) == str(request.user.id):
-            return Response(
-                {"error": "You cannot revoke your own operator access"},
-                status=400,
-            )
-        user.is_platform_operator = False
-        user.is_staff = False
-        user.is_superuser = False
+    if "is_platform_operator" in data:
+        if data["is_platform_operator"]:
+            user.is_platform_operator = True
+            user.is_staff = True
+        else:
+            if str(user.id) == str(request.user.id):
+                return Response(
+                    {"error": "You cannot revoke your own operator access"},
+                    status=400,
+                )
+            user.is_platform_operator = False
+            user.is_staff = False
+            user.is_superuser = False
 
     user.save()
     _log_platform_action(
@@ -1192,7 +1213,9 @@ def platform_impersonate(request):
         return Response({"error": "Tenant not found"}, status=404)
 
     gs = restaurant.general_settings or {}
-    if gs.get("platform_suspended"):
+    from .lifecycle import tenant_is_suspended
+
+    if tenant_is_suspended(gs):
         return Response({"error": "Tenant is suspended"}, status=400)
 
     target = (

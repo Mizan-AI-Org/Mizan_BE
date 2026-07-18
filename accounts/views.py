@@ -73,6 +73,11 @@ def pin_login(request):
         )
         if blocked is not None:
             return blocked
+        blocked = _forbid_blocked_tenant_login(
+            user, ip_address=ip_address, user_agent=user_agent
+        )
+        if blocked is not None:
+            return blocked
         image_data = request.data.get('image_data')  # Get from request.data instead of validated_data
         
         # Log successful PIN login
@@ -327,6 +332,40 @@ def _forbid_platform_ops_on_tenant_login(
     return Response(PLATFORM_OPS_USE_ADMIN_LOGIN, status=status.HTTP_403_FORBIDDEN)
 
 
+def _forbid_blocked_tenant_login(
+    user,
+    *,
+    ip_address=None,
+    user_agent="",
+):
+    """Block inactive users and suspended / deactivated tenants from tenant login."""
+    from platform_admin.lifecycle import user_tenant_access_denied_reason
+
+    reason = user_tenant_access_denied_reason(user)
+    if not reason:
+        return None
+    try:
+        AuditLog.create_log(
+            restaurant=getattr(user, "restaurant", None),
+            user=user,
+            action_type="LOGIN_FAILED",
+            entity_type="USER",
+            entity_id=getattr(user, "id", None),
+            description=f"Tenant login blocked: {reason}",
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+    except Exception:
+        pass
+    return Response(
+        {
+            "error": reason,
+            "code": "tenant_access_denied",
+        },
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
+
 class LoginView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -342,55 +381,12 @@ class LoginView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        try:
-            user = CustomUser.objects.get(email__iexact=str(email).strip(), is_active=True)
-            
-            # Check if account is locked
-            if user.is_account_locked():
-                AuditLog.create_log(
-                    restaurant=user.restaurant,
-                    user=user,
-                    action_type='LOGIN_FAILED',
-                    entity_type='USER',
-                    entity_id=user.id,
-                    description=f'Login attempt on locked account for {email}',
-                    ip_address=ip_address,
-                    user_agent=user_agent
-                )
-                return Response(
-                    {'error': 'Account is temporarily locked due to multiple failed attempts. Please try again later.'},
-                    status=status.HTTP_423_LOCKED
-                )
-            
-            # Platform operators must sign in at /admin — never via tenant /auth.
-            blocked = _forbid_platform_ops_on_tenant_login(
-                user,
-                ip_address=ip_address,
-                user_agent=user_agent,
-                description=f"Tenant /auth login blocked for platform operator {email}",
-            )
-            if blocked is not None:
-                return blocked
-
-            # Check if user is admin (should use password, not PIN)
-            if not user.is_admin_role():
-                AuditLog.create_log(
-                    restaurant=user.restaurant,
-                    user=user,
-                    action_type='LOGIN_FAILED',
-                    entity_type='USER',
-                    entity_id=user.id,
-                    description=f'Password login attempted for non-admin user {email}',
-                    ip_address=ip_address,
-                    user_agent=user_agent
-                )
-                return Response(
-                    {'error': 'Password authentication is only available for admin users. Staff should use PIN login.'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-            
-        except CustomUser.DoesNotExist:
-            # Log failed attempt for non-existent user
+        user = (
+            CustomUser.objects.select_related("restaurant")
+            .filter(email__iexact=str(email).strip())
+            .first()
+        )
+        if not user:
             AuditLog.create_log(
                 restaurant=None,
                 user=None,
@@ -405,16 +401,72 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
+        # Inactive user / suspended or deactivated tenant — never issue tokens.
+        blocked = _forbid_blocked_tenant_login(
+            user, ip_address=ip_address, user_agent=user_agent
+        )
+        if blocked is not None:
+            return blocked
+
+        # Check if account is locked
+        if user.is_account_locked():
+            AuditLog.create_log(
+                restaurant=user.restaurant,
+                user=user,
+                action_type='LOGIN_FAILED',
+                entity_type='USER',
+                entity_id=user.id,
+                description=f'Login attempt on locked account for {email}',
+                ip_address=ip_address,
+                user_agent=user_agent
+            )
+            return Response(
+                {'error': 'Account is temporarily locked due to multiple failed attempts. Please try again later.'},
+                status=status.HTTP_423_LOCKED
+            )
+
+        # Platform operators must sign in at /admin — never via tenant /auth.
+        blocked = _forbid_platform_ops_on_tenant_login(
+            user,
+            ip_address=ip_address,
+            user_agent=user_agent,
+            description=f"Tenant /auth login blocked for platform operator {email}",
+        )
+        if blocked is not None:
+            return blocked
+
+        # Check if user is admin (should use password, not PIN)
+        if not user.is_admin_role():
+            AuditLog.create_log(
+                restaurant=user.restaurant,
+                user=user,
+                action_type='LOGIN_FAILED',
+                entity_type='USER',
+                entity_id=user.id,
+                description=f'Password login attempted for non-admin user {email}',
+                ip_address=ip_address,
+                user_agent=user_agent
+            )
+            return Response(
+                {'error': 'Password authentication is only available for admin users. Staff should use PIN login.'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         # Authenticate user
         authenticated_user = authenticate(email=email, password=password)
 
         if authenticated_user:
-            # Belt-and-suspenders: never mint tenant JWT for ops accounts.
+            # Belt-and-suspenders: never mint tenant JWT for ops / blocked tenants.
             blocked = _forbid_platform_ops_on_tenant_login(
                 authenticated_user,
                 ip_address=ip_address,
                 user_agent=user_agent,
                 description=f"Tenant /auth login blocked post-auth for platform operator {email}",
+            )
+            if blocked is not None:
+                return blocked
+            blocked = _forbid_blocked_tenant_login(
+                authenticated_user, ip_address=ip_address, user_agent=user_agent
             )
             if blocked is not None:
                 return blocked
@@ -933,6 +985,15 @@ class AcceptInvitationView(APIView):
                 if invitation is None:
                     raise UserInvitation.DoesNotExist
 
+                from platform_admin.lifecycle import restaurant_access_denied_reason
+
+                tenant_block = restaurant_access_denied_reason(invitation.restaurant)
+                if tenant_block:
+                    return Response(
+                        {"error": tenant_block, "code": "tenant_access_denied"},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+
                 final_email = invitation.email
                 if not final_email:
                     if not provided_email:
@@ -1049,16 +1110,25 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     def post(self, request, *args, **kwargs):
         email = (request.data.get("email") or "").strip()
         if email:
-            candidate = CustomUser.objects.filter(
-                email__iexact=email, is_active=True
-            ).first()
+            candidate = (
+                CustomUser.objects.select_related("restaurant")
+                .filter(email__iexact=email)
+                .first()
+            )
+            ip = get_client_ip(request)
+            ua = request.META.get("HTTP_USER_AGENT", "")
             blocked = _forbid_platform_ops_on_tenant_login(
                 candidate,
-                ip_address=get_client_ip(request),
-                user_agent=request.META.get("HTTP_USER_AGENT", ""),
+                ip_address=ip,
+                user_agent=ua,
                 description=(
                     f"Tenant JWT obtain blocked for platform operator {email}"
                 ),
+            )
+            if blocked is not None:
+                return blocked
+            blocked = _forbid_blocked_tenant_login(
+                candidate, ip_address=ip, user_agent=ua
             )
             if blocked is not None:
                 return blocked
@@ -1066,7 +1136,29 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 
 
 class CustomTokenRefreshView(TokenRefreshView):
-    pass
+    """Refresh tokens only while the account / tenant is still allowed access."""
+
+    def post(self, request, *args, **kwargs):
+        from rest_framework_simplejwt.tokens import RefreshToken as RT
+        from rest_framework_simplejwt.exceptions import TokenError
+
+        raw = request.data.get("refresh")
+        if raw:
+            try:
+                token = RT(raw)
+                user_id = token.get("user_id")
+                if user_id:
+                    user = (
+                        CustomUser.objects.select_related("restaurant")
+                        .filter(pk=user_id)
+                        .first()
+                    )
+                    blocked = _forbid_blocked_tenant_login(user)
+                    if blocked is not None:
+                        return blocked
+            except TokenError:
+                pass
+        return super().post(request, *args, **kwargs)
 
 
 class RegisterView(RestaurantOwnerSignupView):
@@ -1502,20 +1594,28 @@ class StaffPinLoginView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        try:
-            user = CustomUser.objects.get(email=email, is_active=True)
-        except CustomUser.DoesNotExist:
+        user = (
+            CustomUser.objects.select_related("restaurant")
+            .filter(email__iexact=str(email).strip())
+            .first()
+        )
+        if not user:
             return Response(
                 {'error': 'Invalid credentials.'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
+        ip = get_client_ip(request)
+        ua = request.META.get("HTTP_USER_AGENT", "")
         blocked = _forbid_platform_ops_on_tenant_login(
             user,
-            ip_address=get_client_ip(request),
-            user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            ip_address=ip,
+            user_agent=ua,
             description=f"Tenant PIN login blocked for platform operator {email}",
         )
+        if blocked is not None:
+            return blocked
+        blocked = _forbid_blocked_tenant_login(user, ip_address=ip, user_agent=ua)
         if blocked is not None:
             return blocked
 
@@ -1561,15 +1661,20 @@ class StaffPhoneLoginView(APIView):
                 {'error': 'No active account found for this number. Activate via the WhatsApp link from your manager first.'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
+        ip = get_client_ip(request)
+        ua = request.META.get("HTTP_USER_AGENT", "")
         blocked = _forbid_platform_ops_on_tenant_login(
             user,
-            ip_address=get_client_ip(request),
-            user_agent=request.META.get("HTTP_USER_AGENT", ""),
+            ip_address=ip,
+            user_agent=ua,
             description=(
                 f"Tenant phone login blocked for platform operator "
                 f"{getattr(user, 'email', '')}"
             ),
         )
+        if blocked is not None:
+            return blocked
+        blocked = _forbid_blocked_tenant_login(user, ip_address=ip, user_agent=ua)
         if blocked is not None:
             return blocked
         if user.is_account_locked():

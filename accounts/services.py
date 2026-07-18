@@ -1198,6 +1198,12 @@ class UserManagementService:
                 if invitation.expires_at < timezone.now():
                     return None, "Invitation has expired"
 
+                from platform_admin.lifecycle import restaurant_access_denied_reason
+
+                tenant_block = restaurant_access_denied_reason(invitation.restaurant)
+                if tenant_block:
+                    return None, tenant_block
+
                 # Fallback for names if not provided
                 effective_first_name = first_name or invitation.first_name or ''
                 effective_last_name = last_name or invitation.last_name or ''
