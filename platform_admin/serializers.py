@@ -11,6 +11,7 @@ class PlatformTenantListSerializer(serializers.ModelSerializer):
     subscription_status = serializers.CharField(read_only=True, allow_null=True)
     subscription_plan = serializers.CharField(read_only=True, allow_null=True)
     suspended = serializers.SerializerMethodField()
+    deactivated = serializers.SerializerMethodField()
     onboarding_done = serializers.SerializerMethodField()
 
     class Meta:
@@ -33,12 +34,17 @@ class PlatformTenantListSerializer(serializers.ModelSerializer):
             "subscription_status",
             "subscription_plan",
             "suspended",
+            "deactivated",
             "onboarding_done",
         ]
 
     def get_suspended(self, obj):
         gs = obj.general_settings or {}
         return bool(gs.get("platform_suspended"))
+
+    def get_deactivated(self, obj):
+        gs = obj.general_settings or {}
+        return bool(gs.get("platform_deactivated"))
 
     def get_onboarding_done(self, obj):
         return bool(obj.onboarding_completed_at)
@@ -93,6 +99,8 @@ class PlatformTenantDetailSerializer(PlatformTenantListSerializer):
             sub = obj.subscription
         except Subscription.DoesNotExist:
             return None
+        ops = sub.platform_ops if isinstance(sub.platform_ops, dict) else {}
+        last_change = ops.get("last_plan_change") if isinstance(ops.get("last_plan_change"), dict) else None
         return {
             "id": sub.id,
             "status": sub.status,
@@ -108,6 +116,7 @@ class PlatformTenantDetailSerializer(PlatformTenantListSerializer):
             "trial_ends_at": sub.trial_ends_at,
             "cancel_at_period_end": sub.cancel_at_period_end,
             "price_monthly": str(sub.plan.price_monthly) if sub.plan and sub.plan.price_monthly is not None else None,
+            "last_plan_change": last_change,
         }
 
     def get_staff(self, obj):
@@ -148,6 +157,7 @@ class PlatformTenantDetailSerializer(PlatformTenantListSerializer):
 
 class PlatformTenantWriteSerializer(serializers.ModelSerializer):
     suspended = serializers.BooleanField(required=False)
+    deactivated = serializers.BooleanField(required=False)
 
     class Meta:
         model = Restaurant
@@ -162,15 +172,20 @@ class PlatformTenantWriteSerializer(serializers.ModelSerializer):
             "timezone",
             "restaurant_type",
             "suspended",
+            "deactivated",
         ]
 
     def update(self, instance, validated_data):
         suspended = validated_data.pop("suspended", None)
+        deactivated = validated_data.pop("deactivated", None)
         for k, v in validated_data.items():
             setattr(instance, k, v)
-        if suspended is not None:
+        if suspended is not None or deactivated is not None:
             gs = dict(instance.general_settings or {})
-            gs["platform_suspended"] = bool(suspended)
+            if suspended is not None:
+                gs["platform_suspended"] = bool(suspended)
+            if deactivated is not None:
+                gs["platform_deactivated"] = bool(deactivated)
             instance.general_settings = gs
         instance.save()
         return instance
@@ -238,6 +253,15 @@ class PlatformUserPatchSerializer(serializers.Serializer):
     phone = serializers.CharField(required=False, allow_blank=True)
 
 
+class PlatformOperatorPatchSerializer(serializers.Serializer):
+    first_name = serializers.CharField(required=False, allow_blank=True)
+    last_name = serializers.CharField(required=False, allow_blank=True)
+    phone = serializers.CharField(required=False, allow_blank=True)
+    is_active = serializers.BooleanField(required=False)
+    is_superuser = serializers.BooleanField(required=False)
+    is_platform_operator = serializers.BooleanField(required=False)
+
+
 class PlatformSubscriptionSerializer(serializers.ModelSerializer):
     restaurant_id = serializers.UUIDField(source="restaurant.id", read_only=True)
     restaurant_name = serializers.CharField(source="restaurant.name", read_only=True)
@@ -268,11 +292,16 @@ class PlatformSubscriptionSerializer(serializers.ModelSerializer):
 
 class PlatformSubscriptionPatchSerializer(serializers.Serializer):
     plan = serializers.PrimaryKeyRelatedField(
-        queryset=SubscriptionPlan.objects.all(), required=False, allow_null=True
+        queryset=SubscriptionPlan.objects.filter(is_active=True),
+        required=False,
+        allow_null=False,
     )
+    # Accepted only so we can reject with a clear error — status is system-owned.
     status = serializers.ChoiceField(choices=Subscription.STATUS_CHOICES, required=False)
     cancel_at_period_end = serializers.BooleanField(required=False)
     trial_ends_at = serializers.DateTimeField(required=False, allow_null=True)
+    # Required when changing plan — stored on the subscription + audit log.
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=2000)
 
 
 class PlatformPlanSerializer(serializers.ModelSerializer):

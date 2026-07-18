@@ -5,7 +5,7 @@ import logging
 from datetime import timedelta
 
 from django.conf import settings
-from django.contrib.auth import get_user_model
+from django.contrib.auth import authenticate, get_user_model
 from django.db.models.functions import TruncWeek, TruncMonth
 from django.db.models import Count, Q, OuterRef, Subquery, CharField, Value
 from django.db.models.functions import Coalesce
@@ -13,12 +13,18 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import Restaurant, AuditLog, CustomUser
 from billing.models import Subscription, SubscriptionPlan
-from .permissions import IsPlatformOperator, IsPlatformSuperuser
+from .permissions import (
+    IsPlatformOperator,
+    IsPlatformSuperuser,
+    user_is_platform_ops_account,
+    user_is_platform_operator,
+    user_is_platform_superuser,
+)
 from .serializers import (
     PlatformTenantListSerializer,
     PlatformTenantDetailSerializer,
@@ -26,6 +32,7 @@ from .serializers import (
     PlatformTenantCreateSerializer,
     PlatformUserSerializer,
     PlatformUserPatchSerializer,
+    PlatformOperatorPatchSerializer,
     PlatformSubscriptionSerializer,
     PlatformSubscriptionPatchSerializer,
     PlatformPlanSerializer,
@@ -133,19 +140,111 @@ def _log_platform_action(request, action_type, entity_type, entity_id, descripti
         logger.exception("Failed to write platform audit log")
 
 
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def platform_ops_login(request):
+    """Password login for Platform Admin (/admin) only.
+
+    Tenant restaurant login at ``/api/auth/login/`` rejects these accounts.
+    """
+    email = (request.data.get("email") or "").strip()
+    password = request.data.get("password") or ""
+    if not email or not password:
+        return Response(
+            {"error": "Email and password are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        user = CustomUser.objects.get(email__iexact=email, is_active=True)
+    except CustomUser.DoesNotExist:
+        return Response(
+            {"error": "Invalid credentials"},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    if not user_is_platform_ops_account(user):
+        return Response(
+            {
+                "error": (
+                    "This account is not a platform operator. "
+                    "Restaurant admins sign in at /auth."
+                ),
+                "code": "not_platform_operator",
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if getattr(user, "is_account_locked", None) and user.is_account_locked():
+        return Response(
+            {
+                "error": (
+                    "Account is temporarily locked due to multiple failed attempts. "
+                    "Please try again later."
+                )
+            },
+            status=status.HTTP_423_LOCKED,
+        )
+
+    authenticated = authenticate(email=email, password=password)
+    if not authenticated:
+        if hasattr(user, "increment_failed_attempts"):
+            user.increment_failed_attempts()
+        return Response(
+            {"error": "Invalid credentials"},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    if hasattr(authenticated, "reset_failed_attempts"):
+        authenticated.reset_failed_attempts()
+
+    # Ensure env-listed ops can use /admin APIs even before bootstrap flips flags.
+    if not authenticated.is_platform_operator or not authenticated.is_staff:
+        dirty = []
+        if not authenticated.is_platform_operator:
+            authenticated.is_platform_operator = True
+            dirty.append("is_platform_operator")
+        if not authenticated.is_staff:
+            authenticated.is_staff = True
+            dirty.append("is_staff")
+        if dirty:
+            authenticated.save(update_fields=[*dirty, "updated_at"])
+
+    refresh = RefreshToken.for_user(authenticated)
+    access = str(refresh.access_token)
+    return Response(
+        {
+            "user": {
+                "id": str(authenticated.id),
+                "email": authenticated.email,
+                "first_name": authenticated.first_name,
+                "last_name": authenticated.last_name,
+                "is_platform_operator": True,
+                "is_staff": True,
+                "is_superuser": user_is_platform_superuser(authenticated),
+            },
+            "tokens": {
+                "refresh": str(refresh),
+                "access": access,
+            },
+        }
+    )
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsPlatformOperator])
 def platform_me(request):
     u = request.user
+
     return Response(
         {
             "id": str(u.id),
             "email": u.email,
             "first_name": u.first_name,
             "last_name": u.last_name,
-            "is_staff": u.is_staff,
-            "is_superuser": u.is_superuser,
-            "is_platform_operator": bool(getattr(u, "is_platform_operator", False)),
+            "is_staff": bool(getattr(u, "is_staff", False) or user_is_platform_operator(u)),
+            "is_superuser": user_is_platform_superuser(u),
+            "is_platform_operator": user_is_platform_operator(u),
         }
     )
 
@@ -279,10 +378,44 @@ def platform_tenants(request):
         elif onboarding == "pending":
             qs = qs.filter(onboarding_completed_at__isnull=True)
         suspended = (request.query_params.get("suspended") or "").strip().lower()
-        if suspended == "1" or suspended == "true":
-            qs = qs.filter(general_settings__platform_suspended=True)
-        elif suspended == "0" or suspended == "false":
-            qs = qs.exclude(general_settings__platform_suspended=True)
+        status_filter = (request.query_params.get("status") or "").strip().lower()
+        # Tenant lifecycle is flag-based:
+        #   Suspended / Deactivated flags → not active
+        #   everything else (incl. onboarding, trialing) → active
+        # Default: active only.
+        #
+        # Important: do NOT use exclude(json__key=True). On Postgres, missing
+        # JSON keys make that exclude drop every row (NULL comparison).
+        if not status_filter and not suspended:
+            status_filter = "active"
+
+        suspended_flag = Q(general_settings__platform_suspended=True) | Q(
+            general_settings__platform_suspended="true"
+        )
+        deactivated_flag = Q(general_settings__platform_deactivated=True) | Q(
+            general_settings__platform_deactivated="true"
+        )
+        # Active = flag absent OR explicitly false.
+        not_suspended = ~Q(general_settings__has_key="platform_suspended") | Q(
+            general_settings__platform_suspended=False
+        )
+        not_deactivated = ~Q(general_settings__has_key="platform_deactivated") | Q(
+            general_settings__platform_deactivated=False
+        )
+
+        if status_filter == "active" or suspended in ("0", "false"):
+            qs = qs.filter(not_suspended & not_deactivated)
+        elif status_filter == "suspended" or suspended in ("1", "true"):
+            qs = qs.filter(suspended_flag)
+        elif status_filter == "deactivated":
+            qs = qs.filter(deactivated_flag)
+        elif status_filter == "all":
+            pass  # no lifecycle filter
+        elif suspended:
+            if suspended in ("1", "true"):
+                qs = qs.filter(suspended_flag)
+            elif suspended in ("0", "false"):
+                qs = qs.filter(not_suspended)
 
         try:
             limit = min(int(request.query_params.get("page_size") or 50), 200)
@@ -360,6 +493,10 @@ def platform_tenant_detail(request, tenant_id):
         return Response({"error": "Tenant not found"}, status=404)
 
     if request.method == "GET":
+        # Every tenant must have a billing tier (Starter by default).
+        from billing.services import ensure_starter_subscription
+
+        ensure_starter_subscription(restaurant)
         detail = _tenant_queryset().filter(pk=restaurant.pk).first()
         return Response(PlatformTenantDetailSerializer(detail).data)
 
@@ -444,7 +581,7 @@ def platform_user_detail(request, user_id):
     data = ser.validated_data
 
     if "is_staff" in data:
-        if not request.user.is_superuser:
+        if not user_is_platform_superuser(request.user):
             return Response(
                 {"error": "Only platform superusers can change is_staff"},
                 status=403,
@@ -455,7 +592,7 @@ def platform_user_detail(request, user_id):
             user.is_platform_operator = False
 
     if "is_platform_operator" in data:
-        if not request.user.is_superuser:
+        if not user_is_platform_superuser(request.user):
             return Response(
                 {"error": "Only platform superusers can change platform operator access"},
                 status=403,
@@ -569,18 +706,18 @@ def platform_operators(request):
             }
         )
 
-    # Create — superuser only (must already be a platform operator)
-    if not request.user.is_superuser:
-        return Response(
-            {"error": "Only platform superusers can create operators"},
-            status=403,
-        )
-
+    # Create — any platform operator; only superusers may grant is_superuser.
     email = (request.data.get("email") or "").strip().lower()
     first_name = (request.data.get("first_name") or "").strip() or "Ops"
     last_name = (request.data.get("last_name") or "").strip() or "Admin"
     password = (request.data.get("password") or "").strip()
-    make_super = bool(request.data.get("is_superuser"))
+    want_super = bool(request.data.get("is_superuser"))
+    if want_super and not user_is_platform_superuser(request.user):
+        return Response(
+            {"error": "Only platform superusers can grant superuser"},
+            status=403,
+        )
+    make_super = want_super and user_is_platform_superuser(request.user)
 
     if not email:
         return Response({"error": "email is required"}, status=400)
@@ -596,6 +733,8 @@ def platform_operators(request):
         existing.is_platform_operator = True
         if make_super:
             existing.is_superuser = True
+        existing.first_name = first_name or existing.first_name
+        existing.last_name = last_name or existing.last_name
         existing.restaurant = None
         existing.set_password(password)
         existing.failed_login_attempts = 0
@@ -653,6 +792,73 @@ def platform_operators(request):
     return Response(PlatformUserSerializer(user).data, status=status.HTTP_201_CREATED)
 
 
+@api_view(["GET", "PATCH"])
+@permission_classes([IsAuthenticated, IsPlatformOperator])
+def platform_operator_detail(request, user_id):
+    """Get / update a platform operator account."""
+    try:
+        user = User.objects.select_related("restaurant").get(
+            pk=user_id, is_platform_operator=True
+        )
+    except User.DoesNotExist:
+        return Response({"error": "Operator not found"}, status=404)
+
+    if request.method == "GET":
+        return Response(PlatformUserSerializer(user).data)
+
+    ser = PlatformOperatorPatchSerializer(data=request.data, partial=True)
+    ser.is_valid(raise_exception=True)
+    data = ser.validated_data
+    actor_is_super = user_is_platform_superuser(request.user)
+
+    if "is_superuser" in data or "is_platform_operator" in data:
+        if not actor_is_super:
+            return Response(
+                {"error": "Only platform superusers can change operator privileges"},
+                status=403,
+            )
+
+    if "first_name" in data:
+        user.first_name = data["first_name"]
+    if "last_name" in data:
+        user.last_name = data["last_name"]
+    if "phone" in data:
+        user.phone = data["phone"]
+    if "is_active" in data:
+        if str(user.id) == str(request.user.id) and not data["is_active"]:
+            return Response({"error": "You cannot deactivate your own account"}, status=400)
+        user.is_active = bool(data["is_active"])
+
+    if "is_superuser" in data:
+        if str(user.id) == str(request.user.id) and not data["is_superuser"]:
+            return Response(
+                {"error": "You cannot remove your own superuser flag"},
+                status=400,
+            )
+        user.is_superuser = bool(data["is_superuser"])
+
+    if "is_platform_operator" in data and not data["is_platform_operator"]:
+        if str(user.id) == str(request.user.id):
+            return Response(
+                {"error": "You cannot revoke your own operator access"},
+                status=400,
+            )
+        user.is_platform_operator = False
+        user.is_staff = False
+        user.is_superuser = False
+
+    user.save()
+    _log_platform_action(
+        request,
+        "UPDATE",
+        "CustomUser",
+        user.id,
+        f"Updated platform operator {user.email}",
+        dict(request.data),
+    )
+    return Response(PlatformUserSerializer(user).data)
+
+
 @api_view(["GET"])
 @permission_classes([IsAuthenticated, IsPlatformOperator])
 def platform_billing_plans(request):
@@ -704,22 +910,98 @@ def platform_billing_subscription_detail(request, sub_id):
     ser = PlatformSubscriptionPatchSerializer(data=request.data, partial=True)
     ser.is_valid(raise_exception=True)
     data = ser.validated_data
-    if "plan" in data:
-        sub.plan = data["plan"]
+    reason = (data.pop("reason", None) or "").strip()
+    previous_plan = sub.plan
+    plan_changing = "plan" in data and (
+        (data["plan"].id if data["plan"] else None) != sub.plan_id
+    )
+
+    if "plan" in data and data["plan"] is None:
+        return Response(
+            {"error": "Every tenant must remain on a plan/tier. Choose Starter, Growth, or Enterprise."},
+            status=400,
+        )
+
+    if plan_changing and len(reason) < 8:
+        return Response(
+            {
+                "error": "A reason of at least 8 characters is required when changing plan/tier",
+            },
+            status=400,
+        )
+
+    # Status is system-owned (trialing → active via payment/usage webhooks).
+    # Operators may change plan/tier with a reason, but not subscription status.
     if "status" in data:
-        sub.status = data["status"]
+        return Response(
+            {
+                "error": (
+                    "Subscription status cannot be changed by operators. "
+                    "It updates from tenant billing activity and payment providers."
+                ),
+            },
+            status=400,
+        )
+
+    if "plan" in data and data["plan"] is not None:
+        sub.plan = data["plan"]
+        # Manual ops plan grants take effect for entitlements; status stays as-is
+        # unless the target plan has no trial (Growth/Enterprise).
+        if plan_changing:
+            sub.pending_plan = None
+            sub.pending_billing_interval = ""
+            if not getattr(sub.plan, "trial_days", 0):
+                sub.trial_ends_at = None
+                if sub.status == "trialing":
+                    sub.status = "active"
     if "cancel_at_period_end" in data:
         sub.cancel_at_period_end = data["cancel_at_period_end"]
     if "trial_ends_at" in data:
         sub.trial_ends_at = data["trial_ends_at"]
+
+    if plan_changing:
+        from django.utils import timezone as dj_tz
+
+        ops = dict(sub.platform_ops or {})
+        change = {
+            "from_plan_id": previous_plan.id if previous_plan else None,
+            "from_plan": previous_plan.name if previous_plan else None,
+            "from_tier": previous_plan.tier if previous_plan else None,
+            "to_plan_id": sub.plan.id if sub.plan else None,
+            "to_plan": sub.plan.name if sub.plan else None,
+            "to_tier": sub.plan.tier if sub.plan else None,
+            "reason": reason,
+            "by_email": getattr(request.user, "email", "") or "",
+            "by_id": str(getattr(request.user, "id", "") or ""),
+            "at": dj_tz.now().isoformat(),
+        }
+        ops["last_plan_change"] = change
+        history = list(ops.get("plan_change_history") or [])
+        history.insert(0, change)
+        ops["plan_change_history"] = history[:25]
+        sub.platform_ops = ops
+
     sub.save()
+    desc = f"Updated subscription for {sub.restaurant.name}"
+    if plan_changing:
+        from_label = previous_plan.name if previous_plan else "none"
+        to_label = sub.plan.name if sub.plan else "none"
+        desc = (
+            f"Changed plan for {sub.restaurant.name}: {from_label} → {to_label}. "
+            f"Reason: {reason}"
+        )
     _log_platform_action(
         request,
         "UPDATE",
         "Subscription",
         sub.id,
-        f"Updated subscription for {sub.restaurant.name}",
-        dict(request.data),
+        desc,
+        {
+            **dict(request.data),
+            "reason": reason if plan_changing else None,
+            "from_plan": previous_plan.name if previous_plan else None,
+            "to_plan": sub.plan.name if sub.plan else None,
+        },
     )
     return Response(PlatformSubscriptionSerializer(sub).data)
 

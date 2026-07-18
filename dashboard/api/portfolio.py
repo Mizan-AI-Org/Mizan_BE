@@ -57,7 +57,7 @@ GRACE_MINUTES_FOR_POTENTIAL_NOSHOW = 10
 
 
 def _portfolio_cache_key(restaurant_id, day) -> str:
-    return f"dashboard:portfolio:v1:{restaurant_id}:{day.isoformat()}"
+    return f"dashboard:portfolio:v1:{str(restaurant_id)}:{day.isoformat()}"
 
 
 def _zero_metrics() -> dict[str, Any]:
@@ -81,13 +81,15 @@ def _zero_metrics() -> dict[str, Any]:
     }
 
 
-def _derive_status_and_concern(metrics: dict[str, Any]) -> tuple[str, str | None]:
+def _derive_status_and_concern(
+    metrics: dict[str, Any],
+) -> tuple[str, str | None, str | None, dict[str, Any] | None]:
     """
-    Decide traffic-light colour + a single human-readable top concern.
+    Decide traffic-light colour + top concern.
 
-    Ordered by severity: any red trigger wins, then amber, then green.
-    Tuned for restaurant ops; thresholds deliberately conservative so
-    we flag early rather than late.
+    Returns (status, english_message, concern_code, concern_params).
+    ``concern_code`` / ``concern_params`` let the frontend localize the
+    message; ``english_message`` stays for older clients / logs.
     """
     no_shows = metrics["no_shows_today"]
     mismatches = metrics["location_mismatches_today"]
@@ -98,24 +100,64 @@ def _derive_status_and_concern(metrics: dict[str, Any]) -> tuple[str, str | None
     checklist_pct = metrics["checklist_completion_pct"]
 
     if no_shows > 0:
-        return "red", f"{no_shows} no-show{'s' if no_shows != 1 else ''} today"
+        return (
+            "red",
+            f"{no_shows} no-show{'s' if no_shows != 1 else ''} today",
+            "no_shows",
+            {"count": no_shows},
+        )
     if flagged_cash > 0:
-        return "red", f"{flagged_cash} cash session{'s' if flagged_cash != 1 else ''} flagged"
+        return (
+            "red",
+            f"{flagged_cash} cash session{'s' if flagged_cash != 1 else ''} flagged",
+            "cash_flagged",
+            {"count": flagged_cash},
+        )
     if mismatches > 0:
-        return "red", f"{mismatches} location mismatch{'es' if mismatches != 1 else ''}"
+        return (
+            "red",
+            f"{mismatches} location mismatch{'es' if mismatches != 1 else ''}",
+            "mismatches",
+            {"count": mismatches},
+        )
     if coverage is not None and coverage < 50:
-        return "red", f"Only {coverage}% shift coverage"
+        return (
+            "red",
+            f"Only {coverage}% shift coverage",
+            "coverage_critical",
+            {"pct": coverage},
+        )
 
     if potential > 0:
-        return "amber", f"{potential} potential no-show{'s' if potential != 1 else ''}"
+        return (
+            "amber",
+            f"{potential} potential no-show{'s' if potential != 1 else ''}",
+            "potential_no_shows",
+            {"count": potential},
+        )
     if gaps > 0:
-        return "amber", f"{gaps} unfilled shift{'s' if gaps != 1 else ''}"
+        return (
+            "amber",
+            f"{gaps} unfilled shift{'s' if gaps != 1 else ''}",
+            "shift_gaps",
+            {"count": gaps},
+        )
     if coverage is not None and coverage < 80:
-        return "amber", f"{coverage}% shift coverage"
+        return (
+            "amber",
+            f"{coverage}% shift coverage",
+            "coverage_low",
+            {"pct": coverage},
+        )
     if checklist_pct is not None and checklist_pct < 60 and metrics["checklists_total"] > 0:
-        return "amber", f"{checklist_pct}% checklists done"
+        return (
+            "amber",
+            f"{checklist_pct}% checklists done",
+            "checklists_low",
+            {"pct": checklist_pct},
+        )
 
-    return "green", None
+    return "green", None, None, None
 
 
 class PortfolioSummaryView(APIView):
@@ -193,12 +235,13 @@ class PortfolioSummaryView(APIView):
         if cached is not None and not is_scoped_manager:
             # Add ETag/Cache-Control so a polling client sending the same
             # If-None-Match gets a cheap 304 instead of the full payload.
+            # No stale-while-revalidate: deleted branches must disappear
+            # immediately, not linger while the browser revalidates.
             return json_response_with_cache(
                 request,
                 cached,
                 max_age=PORTFOLIO_CACHE_TTL_SECONDS,
                 private=True,
-                stale_while_revalidate=120,
             )
 
         try:
@@ -226,7 +269,6 @@ class PortfolioSummaryView(APIView):
             payload,
             max_age=PORTFOLIO_CACHE_TTL_SECONDS,
             private=True,
-            stale_while_revalidate=120,
         )
 
     def _safe_fallback(self, restaurant, user, role, today, exc) -> dict[str, Any]:
@@ -261,6 +303,8 @@ class PortfolioSummaryView(APIView):
                 "is_active": loc.is_active,
                 "status": "unknown",
                 "top_concern": None,
+                "top_concern_code": None,
+                "top_concern_params": {},
                 "metrics": _zero_metrics(),
             }
             for loc in locations
@@ -556,7 +600,7 @@ class PortfolioSummaryView(APIView):
                 m["checklist_completion_pct"] = int(
                     round(100.0 * m["checklists_completed"] / m["checklists_total"])
                 )
-            status, concern = _derive_status_and_concern(m)
+            status, concern, concern_code, concern_params = _derive_status_and_concern(m)
             locations_payload.append(
                 {
                     "id": str(loc.id),
@@ -565,6 +609,8 @@ class PortfolioSummaryView(APIView):
                     "is_active": loc.is_active,
                     "status": status,
                     "top_concern": concern,
+                    "top_concern_code": concern_code,
+                    "top_concern_params": concern_params or {},
                     "metrics": m,
                 }
             )

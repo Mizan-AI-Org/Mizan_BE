@@ -21,16 +21,16 @@ def _invalidate_portfolio_cache(restaurant_id):
     Drop the multi-location portfolio cache entries for a tenant whenever a
     branch is created/updated/deleted/promoted, so the Locations Overview
     page picks up the change on the next poll instead of waiting out the
-    60 s TTL. We clear today and yesterday because a late-night edit may
+    60 s TTL. We clear a small day window because late-night edits may
     straddle the day boundary on the server timezone.
     """
     if not restaurant_id:
         return
+    rid = str(restaurant_id)
     today = timezone.now().date()
-    for day in (today, today - timedelta(days=1)):
-        safe_cache_delete(
-            f"dashboard:portfolio:v1:{restaurant_id}:{day.isoformat()}"
-        )
+    for offset in (-1, 0, 1):
+        day = today + timedelta(days=offset)
+        safe_cache_delete(f"dashboard:portfolio:v1:{rid}:{day.isoformat()}")
 
 
 class BusinessLocationSerializer(serializers.ModelSerializer):
@@ -152,7 +152,17 @@ class BusinessLocationViewSet(viewsets.ModelViewSet):
         rest = getattr(self.request.user, 'restaurant', None)
         if rest is None:
             return BusinessLocation.objects.none()
-        return BusinessLocation.objects.filter(restaurant=rest)
+        qs = BusinessLocation.objects.filter(restaurant=rest)
+        # Settings / pickers should not surface soft-deleted branches.
+        # Detail/update/destroy still receive the pk; inactive rows are
+        # excluded from list unless explicitly requested.
+        if self.action == "list":
+            include_inactive = str(
+                self.request.query_params.get("include_inactive") or ""
+            ).lower() in {"1", "true", "yes"}
+            if not include_inactive:
+                qs = qs.filter(is_active=True)
+        return qs
 
     def list(self, request, *args, **kwargs):
         """
@@ -253,7 +263,17 @@ class BusinessLocationViewSet(viewsets.ModelViewSet):
         _invalidate_portfolio_cache(instance.restaurant_id)
 
     def perform_destroy(self, instance):
+        """Soft-delete the branch (``is_active=False``).
+
+        Hard deletes break Locations Overview when portfolio cache/HTTP
+        caching races the mutation, and also orphan historical shifts /
+        clock events. Portfolio and geofence already filter ``is_active``.
+        """
         rest = instance.restaurant
+        if not instance.is_active:
+            _invalidate_portfolio_cache(rest.id)
+            return
+
         remaining = BusinessLocation.objects.filter(
             restaurant=rest, is_active=True
         ).exclude(pk=instance.pk)
@@ -261,20 +281,19 @@ class BusinessLocationViewSet(viewsets.ModelViewSet):
             raise serializers.ValidationError(
                 {'detail': 'Cannot delete the only active location. Add another site first.'}
             )
-        if instance.is_primary:
-            # Promote the next most-recent active site before we delete this
-            # one, otherwise the tenant would be left with zero primaries
-            # (which the DB unique constraint tolerates, but downstream code
-            # does not).
-            new_primary = remaining.order_by('-updated_at').first()
-            with transaction.atomic():
+
+        with transaction.atomic():
+            if instance.is_primary:
+                new_primary = remaining.order_by('-updated_at').first()
                 instance.is_primary = False
-                instance.save(update_fields=['is_primary', 'updated_at'])
-                new_primary.is_primary = True
-                new_primary.save()  # triggers Restaurant.* sync
-                instance.delete()
-        else:
-            instance.delete()
+                instance.is_active = False
+                instance.save(update_fields=['is_primary', 'is_active', 'updated_at'])
+                if new_primary:
+                    new_primary.is_primary = True
+                    new_primary.save()  # triggers Restaurant.* sync
+            else:
+                instance.is_active = False
+                instance.save(update_fields=['is_active', 'updated_at'])
         _invalidate_portfolio_cache(rest.id)
 
     @action(detail=True, methods=['post'], url_path='set-primary')

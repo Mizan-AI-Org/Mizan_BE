@@ -20,7 +20,97 @@ _PRICING = {
         "GROWTH": {"monthly": Decimal("899"), "yearly": Decimal("8990")},
         "ENTERPRISE": {"monthly": Decimal("2499"), "yearly": Decimal("24990")},
     },
+    "EUR": {
+        "STARTER": {"monthly": Decimal("29"), "yearly": Decimal("290")},
+        "GROWTH": {"monthly": Decimal("89"), "yearly": Decimal("890")},
+        "ENTERPRISE": {"monthly": Decimal("249"), "yearly": Decimal("2490")},
+    },
 }
+
+# Country ISO → billing currency when restaurant.currency is missing/unsupported.
+_COUNTRY_CURRENCY = {
+    "MA": "MAD",
+    "US": "USD",
+    "GB": "USD",  # priced in USD until GBP table exists
+    "FR": "EUR",
+    "BE": "EUR",
+    "DE": "EUR",
+    "ES": "EUR",
+    "IT": "EUR",
+    "NL": "EUR",
+    "PT": "EUR",
+    "SN": "MAD",  # regional ops often settle like MA; override via restaurant.currency
+}
+
+
+def supported_billing_currencies() -> tuple[str, ...]:
+    return tuple(_PRICING.keys())
+
+
+def resolve_billing_currency(
+    *,
+    restaurant=None,
+    currency: str | None = None,
+    country_code: str | None = None,
+) -> str:
+    """Pick display/checkout currency for a tenant.
+
+    Preference (location-first):
+      1. explicit ``currency`` query/arg
+      2. country → currency map (tenant location)
+      3. restaurant.currency when it is a supported billing currency
+         *and* not a generic USD default that conflicts with the country
+      4. settings.BILLING_CURRENCY → USD
+    """
+    from django.conf import settings
+
+    if restaurant is not None:
+        country_code = country_code or getattr(restaurant, "country_code", None)
+
+    country = str(country_code or "").strip().upper()
+    country_currency = _COUNTRY_CURRENCY.get(country) if country else None
+    restaurant_currency = ""
+    if restaurant is not None:
+        restaurant_currency = str(getattr(restaurant, "currency", None) or "").strip().upper()
+
+    explicit = str(currency or "").strip().upper()
+    if explicit in _PRICING:
+        return explicit
+
+    # Location wins over a leftover default USD on the restaurant row.
+    if country_currency and country_currency in _PRICING:
+        if not restaurant_currency or restaurant_currency == country_currency:
+            return country_currency
+        if restaurant_currency == "USD" and country_currency != "USD":
+            return country_currency
+        if restaurant_currency in _PRICING:
+            return restaurant_currency
+        return country_currency
+
+    if restaurant_currency in _PRICING:
+        return restaurant_currency
+
+    fallback = str(getattr(settings, "BILLING_CURRENCY", "USD") or "USD").strip().upper()
+    if fallback in _PRICING:
+        return fallback
+    return "USD"
+
+
+def localize_plan_payload(plan: dict[str, Any], currency: str) -> dict[str, Any]:
+    """Return a plan dict with prices rewritten for ``currency`` (display)."""
+    currency = (currency or "USD").upper()
+    if currency not in _PRICING:
+        return plan
+    tier = (plan.get("tier") or "").upper()
+    prices = _PRICING[currency].get(tier)
+    if not prices:
+        return plan
+    out = dict(plan)
+    out["currency"] = currency
+    out["price"] = str(prices["monthly"])
+    out["price_monthly"] = str(prices["monthly"])
+    out["price_yearly"] = str(prices["yearly"])
+    return out
 
 _STARTER_KEYS = [
     "scheduling",
@@ -154,7 +244,8 @@ def sync_subscription_plans(
             "cta_label": "Contact sales" if effective_contact_sales else "",
             "sort_order": order,
             "contact_sales": effective_contact_sales,
-            "trial_days": 14 if tier != "ENTERPRISE" else 0,
+            # Only Starter includes the signup trial; Growth/Enterprise are paid as-you-go.
+            "trial_days": 14 if tier == "STARTER" else 0,
             "is_active": True,
         }
 

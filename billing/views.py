@@ -25,12 +25,47 @@ stripe.api_key = getattr(settings, "STRIPE_SECRET_KEY", "") or ""
 
 
 class PlanViewSet(viewsets.ReadOnlyModelViewSet):
-    """Public list of subscription plans (used by the pricing UI)."""
+    """Public list of subscription plans (used by the pricing UI).
 
-    queryset = SubscriptionPlan.objects.filter(is_active=True)
+    Prices/currency adapt to the authenticated tenant's location
+    (restaurant.currency / country_code). Anonymous callers get
+    settings.BILLING_CURRENCY (or ``?currency=`` / ``?country=``).
+    """
+
+    queryset = SubscriptionPlan.objects.filter(is_active=True).order_by(
+        "sort_order", "name"
+    )
     serializer_class = SubscriptionPlanSerializer
     # Pricing must be visible pre-auth so marketing pages can render it.
     permission_classes = [permissions.AllowAny]
+
+    def _currency_for_request(self, request) -> str:
+        from .plan_seed import resolve_billing_currency
+
+        restaurant = None
+        user = getattr(request, "user", None)
+        if user is not None and getattr(user, "is_authenticated", False):
+            restaurant = getattr(user, "restaurant", None)
+        return resolve_billing_currency(
+            restaurant=restaurant,
+            currency=(request.query_params.get("currency") or "").strip() or None,
+            country_code=(request.query_params.get("country") or "").strip() or None,
+        )
+
+    def list(self, request, *args, **kwargs):
+        from .plan_seed import localize_plan_payload
+
+        queryset = self.filter_queryset(self.get_queryset())
+        data = self.get_serializer(queryset, many=True).data
+        currency = self._currency_for_request(request)
+        return Response([localize_plan_payload(row, currency) for row in data])
+
+    def retrieve(self, request, *args, **kwargs):
+        from .plan_seed import localize_plan_payload
+
+        instance = self.get_object()
+        data = self.get_serializer(instance).data
+        return Response(localize_plan_payload(data, self._currency_for_request(request)))
 
 
 class SubscriptionViewSet(viewsets.ViewSet):
@@ -75,6 +110,11 @@ class SubscriptionViewSet(viewsets.ViewSet):
                 tier=subscription.effective_tier, is_active=True
             ).first()
 
+        from .limits import count_staff_seats
+
+        staff_used = count_staff_seats(restaurant)
+        max_staff = plan.max_staff if plan else None
+
         return Response({
             "tier": subscription.effective_tier,
             "status": subscription.status,
@@ -86,7 +126,10 @@ class SubscriptionViewSet(viewsets.ViewSet):
             "features": plan.feature_keys if plan else [],
             "limits": {
                 "max_locations": plan.max_locations if plan else None,
-                "max_staff": plan.max_staff if plan else None,
+                "max_staff": max_staff,
+            },
+            "usage": {
+                "staff": staff_used,
             },
             "plan": SubscriptionPlanSerializer(plan).data if plan else None,
         })
@@ -243,11 +286,22 @@ class StripeWebhookView(APIView):
         for attr, key in (
             ("current_period_start", "current_period_start"),
             ("current_period_end", "current_period_end"),
-            ("trial_ends_at", "trial_end"),
         ):
             value = stripe_sub.get(key)
             if value:
                 setattr(sub_record, attr, timezone.datetime.fromtimestamp(value, tz=timezone.utc))
+
+        # Paid subscriptions have no local signup trial. Stripe trial_end only
+        # applies when Stripe itself is in trialing (we don't offer plan trials
+        # on Growth/Enterprise checkout).
+        stripe_status = (stripe_sub.get("status") or "").strip()
+        stripe_trial_end = stripe_sub.get("trial_end")
+        if stripe_status == "active" or not stripe_trial_end:
+            sub_record.trial_ends_at = None
+        elif stripe_trial_end:
+            sub_record.trial_ends_at = timezone.datetime.fromtimestamp(
+                stripe_trial_end, tz=timezone.utc
+            )
 
         # Price & interval — either on top-level "items.data[0].price" (new API)
         # or legacy "plan".

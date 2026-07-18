@@ -670,6 +670,8 @@ class UserManagementService:
                 id=default_primary_location_id, restaurant=restaurant
             ).exists():
                 default_primary_location_id = ''
+        from billing.limits import assert_can_add_staff
+
         results = { 'success': 0, 'failed': 0, 'errors': [], 'invitations': [] }
         for idx, item in enumerate(invitations, start=1):
             try:
@@ -708,6 +710,12 @@ class UserManagementService:
                 if existing_invite:
                     results['failed'] += 1
                     results['errors'].append(f"Item {idx}: Invitation already pending for {email}")
+                    continue
+
+                seat_ok, seat_err = assert_can_add_staff(restaurant, additional=1)
+                if not seat_ok:
+                    results['failed'] += 1
+                    results['errors'].append(f"Item {idx}: {seat_err}")
                     continue
 
                 token = secrets.token_urlsafe(32)
@@ -820,6 +828,8 @@ class UserManagementService:
         else:
             results["errors"].append("Provide csv_content or staff_list")
             return results
+        from billing.limits import assert_can_add_staff
+
         seen_phones = set()
         for idx, row in enumerate(rows, start=2 if csv_content else 1):
             try:
@@ -839,6 +849,11 @@ class UserManagementService:
                 if phone in seen_phones:
                     results["failed"] += 1
                     results["errors"].append(f"Row {idx}: Duplicate phone number in this file")
+                    continue
+                seat_ok, seat_err = assert_can_add_staff(restaurant, additional=1)
+                if not seat_ok:
+                    results["failed"] += 1
+                    results["errors"].append(f"Row {idx}: {seat_err}")
                     continue
                 seen_phones.add(phone)
                 first_name = (n.get("first_name") or "").strip()
@@ -929,6 +944,11 @@ class UserManagementService:
             return None, "Invalid or missing custom role for CUSTOM."
         first_name = (first_name or "").strip()
         last_name = (last_name or "").strip()
+        from billing.limits import assert_can_add_staff
+
+        seat_ok, seat_err = assert_can_add_staff(restaurant, additional=1)
+        if not seat_ok:
+            return None, seat_err
         batch_id = secrets.token_hex(8)
         try:
             record = StaffActivationRecord.objects.create(
