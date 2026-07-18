@@ -899,6 +899,21 @@ def platform_billing_subscriptions(request):
         qs = qs.filter(
             Q(restaurant__name__icontains=q) | Q(restaurant__email__icontains=q)
         )
+
+    # Deactivated tenants stay out of billing ops lists (same lifecycle rules as Tenants).
+    restaurant_ids = list(qs.values_list("restaurant_id", flat=True).distinct())
+    if restaurant_ids:
+        keep_ids = [
+            rid
+            for rid, gs in Restaurant.objects.filter(id__in=restaurant_ids).values_list(
+                "id", "general_settings"
+            )
+            if tenant_lifecycle(gs) != "deactivated"
+        ]
+        qs = qs.filter(restaurant_id__in=keep_ids)
+    else:
+        qs = qs.none()
+
     try:
         limit = min(int(request.query_params.get("page_size") or 50), 200)
     except ValueError:

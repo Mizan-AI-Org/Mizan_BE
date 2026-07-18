@@ -257,6 +257,9 @@ CORS_ALLOWED_ORIGINS = [
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 CORS_ALLOW_HEADERS = [
+    # Keep in sync with browser preflights from the SPA (extra safe headers).
+    'cache-control',
+    'pragma',
     'accept',
     'accept-encoding',
     'authorization',
