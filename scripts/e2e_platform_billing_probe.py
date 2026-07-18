@@ -47,14 +47,17 @@ class Report:
         self.add(severity, area, title, detail)
 
 
-def login(email: str, password: str) -> str | None:
+def login(email: str, password: str, *, ops: bool = False) -> str | None:
+    path = "/platform/auth/login/" if ops else "/auth/login/"
     r = requests.post(
-        f"{BASE}/auth/login/",
+        f"{BASE}{path}",
         json={"email": email, "password": password},
         timeout=20,
     )
     if r.status_code != 200:
-        # try JWT pair endpoint
+        if ops:
+            return None
+        # Tenant fallback: JWT pair endpoint (also blocks platform ops).
         r2 = requests.post(
             f"{BASE}/token/",
             json={"email": email, "password": password},
@@ -111,7 +114,7 @@ def run() -> Report:
         report.fail("critical", "frontend", "Frontend not reachable on :8080", str(exc))
 
     # --- Ops login ---
-    ops_token = login(OPS_EMAIL, OPS_PASSWORD)
+    ops_token = login(OPS_EMAIL, OPS_PASSWORD, ops=True)
     if not ops_token:
         report.fail("critical", "auth", "Ops login failed", f"{OPS_EMAIL}")
         return report

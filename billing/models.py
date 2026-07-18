@@ -123,6 +123,9 @@ class Subscription(models.Model):
     cancel_at_period_end = models.BooleanField(default=False)
     trial_ends_at = models.DateTimeField(null=True, blank=True)
 
+    # Platform Admin overrides (plan changes with reason, etc.)
+    platform_ops = models.JSONField(default=dict, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

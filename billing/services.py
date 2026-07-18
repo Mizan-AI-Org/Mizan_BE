@@ -245,9 +245,16 @@ def _apply_local_stripe_update(
     for attr, key in (
         ("current_period_start", "current_period_start"),
         ("current_period_end", "current_period_end"),
-        ("trial_ends_at", "trial_end"),
     ):
         value = stripe_sub.get(key)
         if value:
             setattr(sub, attr, timezone.datetime.fromtimestamp(value, tz=timezone.utc))
+
+    # Paying ends the Starter signup trial — Growth/Enterprise never get a trial.
+    stripe_status = (stripe_sub.get("status") or sub.status or "").strip()
+    stripe_trial_end = stripe_sub.get("trial_end")
+    if stripe_status == "active" or not stripe_trial_end:
+        sub.trial_ends_at = None
+    elif stripe_trial_end:
+        sub.trial_ends_at = timezone.datetime.fromtimestamp(stripe_trial_end, tz=timezone.utc)
     sub.save()

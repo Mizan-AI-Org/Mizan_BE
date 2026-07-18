@@ -471,6 +471,13 @@ PLATFORM_OPS_EMAILS = [
     for e in config("PLATFORM_OPS_EMAILS", default="").split(",")
     if e.strip()
 ]
+# Comma-separated emails treated as platform superusers (privilege grants).
+# Example: PLATFORM_OPS_SUPERUSER_EMAILS=ops@heymizan.ai
+PLATFORM_OPS_SUPERUSER_EMAILS = [
+    e.strip().lower()
+    for e in config("PLATFORM_OPS_SUPERUSER_EMAILS", default="").split(",")
+    if e.strip()
+]
 # Optional: bootstrap password for PLATFORM_OPS_EMAILS accounts.
 # When set, missing users are created and the password is applied on startup
 # (so you can sign in at /admin with email + this password).

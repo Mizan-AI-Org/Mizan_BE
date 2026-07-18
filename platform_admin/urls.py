@@ -2,6 +2,7 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    path("auth/login/", views.platform_ops_login, name="platform_ops_login"),
     path("me/", views.platform_me, name="platform_me"),
     path("overview/", views.platform_overview, name="platform_overview"),
     path("tenants/", views.platform_tenants, name="platform_tenants"),
@@ -15,6 +16,11 @@ urlpatterns = [
         name="platform_user_reset_password",
     ),
     path("operators/", views.platform_operators, name="platform_operators"),
+    path(
+        "operators/<uuid:user_id>/",
+        views.platform_operator_detail,
+        name="platform_operator_detail",
+    ),
     path("billing/plans/", views.platform_billing_plans, name="platform_billing_plans"),
     path(
         "billing/subscriptions/",

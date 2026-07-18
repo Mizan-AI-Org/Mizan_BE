@@ -16,6 +16,32 @@ def email_is_platform_ops(email: str | None) -> bool:
     return email.strip().lower() in platform_ops_emails()
 
 
+PLATFORM_OPS_USE_ADMIN_LOGIN = {
+    "error": (
+        "Platform operator accounts sign in at /admin only. "
+        "This page is for restaurant staff and managers."
+    ),
+    "code": "platform_ops_use_admin_login",
+}
+
+
+def user_is_platform_ops_account(user) -> bool:
+    """Account reserved for Platform Admin (/admin) — not tenant /auth.
+
+    True when the email is in ``PLATFORM_OPS_EMAILS`` /
+    ``PLATFORM_OPS_SUPERUSER_EMAILS``, or the DB flag
+    ``is_platform_operator`` is set. Used to split login surfaces.
+    """
+    if not user:
+        return False
+    email = (getattr(user, "email", None) or "").strip().lower()
+    if email and email in platform_ops_emails():
+        return True
+    if email and email in platform_ops_superuser_emails():
+        return True
+    return bool(getattr(user, "is_platform_operator", False))
+
+
 def user_is_platform_operator(user) -> bool:
     """True for explicit platform ops — never restaurant SUPER_ADMIN alone.
 
