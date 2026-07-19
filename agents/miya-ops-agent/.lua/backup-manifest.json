@@ -1,6 +1,6 @@
 {
-  "lastHash": "304cd0201dbc20f6923f76be4b0309a0ba180c368c4ba643db9576a9557a2966",
-  "lastPushedAt": "2026-07-17T15:59:53.470Z",
+  "lastHash": "3885cf168b24b8e2e7e72b25df32b8ec5c1c5575ee47b4a216b7a3ff6d3ab44f",
+  "lastPushedAt": "2026-07-19T18:47:43.815Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "d16760b9bc0e4c67"
+      "hash": "1f1b7abbc869de29"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "54a3f52016e8f22a"
+      "hash": "b7278222d8ae67ba"
     },
     {
       "relativePath": "src/postprocessors/ResponseFormatterPostProcessor.ts",
@@ -79,6 +79,10 @@
       "hash": "ba4ae8e6055367c3"
     },
     {
+      "relativePath": "src/preprocessors/ProcessDocumentPreprocessor.ts",
+      "hash": "77bcb5d72eb95aa2"
+    },
+    {
       "relativePath": "src/preprocessors/StaffRequestPreprocessor.ts",
       "hash": "2d7d74fd2b140cd1"
     },
@@ -88,7 +92,7 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "6582fc7b41c971d6"
+      "hash": "bcc1263ff9fff79b"
     },
     {
       "relativePath": "src/shared/checklistIntent.ts",
@@ -124,7 +128,7 @@
     },
     {
       "relativePath": "src/skills/operations.skill.ts",
-      "hash": "ec47611d649edd63"
+      "hash": "c202e0365d9f4393"
     },
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
@@ -149,6 +153,10 @@
     {
       "relativePath": "src/skills/tools/ChecklistStarterTool.ts",
       "hash": "e10c830a4223607f"
+    },
+    {
+      "relativePath": "src/skills/tools/DocumentRouterTool.ts",
+      "hash": "81411ff8fe976ebd"
     },
     {
       "relativePath": "src/skills/tools/LaborReportExportTool.ts",

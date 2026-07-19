@@ -1,6 +1,6 @@
 {
-  "lastHash": "fdb9a3169183151bc9188cd1f0d8ae5850fbb5ad788a65cea0be0e9d12f443b8",
-  "lastPushedAt": "2026-07-17T16:00:41.553Z",
+  "lastHash": "72689628e717c2e48a9782b0ad4610a1526699d6913d57b3c1c9f1a1453741e0",
+  "lastPushedAt": "2026-07-19T18:48:28.168Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "7b368ffb37ba2fd0"
+      "hash": "1daa7dc6af460fdc"
     },
     {
       "relativePath": "package.json",
