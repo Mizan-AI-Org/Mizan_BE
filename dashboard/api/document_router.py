@@ -38,6 +38,11 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 
 from scheduling.document_router_service import parse_document
+from scheduling.process_template_import_service import (
+    bulk_create_task_templates,
+    looks_like_process_import,
+    parse_process_templates_from_bytes,
+)
 
 from .photo_router import _action_envelope, _try_create_invoice
 
@@ -104,6 +109,19 @@ def agent_parse_document(request):
 
     note = str(request.data.get("note") or "").strip()
 
+    import_processes_raw = request.data.get("import_processes")
+    import_processes = False
+    if import_processes_raw is not None:
+        import_processes = str(import_processes_raw).strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+            "",
+        )
+    if not import_processes:
+        import_processes = looks_like_process_import(note, name)
+
     try:
         blob = doc_file.read()
     except Exception:
@@ -113,6 +131,72 @@ def agent_parse_document(request):
         )
 
     classification = parse_document(blob, content_type=content_type, name=name)
+
+    # Manager uploaded a Processes & Tasks document — import checklists directly.
+    if import_processes or classification.get("category") == "process_checklist":
+        parsed = parse_process_templates_from_bytes(
+            blob, content_type=content_type, name=name, note=note,
+        )
+        templates = parsed.get("templates") or []
+        if templates:
+            result = bulk_create_task_templates(
+                restaurant,
+                templates,
+                acting_user=_acting_user,
+                skip_duplicates=True,
+                source_note=note or f"Imported via parse_document from {name or 'document'}",
+            )
+            created = result.get("created") or []
+            skipped = result.get("skipped") or []
+            if created:
+                names = ", ".join(c["name"] for c in created[:5])
+                extra = f" (+{len(created) - 5} more)" if len(created) > 5 else ""
+                msg = (
+                    f"Imported {len(created)} process(es) to Processes & Tasks → Templates: "
+                    f"{names}{extra}."
+                )
+                if skipped:
+                    msg += f" Skipped {len(skipped)} duplicate name(s)."
+                action_envelope = _action_envelope(
+                    type_="process_templates_imported",
+                    record_id=created[0]["id"] if len(created) == 1 else None,
+                    message=msg,
+                    extra={
+                        "created_count": len(created),
+                        "skipped_count": len(skipped),
+                        "created_templates": created,
+                    },
+                )
+                return Response(
+                    {
+                        "success": True,
+                        "classification": classification,
+                        "action_taken": action_envelope,
+                        "message_for_user": msg,
+                        "import_result": result,
+                    },
+                    status=status.HTTP_201_CREATED,
+                )
+            if skipped:
+                return Response(
+                    {
+                        "success": True,
+                        "classification": classification,
+                        "action_taken": _action_envelope(
+                            type_="process_templates_skipped",
+                            record_id=None,
+                            message=(
+                                "Those process names already exist under Processes & Tasks → Templates. "
+                                "Open Templates to review or rename the file sections and re-import."
+                            ),
+                        ),
+                        "message_for_user": (
+                            "All process names in that file already exist — nothing new was created."
+                        ),
+                        "import_result": result,
+                    },
+                    status=status.HTTP_200_OK,
+                )
 
     # Hard-error paths — bubble up to Miya so she asks the user for fields
     # rather than fabricating them.

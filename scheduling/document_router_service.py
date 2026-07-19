@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 _VALID_CATEGORIES = {
     "invoice_or_receipt",
     "schedule",
+    "process_checklist",
     "id_or_certification",
     "policy_or_handbook",
     "contract",
@@ -49,6 +50,7 @@ _VALID_CATEGORIES = {
 _VALID_ACTIONS = {
     "log_invoice",
     "import_schedule",
+    "import_process_templates",
     "upload_document",
     "ask_manager",
 }
@@ -65,6 +67,8 @@ Pick exactly one category from this list:
                               manager owes (NOT a guest receipt the
                               customer paid)
   - "schedule"            — staff rota / weekly schedule
+  - "process_checklist"   — SOP / opening-closing checklist / numbered or bulleted
+                              task steps for staff (Processes & Tasks)
   - "id_or_certification" — staff ID, food handler card, license,
                               certification, training certificate
   - "policy_or_handbook"  — HR policy, employee handbook, SOP
@@ -76,7 +80,7 @@ Respond with a STRICT JSON object (no markdown, no commentary) of
 exactly this shape:
 
 {
-  "category": "invoice_or_receipt" | "schedule" | "id_or_certification" | "policy_or_handbook" | "contract" | "report" | "other",
+  "category": "invoice_or_receipt" | "schedule" | "process_checklist" | "id_or_certification" | "policy_or_handbook" | "contract" | "report" | "other",
   "confidence": 0.0 - 1.0,
   "summary": "one-sentence human description of the document, in English",
   "fields": {
@@ -91,7 +95,7 @@ exactly this shape:
     "expiry_date": "YYYY-MM-DD" | null,
     "title": string | null
   },
-  "suggested_action": "log_invoice" | "import_schedule" | "upload_document" | "ask_manager"
+  "suggested_action": "log_invoice" | "import_schedule" | "import_process_templates" | "upload_document" | "ask_manager"
 }
 
 If you are not at least 55% confident, set confidence < 0.55 and

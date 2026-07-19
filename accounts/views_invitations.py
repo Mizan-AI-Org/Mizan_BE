@@ -411,6 +411,14 @@ class InvitationViewSet(viewsets.ModelViewSet):
         )
         
         if user:
+            from platform_admin.lifecycle import user_tenant_access_denied_reason
+
+            denied = user_tenant_access_denied_reason(user)
+            if denied:
+                return Response(
+                    {"detail": denied, "code": "tenant_access_denied"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             refresh = RefreshToken.for_user(user)
             return Response({
                 'detail': 'Account created successfully',
@@ -425,6 +433,11 @@ class InvitationViewSet(viewsets.ModelViewSet):
             if error == 'already_accepted':
                 payload['code'] = 'already_accepted'
                 payload['detail'] = "You've already accepted this invitation. Please log in."
+            elif error and (
+                "suspended" in error.lower() or "deactivated" in error.lower()
+            ):
+                payload['code'] = 'tenant_access_denied'
+                return Response(payload, status=status.HTTP_403_FORBIDDEN)
             return Response(payload, status=status.HTTP_400_BAD_REQUEST)
 
     @action(detail=False, methods=['get'], permission_classes=[AllowAny], url_path='by-token')

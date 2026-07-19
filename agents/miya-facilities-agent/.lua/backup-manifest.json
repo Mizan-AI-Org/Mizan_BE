@@ -1,6 +1,6 @@
 {
-  "lastHash": "740a1a0f2366502063af3bee4bc46043026b156434c9dafa2f16c06984e75823",
-  "lastPushedAt": "2026-07-17T16:03:11.219Z",
+  "lastHash": "017de10de691ec878aacb3038ef42608ab93a8a681c14cc31c0004834ae1ed72",
+  "lastPushedAt": "2026-07-19T18:50:48.549Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "ae93910fa8d11a3e"
+      "hash": "180aeb734dfb9b13"
     },
     {
       "relativePath": "package.json",
@@ -24,7 +24,7 @@
     },
     {
       "relativePath": "src/index.ts",
-      "hash": "cd45c74cd97b9d6f"
+      "hash": "be37fd7fbf6ac3b4"
     },
     {
       "relativePath": "src/modules/incident-management.ts",
@@ -75,6 +75,10 @@
       "hash": "a6a6a6b851efecdf"
     },
     {
+      "relativePath": "src/preprocessors/ProcessDocumentPreprocessor.ts",
+      "hash": "77bcb5d72eb95aa2"
+    },
+    {
       "relativePath": "src/preprocessors/StaffRequestPreprocessor.ts",
       "hash": "2d7d74fd2b140cd1"
     },
@@ -84,7 +88,7 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "7dc4fd4a8fff03b2"
+      "hash": "576d3e55b18846a9"
     },
     {
       "relativePath": "src/shared/checklistIntent.ts",
@@ -144,7 +148,7 @@
     },
     {
       "relativePath": "src/skills/tools/DocumentRouterTool.ts",
-      "hash": "71d3bdc7d0b060a8"
+      "hash": "81411ff8fe976ebd"
     },
     {
       "relativePath": "src/skills/tools/IncidentReportTool.ts",

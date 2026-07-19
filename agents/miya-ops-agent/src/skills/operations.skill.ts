@@ -18,6 +18,7 @@ import {
   CheckinMessageTool,
   OrderStationTool,
 } from "./tools/OpsMemoryTools";
+import { ParseDocumentTool } from "./tools/DocumentRouterTool";
 import ApiService from "../services/ApiService";
 
 const apiService = new ApiService();
@@ -49,6 +50,7 @@ export const operationsSkill = new LuaSkill({
     new StandaloneTasksTool(),
     new AttendanceTool(),
     new ScheduleImportTool(),
+    new ParseDocumentTool(apiService),
     new ScheduleOptimizerTool(),
     new OptimalStaffingTool(),
     new LaborReportExportTool(),

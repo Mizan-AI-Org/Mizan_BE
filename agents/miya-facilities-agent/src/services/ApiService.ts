@@ -2608,6 +2608,7 @@ export default class ApiService {
         fileName?: string;
         note?: string;
         autoCreate?: boolean;
+        importProcesses?: boolean;
     }) {
         const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
         if (!agentKey) throw new Error("No agent key configured");
@@ -2654,6 +2655,7 @@ export default class ApiService {
             form.append("restaurant_id", restaurantId);
             if (payload.note) form.append("note", payload.note);
             if (payload.autoCreate === false) form.append("auto_create", "false");
+            if (payload.importProcesses) form.append("import_processes", "true");
 
             const response = await this.axiosInstance.post(
                 "/api/dashboard/agent/parse-document/",
@@ -2670,6 +2672,80 @@ export default class ApiService {
             return response.data;
         } catch (error: any) {
             console.error("[ApiService] parseDocument failed:", error.message);
+            return { success: false, error: error?.response?.data?.error || error.message };
+        }
+    }
+
+    async importProcessTemplatesForAgent(
+        restaurantId: string,
+        payload: {
+            documentUrl?: string;
+            documentBase64?: string;
+            contentType?: string;
+            fileName?: string;
+            note?: string;
+            skipDuplicates?: boolean;
+        },
+    ) {
+        const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
+        if (!agentKey) throw new Error("No agent key configured");
+        try {
+            let docBytes: Buffer | null = null;
+            let contentType = payload.contentType || "application/octet-stream";
+            let fileName = payload.fileName || "document";
+
+            if (payload.documentUrl) {
+                const resp = await this.axiosInstance.get(payload.documentUrl, {
+                    responseType: "arraybuffer",
+                    timeout: 30000,
+                    headers: {},
+                    transformRequest: [(d: any) => d],
+                });
+                const raw = resp.data;
+                if (raw == null) {
+                    return { success: false, error: "Document download returned an empty response" };
+                }
+                docBytes = Buffer.from(raw as ArrayBuffer);
+                contentType = resp.headers?.["content-type"] || contentType;
+                if (!payload.fileName) {
+                    try {
+                        const u = new URL(payload.documentUrl);
+                        const last = u.pathname.split("/").filter(Boolean).pop();
+                        if (last) fileName = decodeURIComponent(last);
+                    } catch { /* ignore */ }
+                }
+            } else if (payload.documentBase64) {
+                const b64 = String(payload.documentBase64).trim();
+                if (!b64) {
+                    return { success: false, error: "No document provided to import_process_templates" };
+                }
+                docBytes = Buffer.from(b64, "base64");
+            }
+
+            if (!docBytes) {
+                return { success: false, error: "No document provided to import_process_templates" };
+            }
+
+            const form = new FormData();
+            const blob = new Blob([docBytes], { type: contentType });
+            form.append("document", blob, fileName);
+            form.append("restaurant_id", restaurantId);
+            if (payload.note) form.append("note", payload.note);
+            if (payload.skipDuplicates === false) form.append("skip_duplicates", "false");
+
+            const response = await this.axiosInstance.post(
+                "/api/scheduling/agent/import-process-templates/",
+                form,
+                {
+                    headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId),
+                    maxContentLength: Infinity,
+                    maxBodyLength: Infinity,
+                    validateStatus: () => true,
+                },
+            );
+            return response.data;
+        } catch (error: any) {
+            console.error("[ApiService] importProcessTemplatesForAgent failed:", error.message);
             return { success: false, error: error?.response?.data?.error || error.message };
         }
     }
