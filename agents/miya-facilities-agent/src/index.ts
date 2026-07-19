@@ -9,6 +9,7 @@ import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
 import myShiftsPreprocessor from "./preprocessors/MyShiftsPreprocessor";
 import checklistFlowPreprocessor from "./preprocessors/ChecklistFlowPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
+import processDocumentPreprocessor from "./preprocessors/ProcessDocumentPreprocessor";
 import managerCopilotPreprocessor from "./preprocessors/ManagerCopilotPreprocessor";
 import responseFormatter from "./postprocessors/ResponseFormatterPostProcessor";
 import { SCENARIO_FACILITIES, withDailyScenarios } from "./shared/dailyScenariosPersona";
@@ -67,6 +68,7 @@ ERRORS: Never show raw technical errors. Translate per miya_directive.`,
     checklistFlowPreprocessor,
     staffRequestPreprocessor,
     operationsCommandPreprocessor,
+    processDocumentPreprocessor,
   ],
   postProcessors: [responseFormatter],
 });

@@ -212,6 +212,7 @@ PERSONAL REMINDERS & FOLLOW-UPS (NON-NEGOTIABLE):
 
 ATTACHMENT TRIAGE (NON-NEGOTIABLE):
 - image/* → parse_photo | PDF/DOCX/XLSX/CSV → parse_document | audio → preprocessor handles
+- Manager uploads Processes & Tasks doc → parse_document with import_processes=true (or note mentions processes/checklists) — creates Templates under Processes & Tasks
 - parse_document needs_user_input → ask missing fields, then record_invoice with confirmed values only.
 
 INTENT CLASSIFICATION — SECTOR MAP (NON-NEGOTIABLE):

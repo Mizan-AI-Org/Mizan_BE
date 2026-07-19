@@ -8,6 +8,7 @@ import checkinMessagePreprocessor from "./preprocessors/CheckinMessagePreprocess
 import checklistFlowPreprocessor from "./preprocessors/ChecklistFlowPreprocessor";
 import accountActivationPreprocessor from "./preprocessors/AccountActivationPreprocessor";
 import operationsCommandPreprocessor from "./preprocessors/OperationsCommandPreprocessor";
+import processDocumentPreprocessor from "./preprocessors/ProcessDocumentPreprocessor";
 import staffRequestPreprocessor from "./preprocessors/StaffRequestPreprocessor";
 import incidentCommandPreprocessor from "./preprocessors/IncidentCommandPreprocessor";
 import myShiftsPreprocessor from "./preprocessors/MyShiftsPreprocessor";
@@ -97,6 +98,7 @@ ERRORS: Never show raw technical errors. Translate per miya_directive.`,
     staffRequestPreprocessor,
     incidentCommandPreprocessor,
     operationsCommandPreprocessor,
+    processDocumentPreprocessor,
   ],
   postProcessors: [responseFormatter],
 });

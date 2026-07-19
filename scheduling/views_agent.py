@@ -3,7 +3,8 @@ Agent-specific views for scheduling operations.
 These endpoints use LUA_WEBHOOK_API_KEY authentication instead of JWT.
 """
 from django.views.decorators.csrf import csrf_exempt
-from rest_framework.decorators import api_view, permission_classes, authentication_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes, parser_classes
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework import status, permissions
 from django.conf import settings
@@ -650,6 +651,158 @@ def agent_create_task_template(request):
         logger.exception("Agent create task template error")
         err = str(e).strip()[:200] if e else "Unable to create task template"
         return Response({'error': err}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+@parser_classes([MultiPartParser, FormParser])
+def agent_import_process_templates(request):
+    """
+    Import Processes & Tasks (TaskTemplate) from an uploaded document.
+    Used by Miya when a manager attaches CSV/PDF/DOCX/XLSX and wants checklists recreated.
+
+    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
+    Multipart: document (file), optional note, optional skip_duplicates (default true).
+    """
+    from scheduling.process_template_import_service import (
+        bulk_create_task_templates,
+        parse_process_templates_from_bytes,
+    )
+
+    try:
+        restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response({'success': False, 'error': err['error']}, status=err['status'])
+
+        doc_file = (
+            request.FILES.get('document')
+            or request.FILES.get('file')
+            or request.FILES.get('attachment')
+        )
+        if not doc_file:
+            return Response(
+                {
+                    'success': False,
+                    'error': 'Missing document',
+                    'message_for_user': (
+                        'Attach your Processes & Tasks file (CSV, PDF, Excel, Word, or JSON) '
+                        'and I will import the checklists.'
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        content_type = (getattr(doc_file, 'content_type', '') or '').lower()
+        name = getattr(doc_file, 'name', '') or ''
+        if content_type.startswith('image/'):
+            return Response(
+                {
+                    'success': False,
+                    'code': 'USE_PARSE_PHOTO',
+                    'error': 'Use parse_photo for image attachments.',
+                },
+                status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            )
+
+        note = str(request.data.get('note') or '').strip()
+        skip_dup_raw = request.data.get('skip_duplicates')
+        skip_duplicates = True
+        if skip_dup_raw is not None:
+            skip_duplicates = str(skip_dup_raw).strip().lower() not in ('0', 'false', 'no', 'off')
+
+        try:
+            blob = doc_file.read()
+        except Exception:
+            return Response(
+                {'success': False, 'error': 'Could not read uploaded file'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        parsed = parse_process_templates_from_bytes(
+            blob, content_type=content_type, name=name, note=note,
+        )
+        if parsed.get('errors') == ['unsupported_document_type']:
+            return Response(
+                {
+                    'success': False,
+                    'code': 'UNSUPPORTED_DOCUMENT_TYPE',
+                    'message_for_user': "I can't read that file format. Try CSV, Excel, PDF, Word, or JSON.",
+                },
+                status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            )
+        if parsed.get('errors') == ['empty_extraction']:
+            return Response(
+                {
+                    'success': False,
+                    'code': 'EMPTY_DOCUMENT',
+                    'message_for_user': (
+                        "I couldn't extract any text from that file (it may be a scan). "
+                        "Try CSV/Excel, or paste the checklist as text."
+                    ),
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        templates = parsed.get('templates') or []
+        if not templates:
+            return Response(
+                {
+                    'success': False,
+                    'code': 'NO_TEMPLATES_PARSED',
+                    'message_for_user': (
+                        "I read the file but couldn't find process/checklist steps. "
+                        "Make sure it lists process names and task steps (bullets or a task column)."
+                    ),
+                    'parse_preview': parsed,
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        result = bulk_create_task_templates(
+            restaurant,
+            templates,
+            acting_user=acting_user,
+            skip_duplicates=skip_duplicates,
+            source_note=note or f"Imported from {name or 'document'}",
+        )
+        created = result.get('created') or []
+        skipped = result.get('skipped') or []
+
+        if not created and skipped:
+            msg = (
+                f"All {len(skipped)} process(es) already exist under the same names — nothing new was created. "
+                "Open Processes & Tasks → Templates to review them."
+            )
+        elif created:
+            names = ", ".join(c['name'] for c in created[:5])
+            extra = f" (+{len(created) - 5} more)" if len(created) > 5 else ""
+            msg = (
+                f"Imported {len(created)} process(es) to Processes & Tasks → Templates: {names}{extra}."
+            )
+            if skipped:
+                msg += f" Skipped {len(skipped)} duplicate name(s)."
+        else:
+            msg = "No processes were imported."
+
+        return Response(
+            {
+                'success': bool(created),
+                'created': created,
+                'skipped': skipped,
+                'errors': result.get('errors') or [],
+                'message_for_user': msg,
+                'parse_preview': {
+                    'extracted_kind': parsed.get('extracted_kind'),
+                    'template_count': len(templates),
+                },
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+    except Exception as e:
+        logger.exception("Agent import process templates error")
+        err = str(e).strip()[:200] if e else "Unable to import process templates"
+        return Response({'success': False, 'error': err}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])
