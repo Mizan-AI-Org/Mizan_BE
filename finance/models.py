@@ -11,21 +11,29 @@ Design notes:
   try to be a full accounting system — no GL, no journal entries, no
   multi-line invoices for now. The unit of work is "this bill, due on
   this date, paid or not paid".
-- Status transitions are intentionally simple: DRAFT → OPEN → PAID
-  (or VOIDED). OVERDUE is computed on the fly from ``due_date < today``
-  and ``status == 'OPEN'`` so the widget can highlight late bills
-  without needing a beat task to flip them.
-- ``photo`` lets WhatsApp users send a phone snap of the invoice and
-  Miya store the URL on the row — useful audit trail.
-- Indexed for the two read paths the widget cares about:
-    1. "open invoices for tenant ordered by due_date"
-    2. "did we already record vendor X invoice Y" (dedupe)
+- Status lifecycle (richer than the original DRAFT/OPEN/PAID/VOIDED):
+  DRAFT → SUBMITTED → UNDER_REVIEW → PENDING_APPROVAL → APPROVED →
+  PAYMENT_IN_PROGRESS → PAID (or REJECTED / RETURNED / PAYMENT_FAILED /
+  VOIDED). Legacy ``OPEN`` remains valid and is treated as an unpaid
+  active bill. PayGuard still uses ``approval_status`` in parallel;
+  ``lifecycle_status`` merges both for agent/UI display.
+- ``proof_of_payment`` stores the receipt / transfer confirmation.
+- ``returned_reason`` explains RETURNED corrections.
+- OVERDUE is computed on the fly from ``due_date < today`` and an
+  unpaid-active status so the widget can highlight late bills without
+  needing a beat task to flip them.
 """
 from __future__ import annotations
 
 import uuid
 
 from django.db import models
+
+from core.storage_paths import (
+    invoice_photo_upload_path,
+    invoice_upload_path,
+    payment_proof_upload_path,
+)
 from django.utils import timezone
 
 from accounts.models import BusinessLocation, CustomUser, Restaurant
@@ -35,15 +43,45 @@ class Invoice(models.Model):
     """An accounts-payable invoice owed by the tenant."""
 
     STATUS_DRAFT = "DRAFT"
-    STATUS_OPEN = "OPEN"
+    STATUS_SUBMITTED = "SUBMITTED"
+    STATUS_UNDER_REVIEW = "UNDER_REVIEW"
+    STATUS_PENDING_APPROVAL = "PENDING_APPROVAL"
+    STATUS_APPROVED = "APPROVED"
+    STATUS_REJECTED = "REJECTED"
+    STATUS_RETURNED = "RETURNED"
+    STATUS_OPEN = "OPEN"  # legacy open-for-payment (treated like SUBMITTED/APPROVED)
+    STATUS_PAYMENT_IN_PROGRESS = "PAYMENT_IN_PROGRESS"
     STATUS_PAID = "PAID"
+    STATUS_PAYMENT_FAILED = "PAYMENT_FAILED"
     STATUS_VOIDED = "VOIDED"
 
     STATUS_CHOICES = (
         (STATUS_DRAFT, "Draft"),
+        (STATUS_SUBMITTED, "Submitted"),
+        (STATUS_UNDER_REVIEW, "Under review"),
+        (STATUS_PENDING_APPROVAL, "Pending approval"),
+        (STATUS_APPROVED, "Approved"),
+        (STATUS_REJECTED, "Rejected"),
+        (STATUS_RETURNED, "Returned"),
         (STATUS_OPEN, "Open"),
+        (STATUS_PAYMENT_IN_PROGRESS, "Payment in progress"),
         (STATUS_PAID, "Paid"),
+        (STATUS_PAYMENT_FAILED, "Payment failed"),
         (STATUS_VOIDED, "Voided"),
+    )
+
+    # Statuses that still represent an unpaid bill due on ``due_date``.
+    UNPAID_ACTIVE_STATUSES = frozenset(
+        {
+            STATUS_OPEN,
+            STATUS_SUBMITTED,
+            STATUS_UNDER_REVIEW,
+            STATUS_PENDING_APPROVAL,
+            STATUS_APPROVED,
+            STATUS_PAYMENT_IN_PROGRESS,
+            STATUS_PAYMENT_FAILED,
+            STATUS_RETURNED,
+        }
     )
 
     PAYMENT_METHOD_CHOICES = (
@@ -86,7 +124,7 @@ class Invoice(models.Model):
     due_date = models.DateField()
 
     status = models.CharField(
-        max_length=12,
+        max_length=24,
         choices=STATUS_CHOICES,
         default=STATUS_OPEN,
     )
@@ -96,15 +134,20 @@ class Invoice(models.Model):
     # of the actual buckets matters more than locking it down.
     category = models.CharField(max_length=50, blank=True, default="")
     notes = models.TextField(blank=True, default="")
+    returned_reason = models.TextField(
+        blank=True,
+        default="",
+        help_text="Why the invoice was returned for correction.",
+    )
 
     photo = models.ImageField(
-        upload_to="invoices/",
+        upload_to=invoice_photo_upload_path,
         null=True,
         blank=True,
         help_text="Snapshot of the printed/PDF invoice.",
     )
     attachment = models.FileField(
-        upload_to="invoices/",
+        upload_to=invoice_upload_path,
         null=True,
         blank=True,
         help_text="Original invoice scan (image or PDF) from WhatsApp / upload.",
@@ -116,6 +159,12 @@ class Invoice(models.Model):
         blank=True,
         default="",
         help_text="External URL when the photo is hosted off-platform (e.g. WhatsApp media).",
+    )
+    proof_of_payment = models.FileField(
+        upload_to=payment_proof_upload_path,
+        null=True,
+        blank=True,
+        help_text="Receipt / transfer confirmation attached after payment.",
     )
 
     paid_at = models.DateTimeField(null=True, blank=True)
@@ -234,10 +283,41 @@ class Invoice(models.Model):
         return f"{self.vendor_name} {self.invoice_number or ''} — {self.amount} {self.currency}".strip()
 
     @property
+    def lifecycle_status(self) -> str:
+        """
+        Unified lifecycle view combining ``status`` and PayGuard ``approval_status``.
+
+        Prefer the row's explicit ``status`` when it is already a rich lifecycle
+        value; otherwise map legacy OPEN + approval_status into the richer set.
+        """
+        if self.status in {
+            self.STATUS_DRAFT,
+            self.STATUS_SUBMITTED,
+            self.STATUS_UNDER_REVIEW,
+            self.STATUS_APPROVED,
+            self.STATUS_REJECTED,
+            self.STATUS_RETURNED,
+            self.STATUS_PAYMENT_IN_PROGRESS,
+            self.STATUS_PAID,
+            self.STATUS_PAYMENT_FAILED,
+            self.STATUS_VOIDED,
+            self.STATUS_PENDING_APPROVAL,
+        }:
+            return self.status
+        # Legacy OPEN (+ approval overlay)
+        if self.approval_status == self.APPROVAL_PENDING:
+            return self.STATUS_PENDING_APPROVAL
+        if self.approval_status == self.APPROVAL_REJECTED:
+            return self.STATUS_REJECTED
+        if self.approval_status == self.APPROVAL_APPROVED:
+            return self.STATUS_APPROVED
+        return self.STATUS_OPEN
+
+    @property
     def is_overdue(self) -> bool:
         """Computed at read time so we don't need a beat task to flip
         the status (and so VOIDED/PAID rows never look overdue)."""
-        if self.status != self.STATUS_OPEN or not self.due_date:
+        if self.status not in self.UNPAID_ACTIVE_STATUSES or not self.due_date:
             return False
         return self.due_date < timezone.now().date()
 
@@ -247,6 +327,21 @@ class Invoice(models.Model):
         if not self.due_date:
             return None
         return (self.due_date - timezone.now().date()).days
+
+    def mark_payment_in_progress(self) -> None:
+        """Flip to PAYMENT_IN_PROGRESS when a transfer/cheque is initiated."""
+        if self.status == self.STATUS_PAID:
+            return
+        self.status = self.STATUS_PAYMENT_IN_PROGRESS
+        self.save(update_fields=["status", "updated_at"])
+
+    def mark_payment_failed(self, *, note: str = "") -> None:
+        self.status = self.STATUS_PAYMENT_FAILED
+        update_fields = ["status", "updated_at"]
+        if note:
+            self.bank_payment_note = note[:255]
+            update_fields.append("bank_payment_note")
+        self.save(update_fields=update_fields)
 
     def mark_paid(
         self,

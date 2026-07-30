@@ -1,5 +1,8 @@
 """
 WhatsApp notification to the assignee when a safety incident is assigned to them.
+
+Fans out to additional category owners as "informed" when multiple owners
+are configured via ``resolve_all_assignees_for_incident_type``.
 """
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _build_assignee_message(ticket: "SafetyConcernReport") -> str:
+def _build_assignee_message(ticket: "SafetyConcernReport", *, informed: bool = False) -> str:
     restaurant_name = (
         ticket.restaurant.name if getattr(ticket, "restaurant", None) else "Restaurant"
     )
@@ -36,14 +39,31 @@ def _build_assignee_message(ticket: "SafetyConcernReport") -> str:
     front = getattr(settings, "FRONTEND_URL", "") or ""
     dash = f"{front.rstrip('/')}/dashboard/analytics?tab=incidents" if front else ""
 
+    primary = getattr(ticket, "assigned_to", None)
+    primary_name = ""
+    if primary:
+        primary_name = (
+            f"{primary.first_name or ''} {primary.last_name or ''}".strip()
+            or (primary.email or "")
+        )
+
+    if informed:
+        headline = "ℹ️ *Miya — incident FYI (category owner)*"
+        assign_line = f"*Assigned to:* {primary_name or 'a teammate'}"
+    else:
+        headline = "🔔 *Miya — new incident assigned to you*"
+        assign_line = ""
+
     lines = [
-        "🔔 *Miya — new incident assigned to you*",
+        headline,
         "",
         f"*Restaurant:* {restaurant_name}",
         f"*Category:* {itype}",
         f"*Severity:* {sev}",
         f"*Title:* {title}",
     ]
+    if assign_line:
+        lines.append(assign_line)
     if reporter_bits:
         lines.extend(["", *reporter_bits])
     lines.extend(["", "*Description:*", desc or "—", ""])
@@ -53,23 +73,14 @@ def _build_assignee_message(ticket: "SafetyConcernReport") -> str:
     return "\n".join(lines)
 
 
-def notify_assignee_whatsapp_for_incident(ticket: "SafetyConcernReport") -> None:
-    """
-    Send WhatsApp to ticket.assigned_to. No-op if no phone, WhatsApp not configured, or assignee is reporter.
-    """
-    assignee = getattr(ticket, "assigned_to", None)
-    if not assignee:
-        return
-    if ticket.reporter_id and assignee.id == ticket.reporter_id:
-        return
-
-    phone = getattr(assignee, "phone", None) or ""
+def _send_whatsapp(user, body: str) -> bool:
+    phone = getattr(user, "phone", None) or ""
     if not str(phone).strip():
         logger.info(
-            "incident_assignee_notify: no phone for assignee %s, skip WhatsApp",
-            assignee.id,
+            "incident_assignee_notify: no phone for user %s, skip WhatsApp",
+            getattr(user, "id", None),
         )
-        return
+        return False
 
     try:
         from notifications.services import notification_service, normalize_whatsapp_phone
@@ -77,28 +88,70 @@ def notify_assignee_whatsapp_for_incident(ticket: "SafetyConcernReport") -> None
         digits, phone_err = normalize_whatsapp_phone(phone)
         if phone_err:
             logger.warning(
-                "incident_assignee_notify: bad phone for assignee %s: %s",
-                assignee.id,
+                "incident_assignee_notify: bad phone for user %s: %s",
+                getattr(user, "id", None),
                 phone_err,
             )
-            return
+            return False
 
         token = getattr(settings, "WHATSAPP_ACCESS_TOKEN", None)
         phone_id = getattr(settings, "WHATSAPP_PHONE_NUMBER_ID", None)
         if not token or not phone_id:
             logger.info("incident_assignee_notify: WhatsApp not configured, skip")
-            return
+            return False
 
-        body = _build_assignee_message(ticket)
         ok, meta = notification_service.send_whatsapp_text(digits, body)
         if not ok:
             logger.warning(
                 "incident_assignee_notify: WhatsApp send failed for %s: %s",
-                assignee.id,
+                getattr(user, "id", None),
                 meta,
             )
+        return bool(ok)
     except Exception:
-        logger.exception("incident_assignee_notify: failed for ticket %s", ticket.pk)
+        logger.exception(
+            "incident_assignee_notify: failed for user %s",
+            getattr(user, "id", None),
+        )
+        return False
+
+
+def notify_assignee_whatsapp_for_incident(ticket: "SafetyConcernReport") -> None:
+    """
+    Send WhatsApp to ticket.assigned_to, plus any other category owners as informed.
+    No-op when WhatsApp is not configured.
+    """
+    assignee = getattr(ticket, "assigned_to", None)
+    restaurant = getattr(ticket, "restaurant", None)
+
+    notify_users: list = []
+    seen: set[str] = set()
+    if assignee:
+        if not (ticket.reporter_id and assignee.id == ticket.reporter_id):
+            notify_users.append(assignee)
+            seen.add(str(assignee.id))
+
+    if restaurant is not None:
+        try:
+            from staff.incident_routing import resolve_all_assignees_for_incident_type
+
+            for owner in resolve_all_assignees_for_incident_type(
+                restaurant, ticket.incident_type
+            ):
+                oid = str(owner.id)
+                if oid in seen:
+                    continue
+                if ticket.reporter_id and owner.id == ticket.reporter_id:
+                    continue
+                seen.add(oid)
+                notify_users.append(owner)
+        except Exception:
+            logger.exception("incident_assignee_notify: resolve_all failed")
+
+    for user in notify_users:
+        is_primary = assignee is not None and str(user.id) == str(assignee.id)
+        body = _build_assignee_message(ticket, informed=not is_primary)
+        _send_whatsapp(user, body)
 
 
 def schedule_notify_assignee_whatsapp_for_incident(ticket_pk) -> None:

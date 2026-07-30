@@ -2,6 +2,7 @@ from django.db import models
 from django.utils import timezone
 import uuid
 from accounts.models import CustomUser, Restaurant
+from core.storage_paths import incident_photo_upload_path
 from .models import Schedule
 
 class StandardOperatingProcedure(models.Model):
@@ -116,7 +117,7 @@ class SafetyConcernReport(models.Model):
         ('RESOLVED', 'Resolved'),
         ('DISMISSED', 'Dismissed'),
     ], default='OPEN')
-    photo = models.ImageField(upload_to='safety_concerns/', null=True, blank=True)
+    photo = models.ImageField(upload_to=incident_photo_upload_path, null=True, blank=True)
     audio_evidence = models.JSONField(default=list, blank=True)  # URLs to uploaded audio files (e.g., WhatsApp media URL)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

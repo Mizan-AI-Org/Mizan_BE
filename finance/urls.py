@@ -3,12 +3,14 @@ from rest_framework.routers import DefaultRouter
 
 from .views import InvoiceViewSet
 from .views_agent import (
+    agent_attach_invoice_proof,
     agent_confirm_invoice_po_match,
     agent_list_invoices,
     agent_mark_invoice_paid,
     agent_match_invoice_po,
     agent_payment_approval,
     agent_record_invoice,
+    agent_return_invoice,
     agent_update_invoice_bank_payment_status,
 )
 from .views_payment_approval import (
@@ -52,6 +54,16 @@ urlpatterns = [
         "agent/invoices/mark-paid/",
         agent_mark_invoice_paid,
         name="finance-agent-invoice-mark-paid",
+    ),
+    path(
+        "agent/invoices/proof-of-payment/",
+        agent_attach_invoice_proof,
+        name="finance-agent-invoice-proof",
+    ),
+    path(
+        "agent/invoices/return/",
+        agent_return_invoice,
+        name="finance-agent-invoice-return",
     ),
     path(
         "agent/invoices/list/",

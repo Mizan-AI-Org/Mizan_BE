@@ -19,6 +19,8 @@ export type OperationsExecuteResult = {
     task_ref?: string;
     record_id?: string;
     recordId?: string;
+    tasks?: unknown[];
+    count?: number;
 };
 
 async function ensureWidget(
@@ -533,13 +535,21 @@ export async function executeOperationsIntent(
         }
 
         case "calendar_appointment": {
-            const data = await A.createCalendarEvent(restaurantId, {
-                title: intent.title,
-                start: intent.start,
-                end: intent.end,
-                location: intent.location,
-                is_reminder: false,
-            });
+            const batch = intent.events?.length
+                ? intent.events
+                : undefined;
+            const data = await A.createCalendarEvent(
+                restaurantId,
+                batch
+                    ? { events: batch }
+                    : {
+                          title: intent.title,
+                          start: intent.start,
+                          end: intent.end,
+                          location: intent.location,
+                          is_reminder: false,
+                      },
+            );
 
             if (data?.success === false && data?.error === "calendar_not_connected") {
                 const fallback = await A.createDashboardTaskForAgent(restaurantId, {
@@ -553,7 +563,7 @@ export async function executeOperationsIntent(
                         .join("\n"),
                     category: "MEETING",
                     assign_to_self: true,
-                    due_date: intent.start.slice(0, 10),
+                    due_date: (intent.start || "").slice(0, 10),
                     sender_phone: ctx.phone,
                 });
                 if (!fallback.success) {
@@ -570,7 +580,7 @@ export async function executeOperationsIntent(
                     status: "success",
                     message:
                         fallback.message_for_user ||
-                        `✓ Added "${intent.title}" to your agenda (${intent.start.slice(0, 16).replace("T", " ")}).`,
+                        `✓ Added "${intent.title}" to your agenda.`,
                     task_ref: fallback.task_ref,
                     record_id: fallback.record_id || fallback.task?.id,
                 };
@@ -585,8 +595,108 @@ export async function executeOperationsIntent(
             await ensureWidget(api, "meetings", restaurantId, ctx);
             return {
                 status: "success",
-                message: data.message_for_user || `✓ Added "${intent.title}" to your calendar.`,
+                message:
+                    data.message_for_user ||
+                    (data.created_count
+                        ? `✓ Added ${data.created_count} meetings to your calendar.`
+                        : `✓ Added "${intent.title}" to your calendar.`),
                 record_id: data.event_id,
+            };
+        }
+
+        case "update_task_status": {
+            const result = await A.updateDashboardTaskStatusForAgent(restaurantId, {
+                task_id: intent.taskId,
+                status: intent.status,
+                user_id: ctx.userId,
+                email: ctx.email,
+                phone: ctx.phone,
+            });
+            if (!result.success) {
+                return {
+                    status: "error",
+                    message: result.message_for_user || result.error || "Couldn't update task status.",
+                };
+            }
+            return {
+                status: "success",
+                message: result.message_for_user || "Task status updated.",
+                task_ref: result.task_ref,
+                record_id: result.record_id || result.task?.id,
+            };
+        }
+
+        case "update_task": {
+            const result = await A.updateDashboardTaskForAgent(restaurantId, {
+                task_id: intent.taskId,
+                priority: intent.priority,
+                due_date: intent.dueDate,
+                title: intent.title,
+                user_id: ctx.userId,
+                email: ctx.email,
+                phone: ctx.phone,
+            });
+            if (!result.success) {
+                return {
+                    status: "error",
+                    message: result.message_for_user || result.error || "Couldn't update that task.",
+                };
+            }
+            return {
+                status: "success",
+                message: result.message_for_user || "Task updated.",
+                task_ref: result.task_ref,
+                record_id: result.record_id || result.task?.id,
+            };
+        }
+
+        case "list_overdue_tasks": {
+            const result = await A.listDashboardTasksForAgent(restaurantId, {
+                overdue: true,
+                limit: 20,
+                user_id: ctx.userId,
+                email: ctx.email,
+                phone: ctx.phone,
+            });
+            if (!result.success) {
+                return {
+                    status: "error",
+                    message: result.message_for_user || result.error || "Couldn't list overdue tasks.",
+                };
+            }
+            const lines = (result.tasks || []).slice(0, 15).map((t: any, i: number) => {
+                const due = t.due_date ? ` · due ${t.due_date}` : "";
+                return `${i + 1}. [${t.status}] ${t.title}${due}`;
+            });
+            return {
+                status: "success",
+                message:
+                    result.message_for_user ||
+                    (lines.length ? `Overdue tasks:\n${lines.join("\n")}` : "No overdue tasks."),
+                tasks: result.tasks,
+                count: result.count,
+            };
+        }
+
+        case "reassign_task": {
+            const result = await A.reassignDashboardTaskForAgent(restaurantId, {
+                task_id: intent.taskId,
+                user_id: intent.assigneeUserId,
+                email: intent.assigneeEmail,
+                phone: intent.assigneePhone,
+                name: intent.assigneeName,
+                notify_whatsapp: true,
+            });
+            if (!result.success) {
+                return {
+                    status: "error",
+                    message: result.message_for_user || result.error || "Couldn't reassign that task.",
+                };
+            }
+            return {
+                status: "success",
+                message: result.message_for_user || "Task reassigned.",
+                record_id: result.task?.id,
             };
         }
 

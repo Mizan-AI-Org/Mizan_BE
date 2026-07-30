@@ -72,7 +72,7 @@ from notifications.models import Notification
 
 from .models import StaffRequest, StaffRequestComment
 from .models_task import SafetyConcernReport
-from .request_routing import resolve_default_assignee_for_category
+from .request_routing import resolve_all_assignees_for_category
 from .intent_router import (
     DEST_INCIDENT,
     IntentDecision,
@@ -499,8 +499,10 @@ def agent_ingest_staff_request(request):
             is_active=True,
         ).first()
     auto_assigned = False
+    category_owners = resolve_all_assignees_for_category(restaurant, category)
     if not assignee and str(data.get('auto_assign', True)).lower() not in ('false', '0', 'no'):
-        assignee = resolve_default_assignee_for_category(restaurant, category)
+        # Primary FK = first owner; remaining owners are still notified below.
+        assignee = category_owners[0] if category_owners else None
         auto_assigned = assignee is not None
 
     # Stash the router's reasoning on the row so managers can see "this
@@ -582,7 +584,24 @@ def agent_ingest_staff_request(request):
     # no phone or the send failed.
     whatsapp_sent_to_assignee = False
     lane_label_early = widget_lane_label(primary_widget_for_category(category))
+    # Fan-out: primary assignee + every other category owner (informed).
+    notify_owners: list = []
+    seen_owner_ids: set = set()
     if assignee:
+        notify_owners.append(assignee)
+        seen_owner_ids.add(str(assignee.id))
+    for owner in category_owners:
+        oid = str(owner.id)
+        if oid not in seen_owner_ids:
+            seen_owner_ids.add(oid)
+            notify_owners.append(owner)
+
+    if notify_owners:
+        informed_names = [
+            (o.get_full_name() or o.email)
+            for o in notify_owners
+            if assignee is None or str(o.id) != str(assignee.id)
+        ]
         StaffRequestComment.objects.create(
             request=req,
             author=None,
@@ -590,41 +609,64 @@ def agent_ingest_staff_request(request):
             body=(
                 f"Auto-assigned to {assignee.get_full_name() or assignee.email} "
                 f"(category owner for {category.lower()})"
-                if auto_assigned
-                else f"Assigned to {assignee.get_full_name() or assignee.email}"
+                if auto_assigned and assignee
+                else (
+                    f"Assigned to {assignee.get_full_name() or assignee.email}"
+                    if assignee
+                    else "Category owners notified"
+                )
+            )
+            + (
+                f"; informed: {', '.join(informed_names)}"
+                if informed_names
+                else ""
             ),
             metadata={
-                'assignee_id': str(assignee.id),
-                'assignee_name': assignee.get_full_name() or assignee.email,
+                'assignee_id': str(assignee.id) if assignee else None,
+                'assignee_name': (
+                    (assignee.get_full_name() or assignee.email) if assignee else None
+                ),
+                'informed_ids': [
+                    str(o.id)
+                    for o in notify_owners
+                    if assignee is None or str(o.id) != str(assignee.id)
+                ],
                 'auto_assigned': auto_assigned,
                 'category': category,
             },
         )
-        # Best-effort WhatsApp ping to the owner so they know something
-        # landed in their lane. Silent on failure — not critical, but we
-        # do flip a flag the agent reads back so its reply doesn't fib.
-        owner_phone = getattr(assignee, 'phone', '') or ''
-        if owner_phone:
+        # Best-effort WhatsApp ping to every owner. Primary gets the
+        # assigned message; others get an "informed" variant.
+        for owner in notify_owners:
+            owner_phone = getattr(owner, 'phone', '') or ''
+            if not owner_phone:
+                continue
+            is_primary = assignee is not None and str(owner.id) == str(assignee.id)
+            ping_body = (
+                f"📩 New {category.lower()} request from "
+                f"{staff_name or 'a staff member'}: "
+                f"\"{subject[:80]}\". It's waiting under {lane_label_early} (Pending) in the inbox."
+                if is_primary
+                else (
+                    f"ℹ️ FYI — new {category.lower()} request from "
+                    f"{staff_name or 'a staff member'}: "
+                    f"\"{subject[:80]}\". Assigned to "
+                    f"{(assignee.get_full_name() or assignee.email) if assignee else 'a teammate'}; "
+                    f"you're listed as a category owner."
+                )
+            )
             try:
-                # ``send_whatsapp_text`` returns ``(ok: bool, info: dict)``
-                # — capture the boolean so the agent reply only claims a
-                # WhatsApp ping when one actually went out (HTTP 200 from
-                # Meta). Fail closed otherwise.
                 wa_ok, _wa_info = notification_service.send_whatsapp_text(
                     owner_phone,
-                    (
-                        f"📩 New {category.lower()} request from "
-                        f"{staff_name or 'a staff member'}: "
-                        f"\"{subject[:80]}\". It's waiting under {lane_label_early} (Pending) in the inbox."
-                    ),
+                    ping_body,
                 )
-                whatsapp_sent_to_assignee = bool(wa_ok)
                 if wa_ok:
-                    req.whatsapp_notified_at = timezone.now()
-                    req.save(update_fields=['whatsapp_notified_at', 'updated_at'])
+                    whatsapp_sent_to_assignee = True
             except Exception as exc:
-                logger.warning("StaffRequest assignee WhatsApp ping failed: %s", exc)
-                whatsapp_sent_to_assignee = False
+                logger.warning("StaffRequest owner WhatsApp ping failed: %s", exc)
+        if whatsapp_sent_to_assignee:
+            req.whatsapp_notified_at = timezone.now()
+            req.save(update_fields=['whatsapp_notified_at', 'updated_at'])
 
     else:
         # No category owner — WhatsApp managers directly (mirror whatsapp_request_ingest).

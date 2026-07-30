@@ -1,6 +1,6 @@
 {
-  "lastHash": "72689628e717c2e48a9782b0ad4610a1526699d6913d57b3c1c9f1a1453741e0",
-  "lastPushedAt": "2026-07-19T18:48:28.168Z",
+  "lastHash": "e2bd8052f7d42db2e3b4699a954c6f74a4a8d8d5e365c0819afb2de34fa5eb20",
+  "lastPushedAt": "2026-07-30T06:59:03.669Z",
   "files": [
     {
       "relativePath": "env.example",
@@ -8,7 +8,7 @@
     },
     {
       "relativePath": "lua.skill.yaml",
-      "hash": "1daa7dc6af460fdc"
+      "hash": "278701e9996d8813"
     },
     {
       "relativePath": "package.json",
@@ -84,7 +84,7 @@
     },
     {
       "relativePath": "src/services/ApiService.ts",
-      "hash": "9af5f676ddf3aa88"
+      "hash": "c656c002603fe8c8"
     },
     {
       "relativePath": "src/shared/checklistIntent.ts",
@@ -120,7 +120,7 @@
     },
     {
       "relativePath": "src/skills/finance.skill.ts",
-      "hash": "cd91f5cecfec2d32"
+      "hash": "c6f64ed0f96c4bbb"
     },
     {
       "relativePath": "src/skills/tools/_common/errors.ts",
@@ -144,7 +144,7 @@
     },
     {
       "relativePath": "src/skills/tools/InvoiceTools.ts",
-      "hash": "69aca847a506d4eb"
+      "hash": "e8b493fa97ff9794"
     },
     {
       "relativePath": "src/skills/tools/PaymentApprovalTool.ts",

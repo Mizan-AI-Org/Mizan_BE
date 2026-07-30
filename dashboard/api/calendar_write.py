@@ -10,7 +10,7 @@ Endpoints
 ---------
 - ``POST /api/dashboard/agent/calendar-events/create/``
     Body:
-        title         required
+        title         required (unless ``events`` batch is provided)
         start         required (RFC3339 / 'YYYY-MM-DDTHH:MM' / 'YYYY-MM-DD')
         end           optional (defaults to start + 1h, or all-day when start is date-only)
         description   optional
@@ -20,6 +20,8 @@ Endpoints
         timezone      optional IANA tz id (defaults to restaurant.timezone or UTC)
         is_reminder   optional bool — when true, treat as a personal reminder
                       (1h block by default, no attendees, transparent='transparent')
+        events / meetings / appointments  optional list of {title, start, end, …}
+                      for batch create (up to 20)
 
 If the tenant hasn't connected Google Calendar we return a 412
 PRECONDITION_FAILED with a ``connect_url`` so Miya can hand the manager
@@ -91,6 +93,9 @@ def _coerce_event_time(raw, fallback_tz: str) -> tuple[dict[str, Any] | None, bo
 def agent_create_calendar_event(request):
     """
     Create a Google Calendar event on the tenant's primary calendar.
+
+    Also accepts ``events`` / ``meetings`` as a list for batch create
+    (e.g. "schedule three meetings tomorrow").
     """
     from scheduling.views_agent import _resolve_restaurant_for_agent
 
@@ -100,16 +105,78 @@ def agent_create_calendar_event(request):
 
     data = request.data if isinstance(getattr(request, "data", None), dict) else {}
 
-    title = str(data.get("title") or data.get("summary") or "").strip()
-    if not title:
+    batch = data.get("events") or data.get("meetings") or data.get("appointments")
+    if isinstance(batch, list) and batch:
+        results = []
+        errors = []
+        for i, item in enumerate(batch[:20]):
+            if not isinstance(item, dict):
+                errors.append({"index": i, "error": "invalid_item"})
+                continue
+            merged = {**data, **item}
+            merged.pop("events", None)
+            merged.pop("meetings", None)
+            merged.pop("appointments", None)
+            one = _create_single_calendar_event(restaurant, merged)
+            if one.get("success"):
+                results.append(one)
+            else:
+                errors.append({"index": i, **{k: one.get(k) for k in ("error", "message_for_user")}})
+        if not results:
+            first_err = errors[0] if errors else {}
+            return Response(
+                {
+                    "success": False,
+                    "error": first_err.get("error") or "batch_failed",
+                    "message_for_user": first_err.get("message_for_user")
+                    or "Couldn't create those meetings.",
+                    "errors": errors,
+                },
+                status=status.HTTP_400_BAD_REQUEST
+                if first_err.get("error") != "calendar_not_connected"
+                else status.HTTP_412_PRECONDITION_FAILED,
+            )
+        titles = [r.get("calendar_event", {}).get("summary") or "meeting" for r in results]
         return Response(
             {
-                "success": False,
-                "error": "Missing title",
-                "message_for_user": "I need a title for the event.",
-            },
-            status=status.HTTP_400_BAD_REQUEST,
+                "success": True,
+                "created_count": len(results),
+                "events": results,
+                "errors": errors,
+                "event_id": results[0].get("event_id"),
+                "message_for_user": (
+                    f"📅 Created {len(results)} meeting"
+                    f"{'s' if len(results) != 1 else ''}: "
+                    + ", ".join(f'"{t}"' for t in titles[:5])
+                    + ("…" if len(titles) > 5 else "")
+                    + "."
+                ),
+            }
         )
+
+    one = _create_single_calendar_event(restaurant, data)
+    http_status = status.HTTP_200_OK
+    if not one.get("success"):
+        if one.get("error") == "calendar_not_connected":
+            http_status = status.HTTP_412_PRECONDITION_FAILED
+        elif one.get("error") in ("Missing title",) or str(one.get("error", "")).startswith(
+            "Invalid"
+        ):
+            http_status = status.HTTP_400_BAD_REQUEST
+        else:
+            http_status = status.HTTP_502_BAD_GATEWAY
+    return Response(one, status=http_status)
+
+
+def _create_single_calendar_event(restaurant, data: dict) -> dict[str, Any]:
+    """Shared create path for one event; returns a response body dict."""
+    title = str(data.get("title") or data.get("summary") or "").strip()
+    if not title:
+        return {
+            "success": False,
+            "error": "Missing title",
+            "message_for_user": "I need a title for the event.",
+        }
 
     raw_start = data.get("start") or data.get("start_at") or data.get("startTime")
     raw_end = data.get("end") or data.get("end_at") or data.get("endTime")
@@ -121,26 +188,20 @@ def agent_create_calendar_event(request):
 
     start_obj, is_all_day, time_err = _coerce_event_time(raw_start, fallback_tz)
     if time_err:
-        return Response(
-            {
-                "success": False,
-                "error": f"Invalid start time: {time_err}",
-                "message_for_user": "I couldn't read the start time. Try '2026-05-15 14:30'.",
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+        return {
+            "success": False,
+            "error": f"Invalid start time: {time_err}",
+            "message_for_user": "I couldn't read the start time. Try '2026-05-15 14:30'.",
+        }
 
     if raw_end:
         end_obj, _is_all_day_end, end_err = _coerce_event_time(raw_end, fallback_tz)
         if end_err:
-            return Response(
-                {
-                    "success": False,
-                    "error": f"Invalid end time: {end_err}",
-                    "message_for_user": "I couldn't read the end time.",
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return {
+                "success": False,
+                "error": f"Invalid end time: {end_err}",
+                "message_for_user": "I couldn't read the end time.",
+            }
     else:
         # Default duration: 60 min for timed, 1 day for all-day. Reminders
         # use the same defaults but render with transparent availability.
@@ -194,20 +255,17 @@ def agent_create_calendar_event(request):
 
     access_token, gcal = _get_valid_access_token(restaurant)
     if not access_token:
-        return Response(
-            {
-                "success": False,
-                "error": "calendar_not_connected",
-                "connected": False,
-                "connect_url": "/dashboard/settings?tab=integrations#google-calendar",
-                "message_for_user": (
-                    "I can't create that yet — Google Calendar isn't connected for "
-                    f"{restaurant.name}. Connect it from Settings → Integrations and "
-                    "I'll be able to schedule events directly."
-                ),
-            },
-            status=status.HTTP_412_PRECONDITION_FAILED,
-        )
+        return {
+            "success": False,
+            "error": "calendar_not_connected",
+            "connected": False,
+            "connect_url": "/dashboard/settings?tab=integrations#google-calendar",
+            "message_for_user": (
+                "I can't create that yet — Google Calendar isn't connected for "
+                f"{restaurant.name}. Connect it from Settings → Integrations and "
+                "I'll be able to schedule events directly."
+            ),
+        }
 
     # Optionally invite attendees by email — requires sendUpdates=all on
     # the request. We skip this for reminders.
@@ -228,30 +286,24 @@ def agent_create_calendar_event(request):
         )
     except requests.RequestException as exc:
         logger.exception("Google Calendar insert failed for restaurant=%s", restaurant.id)
-        return Response(
-            {
-                "success": False,
-                "error": str(exc),
-                "message_for_user": "Couldn't reach Google Calendar — try again in a minute.",
-            },
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
+        return {
+            "success": False,
+            "error": str(exc),
+            "message_for_user": "Couldn't reach Google Calendar — try again in a minute.",
+        }
 
     if r.status_code >= 400:
         logger.warning(
             "Google Calendar insert returned %s for restaurant=%s: %s",
             r.status_code, restaurant.id, r.text[:300],
         )
-        return Response(
-            {
-                "success": False,
-                "error": "google_api_error",
-                "status_code": r.status_code,
-                "detail": r.text[:300],
-                "message_for_user": "Google Calendar rejected the event. Check the time and try again.",
-            },
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
+        return {
+            "success": False,
+            "error": "google_api_error",
+            "status_code": r.status_code,
+            "detail": r.text[:300],
+            "message_for_user": "Google Calendar rejected the event. Check the time and try again.",
+        }
 
     event = r.json() or {}
     event_id = event.get("id")
@@ -276,21 +328,18 @@ def agent_create_calendar_event(request):
     if html_link:
         msg += f" {html_link}"
 
-    return Response(
-        {
-            "success": True,
-            "event_id": event_id,
+    return {
+        "success": True,
+        "event_id": event_id,
+        "html_link": html_link,
+        "calendar_event": {
+            "id": event_id,
+            "summary": event.get("summary"),
+            "start": event.get("start"),
+            "end": event.get("end"),
             "html_link": html_link,
-            "calendar_event": {
-                "id": event_id,
-                "summary": event.get("summary"),
-                "start": event.get("start"),
-                "end": event.get("end"),
-                "html_link": html_link,
-                "status": event.get("status"),
-                "transparency": event.get("transparency"),
-            },
-            "message_for_user": msg,
+            "status": event.get("status"),
+            "transparency": event.get("transparency"),
         },
-        status=status.HTTP_201_CREATED,
-    )
+        "message_for_user": msg,
+    }

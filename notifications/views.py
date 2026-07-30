@@ -221,6 +221,15 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
                 return True
         except Exception:
             pass
+        try:
+            from notifications.dashboard_task_whatsapp import (
+                looks_like_dashboard_task_status_reply,
+            )
+
+            if looks_like_dashboard_task_status_reply(body):
+                return True
+        except Exception:
+            pass
         if _normalize_start_checklist_intent(body):
             return True
         pair = _parse_lat_lon_from_clock_in_text(body)
@@ -1319,20 +1328,19 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
 
 
 def _attach_whatsapp_photo_to_incident(notification_service, ticket, media_id, mime_type=None):
-    """Download WhatsApp image by media_id and save to SafetyConcernReport.photo. Best-effort; logs on failure."""
+    """Download WhatsApp image by media_id and save to SafetyConcernReport.photo via default storage."""
     if not media_id or not ticket:
         logger.warning("_attach_whatsapp_photo_to_incident: missing media_id=%s or ticket=%s", media_id, ticket)
         return
     try:
-        media_url, resolved_mime = notification_service.fetch_whatsapp_media_url(media_id)
+        from notifications.media_persist import download_whatsapp_media
+
+        image_bytes, resolved_mime, filename = download_whatsapp_media(media_id)
         mime_type = mime_type or resolved_mime or ''
-        if not media_url:
-            logger.warning("_attach_whatsapp_photo_to_incident: no media_url for media_id=%s", media_id)
-            return
-        image_bytes = notification_service.download_media_bytes(media_url)
         if not image_bytes:
             logger.warning("_attach_whatsapp_photo_to_incident: download returned empty for media_id=%s", media_id)
             return
+        # ImageField.save uses Django default storage (local MEDIA_ROOT or S3 when configured).
         ext = '.jpg'
         if 'png' in (mime_type or '').lower():
             ext = '.png'
@@ -1340,6 +1348,8 @@ def _attach_whatsapp_photo_to_incident(notification_service, ticket, media_id, m
             ext = '.gif'
         elif 'webp' in (mime_type or '').lower():
             ext = '.webp'
+        elif filename and '.' in filename:
+            ext = '.' + filename.rsplit('.', 1)[-1]
         name = f"incident_{ticket.id}{ext}"
         ticket.photo.save(name, ContentFile(image_bytes), save=True)
         logger.info("Attached WhatsApp photo to incident %s (%d bytes)", ticket.id, len(image_bytes))
@@ -2375,6 +2385,7 @@ def whatsapp_webhook(request):
                     _interactive_is_clock = False
                     _text_is_incident_report = False
                     _text_is_my_shifts = False
+                    _text_is_dashboard_task_reply = False
                     _text_is_checklist_start = False
                     _text_is_clock_float_recovery = False
                     _text_is_clock_in = (
@@ -2407,6 +2418,9 @@ def whatsapp_webhook(request):
                             session_has_staff_escalation_context,
                         )
                         from staff.whatsapp_my_shifts import looks_like_my_shifts_query
+                        from notifications.dashboard_task_whatsapp import (
+                            looks_like_dashboard_task_status_reply,
+                        )
 
                         if msg_type == 'text' and text_body:
                             _text_is_staff_escalation = looks_like_staff_manager_escalation(text_body)
@@ -2423,6 +2437,9 @@ def whatsapp_webhook(request):
                                 if ctx.get("incident_photo_media_id"):
                                     _text_is_incident_report = True
                             _text_is_my_shifts = looks_like_my_shifts_query(text_body)
+                            _text_is_dashboard_task_reply = looks_like_dashboard_task_status_reply(
+                                text_body
+                            )
                             _text_is_clock_float_recovery = looks_like_cash_clock_in_followup(text_body)
                             _text_is_checklist_start = _normalize_start_checklist_intent(text_body)
                         if msg_type == 'interactive':
@@ -2462,6 +2479,7 @@ def whatsapp_webhook(request):
                         and not _awaiting_incident
                         and not _text_is_incident_report
                         and not _text_is_my_shifts
+                        and not _text_is_dashboard_task_reply
                         and not _text_is_checklist_start
                         and not _text_is_clock_float_recovery
                     ):
@@ -2656,6 +2674,102 @@ def whatsapp_webhook(request):
                     # 2. HANDLE IMAGE (Verification)
                     # ------------------------------------------------------------------
                     if msg_type == 'image':
+                        # Dashboard Task photo proof (Miya-assigned ops tasks)
+                        pending_dash_proof = (session.context or {}).get(
+                            "awaiting_dashboard_task_proof_id"
+                        )
+                        if pending_dash_proof and user:
+                            try:
+                                from dashboard.models import Task as DashTask
+                                from notifications.media_persist import (
+                                    FOLDER_TASK_PROOFS,
+                                    MEDIA_CATEGORY_TASK_PROOFS,
+                                    persist_whatsapp_media,
+                                )
+
+                                dash_task = DashTask.objects.filter(
+                                    id=pending_dash_proof,
+                                    restaurant=getattr(user, "restaurant", None),
+                                ).first()
+                                if dash_task and (
+                                    not dash_task.assigned_to_id
+                                    or dash_task.assigned_to_id == user.id
+                                ):
+                                    image_obj = msg.get("image") or {}
+                                    media_id = image_obj.get("id")
+                                    caption = (image_obj.get("caption") or "").strip()
+                                    durable_url = None
+                                    if media_id:
+                                        durable_url, _, _ = persist_whatsapp_media(
+                                            media_id,
+                                            folder=FOLDER_TASK_PROOFS,
+                                            filename_hint=f"task_proof_{dash_task.id}.jpg",
+                                            restaurant_id=getattr(dash_task, "restaurant_id", None)
+                                            or getattr(user, "restaurant_id", None),
+                                            media_category=MEDIA_CATEGORY_TASK_PROOFS,
+                                        )
+                                    if durable_url:
+                                        dash_task.proof_media_url = durable_url[:1000]
+                                        dash_task.proof_caption = caption[:2000]
+                                        dash_task.proof_submitted_at = timezone.now()
+                                        dash_task.proof_submitted_by = user
+                                        update_fields = [
+                                            "proof_media_url",
+                                            "proof_caption",
+                                            "proof_submitted_at",
+                                            "proof_submitted_by",
+                                            "updated_at",
+                                        ]
+                                        should_complete = bool(
+                                            (session.context or {}).get(
+                                                "awaiting_dashboard_task_proof_complete"
+                                            )
+                                        )
+                                        if should_complete:
+                                            dash_task.status = "COMPLETED"
+                                            dash_task.completed_at = timezone.now()
+                                            dash_task.completed_by = user
+                                            update_fields.extend(
+                                                ["status", "completed_at", "completed_by"]
+                                            )
+                                        elif dash_task.status == "PENDING":
+                                            dash_task.status = "IN_PROGRESS"
+                                            update_fields.append("status")
+                                        dash_task.save(update_fields=update_fields)
+                                        session.context.pop(
+                                            "awaiting_dashboard_task_proof_id", None
+                                        )
+                                        session.context.pop(
+                                            "awaiting_dashboard_task_proof_complete", None
+                                        )
+                                        session.state = "idle"
+                                        session.save(update_fields=["state", "context"])
+                                        if should_complete:
+                                            notification_service.send_whatsapp_text(
+                                                phone_digits,
+                                                f"Photo saved — marked *{dash_task.title}* as completed. Thanks!",
+                                            )
+                                            try:
+                                                from notifications.dashboard_task_whatsapp import (
+                                                    _notify_managers_completed,
+                                                )
+
+                                                _notify_managers_completed(dash_task, user)
+                                            except Exception:
+                                                logger.exception(
+                                                    "dashboard proof complete notify failed"
+                                                )
+                                        else:
+                                            notification_service.send_whatsapp_text(
+                                                phone_digits,
+                                                f"Photo proof saved for *{dash_task.title}*. Reply *done* when finished.",
+                                            )
+                                        continue
+                            except Exception:
+                                logger.exception(
+                                    "dashboard task proof image handler failed"
+                                )
+
                         if session.context.get('awaiting_verification_for_task_id'):
                             task_id = session.context.get('awaiting_verification_for_task_id')
                             try:
@@ -2682,19 +2796,54 @@ def whatsapp_webhook(request):
                                 media_id = image_obj.get('id')
                                 mime_type = image_obj.get('mime_type')
                                 caption = image_obj.get('caption')
-                                
+
+                                durable_url = None
+                                if media_id:
+                                    try:
+                                        from notifications.media_persist import (
+                                            FOLDER_CHECKLIST_EVIDENCE,
+                                            MEDIA_CATEGORY_CHECKLIST_EVIDENCE,
+                                            persist_whatsapp_media,
+                                        )
+                                        restaurant_id = getattr(user, "restaurant_id", None)
+                                        if not restaurant_id and getattr(task, "shift_id", None):
+                                            restaurant_id = getattr(
+                                                getattr(task, "shift", None),
+                                                "restaurant_id",
+                                                None,
+                                            )
+                                        durable_url, persisted_mime, _ = persist_whatsapp_media(
+                                            media_id,
+                                            folder=FOLDER_CHECKLIST_EVIDENCE,
+                                            filename_hint=f"checklist_{task.id}.jpg",
+                                            restaurant_id=restaurant_id,
+                                            media_category=MEDIA_CATEGORY_CHECKLIST_EVIDENCE,
+                                        )
+                                        mime_type = mime_type or persisted_mime
+                                    except Exception:
+                                        logger.warning(
+                                            "Failed to persist checklist photo evidence for task=%s media_id=%s",
+                                            task.id,
+                                            media_id,
+                                            exc_info=True,
+                                        )
+
                                 record, created = TaskVerificationRecord.objects.get_or_create(
                                     task=task,
                                     submitted_by=user,
                                     defaults={'photo_evidence': []}
                                 )
                                 photos = list(record.photo_evidence or [])
+                                submitted_at = timezone.now().isoformat()
                                 photos.append({
+                                    'url': durable_url,
                                     'media_id': media_id,
                                     'mime_type': mime_type,
                                     'caption': caption,
-                                    'timestamp': timezone.now().isoformat(),
+                                    'submitted_at': submitted_at,
+                                    'timestamp': submitted_at,  # backwards compatible
                                     'staff_id': str(user.id),
+                                    'user_id': str(user.id),
                                     'shift_id': str(task.shift_id),
                                     'task_id': str(task.id),
                                 })
@@ -3430,6 +3579,25 @@ def whatsapp_webhook(request):
                             continue
                     except Exception:
                         logger.exception("WhatsApp my-shifts handler failed phone=%s", phone_digits)
+
+                    # Dashboard.Task lifecycle — accept / start / done / unable (never Lua).
+                    try:
+                        from notifications.dashboard_task_whatsapp import (
+                            handle_dashboard_task_whatsapp_reply,
+                        )
+
+                        if handle_dashboard_task_whatsapp_reply(
+                            notification_service=notification_service,
+                            user=user,
+                            phone_digits=phone_digits,
+                            text_body=raw_body,
+                            session=session,
+                        ):
+                            continue
+                    except Exception:
+                        logger.exception(
+                            "WhatsApp dashboard-task handler failed phone=%s", phone_digits
+                        )
 
                     # Voice surfaced as placeholder text (no transcript): do not fall through to Lua or incident heuristics.
                     if _looks_like_voice_ui_placeholder(raw_body):

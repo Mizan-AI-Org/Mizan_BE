@@ -437,6 +437,183 @@ def agent_mark_invoice_paid(request):
 
 
 # ---------------------------------------------------------------------------
+# attach proof of payment
+# ---------------------------------------------------------------------------
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_attach_invoice_proof(request):
+    """
+    POST /api/finance/agent/invoices/proof-of-payment/
+
+    Attach a proof-of-payment file (URL or multipart upload) to an invoice.
+    Optionally flips status to PAID when ``mark_paid=true``.
+    """
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+
+    restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+    if err:
+        msg = err["error"]
+        return Response(
+            {"success": False, "error": msg, "message_for_user": msg},
+            status=err["status"],
+        )
+
+    data = request.data if hasattr(request, "data") else {}
+    if not isinstance(data, dict):
+        data = {}
+    invoice = _find_invoice(restaurant, data)
+    if invoice is None:
+        return Response(
+            {
+                "success": False,
+                "error": "Invoice not found",
+                "message_for_user": "I couldn't find that invoice to attach proof of payment.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    proof_url = str(
+        _get_first(data, "proof_url", "proofUrl", "attachment_url", "url", "photo_url") or ""
+    ).strip()
+    uploaded = request.FILES.get("proof_of_payment") or request.FILES.get("file") or request.FILES.get("attachment")
+
+    saved = False
+    if uploaded:
+        try:
+            invoice.proof_of_payment.save(uploaded.name, uploaded, save=True)
+            saved = True
+        except Exception as exc:
+            logger.exception("proof_of_payment upload failed: %s", exc)
+            return Response(
+                {
+                    "success": False,
+                    "error": "upload_failed",
+                    "message_for_user": "I couldn't save that proof of payment file.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    elif proof_url:
+        from finance.attachment_utils import attach_proof_of_payment_from_url
+
+        saved = attach_proof_of_payment_from_url(invoice, proof_url)
+
+    if not saved:
+        return Response(
+            {
+                "success": False,
+                "error": "proof_required",
+                "message_for_user": "Send a proof_of_payment file or proof_url.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    mark_paid_flag = str(
+        _get_first(data, "mark_paid", "markPaid") or ""
+    ).lower() in ("1", "true", "yes")
+    if mark_paid_flag and invoice.status != Invoice.STATUS_PAID:
+        from finance.payment_approval import payment_allowed
+
+        ok, block_msg = payment_allowed(invoice)
+        if not ok:
+            return Response(
+                {
+                    "success": True,
+                    "invoice": InvoiceSerializer(invoice).data,
+                    "message_for_user": (
+                        f"Proof attached for {invoice.vendor_name}, but payment "
+                        f"isn't cleared yet: {block_msg}"
+                    ),
+                },
+                status=status.HTTP_200_OK,
+            )
+        invoice.mark_paid(user=acting_user)
+        invoice.bank_payment_status = Invoice.BANK_PAYMENT_CLEARED
+        invoice.save(update_fields=["bank_payment_status", "updated_at"])
+
+    invoice.refresh_from_db()
+    return Response(
+        {
+            "success": True,
+            "invoice": InvoiceSerializer(invoice).data,
+            "message_for_user": (
+                f"Attached proof of payment for {invoice.vendor_name}"
+                + (" and marked it paid." if invoice.status == Invoice.STATUS_PAID else ".")
+            ),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
+# return invoice for correction
+# ---------------------------------------------------------------------------
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_return_invoice(request):
+    """
+    POST /api/finance/agent/invoices/return/
+
+    Mark an invoice RETURNED with a correction reason (PayGuard / AP loop).
+    """
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+
+    restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+    if err:
+        msg = err["error"]
+        return Response(
+            {"success": False, "error": msg, "message_for_user": msg},
+            status=err["status"],
+        )
+
+    data = request.data if hasattr(request, "data") else {}
+    if not isinstance(data, dict):
+        data = {}
+    invoice = _find_invoice(restaurant, data)
+    if invoice is None:
+        return Response(
+            {
+                "success": False,
+                "error": "Invoice not found",
+                "message_for_user": "I couldn't find that invoice to return.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    reason = str(
+        _get_first(data, "returned_reason", "returnedReason", "reason", "notes") or ""
+    ).strip()
+    if not reason:
+        return Response(
+            {
+                "success": False,
+                "error": "reason_required",
+                "message_for_user": "Tell me why this invoice is being returned.",
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    invoice.status = Invoice.STATUS_RETURNED
+    invoice.returned_reason = reason[:4000]
+    update_fields = ["status", "returned_reason", "updated_at"]
+    invoice.save(update_fields=update_fields)
+
+    return Response(
+        {
+            "success": True,
+            "invoice": InvoiceSerializer(invoice).data,
+            "message_for_user": (
+                f"Returned invoice from {invoice.vendor_name} for correction: {reason[:200]}"
+            ),
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+# ---------------------------------------------------------------------------
 # list_invoices
 # ---------------------------------------------------------------------------
 
@@ -497,30 +674,36 @@ def agent_list_invoices(request):
         qs = Invoice.objects.filter(restaurant=restaurant).select_related("location")
 
         if st != "ALL":
-            if st in {
-                Invoice.STATUS_OPEN,
-                Invoice.STATUS_PAID,
-                Invoice.STATUS_VOIDED,
-                Invoice.STATUS_DRAFT,
-            }:
+            valid = {c[0] for c in Invoice.STATUS_CHOICES}
+            if st == "OPEN":
+                # Legacy "open" = all unpaid active lifecycle statuses
+                qs = qs.filter(status__in=Invoice.UNPAID_ACTIVE_STATUSES)
+            elif st in valid:
                 qs = qs.filter(status=st)
 
         if vendor:
             qs = qs.filter(vendor_name__icontains=vendor)
 
         if overdue_flag:
-            qs = qs.filter(status=Invoice.STATUS_OPEN, due_date__lt=today)
+            qs = qs.filter(
+                status__in=Invoice.UNPAID_ACTIVE_STATUSES,
+                due_date__lt=today,
+            )
 
         if due_within_n is not None:
             qs = qs.filter(
-                status=Invoice.STATUS_OPEN,
+                status__in=Invoice.UNPAID_ACTIVE_STATUSES,
                 due_date__gte=today,
                 due_date__lte=today + timedelta(days=due_within_n),
             )
 
         rows = list(qs.order_by("due_date", "-created_at")[:limit])
         overdue_count = sum(
-            1 for r in rows if r.status == Invoice.STATUS_OPEN and r.due_date and r.due_date < today
+            1
+            for r in rows
+            if r.status in Invoice.UNPAID_ACTIVE_STATUSES
+            and r.due_date
+            and r.due_date < today
         )
 
         if not rows:
@@ -536,7 +719,9 @@ def agent_list_invoices(request):
                     + f" — {r.currency} {r.amount}, due {r.due_date.isoformat() if r.due_date else 'unscheduled'}"
                     + (
                         " (OVERDUE)"
-                        if r.status == Invoice.STATUS_OPEN and r.due_date and r.due_date < today
+                        if r.status in Invoice.UNPAID_ACTIVE_STATUSES
+                        and r.due_date
+                        and r.due_date < today
                         else ""
                     )
                 )
@@ -615,15 +800,43 @@ def agent_update_invoice_bank_payment_status(request):
         invoice.bank_payment_note = note
     if reference:
         invoice.payment_reference = reference[:120]
-    if raw_status == Invoice.BANK_PAYMENT_CLEARED and invoice.status == Invoice.STATUS_OPEN:
-        invoice.mark_paid(method=invoice.payment_method or "BANK_TRANSFER", reference=reference, user=acting_user)
+
+    unpaid_ok = invoice.status in Invoice.UNPAID_ACTIVE_STATUSES
+    if raw_status == Invoice.BANK_PAYMENT_CLEARED and unpaid_ok:
+        invoice.mark_paid(
+            method=invoice.payment_method or "BANK_TRANSFER",
+            reference=reference,
+            user=acting_user,
+        )
         invoice.refresh_from_db()
         invoice.bank_payment_status = raw_status
         if note:
             invoice.bank_payment_note = note
         invoice.save(update_fields=["bank_payment_status", "bank_payment_note", "updated_at"])
+    elif raw_status == Invoice.BANK_PAYMENT_INITIATED and unpaid_ok:
+        invoice.status = Invoice.STATUS_PAYMENT_IN_PROGRESS
+        invoice.save(
+            update_fields=[
+                "status",
+                "bank_payment_status",
+                "bank_payment_note",
+                "payment_reference",
+                "updated_at",
+            ]
+        )
+    elif raw_status == Invoice.BANK_PAYMENT_FAILED and invoice.status != Invoice.STATUS_PAID:
+        invoice.mark_payment_failed(note=note)
+        invoice.bank_payment_status = raw_status
+        invoice.save(update_fields=["bank_payment_status", "updated_at"])
     else:
-        invoice.save(update_fields=["bank_payment_status", "bank_payment_note", "payment_reference", "updated_at"])
+        invoice.save(
+            update_fields=[
+                "bank_payment_status",
+                "bank_payment_note",
+                "payment_reference",
+                "updated_at",
+            ]
+        )
 
     labels = dict(Invoice.BANK_PAYMENT_STATUS_CHOICES)
     return Response(

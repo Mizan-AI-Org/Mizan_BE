@@ -85,7 +85,12 @@ def agent_validate_task(request):
 @authentication_classes([])
 @permission_classes([permissions.AllowAny])
 def agent_submit_task_proof(request):
-    """Staff submits photo proof of work via WhatsApp."""
+    """Staff submits photo proof of work via WhatsApp.
+
+    Accepts a durable ``media_url`` / ``photo_url``, or a Meta ``media_id``
+    (downloaded and persisted to default storage under ``task-proofs/``).
+    Ephemeral WhatsApp CDN URLs are also re-hosted when detected.
+    """
     try:
         restaurant, acting_user, err = _resolve_dashboard_restaurant(request)
         if err:
@@ -93,31 +98,76 @@ def agent_submit_task_proof(request):
         data = request.data if isinstance(getattr(request, "data", None), dict) else {}
         task_id = data.get("task_id") or data.get("id")
         media_url = (data.get("media_url") or data.get("photo_url") or "").strip()
-        if not task_id or not media_url:
+        media_id = (data.get("media_id") or "").strip()
+        caption = (data.get("caption") or "").strip()
+        if not task_id or (not media_url and not media_id):
             return Response(
-                {"error": "task_id and media_url required"},
+                {"error": "task_id and media_url (or media_id) required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         from dashboard.models import Task
+        from notifications.media_persist import (
+            FOLDER_TASK_PROOFS,
+            MEDIA_CATEGORY_TASK_PROOFS,
+            persist_remote_or_whatsapp_url,
+            persist_whatsapp_media,
+        )
 
         task = Task.objects.filter(id=task_id, restaurant=restaurant).first()
         if not task:
             return Response({"error": "task not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        task.proof_media_url = media_url[:1000]
+        durable_url = None
+        if media_id:
+            durable_url, _, _ = persist_whatsapp_media(
+                media_id,
+                folder=FOLDER_TASK_PROOFS,
+                filename_hint=f"task_proof_{task.id}.jpg",
+                restaurant_id=restaurant.id,
+                media_category=MEDIA_CATEGORY_TASK_PROOFS,
+            )
+        if not durable_url and media_url:
+            durable_url = persist_remote_or_whatsapp_url(
+                media_url,
+                folder=FOLDER_TASK_PROOFS,
+                filename_hint=f"task_proof_{task.id}.jpg",
+                restaurant_id=restaurant.id,
+                media_category=MEDIA_CATEGORY_TASK_PROOFS,
+            )
+        if not durable_url:
+            return Response(
+                {"error": "Could not persist photo proof (download or storage failed)"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        task.proof_media_url = durable_url[:1000]
         task.proof_submitted_at = timezone.now()
+        if caption:
+            task.proof_caption = caption
+        if acting_user is not None:
+            task.proof_submitted_by = acting_user
         # Optionally mark in progress
         if task.status == "PENDING":
             task.status = "IN_PROGRESS"
         task.save(
-            update_fields=["proof_media_url", "proof_submitted_at", "status", "updated_at"]
+            update_fields=[
+                "proof_media_url",
+                "proof_caption",
+                "proof_submitted_at",
+                "proof_submitted_by",
+                "status",
+                "updated_at",
+            ]
         )
         return Response(
             {
                 "success": True,
                 "task_id": str(task.id),
                 "proof_media_url": task.proof_media_url,
+                "proof_caption": task.proof_caption,
+                "proof_submitted_by": str(task.proof_submitted_by_id) if task.proof_submitted_by_id else None,
+                "proof_submitted_at": task.proof_submitted_at.isoformat() if task.proof_submitted_at else None,
                 "message": "Photo proof saved. Thanks!",
             }
         )

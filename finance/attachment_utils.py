@@ -84,3 +84,47 @@ def attach_invoice_from_url(invoice: Invoice, url: str) -> bool:
         content_type=content_type,
         filename_hint=raw.rsplit("/", 1)[-1].split("?")[0] or None,
     )
+
+
+def save_proof_of_payment(
+    invoice: Invoice,
+    file_bytes: bytes,
+    *,
+    content_type: str | None = None,
+    filename_hint: str | None = None,
+) -> bool:
+    """Store proof-of-payment bytes on the invoice row."""
+    if not file_bytes:
+        return False
+
+    ct = (content_type or "application/octet-stream").split(";")[0].strip()[:100]
+    ext = _guess_extension(ct, filename_hint)
+    base = (filename_hint or f"proof_{invoice.id}").rsplit("/", 1)[-1]
+    base = _SAFE_NAME.sub("_", base).strip("._") or f"proof_{invoice.id}"
+    if not base.lower().endswith(ext):
+        base = f"{base}{ext}"
+
+    try:
+        invoice.proof_of_payment.save(base, ContentFile(file_bytes), save=True)
+        return True
+    except Exception:
+        logger.exception("save_proof_of_payment failed for invoice=%s", invoice.id)
+        return False
+
+
+def attach_proof_of_payment_from_url(invoice: Invoice, url: str) -> bool:
+    """Download a remote URL and persist as proof_of_payment."""
+    from core.media_fetch import fetch_remote_media_bytes
+
+    raw = (url or "").strip()
+    if not raw:
+        return False
+    file_bytes, content_type = fetch_remote_media_bytes(raw)
+    if not file_bytes:
+        return False
+    return save_proof_of_payment(
+        invoice,
+        file_bytes,
+        content_type=content_type,
+        filename_hint=raw.rsplit("/", 1)[-1].split("?")[0] or None,
+    )

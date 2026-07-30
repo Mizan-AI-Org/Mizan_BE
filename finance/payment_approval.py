@@ -24,6 +24,8 @@ DEFAULT_POLICY: dict[str, Any] = {
     "currencies": ["MAD"],
     "stuck_hours": 4,
     "max_reminders": 3,
+    # Default: one approval step per amount band. Multi-step ladders remain
+    # supported for tenants that configure them (or already have them saved).
     "tiers": [
         {
             "id": "everyday",
@@ -39,10 +41,7 @@ DEFAULT_POLICY: dict[str, Any] = {
             "currency": "MAD",
             "max_amount": "50000",
             "accent": "amber",
-            "steps": [
-                {"role": "MANAGER", "label": "Ops manager"},
-                {"role": "OWNER", "label": "Owner"},
-            ],
+            "steps": [{"role": "OWNER", "label": "Owner"}],
         },
         {
             "id": "major",
@@ -50,11 +49,7 @@ DEFAULT_POLICY: dict[str, Any] = {
             "currency": "MAD",
             "max_amount": None,
             "accent": "rose",
-            "steps": [
-                {"role": "MANAGER", "label": "Ops manager"},
-                {"role": "OWNER", "label": "Owner"},
-                {"role": "ADMIN", "label": "Co-signer"},
-            ],
+            "steps": [{"role": "OWNER", "label": "Owner"}],
         },
     ],
 }
@@ -382,7 +377,11 @@ def start_payment_approval(*, invoice, requested_by=None) -> dict[str, Any]:
 
     if not policy.get("enabled"):
         invoice.approval_status = Invoice.APPROVAL_APPROVED
-        invoice.save(update_fields=["approval_status", "updated_at"])
+        if invoice.status in (Invoice.STATUS_OPEN, Invoice.STATUS_SUBMITTED, Invoice.STATUS_UNDER_REVIEW):
+            invoice.status = Invoice.STATUS_APPROVED
+            invoice.save(update_fields=["approval_status", "status", "updated_at"])
+        else:
+            invoice.save(update_fields=["approval_status", "updated_at"])
         return {
             "success": True,
             "status": "approved",
@@ -394,7 +393,11 @@ def start_payment_approval(*, invoice, requested_by=None) -> dict[str, Any]:
     tier = resolve_tier(policy, invoice.amount, currency=inv_currency)
     if not tier or not tier.get("steps"):
         invoice.approval_status = Invoice.APPROVAL_APPROVED
-        invoice.save(update_fields=["approval_status", "updated_at"])
+        if invoice.status in (Invoice.STATUS_OPEN, Invoice.STATUS_SUBMITTED, Invoice.STATUS_UNDER_REVIEW):
+            invoice.status = Invoice.STATUS_APPROVED
+            invoice.save(update_fields=["approval_status", "status", "updated_at"])
+        else:
+            invoice.save(update_fields=["approval_status", "updated_at"])
         return {
             "success": True,
             "status": "approved",
@@ -433,7 +436,16 @@ def start_payment_approval(*, invoice, requested_by=None) -> dict[str, Any]:
         )
 
     invoice.approval_status = Invoice.APPROVAL_PENDING
-    invoice.save(update_fields=["approval_status", "updated_at"])
+    if invoice.status in (
+        Invoice.STATUS_OPEN,
+        Invoice.STATUS_SUBMITTED,
+        Invoice.STATUS_UNDER_REVIEW,
+        Invoice.STATUS_APPROVED,
+    ):
+        invoice.status = Invoice.STATUS_PENDING_APPROVAL
+        invoice.save(update_fields=["approval_status", "status", "updated_at"])
+    else:
+        invoice.save(update_fields=["approval_status", "updated_at"])
 
     notified = notify_current_step(approval, is_reminder=False)
     money = format_money(invoice.amount, invoice.currency)
@@ -508,7 +520,8 @@ def act_on_approval(
         approval.completed_at = now
         approval.save(update_fields=["status", "completed_at", "updated_at"])
         invoice.approval_status = Invoice.APPROVAL_REJECTED
-        invoice.save(update_fields=["approval_status", "updated_at"])
+        invoice.status = Invoice.STATUS_REJECTED
+        invoice.save(update_fields=["approval_status", "status", "updated_at"])
         return {
             "success": True,
             "status": "rejected",
@@ -536,7 +549,8 @@ def act_on_approval(
             update_fields=["status", "completed_at", "current_step_index", "updated_at"]
         )
         invoice.approval_status = Invoice.APPROVAL_APPROVED
-        invoice.save(update_fields=["approval_status", "updated_at"])
+        invoice.status = Invoice.STATUS_APPROVED
+        invoice.save(update_fields=["approval_status", "status", "updated_at"])
         return {
             "success": True,
             "status": "approved",
@@ -589,8 +603,12 @@ def payment_allowed(invoice) -> tuple[bool, str]:
     if not policy.get("enabled"):
         return True, ""
     if invoice.approval_status in (Invoice.APPROVAL_APPROVED, Invoice.APPROVAL_NONE):
-        # NONE with policy on: require starting approval first for OPEN bills
-        if invoice.approval_status == Invoice.APPROVAL_NONE and invoice.status == Invoice.STATUS_OPEN:
+        # NONE with policy on: require starting approval first for unpaid bills
+        if invoice.approval_status == Invoice.APPROVAL_NONE and invoice.status in (
+            Invoice.STATUS_OPEN,
+            Invoice.STATUS_SUBMITTED,
+            Invoice.STATUS_UNDER_REVIEW,
+        ):
             # Auto-start not done yet — block until submitted
             return False, tr("payguard.need_first", lang)
         return True, ""

@@ -1434,6 +1434,151 @@ export default class ApiService {
     }
 
     /**
+     * Update dashboard.Task status (Pending / Accepted / In Progress / Completed / Unable / Cancelled).
+     * Backend: POST /api/dashboard/agent/tasks/status/
+     */
+    async updateDashboardTaskStatusForAgent(
+        restaurantId: string,
+        input: {
+            task_id: string;
+            status: string;
+            user_id?: string;
+            email?: string;
+            phone?: string;
+            note?: string;
+        }
+    ): Promise<{
+        success: boolean;
+        task?: any;
+        old_status?: string;
+        status?: string;
+        task_ref?: string;
+        record_id?: string;
+        message_for_user?: string;
+        error?: string;
+    }> {
+        const agentKey = env("LUA_WEBHOOK_API_KEY") || env("WEBHOOK_API_KEY") || env("MIZAN_SERVICE_TOKEN");
+        if (!agentKey) {
+            return { success: false, error: "No agent key configured" };
+        }
+        const rid =
+            restaurantId !== undefined && restaurantId !== null ? String(restaurantId).trim() : "";
+        if (!rid) {
+            return {
+                success: false,
+                error: "Missing restaurant_id",
+                message_for_user:
+                    "I couldn't tell which restaurant this task belongs to. Open Miya from your Mizan dashboard and try again.",
+            };
+        }
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/dashboard/agent/tasks/status/",
+                {
+                    restaurant_id: rid,
+                    task_id: input.task_id,
+                    status: input.status,
+                    user_id: input.user_id,
+                    email: input.email,
+                    phone: input.phone,
+                    note: input.note,
+                },
+                {
+                    headers: agentKeyBearerHeadersWithRestaurant(agentKey, rid),
+                }
+            );
+            return response.data;
+        } catch (error: any) {
+            const body = error.response?.data;
+            const err =
+                body?.message_for_user ||
+                body?.error ||
+                error.message ||
+                "Could not update task status";
+            return { success: false, error: err };
+        }
+    }
+
+    async updateDashboardTaskForAgent(
+        restaurantId: string,
+        input: {
+            task_id: string;
+            priority?: string;
+            due_date?: string;
+            title?: string;
+            description?: string;
+            require_photo_proof?: boolean;
+            user_id?: string;
+            email?: string;
+            phone?: string;
+        }
+    ): Promise<{
+        success: boolean;
+        task?: any;
+        task_ref?: string;
+        record_id?: string;
+        message_for_user?: string;
+        error?: string;
+    }> {
+        const agentKey = env("LUA_WEBHOOK_API_KEY") || env("WEBHOOK_API_KEY") || env("MIZAN_SERVICE_TOKEN");
+        if (!agentKey) return { success: false, error: "No agent key configured" };
+        const rid = restaurantId !== undefined && restaurantId !== null ? String(restaurantId).trim() : "";
+        if (!rid) return { success: false, error: "Missing restaurant_id" };
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/dashboard/agent/tasks/update/",
+                { restaurant_id: rid, ...input },
+                { headers: agentKeyBearerHeadersWithRestaurant(agentKey, rid) }
+            );
+            return response.data;
+        } catch (error: any) {
+            const body = error.response?.data;
+            return {
+                success: false,
+                error: body?.message_for_user || body?.error || error.message || "Could not update task",
+            };
+        }
+    }
+
+    async listDashboardTasksForAgent(
+        restaurantId: string,
+        input: {
+            overdue?: boolean;
+            status?: string;
+            assignee_id?: string;
+            limit?: number;
+            user_id?: string;
+            email?: string;
+            phone?: string;
+        } = {}
+    ): Promise<{
+        success: boolean;
+        tasks?: any[];
+        count?: number;
+        message_for_user?: string;
+        error?: string;
+    }> {
+        const agentKey = env("LUA_WEBHOOK_API_KEY") || env("WEBHOOK_API_KEY") || env("MIZAN_SERVICE_TOKEN");
+        if (!agentKey) return { success: false, error: "No agent key configured" };
+        const rid = restaurantId !== undefined && restaurantId !== null ? String(restaurantId).trim() : "";
+        if (!rid) return { success: false, error: "Missing restaurant_id" };
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/dashboard/agent/tasks/list/",
+                { restaurant_id: rid, ...input },
+                { headers: agentKeyBearerHeadersWithRestaurant(agentKey, rid) }
+            );
+            return response.data;
+        } catch (error: any) {
+            const body = error.response?.data;
+            return {
+                success: false,
+                error: body?.message_for_user || body?.error || error.message || "Could not list tasks",
+            };
+        }
+    }
+
+    /**
      * Create a tenant-wide dashboard widget category ("rubrique") for grouping shortcuts.
      * Backend: POST /api/dashboard/agent/categories/create/
      */
@@ -2588,8 +2733,8 @@ export default class ApiService {
 
     // ── Calendar write (Google Calendar via tenant onboarding tokens) ──
     async createCalendarEvent(restaurantId: string, payload: {
-        title: string;
-        start: string;
+        title?: string;
+        start?: string;
         end?: string;
         description?: string;
         location?: string;
@@ -2597,6 +2742,21 @@ export default class ApiService {
         is_reminder?: boolean;
         timezone?: string;
         all_day?: boolean;
+        events?: Array<{
+            title: string;
+            start: string;
+            end?: string;
+            description?: string;
+            location?: string;
+            attendees?: string[];
+        }>;
+        meetings?: Array<{
+            title: string;
+            start: string;
+            end?: string;
+            description?: string;
+            location?: string;
+        }>;
     }) {
         const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
         if (!agentKey) throw new Error("No agent key configured");

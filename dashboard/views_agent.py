@@ -497,7 +497,7 @@ def _build_whatsapp_body(
     lines.append("")
     lines.append(f"({'; '.join(meta_bits)})")
     lines.append("")
-    lines.append("Reply here when it's done or if you have questions.")
+    lines.append("Reply *accept*, *start*, *done*, or *unable* (add #id if you have several).")
     return "\n".join(lines)
 
 
@@ -942,6 +942,558 @@ def agent_create_dashboard_task(request):
                 "success": False,
                 "error": str(exc)[:200],
                 "message_for_user": "Something went wrong while creating that task. Please try again.",
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Reassign + status update (Miya WhatsApp parity)
+# ---------------------------------------------------------------------------
+
+
+_VALID_TASK_STATUSES = {
+    "PENDING",
+    "ACCEPTED",
+    "IN_PROGRESS",
+    "COMPLETED",
+    "UNABLE_TO_COMPLETE",
+    "CANCELLED",
+}
+
+
+def _load_dashboard_task_for_agent(data: dict, restaurant) -> tuple[Task | None, str | None]:
+    task_id = str(
+        _get_first(data, "task_id", "taskId", "id", "record_id", "recordId") or ""
+    ).strip()
+    if not task_id:
+        return None, "Missing required field: task_id"
+    try:
+        task = Task.objects.select_related("assigned_to").get(
+            pk=task_id, restaurant=restaurant
+        )
+    except (Task.DoesNotExist, ValueError, TypeError):
+        return None, "Task not found in this workspace."
+    return task, None
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_reassign_dashboard_task(request):
+    """
+    POST /api/dashboard/agent/tasks/reassign/
+
+    Reassign a ``dashboard.Task`` to another staff member. Used by Miya when
+    a manager says e.g. "Reassign the kitchen cleaning task to Ahmed."
+    """
+    from scheduling.views_agent import (
+        _resolve_restaurant_for_agent,
+        _try_jwt_restaurant_and_user,
+    )
+    from notifications.services import notification_service
+
+    try:
+        restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response(
+                {"success": False, "error": err["error"]},
+                status=err["status"],
+            )
+
+        data = request.data if isinstance(getattr(request, "data", None), dict) else {}
+        task, task_err = _load_dashboard_task_for_agent(data, restaurant)
+        if task_err or not task:
+            return Response(
+                {
+                    "success": False,
+                    "error": task_err or "Task not found",
+                    "message_for_user": task_err or "I couldn't find that task.",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        assignee, assignee_err = _resolve_assignee(data, restaurant)
+        if assignee_err or not assignee:
+            return Response(
+                {
+                    "success": False,
+                    "error": assignee_err or "Assignee not found",
+                    "message_for_user": assignee_err
+                    or "I couldn't find that staff member in this workspace.",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if not acting_user:
+            try:
+                _, acting_user = _try_jwt_restaurant_and_user(request)
+            except Exception:
+                acting_user = None
+
+        old = task.assigned_to
+        note = str(_get_first(data, "note", "reason") or "").strip()
+        task.assigned_to = assignee
+        task.save(update_fields=["assigned_to", "updated_at"])
+
+        assignee_display = (
+            f"{(assignee.first_name or '').strip()} {(assignee.last_name or '').strip()}".strip()
+            or assignee.email
+        )
+        old_display = ""
+        if old:
+            old_display = (
+                f"{(old.first_name or '').strip()} {(old.last_name or '').strip()}".strip()
+                or old.email
+            )
+
+        # In-app notify new assignee (best-effort).
+        try:
+            notification_service.send_custom_notification(
+                recipient=assignee,
+                message=f"Task reassigned to you: {task.title}",
+                title="Task reassigned",
+                notification_type="TASK_ASSIGNED",
+                channels=["app", "push"],
+                sender=acting_user,
+            )
+        except Exception:
+            logger.exception(
+                "Miya reassign_task: in-app notification failed for task %s", task.id
+            )
+
+        notify_whatsapp = _coerce_bool(
+            _get_first(data, "notify_whatsapp", "notifyWhatsapp", "send_whatsapp"),
+            default=True,
+        )
+        wa_override = _get_first(data, "whatsapp_message", "whatsappMessage", "message")
+        wa_result: dict[str, Any] = {
+            "sent": False,
+            "skipped_reason": None,
+            "error": None,
+            "provider_status": None,
+        }
+        if not notify_whatsapp:
+            wa_result["skipped_reason"] = "disabled"
+        elif not (assignee.phone or "").strip():
+            wa_result["skipped_reason"] = "no_phone"
+        else:
+            sender_display = "Your manager"
+            if acting_user:
+                nm = f"{(acting_user.first_name or '').strip()} {(acting_user.last_name or '').strip()}".strip()
+                sender_display = nm or getattr(acting_user, "email", None) or sender_display
+            body = (
+                str(wa_override).strip()
+                if isinstance(wa_override, str) and wa_override.strip()
+                else (
+                    f"Hi {(assignee.first_name or '').strip() or 'there'},\n"
+                    f"{sender_display} reassigned a task to you:\n"
+                    f"*{task.title}*\n"
+                    + (f"Note: {note}\n" if note else "")
+                    + "Reply *accept*, *start*, *done*, or *unable*."
+                )
+            )
+            try:
+                ok, resp = notification_service.send_whatsapp_text(assignee.phone, body)
+                wa_result["sent"] = bool(ok)
+                if isinstance(resp, dict):
+                    wa_result["provider_status"] = resp.get("status_code")
+                    if not ok:
+                        wa_result["error"] = resp.get("error") or "WhatsApp send failed"
+                if ok:
+                    task.whatsapp_notified_at = timezone.now()
+                    task.save(update_fields=["whatsapp_notified_at"])
+            except Exception as exc:
+                logger.exception("Miya reassign_task: WhatsApp send failed for %s", task.id)
+                wa_result["error"] = str(exc)[:200]
+
+        task_ref = _short_record_ref(task.id)
+        if old_display and old and str(old.id) != str(assignee.id):
+            message_for_user = (
+                f"Task #{task_ref} — Reassigned '{task.title}' "
+                f"from {old_display} to {assignee_display}."
+            )
+        else:
+            message_for_user = (
+                f"Task #{task_ref} — Assigned '{task.title}' to {assignee_display}."
+            )
+
+        return Response(
+            {
+                "success": True,
+                "task": DashboardTaskCompactSerializer(task).data,
+                "record_id": str(task.id),
+                "task_ref": task_ref,
+                "assignee": {
+                    "id": str(assignee.id),
+                    "name": assignee_display,
+                    "phone": assignee.phone or "",
+                    "role": getattr(assignee, "role", None),
+                },
+                "whatsapp": wa_result,
+                "message_for_user": message_for_user,
+            }
+        )
+    except Exception as exc:
+        logger.exception("agent_reassign_dashboard_task crashed")
+        return Response(
+            {
+                "success": False,
+                "error": str(exc)[:200],
+                "message_for_user": "Something went wrong while reassigning that task.",
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_update_dashboard_task_status(request):
+    """
+    POST /api/dashboard/agent/tasks/status/
+
+    Update ``dashboard.Task.status`` from Miya / WhatsApp.
+    Valid statuses: PENDING | IN_PROGRESS | COMPLETED | CANCELLED.
+    """
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+
+    try:
+        restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response(
+                {"success": False, "error": err["error"]},
+                status=err["status"],
+            )
+
+        data = request.data if isinstance(getattr(request, "data", None), dict) else {}
+        task, task_err = _load_dashboard_task_for_agent(data, restaurant)
+        if task_err or not task:
+            return Response(
+                {
+                    "success": False,
+                    "error": task_err or "Task not found",
+                    "message_for_user": task_err or "I couldn't find that task.",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        raw_status = str(
+            _get_first(data, "status", "new_status", "task_status") or ""
+        ).upper().strip()
+        # Soft aliases for natural language from Miya.
+        aliases = {
+            "DONE": "COMPLETED",
+            "COMPLETE": "COMPLETED",
+            "FINISHED": "COMPLETED",
+            "STARTED": "IN_PROGRESS",
+            "START": "IN_PROGRESS",
+            "REJECTED": "CANCELLED",
+            "UNABLE": "UNABLE_TO_COMPLETE",
+            "CANT": "UNABLE_TO_COMPLETE",
+            "CANNOT": "UNABLE_TO_COMPLETE",
+            "CANCEL": "CANCELLED",
+        }
+        new_status = aliases.get(raw_status, raw_status)
+        if new_status not in _VALID_TASK_STATUSES:
+            return Response(
+                {
+                    "success": False,
+                    "error": f"Invalid status '{raw_status}'",
+                    "message_for_user": (
+                        "Status must be Pending, Accepted, In Progress, "
+                        "Completed, Unable to Complete, or Cancelled."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        old_status = task.status
+        task.status = new_status
+        update_fields = ["status", "updated_at"]
+        if new_status == "COMPLETED":
+            task.completed_at = timezone.now()
+            update_fields.append("completed_at")
+            if acting_user:
+                task.completed_by = acting_user
+                update_fields.append("completed_by")
+        task.save(update_fields=update_fields)
+
+        # Notify managers when a task is completed or blocked (best-effort).
+        if new_status in ("COMPLETED", "UNABLE_TO_COMPLETE") and old_status != new_status:
+            try:
+                from notifications.services import notification_service
+                from accounts.models import CustomUser as CU
+
+                managers = CU.objects.filter(
+                    restaurant=restaurant,
+                    is_active=True,
+                    role__in=("SUPER_ADMIN", "OWNER", "ADMIN", "MANAGER"),
+                ).exclude(pk=getattr(acting_user, "id", None))[:8]
+                actor = ""
+                if acting_user:
+                    actor = (
+                        f"{(acting_user.first_name or '').strip()} "
+                        f"{(acting_user.last_name or '').strip()}"
+                    ).strip() or acting_user.email
+                if new_status == "UNABLE_TO_COMPLETE":
+                    title = "Task unable to complete"
+                    msg = f"{actor or 'Staff'} cannot complete: {task.title}"
+                    ntype = "TASK_ASSIGNED"
+                else:
+                    title = "Task completed"
+                    msg = f"{actor or 'Staff'} completed: {task.title}"
+                    ntype = "TASK_COMPLETED"
+                for mgr in managers:
+                    notification_service.send_custom_notification(
+                        recipient=mgr,
+                        message=msg,
+                        title=title,
+                        notification_type=ntype,
+                        channels=["app", "push"],
+                        sender=acting_user,
+                    )
+            except Exception:
+                logger.exception(
+                    "Miya task status: manager notify failed for task %s", task.id
+                )
+
+        task_ref = _short_record_ref(task.id)
+        return Response(
+            {
+                "success": True,
+                "task": DashboardTaskCompactSerializer(task).data,
+                "record_id": str(task.id),
+                "task_ref": task_ref,
+                "old_status": old_status,
+                "status": new_status,
+                "message_for_user": (
+                    f"Task #{task_ref} — Status updated to "
+                    f"{new_status.replace('_', ' ').title()}."
+                ),
+            }
+        )
+    except Exception as exc:
+        logger.exception("agent_update_dashboard_task_status crashed")
+        return Response(
+            {
+                "success": False,
+                "error": str(exc)[:200],
+                "message_for_user": "Something went wrong while updating that task.",
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_update_dashboard_task(request):
+    """
+    POST /api/dashboard/agent/tasks/update/
+
+    Update priority, due_date, title, description, or require_photo_proof on a
+    dashboard.Task (Miya / WhatsApp after create).
+    """
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+
+    try:
+        restaurant, _acting_user, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response(
+                {"success": False, "error": err["error"]},
+                status=err["status"],
+            )
+
+        data = request.data if isinstance(getattr(request, "data", None), dict) else {}
+        task, task_err = _load_dashboard_task_for_agent(data, restaurant)
+        if task_err or not task:
+            return Response(
+                {
+                    "success": False,
+                    "error": task_err or "Task not found",
+                    "message_for_user": task_err or "I couldn't find that task.",
+                },
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        update_fields = ["updated_at"]
+        changed = []
+
+        raw_priority = _get_first(data, "priority")
+        if raw_priority is not None and str(raw_priority).strip():
+            p = str(raw_priority).upper().strip()
+            aliases = {"NORMAL": "MEDIUM", "MED": "MEDIUM", "CRITICAL": "URGENT"}
+            p = aliases.get(p, p)
+            if p not in ("LOW", "MEDIUM", "HIGH", "URGENT"):
+                return Response(
+                    {
+                        "success": False,
+                        "error": f"Invalid priority '{raw_priority}'",
+                        "message_for_user": "Priority must be Low, Medium, High, or Urgent.",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            task.priority = p
+            update_fields.append("priority")
+            changed.append(f"priority={p}")
+
+        if any(k in data for k in ("due_date", "dueDate", "due", "deadline")):
+            due_date, due_err = _parse_due_date(
+                _get_first(data, "due_date", "dueDate", "due", "deadline")
+            )
+            if due_err:
+                return Response(
+                    {
+                        "success": False,
+                        "error": due_err,
+                        "message_for_user": due_err,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            task.due_date = due_date
+            update_fields.append("due_date")
+            changed.append(f"due={due_date}" if due_date else "due=cleared")
+
+        title = _get_first(data, "title")
+        if title is not None and str(title).strip():
+            task.title = str(title).strip()[:200]
+            update_fields.append("title")
+            changed.append("title")
+
+        description = _get_first(data, "description", "body", "notes")
+        if description is not None:
+            task.description = str(description).strip()[:5000]
+            update_fields.append("description")
+            changed.append("description")
+
+        if any(k in data for k in ("require_photo_proof", "requirePhotoProof", "photo_proof")):
+            task.require_photo_proof = _coerce_bool(
+                _get_first(data, "require_photo_proof", "requirePhotoProof", "photo_proof"),
+                default=task.require_photo_proof,
+            )
+            update_fields.append("require_photo_proof")
+            changed.append(f"photo_proof={task.require_photo_proof}")
+
+        if len(changed) == 0:
+            return Response(
+                {
+                    "success": False,
+                    "error": "No updatable fields provided",
+                    "message_for_user": "Tell me what to change — priority, due date, or title.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        task.save(update_fields=list(dict.fromkeys(update_fields)))
+        task_ref = _short_record_ref(task.id)
+        return Response(
+            {
+                "success": True,
+                "task": DashboardTaskCompactSerializer(task).data,
+                "record_id": str(task.id),
+                "task_ref": task_ref,
+                "changed": changed,
+                "message_for_user": f"Task #{task_ref} updated ({', '.join(changed)}).",
+            }
+        )
+    except Exception as exc:
+        logger.exception("agent_update_dashboard_task crashed")
+        return Response(
+            {
+                "success": False,
+                "error": str(exc)[:200],
+                "message_for_user": "Something went wrong while updating that task.",
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+
+@api_view(["GET", "POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_list_dashboard_tasks(request):
+    """
+    GET|POST /api/dashboard/agent/tasks/list/
+
+    List dashboard tasks. Supports overdue=true, status, assignee filters.
+    """
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+
+    try:
+        restaurant, _acting_user, err = _resolve_restaurant_for_agent(request)
+        if err:
+            return Response(
+                {"success": False, "error": err["error"]},
+                status=err["status"],
+            )
+
+        data = {}
+        if request.method == "GET":
+            data = {k: v for k, v in request.query_params.items()}
+        elif isinstance(getattr(request, "data", None), dict):
+            data = request.data
+
+        from dashboard.models import Task
+
+        qs = Task.objects.filter(restaurant=restaurant).select_related(
+            "assigned_to", "completed_by", "proof_submitted_by"
+        )
+
+        overdue = _coerce_bool(_get_first(data, "overdue", "is_overdue"), default=False)
+        if overdue:
+            today = timezone.localdate()
+            qs = qs.filter(due_date__lt=today).exclude(
+                status__in=("COMPLETED", "CANCELLED")
+            )
+
+        raw_status = _get_first(data, "status", "statuses")
+        if raw_status:
+            statuses = [
+                s.strip().upper()
+                for s in str(raw_status).replace(";", ",").split(",")
+                if s.strip()
+            ]
+            aliases = {
+                "DONE": "COMPLETED",
+                "OPEN": "PENDING",
+                "STARTED": "IN_PROGRESS",
+            }
+            statuses = [aliases.get(s, s) for s in statuses]
+            qs = qs.filter(status__in=statuses)
+
+        assignee_id = _get_first(data, "assignee_id", "assignee", "user_id")
+        if assignee_id:
+            qs = qs.filter(assigned_to_id=assignee_id)
+
+        try:
+            limit = min(int(_get_first(data, "limit") or 20), 50)
+        except (TypeError, ValueError):
+            limit = 20
+
+        tasks = list(qs.order_by("due_date", "-priority", "-created_at")[:limit])
+        payload = DashboardTaskCompactSerializer(tasks, many=True).data
+        label = "overdue tasks" if overdue else "tasks"
+        return Response(
+            {
+                "success": True,
+                "count": len(payload),
+                "tasks": payload,
+                "overdue": overdue,
+                "message_for_user": (
+                    f"Found {len(payload)} {label}."
+                    if payload
+                    else f"No {label} found."
+                ),
+            }
+        )
+    except Exception as exc:
+        logger.exception("agent_list_dashboard_tasks crashed")
+        return Response(
+            {
+                "success": False,
+                "error": str(exc)[:200],
+                "message_for_user": "Something went wrong while listing tasks.",
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
