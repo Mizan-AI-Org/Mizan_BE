@@ -17,6 +17,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from accounts.models import Restaurant, AuditLog, CustomUser
+from accounts.country_utils import normalize_country_code
 from billing.models import Subscription, SubscriptionPlan
 from .lifecycle import tenant_lifecycle
 from .permissions import (
@@ -432,11 +433,16 @@ def platform_tenants(request):
     if Restaurant.objects.filter(email__iexact=data["email"]).exists():
         return Response({"error": "Restaurant email already exists"}, status=400)
 
+    country_code = normalize_country_code(
+        data.get("country_code") or "MA",
+        phone=data.get("phone") or "",
+        email=data["email"],
+    )
     restaurant = Restaurant.objects.create(
         name=data["name"],
         email=data["email"],
         phone=data.get("phone") or "",
-        country_code=data.get("country_code") or "MA",
+        country_code=country_code,
         currency=data.get("currency") or "USD",
     )
     owner_email = data.get("owner_email") or data["email"]

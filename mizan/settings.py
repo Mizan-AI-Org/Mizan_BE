@@ -76,6 +76,7 @@ INSTALLED_APPS = [
     'finance',
     'payroll',
     'platform_admin.apps.PlatformAdminConfig',
+    'miya.apps.MiyaConfig',
 ]
 
 # ---------------------------
@@ -439,6 +440,7 @@ WHATSAPP_PHONE_NUMBER_ID = clean_whatsapp_env_value(
 WHATSAPP_API_VERSION = config('WHATSAPP_API_VERSION', default='v22.0')
 WHATSAPP_BUSINESS_ACCOUNT_ID = config('WHATSAPP_BUSINESS_ACCOUNT_ID', default='')
 WHATSAPP_VERIFY_TOKEN = config('WHATSAPP_VERIFY_TOKEN', default='')
+PUBLIC_API_BASE_URL = config('PUBLIC_API_BASE_URL', default='https://api.heymizan.ai')
 # Default country code for local phone numbers. Morocco (212) by default; override via env for other countries (e.g. 220 Gambia, 33 France).
 # Only used when staff phone lacks country code; numbers with valid country code are used as-is.
 WHATSAPP_DEFAULT_COUNTRY_CODE = config('WHATSAPP_DEFAULT_COUNTRY_CODE', default='212')
@@ -453,7 +455,7 @@ WHATSAPP_TEMPLATE_SHIFT_ASSIGNED_DETAILED_LANGUAGE = config('WHATSAPP_TEMPLATE_S
 # After staff activation we send this template (Welcome {{1}}, account for {{2}} activated...)
 WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME = config('WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME', default='staff_activated_welcome')
 WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME_HAS_HEADER = config('WHATSAPP_TEMPLATE_STAFF_ACTIVATED_WELCOME_HAS_HEADER', default=False, cast=str_to_bool)
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+OPENAI_API_KEY = config('OPENAI_API_KEY', default='') or os.getenv('OPENAI_API_KEY', '')
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
 
 # Cache: Redis DB 2 (broker/result typically use 0). LocMem fallback if disabled or local dev.
@@ -491,6 +493,17 @@ LUA_WEBHOOK_API_KEY = config('LUA_WEBHOOK_API_KEY', default='')
 LUA_USER_EVENTS_WEBHOOK = config('LUA_USER_EVENTS_WEBHOOK', default='')
 LUA_USER_AUTHENTICATION_WEBHOOK = config('LUA_USER_AUTHENTICATION_WEBHOOK', default='')
 LUA_WHATSAPP_WEBHOOK_URL = config('LUA_WHATSAPP_WEBHOOK_URL', default='')
+
+# Fish Audio — Miya voice (https://fish.audio/app/)
+FISH_AUDIO_API_KEY = config('FISH_AUDIO_API_KEY', default='')
+FISH_AUDIO_REFERENCE_ID = config('FISH_AUDIO_REFERENCE_ID', default='')
+FISH_AUDIO_MODEL = config('FISH_AUDIO_MODEL', default='s2.1-pro')
+
+# Miya AI agent (Fish Audio voice + OpenAI reasoning)
+MIYA_CHAT_MODEL = config('MIYA_CHAT_MODEL', default='gpt-4o-mini')
+MIYA_AGENT_API_BASE = config('MIYA_AGENT_API_BASE', default='http://127.0.0.1:8000')
+MIYA_WHATSAPP_ENABLED = config('MIYA_WHATSAPP_ENABLED', default=True, cast=str_to_bool)
+MIYA_WHATSAPP_VOICE_DEFAULT = config('MIYA_WHATSAPP_VOICE_DEFAULT', default=False, cast=str_to_bool)
 
 # WhatsApp Invitation Automation (Delegates to Lua Agent by default)
 AUTO_WHATSAPP_INVITES = str_to_bool(os.getenv('AUTO_WHATSAPP_INVITES', True))

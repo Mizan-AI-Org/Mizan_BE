@@ -247,6 +247,13 @@ class RestaurantOwnerSignupView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        from accounts.country_utils import normalize_country_code_for_restaurant
+
+        normalized_country = normalize_country_code_for_restaurant(restaurant)
+        if restaurant.country_code != normalized_country:
+            restaurant.country_code = normalized_country
+            restaurant.save(update_fields=["country_code", "updated_at"])
+
         gs = dict(restaurant.general_settings or {})
         gs['business_vertical'] = chosen_vertical
         restaurant.general_settings = gs

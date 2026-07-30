@@ -25,6 +25,7 @@ from .serializers import (
     AnnouncementCreateSerializer
 )
 from .services import notification_service
+from core.whatsapp_config import get_miya_whatsapp_enabled, get_whatsapp_verify_token
 from .utils import (
     infer_incident_type,
     infer_severity,
@@ -1327,34 +1328,54 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
     return True
 
 
-def _attach_whatsapp_photo_to_incident(notification_service, ticket, media_id, mime_type=None):
-    """Download WhatsApp image by media_id and save to SafetyConcernReport.photo via default storage."""
+def _attach_whatsapp_media_to_incident(notification_service, ticket, media_id, mime_type=None, filename=None):
+    """Download WhatsApp media by media_id and save to SafetyConcernReport photo/attachment."""
     if not media_id or not ticket:
-        logger.warning("_attach_whatsapp_photo_to_incident: missing media_id=%s or ticket=%s", media_id, ticket)
+        logger.warning("_attach_whatsapp_media_to_incident: missing media_id=%s or ticket=%s", media_id, ticket)
         return
     try:
         from notifications.media_persist import download_whatsapp_media
 
-        image_bytes, resolved_mime, filename = download_whatsapp_media(media_id)
+        file_bytes, resolved_mime, resolved_name = download_whatsapp_media(media_id)
         mime_type = mime_type or resolved_mime or ''
-        if not image_bytes:
-            logger.warning("_attach_whatsapp_photo_to_incident: download returned empty for media_id=%s", media_id)
+        filename = filename or resolved_name or ''
+        if not file_bytes:
+            logger.warning("_attach_whatsapp_media_to_incident: download returned empty for media_id=%s", media_id)
             return
-        # ImageField.save uses Django default storage (local MEDIA_ROOT or S3 when configured).
+        mime_lower = (mime_type or '').lower()
+        is_image = mime_lower.startswith('image/')
         ext = '.jpg'
-        if 'png' in (mime_type or '').lower():
+        if 'png' in mime_lower:
             ext = '.png'
-        elif 'gif' in (mime_type or '').lower():
+        elif 'gif' in mime_lower:
             ext = '.gif'
-        elif 'webp' in (mime_type or '').lower():
+        elif 'webp' in mime_lower:
             ext = '.webp'
+        elif 'pdf' in mime_lower:
+            ext = '.pdf'
         elif filename and '.' in filename:
             ext = '.' + filename.rsplit('.', 1)[-1]
         name = f"incident_{ticket.id}{ext}"
-        ticket.photo.save(name, ContentFile(image_bytes), save=True)
-        logger.info("Attached WhatsApp photo to incident %s (%d bytes)", ticket.id, len(image_bytes))
+        if is_image:
+            ticket.photo.save(name, ContentFile(file_bytes), save=True)
+        else:
+            ticket.attachment.save(name, ContentFile(file_bytes), save=True)
+            ticket.attachment_filename = (filename or name)[:255]
+            ticket.attachment_content_type = (mime_type or '')[:100]
+            ticket.save(update_fields=['attachment_filename', 'attachment_content_type', 'updated_at'])
+        logger.info(
+            "Attached WhatsApp %s to incident %s (%d bytes)",
+            "photo" if is_image else "file",
+            ticket.id,
+            len(file_bytes),
+        )
     except Exception as e:
-        logger.warning("Could not attach WhatsApp photo to incident %s: %s", getattr(ticket, 'id', '?'), e)
+        logger.warning("Could not attach WhatsApp media to incident %s: %s", getattr(ticket, 'id', '?'), e)
+
+
+def _attach_whatsapp_photo_to_incident(notification_service, ticket, media_id, mime_type=None):
+    """Backward-compatible wrapper for image-only callers."""
+    _attach_whatsapp_media_to_incident(notification_service, ticket, media_id, mime_type)
 
 
 def _notify_managers_of_whatsapp_incident(ticket):
@@ -1992,8 +2013,14 @@ def register_device_token(request):
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
+def _miya_whatsapp_enabled() -> bool:
+    return get_miya_whatsapp_enabled()
+
+
 def _lua_owns_whatsapp_conversation() -> bool:
-    """When Lua/Miya webhook is configured, Miya owns checklist Yes/No/N/A replies."""
+    """When external Lua webhook is configured and in-Django Miya WhatsApp is off."""
+    if _miya_whatsapp_enabled():
+        return False
     return bool((getattr(dj_settings, "LUA_WHATSAPP_WEBHOOK_URL", None) or "").strip())
 
 
@@ -2016,7 +2043,8 @@ def whatsapp_webhook(request):
         if request.method == 'GET':
             token = request.query_params.get('hub.verify_token') or request.GET.get('hub.verify_token')
             challenge = request.query_params.get('hub.challenge') or request.GET.get('hub.challenge')
-            if token and token == getattr(dj_settings, 'WHATSAPP_VERIFY_TOKEN', ''):
+            from core.whatsapp_config import get_whatsapp_verify_token
+            if token and token == get_whatsapp_verify_token():
                 return Response(int(challenge))
             return Response(status=status.HTTP_403_FORBIDDEN)
         
@@ -2026,11 +2054,12 @@ def whatsapp_webhook(request):
         # but NOT if it contains image/location messages (Lua cannot
         # download WhatsApp media — Django handles those directly).
         lua_url = getattr(dj_settings, 'LUA_WHATSAPP_WEBHOOK_URL', '')
+        miya_wa = _miya_whatsapp_enabled()
         # Audio is transcribed in Django; forwarding voice to Lua as well caused duplicate
         # handling (e.g. incident API) instead of guest-order routing.
         # Include 'voice' — some BSPs use type=voice for voice notes; treat like audio (Django transcribes, no Lua duplicate).
         _lua_skip_types = {'image', 'location', 'audio', 'voice'}
-        if lua_url:
+        if lua_url and not miya_wa:
             if not _payload_should_skip_lua_forward(payload, _lua_skip_types):
                 threading.Thread(
                     target=_forward_to_lua_whatsapp,
@@ -2465,7 +2494,7 @@ def whatsapp_webhook(request):
                     except Exception:
                         pass
                     if (
-                        lua_url
+                        (lua_url or miya_wa)
                         and session
                         and session.state not in _active_django_states
                         and msg_type not in _django_only_msg_types
@@ -2483,8 +2512,23 @@ def whatsapp_webhook(request):
                         and not _text_is_checklist_start
                         and not _text_is_clock_float_recovery
                     ):
-                        logger.info("Session state '%s' for %s — deferring to Lua/Miya.", session.state, phone_digits)
-                        continue
+                        if miya_wa and user and text_body:
+                            from miya.services.whatsapp import handle_miya_whatsapp_turn
+
+                            if handle_miya_whatsapp_turn(
+                                user=user,
+                                phone_digits=phone_digits,
+                                message_text=text_body,
+                                session=session,
+                            ):
+                                continue
+                        if lua_url:
+                            logger.info(
+                                "Session state '%s' for %s — deferring to Lua/Miya.",
+                                session.state,
+                                phone_digits,
+                            )
+                            continue
                     
                     # ------------------------------------------------------------------
                     # 1. HANDLE INTERACTIVE (Buttons)
@@ -2997,8 +3041,10 @@ def whatsapp_webhook(request):
                             from staff.models_task import SafetyConcernReport
 
                             image_obj = msg.get('image') or {}
-                            media_id_img = image_obj.get('id')
-                            mime_type_img = image_obj.get('mime_type')
+                            document_obj = msg.get('document') or {}
+                            media_id_img = image_obj.get('id') or document_obj.get('id')
+                            mime_type_img = image_obj.get('mime_type') or document_obj.get('mime_type')
+                            filename_img = document_obj.get('filename')
                             ticket_id = (session.context or {}).get('incident_ticket_id')
                             ticket = None
                             if ticket_id:
@@ -3006,8 +3052,12 @@ def whatsapp_webhook(request):
                                     id=ticket_id, reporter=user
                                 ).first()
                             if ticket and media_id_img:
-                                _attach_whatsapp_photo_to_incident(
-                                    notification_service, ticket, media_id_img, mime_type_img
+                                _attach_whatsapp_media_to_incident(
+                                    notification_service,
+                                    ticket,
+                                    media_id_img,
+                                    mime_type_img,
+                                    filename_img,
                                 )
                                 session.state = 'idle'
                                 session.context.pop('incident_ticket_id', None)
@@ -4192,7 +4242,18 @@ def whatsapp_webhook(request):
                                 # Fall through to generic unrecognized response if anything fails
                                 pass
 
-                    # Final fallback when no flows matched
+                    # Final fallback — Miya handles free-form ops chat on shared Mizan number
+                    if miya_wa and user and raw_body and session and session.state == 'idle':
+                        from miya.services.whatsapp import handle_miya_whatsapp_turn
+
+                        if handle_miya_whatsapp_turn(
+                            user=user,
+                            phone_digits=phone_digits,
+                            message_text=raw_body,
+                            session=session,
+                        ):
+                            continue
+
                     notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed' if 'chair' in raw_body.lower() or 'broken' in raw_body.lower() else 'unrecognized'))
 
         return Response({'success': True})

@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from . import whatsapp_views
 
 urlpatterns = [
     path("auth/login/", views.platform_ops_login, name="platform_ops_login"),
@@ -35,4 +36,17 @@ urlpatterns = [
     path("health/", views.platform_health, name="platform_health"),
     path("audit/", views.platform_audit, name="platform_audit"),
     path("impersonate/", views.platform_impersonate, name="platform_impersonate"),
+    path("whatsapp/config/", whatsapp_views.platform_whatsapp_config, name="platform_whatsapp_config"),
+    path("whatsapp/config/test/", whatsapp_views.platform_whatsapp_test, name="platform_whatsapp_test"),
+    path("whatsapp/templates/", whatsapp_views.platform_whatsapp_templates, name="platform_whatsapp_templates"),
+    path(
+        "whatsapp/templates/sync/",
+        whatsapp_views.platform_whatsapp_templates_sync,
+        name="platform_whatsapp_templates_sync",
+    ),
+    path(
+        "whatsapp/templates/<int:template_id>/",
+        whatsapp_views.platform_whatsapp_template_detail,
+        name="platform_whatsapp_template_detail",
+    ),
 ]
