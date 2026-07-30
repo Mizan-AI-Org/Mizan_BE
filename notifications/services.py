@@ -2344,35 +2344,82 @@ class NotificationService:
     # ----------------------------------------------------------------------
 
     def synthesize_speech_bytes(self, text, voice="alloy", fmt="mp3", speed=1.0):
-        """Run OpenAI TTS and return raw audio bytes.
+        """Generate speech audio bytes for WhatsApp voice notes.
 
-        Picked OpenAI tts-1 because:
-          - we already use OpenAI for Whisper STT and Vision, so one
-            API key + one bill;
-          - mp3 output is supported as-is by WhatsApp Cloud audio
-            messages (no transcoding required);
-          - ~150ms first-byte latency on short replies, which keeps the
-            chat feeling synchronous.
+        Uses Fish Audio (https://fish.audio/app/) when ``FISH_AUDIO_API_KEY`` is
+        configured — this is Miya's voice. Falls back to OpenAI TTS if Fish Audio
+        is not set (legacy).
 
-        Returns ``(bytes, mime_type)`` on success or ``(None, None)``
-        on any failure -- caller should fall back to text in that case.
+        Returns ``(bytes, mime_type)`` on success or ``(None, None)`` on failure.
         """
         if not text or not str(text).strip():
             return None, None
 
-        api_key = getattr(settings, 'OPENAI_API_KEY', '') or ''
-        if not api_key:
-            logger.warning("OPENAI_API_KEY not configured; skipping TTS")
-            return None, None
-
-        # Hard cap so a runaway agent reply doesn't burn $1 of TTS for
-        # a 30-page essay. Keep the cap generous enough for an explanation.
         text = str(text).strip()[:1500]
-
-        # Lock fmt to a small allow-list -- WhatsApp accepts mp3 and ogg.
         fmt = (fmt or "mp3").lower()
         if fmt not in ("mp3", "opus", "aac", "flac", "wav"):
             fmt = "mp3"
+        speed = max(0.25, min(4.0, float(speed or 1.0)))
+
+        fish_key = getattr(settings, "FISH_AUDIO_API_KEY", "") or ""
+        if fish_key:
+            return self._synthesize_fish_audio(text, fmt=fmt, speed=speed)
+
+        return self._synthesize_openai_tts(text, voice=voice, fmt=fmt, speed=speed)
+
+    def _synthesize_fish_audio(self, text, fmt="mp3", speed=1.0):
+        """Fish Audio TTS — Miya's voice via https://fish.audio/app/"""
+        api_key = getattr(settings, "FISH_AUDIO_API_KEY", "") or ""
+        reference_id = getattr(settings, "FISH_AUDIO_REFERENCE_ID", "") or ""
+        model = getattr(settings, "FISH_AUDIO_MODEL", "s2.1-pro") or "s2.1-pro"
+
+        if not api_key:
+            return None, None
+
+        payload = {
+            "text": text,
+            "format": fmt,
+            "prosody": {"speed": speed, "volume": 0, "normalize_loudness": True},
+        }
+        if reference_id:
+            payload["reference_id"] = reference_id
+
+        try:
+            resp = requests.post(
+                "https://api.fish.audio/v1/tts",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "model": model,
+                },
+                json=payload,
+                timeout=45,
+            )
+        except requests.RequestException as e:
+            logger.warning(f"Fish Audio TTS request failed: {e}")
+            return None, None
+
+        if resp.status_code != 200:
+            logger.warning(
+                f"Fish Audio TTS failed: {resp.status_code} - {resp.text[:300]}"
+            )
+            return None, None
+
+        mime = {
+            "mp3": "audio/mpeg",
+            "opus": "audio/ogg",
+            "aac": "audio/aac",
+            "flac": "audio/flac",
+            "wav": "audio/wav",
+        }.get(fmt, "audio/mpeg")
+        return resp.content, mime
+
+    def _synthesize_openai_tts(self, text, voice="alloy", fmt="mp3", speed=1.0):
+        """Legacy OpenAI TTS fallback when Fish Audio is not configured."""
+        api_key = getattr(settings, "OPENAI_API_KEY", "") or ""
+        if not api_key:
+            logger.warning("Neither FISH_AUDIO_API_KEY nor OPENAI_API_KEY configured; skipping TTS")
+            return None, None
 
         url = "https://api.openai.com/v1/audio/speech"
         payload = {
@@ -2380,7 +2427,7 @@ class NotificationService:
             "input": text,
             "voice": voice or "alloy",
             "response_format": fmt,
-            "speed": max(0.25, min(4.0, float(speed or 1.0))),
+            "speed": speed,
         }
         try:
             resp = requests.post(

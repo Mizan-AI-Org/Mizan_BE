@@ -40,6 +40,7 @@ urlpatterns = [
     path('api/finance/', include('finance.urls')),
     path('api/payroll/', include('payroll.urls')),
     path('api/platform/', include('platform_admin.urls')),
+    path('api/miya/', include('miya.urls')),
 
     # SWAGGER URLS
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

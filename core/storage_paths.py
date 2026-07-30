@@ -61,6 +61,11 @@ def incident_photo_upload_path(instance, filename):
     )
 
 
+def incident_attachment_upload_path(instance, filename):
+    """Non-image incident evidence (PDF, etc.)."""
+    return incident_photo_upload_path(instance, filename)
+
+
 def task_attachment_upload_path(instance, filename):
     """Dashboard task inbound attachment."""
     restaurant_id = getattr(instance, "restaurant_id", None)

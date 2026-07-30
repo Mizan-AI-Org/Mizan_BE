@@ -1,6 +1,10 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from accounts.models import Restaurant, BusinessLocation, AuditLog
+from accounts.country_utils import (
+    normalize_country_code,
+    normalize_country_code_for_restaurant,
+)
 from billing.models import Subscription, SubscriptionPlan
 from .lifecycle import tenant_is_deactivated, tenant_is_suspended
 
@@ -11,6 +15,7 @@ class PlatformTenantListSerializer(serializers.ModelSerializer):
     staff_count = serializers.IntegerField(read_only=True)
     subscription_status = serializers.CharField(read_only=True, allow_null=True)
     subscription_plan = serializers.CharField(read_only=True, allow_null=True)
+    country_code = serializers.SerializerMethodField()
     suspended = serializers.SerializerMethodField()
     deactivated = serializers.SerializerMethodField()
     onboarding_done = serializers.SerializerMethodField()
@@ -38,6 +43,9 @@ class PlatformTenantListSerializer(serializers.ModelSerializer):
             "deactivated",
             "onboarding_done",
         ]
+
+    def get_country_code(self, obj):
+        return normalize_country_code_for_restaurant(obj)
 
     def get_suspended(self, obj):
         return tenant_is_suspended(obj.general_settings)
@@ -173,6 +181,17 @@ class PlatformTenantWriteSerializer(serializers.ModelSerializer):
             "suspended",
             "deactivated",
         ]
+
+    def validate_country_code(self, value):
+        inst = getattr(self, "instance", None)
+        return normalize_country_code(
+            value,
+            timezone=getattr(inst, "timezone", None) if inst else None,
+            currency=getattr(inst, "currency", None) if inst else None,
+            phone=getattr(inst, "phone", None) if inst else None,
+            email=getattr(inst, "email", None) if inst else None,
+            language=getattr(inst, "language", None) if inst else None,
+        )
 
     def update(self, instance, validated_data):
         suspended = validated_data.pop("suspended", None)

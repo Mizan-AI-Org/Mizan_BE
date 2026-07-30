@@ -83,6 +83,19 @@ class RestaurantSerializer(serializers.ModelSerializer):
         model = Restaurant
         fields = '__all__'
 
+    def validate_country_code(self, value):
+        from accounts.country_utils import normalize_country_code
+
+        inst = getattr(self, "instance", None)
+        return normalize_country_code(
+            value,
+            timezone=getattr(inst, "timezone", None) if inst else None,
+            currency=getattr(inst, "currency", None) if inst else None,
+            phone=getattr(inst, "phone", None) if inst else None,
+            email=getattr(inst, "email", None) if inst else None,
+            language=getattr(inst, "language", None) if inst else None,
+        )
+
 class CustomUserSerializer(serializers.ModelSerializer):
     restaurant_name = serializers.CharField(source='restaurant.name', read_only=True)
     profile = StaffProfileSerializer(required=False)

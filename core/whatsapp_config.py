@@ -60,12 +60,76 @@ def resolve_whatsapp_access_token(raw: str | None = None) -> str:
     return token
 
 
+def _platform_whatsapp_effective() -> dict:
+    """Lazy import — platform_admin may not be migrated yet at startup."""
+    try:
+        from platform_admin.whatsapp_services import effective_whatsapp_values
+
+        return effective_whatsapp_values()
+    except Exception:
+        return {}
+
+
 def get_whatsapp_access_token() -> str:
+    effective = _platform_whatsapp_effective()
+    token = effective.get("access_token")
+    if token:
+        return str(token)
     return resolve_whatsapp_access_token()
 
 
 def get_whatsapp_phone_number_id() -> str:
+    effective = _platform_whatsapp_effective()
+    phone = effective.get("phone_number_id")
+    if phone:
+        return clean_whatsapp_env_value(str(phone))
     return clean_whatsapp_env_value(getattr(settings, "WHATSAPP_PHONE_NUMBER_ID", ""))
+
+
+def get_whatsapp_business_account_id() -> str:
+    effective = _platform_whatsapp_effective()
+    waba = effective.get("business_account_id")
+    if waba:
+        return clean_whatsapp_env_value(str(waba))
+    return clean_whatsapp_env_value(getattr(settings, "WHATSAPP_BUSINESS_ACCOUNT_ID", ""))
+
+
+def get_whatsapp_verify_token() -> str:
+    effective = _platform_whatsapp_effective()
+    verify = effective.get("verify_token")
+    if verify:
+        return clean_whatsapp_env_value(str(verify))
+    return clean_whatsapp_env_value(getattr(settings, "WHATSAPP_VERIFY_TOKEN", ""))
+
+
+def get_whatsapp_activation_phone() -> str:
+    effective = _platform_whatsapp_effective()
+    phone = effective.get("activation_phone")
+    if phone:
+        return clean_whatsapp_env_value(str(phone))
+    return clean_whatsapp_env_value(getattr(settings, "WHATSAPP_ACTIVATION_WA_PHONE", ""))
+
+
+def get_whatsapp_api_version() -> str:
+    effective = _platform_whatsapp_effective()
+    version = effective.get("api_version")
+    if version:
+        return str(version)
+    return getattr(settings, "WHATSAPP_API_VERSION", "v22.0")
+
+
+def get_miya_whatsapp_enabled() -> bool:
+    effective = _platform_whatsapp_effective()
+    if effective:
+        return bool(effective.get("miya_whatsapp_enabled", True))
+    return bool(getattr(settings, "MIYA_WHATSAPP_ENABLED", True))
+
+
+def get_miya_whatsapp_voice_default() -> bool:
+    effective = _platform_whatsapp_effective()
+    if effective:
+        return bool(effective.get("miya_voice_default", False))
+    return bool(getattr(settings, "MIYA_WHATSAPP_VOICE_DEFAULT", False))
 
 
 def parse_whatsapp_api_error(payload: Any) -> str:
@@ -151,7 +215,7 @@ def probe_whatsapp_credentials() -> dict[str, Any]:
             "message": "WHATSAPP_PHONE_NUMBER_ID is not set",
         }
 
-    api_version = getattr(settings, "WHATSAPP_API_VERSION", "v22.0")
+    api_version = get_whatsapp_api_version()
     url = f"https://graph.facebook.com/{api_version}/{phone_id}"
     try:
         resp = requests.get(

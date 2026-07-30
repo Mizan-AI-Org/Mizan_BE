@@ -55,8 +55,8 @@ node_modules/
 # Localization compiled files
 locale/**/*.mo
 
-# Lua Agent: always ignore; deployed separately via Lua CLI, not with BE
-my-agent/
+# Lua Agent: deployed separately from https://github.com/Mizan-AI-Org/Miya
+# (removed from this repo)
 
 # Redis
 dump.rdb

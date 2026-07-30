@@ -1,12 +1,19 @@
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 from django.conf import settings
-from .models import UserInvitation, InvitationDeliveryLog
+from .models import UserInvitation, InvitationDeliveryLog, Restaurant
 from notifications.services import notification_service
 import logging
 import sys
 
 logger = logging.getLogger(__name__)
+
+
+@receiver(pre_save, sender=Restaurant)
+def normalize_restaurant_country_code(sender, instance: Restaurant, **kwargs):
+    from accounts.country_utils import normalize_country_code_for_restaurant
+
+    instance.country_code = normalize_country_code_for_restaurant(instance)
 
 
 def normalize_phone(phone):

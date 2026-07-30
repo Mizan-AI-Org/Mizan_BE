@@ -1,4 +1,6 @@
 from rest_framework import serializers
+import mimetypes
+import os
 from .models import (
     Schedule,
     StaffProfile,
@@ -12,6 +14,7 @@ from .models import (
 )
 from .models_task import StandardOperatingProcedure, SafetyChecklist, ScheduleTask, SafetyConcernReport, SafetyRecognition
 from accounts.serializers import CustomUserSerializer, RestaurantSerializer
+from core.s3_storage import file_field_download_url, s3_media_enabled, generate_presigned_url
 import decimal
 from accounts.models import CustomUser, Restaurant
 from typing import Tuple
@@ -133,6 +136,90 @@ class SafetyConcernReportSerializer(serializers.ModelSerializer):
         model = SafetyConcernReport
         fields = '__all__'
         read_only_fields = ('created_at', 'updated_at', 'restaurant', 'reporter')
+
+    def _absolute_file_url(self, file_field) -> str:
+        request = self.context.get('request')
+        return file_field_download_url(file_field, request=request)
+
+    def _resolve_stored_url(self, url: str) -> str:
+        raw = (url or "").strip()
+        if not raw:
+            return ""
+        if raw.startswith(("http://", "https://")):
+            return raw
+        request = self.context.get('request')
+        if s3_media_enabled() and not raw.startswith("/"):
+            presigned = generate_presigned_url(raw.lstrip("/"))
+            if presigned:
+                return presigned
+        if request:
+            return request.build_absolute_uri(raw if raw.startswith("/") else f"/{raw}")
+        return raw
+
+    def _guess_content_type(self, name: str, fallback: str = "") -> str:
+        guessed, _ = mimetypes.guess_type(name or "")
+        return guessed or fallback
+
+    def _build_attachments(self, obj) -> list[dict]:
+        items: list[dict] = []
+        if obj.photo:
+            url = self._absolute_file_url(obj.photo)
+            if url:
+                name = os.path.basename(obj.photo.name or "") or "Photo evidence"
+                items.append(
+                    {
+                        "url": url,
+                        "name": name,
+                        "content_type": self._guess_content_type(name, "image/jpeg"),
+                    }
+                )
+        if getattr(obj, "attachment", None):
+            url = self._absolute_file_url(obj.attachment)
+            if url:
+                name = (
+                    (getattr(obj, "attachment_filename", None) or "").strip()
+                    or os.path.basename(obj.attachment.name or "")
+                    or "Attachment"
+                )
+                items.append(
+                    {
+                        "url": url,
+                        "name": name,
+                        "content_type": (
+                            (getattr(obj, "attachment_content_type", None) or "").strip()
+                            or self._guess_content_type(name)
+                        ),
+                    }
+                )
+        for idx, raw_url in enumerate(obj.audio_evidence or [], start=1):
+            url = self._resolve_stored_url(str(raw_url))
+            if not url:
+                continue
+            name = os.path.basename(str(raw_url).split("?")[0]) or f"Audio {idx}"
+            items.append(
+                {
+                    "url": url,
+                    "name": name,
+                    "content_type": self._guess_content_type(name, "audio/mpeg"),
+                }
+            )
+        return items
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        photo_url = self._absolute_file_url(instance.photo) if instance.photo else ""
+        attachment_url = (
+            self._absolute_file_url(instance.attachment)
+            if getattr(instance, "attachment", None)
+            else ""
+        )
+        data["photo_url"] = photo_url
+        data["attachment_url"] = attachment_url
+        data["attachments"] = self._build_attachments(instance)
+        data["has_attachments"] = bool(data["attachments"])
+        if photo_url:
+            data["photo"] = photo_url
+        return data
         
     def create(self, validated_data):
         # Handle anonymous reports
