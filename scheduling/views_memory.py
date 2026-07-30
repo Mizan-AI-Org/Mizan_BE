@@ -131,6 +131,14 @@ def _list_payload(lst: MemoryList, include_items: bool = True) -> dict:
 
 
 def _reminder_payload(r: PersonalReminder) -> dict:
+    attachment_href = ""
+    if getattr(r, "attachment", None):
+        try:
+            attachment_href = r.attachment.url or ""
+        except Exception:
+            attachment_href = ""
+    if not attachment_href:
+        attachment_href = (getattr(r, "attachment_url", None) or "").strip()
     return {
         "id": str(r.id),
         "title": r.title,
@@ -141,6 +149,8 @@ def _reminder_payload(r: PersonalReminder) -> dict:
         "status": r.status,
         "phone": r.phone or "",
         "fire_count": r.fire_count,
+        "attachment_url": attachment_href,
+        "has_attachment": bool(attachment_href or getattr(r, "attachment", None)),
         "linked_note_id": str(r.linked_note_id) if r.linked_note_id else None,
         "created_at": r.created_at.isoformat() if r.created_at else None,
     }
@@ -422,7 +432,8 @@ def agent_memory_lists(request):
 def agent_personal_reminders(request):
     """
     GET: pending reminders for owner.
-    POST: create reminder, or action=cancel.
+    POST: create reminder, or action=cancel / action=update.
+    Accepts optional ``attachment_url`` or multipart ``attachment`` / ``file``.
     """
     try:
         restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
@@ -458,6 +469,54 @@ def agent_personal_reminders(request):
             ).update(status="cancelled")
             return Response({"success": True, "cancelled": updated})
 
+        def _apply_attachment(rem: PersonalReminder) -> None:
+            uploaded = (
+                request.FILES.get("attachment")
+                or request.FILES.get("file")
+                or request.FILES.get("media")
+            )
+            att_url = str(
+                data.get("attachment_url")
+                or data.get("attachmentUrl")
+                or data.get("media_url")
+                or data.get("file_url")
+                or ""
+            ).strip()[:1024]
+            if uploaded:
+                rem.attachment.save(uploaded.name, uploaded, save=False)
+                rem.attachment_url = ""
+            elif att_url:
+                rem.attachment_url = att_url
+
+        if action == "update":
+            rid = data.get("reminder_id") or data.get("id")
+            if not rid:
+                return Response({"error": "reminder_id required"}, status=status.HTTP_400_BAD_REQUEST)
+            rem = PersonalReminder.objects.filter(
+                id=rid, restaurant=restaurant, owner=owner
+            ).first()
+            if not rem:
+                return Response({"error": "not found"}, status=status.HTTP_404_NOT_FOUND)
+            if data.get("title") or data.get("text"):
+                rem.title = str(data.get("title") or data.get("text") or rem.title)[:255]
+            if "body" in data or "description" in data:
+                rem.body = str(data.get("body") or data.get("description") or "")[:4000]
+            due_raw = data.get("due_at") or data.get("when") or data.get("remind_at")
+            if due_raw:
+                due_at = parse_datetime(str(due_raw).replace("Z", "+00:00"))
+                if due_at is None:
+                    return Response({"error": "Invalid due_at"}, status=status.HTTP_400_BAD_REQUEST)
+                if timezone.is_naive(due_at):
+                    due_at = timezone.make_aware(due_at)
+                rem.due_at = due_at
+            if data.get("recurrence"):
+                recurrence = str(data.get("recurrence") or "none").lower()
+                if recurrence in ("none", "daily", "weekly", "monthly", "weekdays"):
+                    rem.recurrence = recurrence
+            _apply_attachment(rem)
+            rem.save()
+            return Response({"success": True, "reminder": _reminder_payload(rem)})
+
         title = (data.get("title") or data.get("text") or "").strip()
         if not title:
             return Response({"error": "title is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -488,7 +547,7 @@ def agent_personal_reminders(request):
         if linked_note_id:
             linked_note = MemoryNote.objects.filter(id=linked_note_id, restaurant=restaurant).first()
 
-        rem = PersonalReminder.objects.create(
+        rem = PersonalReminder(
             restaurant=restaurant,
             owner=owner,
             phone=phone[:40],
@@ -499,6 +558,8 @@ def agent_personal_reminders(request):
             recurrence=recurrence,
             linked_note=linked_note,
         )
+        _apply_attachment(rem)
+        rem.save()
         return Response(
             {
                 "success": True,

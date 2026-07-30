@@ -189,6 +189,8 @@ def _task_pill_status(task, *, now=None) -> str:
         return "DONE"
     if status == "CANCELLED":
         return "CANCELLED"
+    if status == "UNABLE_TO_COMPLETE":
+        return "ESCALATED"
     due = getattr(task, "due_date", None)
     if due is not None:
         try:
@@ -199,6 +201,8 @@ def _task_pill_status(task, *, now=None) -> str:
             pass
     if status == "IN_PROGRESS":
         return "IN_PROGRESS"
+    if status == "ACCEPTED":
+        return "ASSIGNED"
     created = getattr(task, "created_at", None)
     if created and (now - created).total_seconds() < _NEW_BADGE_HOURS * 3600:
         return "NEW"
@@ -307,7 +311,19 @@ def _serialize_dashboard_task(task, *, now=None) -> dict[str, Any]:
     )
     data["has_photo_proof"] = bool(getattr(task, "proof_media_url", None))
     data["require_photo_proof"] = bool(getattr(task, "require_photo_proof", False))
-
+    data["proof_media_url"] = getattr(task, "proof_media_url", None) or None
+    data["proof_caption"] = getattr(task, "proof_caption", "") or ""
+    submitted_at = getattr(task, "proof_submitted_at", None)
+    data["proof_submitted_at"] = submitted_at.isoformat() if submitted_at else None
+    submitter = getattr(task, "proof_submitted_by", None)
+    if submitter:
+        data["proof_submitter_name"] = (
+            f"{(submitter.first_name or '').strip()} {(submitter.last_name or '').strip()}".strip()
+            or getattr(submitter, "email", None)
+            or getattr(submitter, "phone", None)
+        )
+    else:
+        data["proof_submitter_name"] = data.get("proof_submitted_by_name")
     assignee_absent = False
     try:
         from dashboard.views_ops_memory import _is_user_absent

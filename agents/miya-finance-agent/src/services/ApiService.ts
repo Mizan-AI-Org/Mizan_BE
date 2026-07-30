@@ -2777,6 +2777,63 @@ export default class ApiService {
         }
     }
 
+    async attachInvoiceProofOfPayment(restaurantId: string, payload: {
+        invoice_id?: string;
+        vendor?: string;
+        invoice_number?: string;
+        proof_url?: string;
+        mark_paid?: boolean;
+    }) {
+        const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
+        if (!agentKey) throw new Error("No agent key configured");
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/finance/agent/invoices/proof-of-payment/",
+                { restaurant_id: restaurantId, ...payload },
+                {
+                    headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId),
+                },
+            );
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                error: error?.response?.data?.error || error.message,
+                message_for_user: error?.response?.data?.message_for_user,
+            };
+        }
+    }
+
+    async returnInvoiceForCorrection(restaurantId: string, payload: {
+        invoice_id?: string;
+        vendor?: string;
+        invoice_number?: string;
+        reason: string;
+    }) {
+        const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
+        if (!agentKey) throw new Error("No agent key configured");
+        try {
+            const response = await this.axiosInstance.post(
+                "/api/finance/agent/invoices/return/",
+                {
+                    restaurant_id: restaurantId,
+                    returned_reason: payload.reason,
+                    ...payload,
+                },
+                {
+                    headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId),
+                },
+            );
+            return response.data;
+        } catch (error: any) {
+            return {
+                success: false,
+                error: error?.response?.data?.error || error.message,
+                message_for_user: error?.response?.data?.message_for_user,
+            };
+        }
+    }
+
     async paymentApprovalForAgent(payload: {
         restaurant_id: string;
         token?: string;

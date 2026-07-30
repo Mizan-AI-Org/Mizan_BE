@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from core.s3_storage import file_field_download_url
+
 from .models import Invoice
 
 
@@ -13,6 +15,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
     paid_by_name = serializers.SerializerMethodField()
     attachment_url = serializers.SerializerMethodField()
     has_attachment = serializers.SerializerMethodField()
+    proof_of_payment_url = serializers.SerializerMethodField()
+    lifecycle_status = serializers.CharField(read_only=True)
 
     class Meta:
         model = Invoice
@@ -28,9 +32,11 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "issue_date",
             "due_date",
             "status",
+            "lifecycle_status",
             "approval_status",
             "category",
             "notes",
+            "returned_reason",
             "photo",
             "attachment",
             "attachment_content_type",
@@ -38,6 +44,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "attachment_url",
             "has_attachment",
             "photo_url",
+            "proof_of_payment",
+            "proof_of_payment_url",
             "paid_at",
             "paid_amount",
             "payment_method",
@@ -58,6 +66,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "id",
             "restaurant",
             "approval_status",
+            "lifecycle_status",
             "is_overdue",
             "days_until_due",
             "location_name",
@@ -65,6 +74,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "paid_by_name",
             "attachment_url",
             "has_attachment",
+            "proof_of_payment_url",
             "match_status",
             "match_confidence",
             "created_at",
@@ -72,13 +82,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
         ]
 
     def _absolute_file_url(self, file_field) -> str:
-        if not file_field:
-            return ""
-        url = file_field.url
         request = self.context.get("request")
-        if request and url:
-            return request.build_absolute_uri(url)
-        return url
+        return file_field_download_url(file_field, request=request)
 
     def get_attachment_url(self, obj):
         stored = obj.attachment or obj.photo
@@ -88,6 +93,11 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
     def get_has_attachment(self, obj) -> bool:
         return bool(obj.attachment or obj.photo or (obj.photo_url or "").strip())
+
+    def get_proof_of_payment_url(self, obj):
+        if obj.proof_of_payment:
+            return self._absolute_file_url(obj.proof_of_payment)
+        return ""
 
     def get_location_name(self, obj):
         return obj.location.name if obj.location_id else ""

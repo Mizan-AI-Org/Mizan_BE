@@ -55,19 +55,23 @@ class InvoiceViewSet(ModelViewSet):
         # Filtering
         params = self.request.query_params
         st = (params.get("status") or "").upper()
-        if st in {Invoice.STATUS_DRAFT, Invoice.STATUS_OPEN, Invoice.STATUS_PAID, Invoice.STATUS_VOIDED}:
+        valid_statuses = {c[0] for c in Invoice.STATUS_CHOICES}
+        if st in valid_statuses:
             qs = qs.filter(status=st)
 
         vendor = (params.get("vendor") or "").strip()
         if vendor:
             qs = qs.filter(vendor_name__icontains=vendor)
 
-        # ``overdue=true`` — open + due_date < today.
+        # ``overdue=true`` — unpaid active + due_date < today.
         overdue = (params.get("overdue") or "").lower() in ("true", "1", "yes")
         if overdue:
-            qs = qs.filter(status=Invoice.STATUS_OPEN, due_date__lt=timezone.now().date())
+            qs = qs.filter(
+                status__in=Invoice.UNPAID_ACTIVE_STATUSES,
+                due_date__lt=timezone.now().date(),
+            )
 
-        # ``due_within=N`` days — open + due_date <= today+N (and >= today
+        # ``due_within=N`` days — unpaid active + due_date <= today+N (and >= today
         # so we don't double-count overdue rows).
         due_within = params.get("due_within")
         if due_within:
@@ -75,7 +79,7 @@ class InvoiceViewSet(ModelViewSet):
                 n = int(due_within)
                 today = timezone.now().date()
                 qs = qs.filter(
-                    status=Invoice.STATUS_OPEN,
+                    status__in=Invoice.UNPAID_ACTIVE_STATUSES,
                     due_date__gte=today,
                     due_date__lte=today + timedelta(days=n),
                 )

@@ -19,7 +19,7 @@ from notifications.services import notification_service
 
 from .intent_router import classify_request, staff_request_category
 from .models import StaffRequest, StaffRequestComment
-from .request_routing import resolve_default_assignee_for_category
+from .request_routing import resolve_all_assignees_for_category
 from .views_agent import (
     _invalidate_staff_requests_cache,
     _notify_managers_of_staff_request,
@@ -99,7 +99,9 @@ def ingest_staff_escalation_from_whatsapp(
     if not staff_name and staff_phone:
         staff_name = staff_phone if str(staff_phone).startswith("+") else f"+{staff_phone}"
 
-    assignee = resolve_default_assignee_for_category(restaurant, category)
+    category_owners = resolve_all_assignees_for_category(restaurant, category)
+    # Primary FK = first owner; remaining owners are still notified below.
+    assignee = category_owners[0] if category_owners else None
     auto_assigned = assignee is not None
 
     ext = (external_id or "").strip()
@@ -163,7 +165,11 @@ def ingest_staff_escalation_from_whatsapp(
         f"\"{subject[:80]}\". It's waiting under {lane} (Pending) in the inbox."
     )
 
-    if assignee:
+    if category_owners:
+        informed_names = [
+            (o.get_full_name() or o.email)
+            for o in category_owners[1:]
+        ]
         StaffRequestComment.objects.create(
             request=req,
             author=None,
@@ -171,22 +177,39 @@ def ingest_staff_escalation_from_whatsapp(
             body=(
                 f"Auto-assigned to {assignee.get_full_name() or assignee.email} "
                 f"(category owner for {category.lower()})"
+                + (
+                    f"; informed: {', '.join(informed_names)}"
+                    if informed_names
+                    else ""
+                )
             ),
             metadata={
                 "assignee_id": str(assignee.id),
+                "informed_ids": [str(o.id) for o in category_owners[1:]],
                 "auto_assigned": auto_assigned,
                 "category": category,
             },
         )
-        owner_phone = getattr(assignee, "phone", "") or ""
-        if owner_phone:
+        notified = False
+        for idx, owner in enumerate(category_owners):
+            owner_phone = getattr(owner, "phone", "") or ""
+            if not owner_phone:
+                continue
+            ping = manager_ping if idx == 0 else (
+                f"ℹ️ FYI — new {category.lower()} request from "
+                f"{staff_name or 'a staff member'}: "
+                f"\"{subject[:80]}\". Assigned to "
+                f"{assignee.get_full_name() or assignee.email}; "
+                f"you're listed as a category owner."
+            )
             try:
-                wa_ok, _ = notification_service.send_whatsapp_text(owner_phone, manager_ping)
-                if wa_ok:
-                    req.whatsapp_notified_at = timezone.now()
-                    req.save(update_fields=["whatsapp_notified_at", "updated_at"])
+                wa_ok, _ = notification_service.send_whatsapp_text(owner_phone, ping)
+                notified = notified or bool(wa_ok)
             except Exception as exc:
-                logger.warning("StaffRequest assignee WhatsApp ping failed: %s", exc)
+                logger.warning("StaffRequest owner WhatsApp ping failed: %s", exc)
+        if notified:
+            req.whatsapp_notified_at = timezone.now()
+            req.save(update_fields=["whatsapp_notified_at", "updated_at"])
     else:
         # No category owner configured — WhatsApp the managers directly so the
         # escalation is never silently parked in the inbox.

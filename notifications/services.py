@@ -2540,6 +2540,94 @@ class NotificationService:
 
         return ok, {"status_code": resp.status_code, "data": data, "external_id": external_id, "media_id": media_id}
 
+    def send_whatsapp_media_attachment(
+        self,
+        phone,
+        *,
+        file_bytes=None,
+        media_id=None,
+        mime_type="application/octet-stream",
+        filename="attachment.bin",
+        caption=None,
+        as_document=False,
+        notification=None,
+    ):
+        """Send an image or document attachment via WhatsApp Cloud API."""
+        from .models import NotificationLog
+
+        token = get_whatsapp_access_token() or None
+        phone_id = get_whatsapp_phone_number_id() or None
+        if not token or not phone_id:
+            return False, {"error": "WhatsApp not configured on backend"}
+
+        phone, phone_err = normalize_whatsapp_phone(phone)
+        if phone_err:
+            return False, {"error": phone_err}
+
+        if not media_id:
+            if not file_bytes:
+                return False, {"error": "Provide file_bytes or media_id"}
+            media_id, up_err = self.upload_whatsapp_media(
+                file_bytes,
+                mime_type=mime_type,
+                filename=filename,
+            )
+            if not media_id:
+                return False, {"error": up_err}
+
+        is_image = (mime_type or "").startswith("image/") and not as_document
+        msg_type = "image" if is_image else "document"
+        body = {"id": media_id}
+        if caption:
+            body["caption"] = str(caption)[:1024]
+        if msg_type == "document":
+            body["filename"] = filename or "file"
+
+        url = (
+            f"https://graph.facebook.com/"
+            f"{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
+        )
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": phone,
+            "type": msg_type,
+            msg_type: body,
+        }
+
+        try:
+            resp = requests.post(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                json=payload,
+                timeout=45,
+            )
+        except requests.RequestException as e:
+            return False, {"error": str(e)}
+
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"error": resp.text}
+
+        ok = resp.status_code == 200
+        external_id = None
+        if isinstance(data, dict) and data.get("messages"):
+            external_id = str(data["messages"][0].get("id"))
+
+        try:
+            NotificationLog.objects.create(
+                notification=notification,
+                channel="whatsapp",
+                recipient_address=phone,
+                status="SENT" if ok else "FAILED",
+                external_id=external_id,
+                response_data=data if isinstance(data, dict) else {"raw": str(data)},
+                error_message=None if ok else str(data)[:500],
+            )
+        except Exception:
+            pass
+        return ok, {"status_code": resp.status_code, "data": data, "external_id": external_id, "media_id": media_id}
+
     # ----------------------------------------------------------------------
     # PREFERENCE HELPERS
     # ----------------------------------------------------------------------

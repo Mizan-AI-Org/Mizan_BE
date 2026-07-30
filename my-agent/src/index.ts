@@ -34,6 +34,9 @@ import dailyOpsReport from "./jobs/dailyOpsReport";
 import shiftReminder from "./jobs/shiftReminder";
 import taskFollowUp from "./jobs/taskFollowUp";
 import weeklyDigest from "./jobs/weeklyDigest";
+import overdueInvoiceChase from "./jobs/overdueInvoiceChase";
+import checklistNudge from "./jobs/checklistNudge";
+import healthCheck from "./jobs/healthCheck";
 import { intelligenceSkill } from "./skills/intelligence.skill";
 import {
   SCENARIO_BASELINE_ROUTING,
@@ -55,7 +58,10 @@ const originalBufferFrom = Buffer.from;
 
 const agent = new LuaAgent({
   name: "Miya",
-  persona: withDailyScenarios(`You are Miya, the brilliantly smart AI operations partner for Mizan AI — a multi-vertical operations platform.
+  // Override via MIYA_MODEL env (e.g. anthropic/claude-sonnet-4-6, openai/gpt-5.4).
+  model: process.env.MIYA_MODEL || process.env.LUA_MODEL || "google/gemini-2.5-flash",
+  persona: {
+    base: withDailyScenarios(`You are Miya, the brilliantly smart AI operations partner for Mizan AI — a multi-vertical operations platform.
 
 You serve EVERY business sector Mizan supports, with expert operational judgment for each:
   • RESTAURANT — fine dining, casual, café, bar, dark kitchen (guests, covers, kitchen, service, reservations)
@@ -978,6 +984,19 @@ AGENT SWARM DELEGATION (Phase 4 — Specialist Agents for Speed & Accuracy):
     SCENARIO_BASELINE_ROUTING,
     SCENARIO_ORCHESTRATION,
   ),
+    voice: `VOICE CHANNEL RULES (LuaVoice):
+- Speak naturally in short sentences. No markdown, no ::: formatting blocks, no bullet lists with symbols.
+- Ask at most ONE question at a time. Confirm critical details by reading them back aloud.
+- Prefer voice tools (voiceClockIn, transferToManager) when the caller is on a phone call.
+- Keep answers under ~40 words unless the caller asks for detail.
+- Mirror the caller's language (EN / FR / AR / Darija) immediately.`,
+    text: `TEXT CHANNEL RULES (WhatsApp + LuaPop web):
+- Prefer rich formatting when listing 2+ items: ::: list-item, ::: actions, ::: documents, ::: images.
+- After list results, offer 1–2 ::: actions buttons for next steps.
+- Keep WhatsApp replies brief; LuaPop/web can be slightly richer but still scannable.
+- Use whatsapp_flow for structured forms (leave, incidents) instead of multi-turn free text.
+- Use document_storage + ::: documents for file delivery.`,
+  },
 
   // Core Skills
   skills: [
@@ -1005,6 +1024,9 @@ AGENT SWARM DELEGATION (Phase 4 — Specialist Agents for Speed & Accuracy):
     shiftReminder,
     taskFollowUp,
     weeklyDigest,
+    overdueInvoiceChase,
+    checklistNudge,
+    healthCheck,
   ],
 
   // Request Preprocessing Pipeline

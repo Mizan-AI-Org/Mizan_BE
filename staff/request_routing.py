@@ -41,6 +41,7 @@ _CATEGORY_TO_SLUGS: dict[str, tuple[str, ...]] = {
     # that way existing tenants get sensible routing without having
     # to revisit onboarding.
     "PURCHASE_ORDER": ("request.purchase_order", "request.inventory"),
+    "FINANCE": ("request.finance", "task.finance"),
     "MEDICAL": ("request.medical", "request.hr"),
     "OTHER": (),
 }
@@ -82,35 +83,55 @@ def _lookup_user_by_id(
         return None
 
 
+def _uids_from_raw(raw) -> list[str]:
+    """Normalize a mapping value (string or list) into ordered UUID strings."""
+    if raw is None or raw == "":
+        return []
+    if isinstance(raw, (list, tuple)):
+        out: list[str] = []
+        for item in raw:
+            out.extend(_uids_from_raw(item))
+        return out
+    uid = str(raw).strip()
+    return [uid] if uid else []
+
+
 def _first_uid(mapping: dict, slugs: Iterable[str]) -> Optional[str]:
     """Return the first non-empty UUID in ``mapping`` for any of ``slugs``.
 
     Onboarding stores owners as ``string[]`` per slug; agent API may store a
-    single string. Accept both.
+    single string. Accept both. Kept for backward-compatible single-assignee
+    resolution.
     """
+    uids = _all_uids(mapping, slugs)
+    return uids[0] if uids else None
 
-    def _as_uid(raw) -> Optional[str]:
-        if raw is None or raw == "":
-            return None
-        if isinstance(raw, (list, tuple)):
-            for item in raw:
-                got = _as_uid(item)
-                if got:
-                    return got
-            return None
-        return str(raw).strip() or None
+
+def _all_uids(mapping: dict, slugs: Iterable[str]) -> list[str]:
+    """Return all non-empty UUIDs in ``mapping`` for any of ``slugs``.
+
+    Preserves configured order, de-duplicates. Walks slugs in priority order
+    so owners on the primary slug appear before fallback-slug owners.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+
+    def _consume(raw) -> None:
+        for uid in _uids_from_raw(raw):
+            if uid not in seen:
+                seen.add(uid)
+                out.append(uid)
 
     for slug in slugs:
-        uid = _as_uid(mapping.get(slug))
-        if uid:
-            return uid
+        if slug in mapping:
+            _consume(mapping.get(slug))
     # Case-insensitive fallback: handles manually-edited JSON.
     lowered = {str(k).lower(): v for k, v in mapping.items() if isinstance(k, str)}
     for slug in slugs:
-        uid = _as_uid(lowered.get(slug.lower()))
-        if uid:
-            return uid
-    return None
+        key = slug.lower()
+        if key in lowered and slug not in mapping:
+            _consume(lowered.get(key))
+    return out
 
 
 def resolve_default_assignee_for_category(
@@ -118,77 +139,82 @@ def resolve_default_assignee_for_category(
     category: Optional[str],
 ) -> Optional["CustomUser"]:
     """
-    Return the CustomUser that should own a new StaffRequest in this
+    Return the primary CustomUser that should own a new StaffRequest in this
     category, or ``None`` if no owner is configured.
 
-    Resolution order (first match wins):
+    Equivalent to the first entry of
+    :func:`resolve_all_assignees_for_category` (backward-compatible).
+    """
+    owners = resolve_all_assignees_for_category(restaurant, category)
+    return owners[0] if owners else None
 
-    1. ``restaurant.general_settings['category_owners']`` — the
-       onboarding-step-4 mapping. This is the explicit, manager-curated
-       answer; respect it when set.
-    2. **Tag-based fallback** — if no explicit owner is configured,
-       look up the canonical tag list for this category (see
-       :data:`accounts.staff_tags.CATEGORY_TAGS`) and return the first
-       active staff member who carries any of those tags. This means
-       a fresh tenant who has assigned tags to staff but hasn't yet
-       configured ``category_owners`` still gets requests routed
-       sensibly — e.g. ``PURCHASE_ORDER`` lands on someone tagged
-       ``PURCHASES``.
 
-    Returns ``None`` only when neither path produces a candidate.
+def resolve_all_assignees_for_category(
+    restaurant: Optional["Restaurant"],
+    category: Optional[str],
+) -> list["CustomUser"]:
+    """
+    Return ALL active CustomUsers that own this category bucket.
+
+    Resolution order:
+
+    1. ``restaurant.general_settings['category_owners']`` — every UUID
+       listed under the category's slugs (onboarding stores ``string[]``).
+    2. **Tag-based fallback** — if no explicit owners are configured,
+       return every active staff member tagged for this category
+       (see :data:`accounts.staff_tags.CATEGORY_TAGS`), ordered by role
+       priority then name.
+
+    Primary assignee for the StaffRequest FK is ``result[0]`` when present;
+    remaining owners should still be notified as informed.
     """
     if not restaurant:
-        return None
+        return []
 
-    # 1) Explicit ``category_owners`` mapping.
+    # 1) Explicit ``category_owners`` mapping — fan out to every configured owner.
     gs = restaurant.general_settings or {}
     mapping = gs.get("category_owners") or {}
     if isinstance(mapping, dict) and mapping:
         slugs = slugs_for_category(category)
         if slugs:
-            uid = _first_uid(mapping, slugs)
-            if uid:
+            users: list["CustomUser"] = []
+            seen_ids: set[str] = set()
+            for uid in _all_uids(mapping, slugs):
                 user = _lookup_user_by_id(restaurant, uid)
-                if user is not None:
-                    return user
+                if user is None:
+                    continue
+                sid = str(user.id)
+                if sid in seen_ids:
+                    continue
+                seen_ids.add(sid)
+                users.append(user)
+            if users:
+                return users
 
-    # 2) Tag-based fallback.
-    return _resolve_assignee_by_tag(restaurant, category)
+    # 2) Tag-based fallback — all tagged candidates for the first matching tag.
+    return _resolve_all_assignees_by_tag(restaurant, category)
 
 
-def _resolve_assignee_by_tag(
+def _resolve_all_assignees_by_tag(
     restaurant: "Restaurant",
     category: Optional[str],
-) -> Optional["CustomUser"]:
-    """Return the first active staff member tagged for this category.
-
-    Walks the tag list from
-    :data:`accounts.staff_tags.CATEGORY_TAGS` in declared order so the
-    "primary" tag for a bucket (e.g. ``PURCHASES`` for
-    ``PURCHASE_ORDER``) wins over secondary tags
-    (``CONTROL`` / ``MANAGEMENT``). Within a single tag we order by
-    ``role`` priority (Owner / Admin / Manager first) then alphabetic
-    name so the result is stable across calls.
-    """
+) -> list["CustomUser"]:
+    """Return active staff tagged for this category (stable role/name order)."""
     if not category:
-        return None
+        return []
 
     from accounts.staff_tags import tags_for_category  # local import: avoid cycles
     from accounts.models import CustomUser
 
     tags = tags_for_category(category)
     if not tags:
-        return None
+        return []
 
-    # Authority tier order — high-authority owners get the bucket
-    # first, so newly-onboarded teams don't accidentally route
-    # PURCHASE_ORDER to a junior staff who happened to be tagged
-    # PURCHASES alongside the buyer.
     role_priority = {"OWNER": 0, "ADMIN": 1, "MANAGER": 2}
 
     rid = getattr(restaurant, "id", None)
     if rid is None:
-        return None
+        return []
 
     for tag in tags:
         candidates = list(
@@ -210,6 +236,6 @@ def _resolve_assignee_by_tag(
                 str(u.id),
             )
         )
-        return candidates[0]
+        return candidates
 
-    return None
+    return []

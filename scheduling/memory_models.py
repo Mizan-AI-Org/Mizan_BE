@@ -11,6 +11,8 @@ import uuid
 from django.conf import settings
 from django.db import models
 
+from core.storage_paths import reminder_attachment_upload_path
+
 
 class MemoryNote(models.Model):
     """
@@ -227,6 +229,18 @@ class PersonalReminder(models.Model):
     status = models.CharField(max_length=20, choices=STATUS, default="pending", db_index=True)
     fired_at = models.DateTimeField(null=True, blank=True)
     fire_count = models.PositiveIntegerField(default=0)
+    attachment = models.FileField(
+        upload_to=reminder_attachment_upload_path,
+        null=True,
+        blank=True,
+        help_text="Optional file attached to the reminder (image, PDF, etc.).",
+    )
+    attachment_url = models.URLField(
+        max_length=1024,
+        blank=True,
+        default="",
+        help_text="External URL when the attachment is hosted off-platform.",
+    )
     linked_note = models.ForeignKey(
         MemoryNote,
         on_delete=models.SET_NULL,

@@ -73,15 +73,64 @@ def personal_reminder_sweep():
         if rem.linked_note_id and rem.linked_note:
             preview = (rem.linked_note.content or "")[:160]
             body_parts.append(f"Related note: {preview}")
+        att_url = (getattr(rem, "attachment_url", None) or "").strip()
+        att_file = None
+        if not att_url and getattr(rem, "attachment", None):
+            try:
+                att_url = rem.attachment.url or ""
+            except Exception:
+                att_url = ""
+        if getattr(rem, "attachment", None):
+            try:
+                rem.attachment.open("rb")
+                att_file = rem.attachment.read()
+                rem.attachment.close()
+            except Exception:
+                att_file = None
+
         text = "\n".join(body_parts)
 
         try:
-            result = notification_service.send_whatsapp_text(phone, text)
-            ok = result[0] if isinstance(result, tuple) else bool(result)
-            if not ok:
-                logger.warning("personal_reminder_sweep: WA send failed for %s", rem.id)
-                failed += 1
-                continue
+            # Prefer native WhatsApp media when we have file bytes.
+            media_sent = False
+            if att_file:
+                name = ""
+                try:
+                    name = (rem.attachment.name or "").split("/")[-1] or "attachment"
+                except Exception:
+                    name = "attachment"
+                lower = name.lower()
+                if lower.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+                    mime = "image/jpeg"
+                    if lower.endswith(".png"):
+                        mime = "image/png"
+                    elif lower.endswith(".webp"):
+                        mime = "image/webp"
+                    elif lower.endswith(".gif"):
+                        mime = "image/gif"
+                    as_doc = False
+                else:
+                    mime = "application/pdf" if lower.endswith(".pdf") else "application/octet-stream"
+                    as_doc = True
+                media_ok, _ = notification_service.send_whatsapp_media_attachment(
+                    phone,
+                    file_bytes=att_file,
+                    mime_type=mime,
+                    filename=name,
+                    caption=text[:1024],
+                    as_document=as_doc,
+                )
+                media_sent = bool(media_ok)
+
+            if not media_sent:
+                if att_url and "Attachment:" not in text:
+                    text = f"{text}\nAttachment: {att_url}"
+                result = notification_service.send_whatsapp_text(phone, text)
+                ok = result[0] if isinstance(result, tuple) else bool(result)
+                if not ok:
+                    logger.warning("personal_reminder_sweep: WA send failed for %s", rem.id)
+                    failed += 1
+                    continue
         except Exception:
             logger.exception("personal_reminder_sweep send error rem=%s", rem.id)
             failed += 1

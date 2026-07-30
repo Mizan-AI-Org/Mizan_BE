@@ -34,6 +34,7 @@ class DashboardTaskCompactSerializer(serializers.ModelSerializer):
     """
 
     assignee = serializers.SerializerMethodField()
+    proof_submitted_by_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
@@ -59,9 +60,21 @@ class DashboardTaskCompactSerializer(serializers.ModelSerializer):
             'manager_validated_at',
             'require_photo_proof',
             'proof_media_url',
+            'proof_caption',
             'proof_submitted_at',
+            'proof_submitted_by_name',
         )
         read_only_fields = fields
+
+    def get_proof_submitted_by_name(self, obj):
+        user = getattr(obj, 'proof_submitted_by', None)
+        if not user:
+            return None
+        return (
+            f"{(user.first_name or '').strip()} {(user.last_name or '').strip()}".strip()
+            or getattr(user, 'email', None)
+            or getattr(user, 'phone', None)
+        )
 
     def get_assignee(self, obj):
         u = obj.assigned_to

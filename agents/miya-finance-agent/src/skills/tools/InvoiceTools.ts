@@ -283,9 +283,16 @@ export class ListInvoicesTool implements LuaTool {
             currency: inv.currency,
             due_date: inv.due_date,
             status: inv.status,
+            lifecycle_status: inv.lifecycle_status,
+            approval_status: inv.approval_status,
             is_overdue: inv.is_overdue,
             days_until_due: inv.days_until_due,
             category: inv.category,
+            paid_at: inv.paid_at,
+            paid_by_name: inv.paid_by_name,
+            proof_of_payment_url: inv.proof_of_payment_url,
+            returned_reason: inv.returned_reason,
+            created_by_name: inv.created_by_name,
         }));
 
         const listItems = invoices.slice(0, 10).map((inv: any) => {
@@ -293,7 +300,7 @@ export class ListInvoicesTool implements LuaTool {
             const dueInfo = inv.days_until_due != null
                 ? (inv.days_until_due === 0 ? "Due today" : inv.days_until_due > 0 ? `Due in ${inv.days_until_due}d` : `${Math.abs(inv.days_until_due)}d overdue`)
                 : `Due ${inv.due_date}`;
-            return `::: list-item\n# ${inv.vendor_name}${overdueTag}\n${inv.currency || "USD"} ${Number(inv.amount).toFixed(2)} · ${dueInfo}. Invoice #${inv.invoice_number || "N/A"} · ${inv.category || "General"}\n:::`;
+            return `::: list-item\n# ${inv.vendor_name}${overdueTag}\n${inv.currency || "USD"} ${Number(inv.amount).toFixed(2)} · ${dueInfo}. Invoice #${inv.invoice_number || "N/A"} · ${inv.lifecycle_status || inv.status || "OPEN"}\n:::`;
         });
 
         return {
@@ -307,8 +314,78 @@ export class ListInvoicesTool implements LuaTool {
                 : undefined,
             miya_directive:
                 "When displaying invoices, include the formatting_hint VERBATIM in your reply. " +
-                "The ::: list-item blocks will render as visual cards. " +
-                "Add a brief summary line before the cards (e.g. '3 unpaid invoices, 1 overdue').",
+                "Answer history questions from invoice fields: paid_by_name, paid_at, proof_of_payment_url, approval_status, lifecycle_status, returned_reason. " +
+                "If proof_of_payment_url exists and user asks for proof, include ::: documents with that URL. Never invent values.",
+        };
+    }
+}
+
+export class AttachInvoiceProofTool implements LuaTool {
+    name = "attach_invoice_proof";
+    description =
+        "Attach proof of payment (media URL or file URL) to an invoice. Use after payment when the manager/staff sends a receipt/screenshot.";
+
+    inputSchema = z.object({
+        invoice_id: z.string(),
+        media_url: z.string().optional(),
+        media_id: z.string().optional(),
+        restaurantId: z.string().optional(),
+    });
+
+    constructor(private apiService: ApiService = _financeApi) {}
+
+    async execute(input: z.infer<typeof this.inputSchema>) {
+        const user = await User.get();
+        if (!user) return { status: "error", message: "No context." };
+        const ctx = await resolveAgentContext(input.restaurantId);
+        const rid = ctx.restaurantId;
+        if (!rid) return noContextError();
+        const data = await this.apiService.attachInvoiceProofOfPayment(rid, {
+            invoice_id: input.invoice_id,
+            proof_url: input.media_url,
+        });
+        if (data?.success === false) {
+            return { status: "error", message: data?.message_for_user || data?.error || "Couldn't attach proof." };
+        }
+        return {
+            status: "success",
+            message: data?.message_for_user || "Proof of payment attached.",
+            invoice: data?.invoice,
+            proof_of_payment_url: data?.proof_of_payment_url || data?.invoice?.proof_of_payment_url,
+        };
+    }
+}
+
+export class ReturnInvoiceTool implements LuaTool {
+    name = "return_invoice";
+    description =
+        "Return an invoice for changes (correction). Use when the approver/manager rejects details and asks the submitter to fix them.";
+
+    inputSchema = z.object({
+        invoice_id: z.string(),
+        reason: z.string().describe("Why the invoice is being returned."),
+        restaurantId: z.string().optional(),
+    });
+
+    constructor(private apiService: ApiService = _financeApi) {}
+
+    async execute(input: z.infer<typeof this.inputSchema>) {
+        const user = await User.get();
+        if (!user) return { status: "error", message: "No context." };
+        const ctx = await resolveAgentContext(input.restaurantId);
+        const rid = ctx.restaurantId;
+        if (!rid) return noContextError();
+        const data = await this.apiService.returnInvoiceForCorrection(rid, {
+            invoice_id: input.invoice_id,
+            reason: input.reason,
+        });
+        if (data?.success === false) {
+            return { status: "error", message: data?.message_for_user || data?.error || "Couldn't return invoice." };
+        }
+        return {
+            status: "success",
+            message: data?.message_for_user || "Invoice returned for changes.",
+            invoice: data?.invoice,
         };
     }
 }

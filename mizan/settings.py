@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'channels',
     'drf_spectacular',  # Optional: for API schema and docs
+    'storages',
     'notifications.apps.NotificationsConfig',
 
     # Local apps
@@ -197,6 +198,74 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# Optional S3 media via django-storages when a bucket is configured.
+# Local MEDIA_ROOT is used when AWS_STORAGE_BUCKET_NAME / S3_BUCKET is unset.
+# On EC2, attach an IAM role (e.g. MizanEC2S3Role) — do not set long-lived keys.
+AWS_STORAGE_BUCKET_NAME = (
+    config('AWS_STORAGE_BUCKET_NAME', default='')
+    or config('S3_BUCKET', default='')
+    or os.getenv('AWS_STORAGE_BUCKET_NAME', '')
+    or os.getenv('S3_BUCKET', '')
+).strip()
+
+AWS_S3_REGION_NAME = (
+    config('AWS_S3_REGION_NAME', default='')
+    or os.getenv('AWS_S3_REGION_NAME', '')
+    or os.getenv('AWS_REGION', '')
+    or 'eu-central-1'
+).strip()
+
+AWS_S3_SIGNATURE_VERSION = 's3v4'
+AWS_DEFAULT_ACL = None
+AWS_S3_FILE_OVERWRITE = False
+AWS_QUERYSTRING_AUTH = config('AWS_QUERYSTRING_AUTH', default=True, cast=str_to_bool)
+AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'max-age=86400'}
+AWS_S3_CUSTOM_DOMAIN = config('AWS_S3_CUSTOM_DOMAIN', default='') or os.getenv('AWS_S3_CUSTOM_DOMAIN', '')
+
+# Optional explicit keys for local dev only — production EC2 should use IAM role.
+AWS_ACCESS_KEY_ID = config('AWS_ACCESS_KEY_ID', default='') or os.getenv('AWS_ACCESS_KEY_ID', '')
+AWS_SECRET_ACCESS_KEY = config('AWS_SECRET_ACCESS_KEY', default='') or os.getenv('AWS_SECRET_ACCESS_KEY', '')
+
+_USE_S3_MEDIA = bool(str(AWS_STORAGE_BUCKET_NAME or '').strip())
+if _USE_S3_MEDIA:
+    _S3_OPTIONS = {
+        'bucket_name': AWS_STORAGE_BUCKET_NAME,
+        'region_name': AWS_S3_REGION_NAME or None,
+        'default_acl': AWS_DEFAULT_ACL,
+        'querystring_auth': AWS_QUERYSTRING_AUTH,
+        'file_overwrite': AWS_S3_FILE_OVERWRITE,
+        'object_parameters': AWS_S3_OBJECT_PARAMETERS,
+        'signature_version': AWS_S3_SIGNATURE_VERSION,
+    }
+    if AWS_ACCESS_KEY_ID:
+        _S3_OPTIONS['access_key'] = AWS_ACCESS_KEY_ID
+    if AWS_SECRET_ACCESS_KEY:
+        _S3_OPTIONS['secret_key'] = AWS_SECRET_ACCESS_KEY
+    if AWS_S3_CUSTOM_DOMAIN:
+        _S3_OPTIONS['custom_domain'] = AWS_S3_CUSTOM_DOMAIN
+    STORAGES = {
+        'default': {
+            'BACKEND': 'storages.backends.s3.S3Storage',
+            'OPTIONS': _S3_OPTIONS,
+        },
+        'staticfiles': {
+            'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+        },
+    }
+else:
+    STORAGES = {
+        'default': {
+            'BACKEND': 'django.core.files.storage.FileSystemStorage',
+            'OPTIONS': {
+                'location': MEDIA_ROOT,
+                'base_url': MEDIA_URL,
+            },
+        },
+        'staticfiles': {
+            'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+        },
+    }
 
 # ---------------------------
 # Default primary key field type

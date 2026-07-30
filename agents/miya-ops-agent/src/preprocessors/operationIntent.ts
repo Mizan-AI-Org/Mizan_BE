@@ -83,7 +83,29 @@ export type OperationCommandIntent =
           start: string;
           end?: string;
           location?: string;
-      };
+          events?: Array<{ title: string; start: string; end?: string; location?: string }>;
+      }
+    | {
+          kind: "update_task_status";
+          taskId: string;
+          status: string;
+      }
+    | {
+          kind: "reassign_task";
+          taskId: string;
+          assigneeName?: string;
+          assigneePhone?: string;
+          assigneeEmail?: string;
+          assigneeUserId?: string;
+      }
+    | {
+          kind: "update_task";
+          taskId: string;
+          priority?: string;
+          dueDate?: string;
+          title?: string;
+      }
+    | { kind: "list_overdue_tasks" };
 
 const LOOKUP_ID_RE =
     /(?:num[eé]ro\s+(?:de\s+)?demande|request\s*(?:#|n[o°]\.?)?|demande\s*(?:#|n[o°]\.?)?|task\s*#?|#)\s*([a-f0-9]{6,12})/i;
@@ -102,6 +124,18 @@ const EVENT_PREP_RE =
 
 const CALENDAR_APPT_RE =
     /\b(rendez[- ]?vous|meeting|appointment|r[eé]union|agenda|calendrier|calendar)\b/i;
+
+const UPDATE_TASK_STATUS_RE =
+    /\b(?:mark|set|update)\s+(?:task\s+)?(?:#?\s*)([a-f0-9]{6,12})\s+(?:as\s+|to\s+)?(accepted|pending|in[\s-]?progress|started|done|completed|unable(?:\s+to\s+complete)?|cancelled|canceled)\b/i;
+
+const REASSIGN_TASK_RE =
+    /\b(?:reassign|re[\s-]?assign|transfer|give)\s+(?:task\s+)?(?:#?\s*)([a-f0-9]{6,12})\s+(?:to\s+)(.+)/i;
+
+const UPDATE_TASK_META_RE =
+    /\b(?:change|set|update|make)\s+(?:task\s+)?(?:#?\s*)([a-f0-9]{6,12})\s+(?:(?:priority|due(?:\s+date)?|deadline)\s+(?:to\s+|by\s+)?)(.+)/i;
+
+const LIST_OVERDUE_TASKS_RE =
+    /\b(?:show|list|get|what(?:'s|\s+are)?)\s+(?:me\s+)?(?:all\s+)?overdue\s+tasks\b|\boverdue\s+tasks\b/i;
 
 const CALENDAR_PROMPT_ONLY_RE =
     /^\s*(?:tu\s+peux|peux[- ]tu|can\s+you|oui\s*,?\s*(?:bien\s+s[uû]r)?).*(?:agenda|calendar|calendrier)\s*\??\s*$/i;
@@ -987,6 +1021,112 @@ export function resolveEventPrepReminderIntent(text: string): OperationCommandIn
     };
 }
 
+function parseEnglishClock(text: string): string | null {
+    const m = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(a\.?m\.?|p\.?m\.?)\b/i);
+    if (!m) return null;
+    let hour = Number(m[1]);
+    const minute = m[2] ? Number(m[2]) : 0;
+    const ap = m[3].toLowerCase().replace(/\./g, "");
+    if (ap.startsWith("p") && hour < 12) hour += 12;
+    if (ap.startsWith("a") && hour === 12) hour = 0;
+    if (hour > 23 || minute > 59) return null;
+    return `${pad2(hour)}:${pad2(minute)}`;
+}
+
+function resolveRelativeDateToken(text: string, ref = new Date()): string | null {
+    const t = text.toLowerCase();
+    if (/\btomorrow\b|\bdemain\b/.test(t)) {
+        const d = new Date(ref);
+        d.setDate(d.getDate() + 1);
+        return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    }
+    if (/\btoday\b|\baujourd['']?hui\b/.test(t)) {
+        return `${ref.getFullYear()}-${pad2(ref.getMonth() + 1)}-${pad2(ref.getDate())}`;
+    }
+    return null;
+}
+
+function extractMeetingTitle(clause: string): string {
+    const withMatch = clause.match(
+        /\b(?:meeting|appointment|rendez[- ]?vous|r[eé]union)\s+(?:avec|with)\s+(?:the\s+)?(.+?)(?:\s+(?:tomorrow|today|demain|le|on|à|at|@)\b|\s*$)/i,
+    );
+    if (withMatch?.[1]) return withMatch[1].replace(/\banother\b/i, "").trim().slice(0, 120);
+    const teamMatch = clause.match(
+        /\b(?:the\s+)?(front[- ]?of[- ]?house|foh|kitchen|finance|hr|human resources|management|ops|operations)\b/i,
+    );
+    if (teamMatch?.[1]) return teamMatch[1].trim();
+    const cleaned = clause
+        .replace(/\b(?:schedule|book|add|crée[rz]?|planifie[rz]?)\b/gi, "")
+        .replace(/\b(?:a|an|another|une?|meeting|appointment|rendez[- ]?vous|r[eé]union)\b/gi, "")
+        .replace(/\b(?:tomorrow|today|demain|at|à|@)\b.*$/i, "")
+        .trim();
+    return (cleaned || "Meeting").slice(0, 120);
+}
+
+function parseMeetingClause(
+    clause: string,
+    defaultDate: string,
+): { title: string; start: string; end: string } | null {
+    const fr = parseFrenchSchedule(clause);
+    const enClock = parseEnglishClock(clause);
+    const rel = resolveRelativeDateToken(clause);
+    const date = fr?.date || rel || defaultDate;
+    const time = fr?.time || enClock;
+    if (!time) return null;
+    const start = `${date}T${time}`;
+    const end = fr?.endTime ? `${date}T${fr.endTime}` : addMinutesToIso(start, 60);
+    const title = extractMeetingTitle(clause);
+    return {
+        title: title.charAt(0).toUpperCase() + title.slice(1),
+        start,
+        end,
+    };
+}
+
+/** Split multi-meeting utterances into calendar events[]. */
+export function splitMeetingClauses(
+    text: string,
+    ref = new Date(),
+): Array<{ title: string; start: string; end?: string; location?: string }> {
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (!normalized) return [];
+
+    const defaultDate =
+        resolveRelativeDateToken(normalized, ref) ||
+        parseFrenchSchedule(normalized, ref)?.date ||
+        `${ref.getFullYear()}-${pad2(ref.getMonth() + 1)}-${pad2(ref.getDate())}`;
+
+    const parts = normalized
+        .split(
+            /\s+(?:and|et)\s+(?:(?:another|une?\s+autre)\s+)?(?:meeting|appointment|rendez[- ]?vous|r[eé]union)?\s*/i,
+        )
+        .map((p) => p.trim())
+        .filter(Boolean);
+
+    // Also split "… at 10 AM … kitchen at 3 PM" when "and" join missed.
+    const expanded: string[] = [];
+    for (const part of parts) {
+        const multiTime = part.match(
+            /(.+?\b(?:at|à|@)\s+\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?)\s+(?:and|et|,)\s+(.+)/i,
+        );
+        if (
+            multiTime &&
+            (parseEnglishClock(multiTime[2]) || parseFrenchSchedule(multiTime[2])?.time)
+        ) {
+            expanded.push(multiTime[1], multiTime[2]);
+        } else {
+            expanded.push(part);
+        }
+    }
+
+    const events: Array<{ title: string; start: string; end?: string }> = [];
+    for (const clause of expanded) {
+        const parsed = parseMeetingClause(clause, defaultDate);
+        if (parsed) events.push(parsed);
+    }
+    return events;
+}
+
 export function resolveCalendarAppointmentIntent(recentTexts: string[]): OperationCommandIntent | null {
     const joined = recentTexts.join("\n");
     const last = recentTexts[recentTexts.length - 1] || "";
@@ -994,8 +1134,8 @@ export function resolveCalendarAppointmentIntent(recentTexts: string[]): Operati
 
     const hasCalendarWord = CALENDAR_APPT_RE.test(joined);
     const hasWeekdaySlot = recentTexts.some((l) => WEEKDAY_SLOT_RE.test(l));
-    if (!hasCalendarWord && !hasWeekdaySlot && !/\bagenda\b/i.test(joined)) {
-        // Still allow bare "le 24 à 10:00" + follow-up end time
+    const hasEnglishClock = recentTexts.some((l) => Boolean(parseEnglishClock(l)));
+    if (!hasCalendarWord && !hasWeekdaySlot && !/\bagenda\b/i.test(joined) && !hasEnglishClock) {
         const hasTimedSlot = recentTexts.some((l) => Boolean(parseFrenchSchedule(l)?.time));
         const endOnly = parseTimeOnly(last);
         if (!(hasTimedSlot && endOnly && recentTexts.length >= 2)) return null;
@@ -1003,9 +1143,14 @@ export function resolveCalendarAppointmentIntent(recentTexts: string[]): Operati
 
     let apptLine = "";
     for (const line of [...recentTexts].reverse()) {
-        if (CALENDAR_APPT_RE.test(line) || WEEKDAY_SLOT_RE.test(line) || parseFrenchSchedule(line)?.time) {
+        if (
+            CALENDAR_APPT_RE.test(line) ||
+            WEEKDAY_SLOT_RE.test(line) ||
+            parseFrenchSchedule(line)?.time ||
+            parseEnglishClock(line)
+        ) {
             if (parseTimeOnly(line) && !WEEKDAY_SLOT_RE.test(line) && !CALENDAR_APPT_RE.test(line)) {
-                continue; // bare end-time reply
+                continue;
             }
             apptLine = line;
             break;
@@ -1013,36 +1158,48 @@ export function resolveCalendarAppointmentIntent(recentTexts: string[]): Operati
     }
     if (!apptLine) return null;
 
-    const schedule = parseFrenchSchedule(apptLine);
-    if (!schedule?.time) return null;
+    const multi = splitMeetingClauses(apptLine);
+    if (multi.length >= 2) {
+        return {
+            kind: "calendar_appointment",
+            title: multi[0].title,
+            start: multi[0].start,
+            end: multi[0].end,
+            events: multi,
+        };
+    }
 
-    const start = `${schedule.date}T${schedule.time}`;
+    const schedule = parseFrenchSchedule(apptLine);
+    const enClock = parseEnglishClock(apptLine);
+    const relDate = resolveRelativeDateToken(apptLine);
+    const date =
+        schedule?.date ||
+        relDate ||
+        `${new Date().getFullYear()}-${pad2(new Date().getMonth() + 1)}-${pad2(new Date().getDate())}`;
+    const time = schedule?.time || enClock;
+    if (!time) return null;
+
+    const start = `${date}T${time}`;
     let end: string | undefined;
 
-    if (schedule.endTime) {
-        end = `${schedule.date}T${schedule.endTime}`;
+    if (schedule?.endTime) {
+        end = `${date}T${schedule.endTime}`;
     } else {
         const endOnly = parseTimeOnly(last);
         if (endOnly && recentTexts.length >= 2) {
-            end = `${schedule.date}T${endOnly}`;
+            end = `${date}T${endOnly}`;
         } else {
             end = addMinutesToIso(start, 60);
         }
     }
 
-    let title = apptLine.trim();
-    const titleMatch = apptLine.match(
-        /\b(?:rendez[- ]?vous|meeting|appointment|r[eé]union)\s+(?:avec|with)\s+(.+?)(?:\s+(?:le|on|à|at)\s+|\s*$)/i,
-    );
-    if (titleMatch?.[1]) {
-        title = titleMatch[1].trim().slice(0, 120);
-    } else if (WEEKDAY_SLOT_RE.test(apptLine) || /^le\s+/i.test(apptLine)) {
-        title = "Rendez-vous";
-    }
+    const title = extractMeetingTitle(apptLine);
 
     let location: string | undefined;
     const locMatch = apptLine.match(/\b(?:à|at|@)\s+([a-zàâäéèêëïîôùûüç0-9\s'-]{3,60})/i);
-    if (locMatch?.[1] && !/^\d{1,2}[:hH]/.test(locMatch[1])) location = locMatch[1].trim();
+    if (locMatch?.[1] && !/^\d{1,2}[:hH]/.test(locMatch[1]) && !parseEnglishClock(locMatch[1])) {
+        location = locMatch[1].trim();
+    }
 
     return {
         kind: "calendar_appointment",
@@ -1051,6 +1208,68 @@ export function resolveCalendarAppointmentIntent(recentTexts: string[]): Operati
         end,
         location,
     };
+}
+
+function normalizeTaskStatusToken(raw: string): string {
+    const s = raw.toLowerCase().replace(/[\s-]+/g, "_");
+    if (s.startsWith("accept")) return "ACCEPTED";
+    if (s.startsWith("pending")) return "PENDING";
+    if (s.includes("progress") || s.startsWith("start")) return "IN_PROGRESS";
+    if (s.startsWith("done") || s.startsWith("complete")) return "COMPLETED";
+    if (s.includes("unable")) return "UNABLE_TO_COMPLETE";
+    if (s.startsWith("cancel")) return "CANCELLED";
+    return raw.toUpperCase();
+}
+
+function resolveUpdateTaskStatusIntent(text: string): OperationCommandIntent | null {
+    const m = text.match(UPDATE_TASK_STATUS_RE);
+    if (!m) return null;
+    return {
+        kind: "update_task_status",
+        taskId: m[1].replace(/[^a-f0-9]/gi, ""),
+        status: normalizeTaskStatusToken(m[2]),
+    };
+}
+
+function resolveReassignTaskIntent(text: string): OperationCommandIntent | null {
+    const m = text.match(REASSIGN_TASK_RE);
+    if (!m) return null;
+    const who = (m[2] || "").trim().slice(0, 120);
+    if (!who) return null;
+    const emailMatch = who.match(/[\w.+-]+@[\w.-]+\.\w+/);
+    const phoneMatch = who.match(/\+?\d[\d\s()-]{7,}\d/);
+    return {
+        kind: "reassign_task",
+        taskId: m[1].replace(/[^a-f0-9]/gi, ""),
+        assigneeName: emailMatch || phoneMatch ? undefined : who,
+        assigneeEmail: emailMatch?.[0],
+        assigneePhone: phoneMatch?.[0]?.replace(/[^\d+]/g, ""),
+    };
+}
+
+function resolveUpdateTaskMetaIntent(text: string): OperationCommandIntent | null {
+    const m = text.match(UPDATE_TASK_META_RE);
+    if (!m) return null;
+    const taskId = m[1].replace(/[^a-f0-9]/gi, "");
+    const rest = (m[2] || "").trim();
+    const priorityMatch = rest.match(/\b(low|medium|high|urgent)\b/i);
+    const dueMatch =
+        rest.match(/\b(?:due|deadline|by)\s+(.+)/i) ||
+        (!priorityMatch ? { 1: rest } : null);
+    const intent: OperationCommandIntent = { kind: "update_task", taskId };
+    if (priorityMatch) (intent as { priority?: string }).priority = priorityMatch[1].toUpperCase();
+    if (dueMatch?.[1] && !/^(low|medium|high|urgent)$/i.test(dueMatch[1].trim())) {
+        (intent as { dueDate?: string }).dueDate = dueMatch[1].trim().slice(0, 80);
+    }
+    if (!(intent as { priority?: string }).priority && !(intent as { dueDate?: string }).dueDate) {
+        return null;
+    }
+    return intent;
+}
+
+function resolveListOverdueTasksIntent(text: string): OperationCommandIntent | null {
+    if (!LIST_OVERDUE_TASKS_RE.test(text)) return null;
+    return { kind: "list_overdue_tasks" };
 }
 
 export function resolveOperationsCommandIntent(
@@ -1063,6 +1282,18 @@ export function resolveOperationsCommandIntent(
 
     const lookup = resolveLookupIntent(last);
     if (lookup) return lookup;
+
+    const updateStatus = resolveUpdateTaskStatusIntent(last);
+    if (updateStatus) return updateStatus;
+
+    const updateMeta = resolveUpdateTaskMetaIntent(last);
+    if (updateMeta) return updateMeta;
+
+    const overdue = resolveListOverdueTasksIntent(last);
+    if (overdue) return overdue;
+
+    const reassign = resolveReassignTaskIntent(last);
+    if (reassign) return reassign;
 
     const selfRole = resolveSelfRoleIntent(last);
     if (selfRole) return selfRole;

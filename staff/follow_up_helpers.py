@@ -46,19 +46,18 @@ def build_staff_request_follow_up_message(req, follow_up_number: int) -> str:
 
 def build_task_follow_up_message(task, follow_up_number: int) -> str:
     title = task.title or "your assigned task"
+    cmds = "Reply *accept*, *start*, *done*, or *unable*."
     if follow_up_number == 1:
         due = ""
         if task.due_date:
             due = f" (due {task.due_date.strftime('%b %d')})"
         return (
             f"Hi! Just checking in on: *{title}*{due}\n\n"
-            f"Could you update the status or let me know how it's going? "
-            f"Reply here or mark it in-progress from your dashboard."
+            f"Could you update the status?\n{cmds}"
         )
     return (
         f"Friendly reminder about: *{title}*\n\n"
-        f"Your manager is waiting for an update. "
-        f"Please reply with your progress or mark the task done when complete."
+        f"Your manager is waiting for an update.\n{cmds}"
     )
 
 

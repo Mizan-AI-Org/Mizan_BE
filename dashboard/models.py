@@ -2,6 +2,8 @@ from django.db import models
 import uuid
 from django.conf import settings
 
+from core.storage_paths import task_attachment_upload_path
+
 
 class DashboardCategory(models.Model):
     """
@@ -161,8 +163,10 @@ class Task(models.Model):
 
     TASK_STATUS = (
         ('PENDING', 'Pending'),
+        ('ACCEPTED', 'Accepted'),
         ('IN_PROGRESS', 'In Progress'),
         ('COMPLETED', 'Completed'),
+        ('UNABLE_TO_COMPLETE', 'Unable to Complete'),
         ('CANCELLED', 'Cancelled'),
     )
 
@@ -266,11 +270,36 @@ class Task(models.Model):
 
     # WhatsApp photo proof of work / incident evidence
     proof_media_url = models.URLField(max_length=1000, blank=True, default="")
+    proof_caption = models.TextField(blank=True, default="")
     proof_submitted_at = models.DateTimeField(null=True, blank=True)
+    proof_submitted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="dashboard_tasks_proofs_submitted",
+    )
     require_photo_proof = models.BooleanField(
         default=False,
         help_text="Assignee should send a photo via WhatsApp before completion.",
     )
+
+    # Lifecycle audit — when / who completed (WhatsApp or dashboard).
+    completed_at = models.DateTimeField(null=True, blank=True)
+    completed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="dashboard_tasks_completed",
+    )
+    # Optional inbound attachment (reminder docs, brief PDFs) stored via default storage / S3.
+    attachment = models.FileField(
+        upload_to=task_attachment_upload_path,
+        null=True,
+        blank=True,
+    )
+    attachment_url = models.URLField(max_length=1000, blank=True, default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

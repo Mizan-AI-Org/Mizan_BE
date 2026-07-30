@@ -59,7 +59,13 @@ from .views_categories import (
     DashboardCustomWidgetCreateView,
     DashboardCustomWidgetDetailView,
 )
-from .views_agent import agent_create_dashboard_task
+from .views_agent import (
+    agent_create_dashboard_task,
+    agent_reassign_dashboard_task,
+    agent_update_dashboard_task_status,
+    agent_update_dashboard_task,
+    agent_list_dashboard_tasks,
+)
 from .views_ops_memory import (
     agent_validate_task,
     agent_submit_task_proof,
@@ -105,6 +111,10 @@ urlpatterns = [
         name='dashboard-categories-detail',
     ),
     path('agent/tasks/create/', agent_create_dashboard_task, name='dashboard-agent-tasks-create'),
+    path('agent/tasks/reassign/', agent_reassign_dashboard_task, name='dashboard-agent-tasks-reassign'),
+    path('agent/tasks/status/', agent_update_dashboard_task_status, name='dashboard-agent-tasks-status'),
+    path('agent/tasks/update/', agent_update_dashboard_task, name='dashboard-agent-tasks-update'),
+    path('agent/tasks/list/', agent_list_dashboard_tasks, name='dashboard-agent-tasks-list'),
     path('agent/tasks/validate/', agent_validate_task, name='dashboard-agent-tasks-validate'),
     path('agent/tasks/proof/', agent_submit_task_proof, name='dashboard-agent-tasks-proof'),
     path('agent/department-owners/', agent_department_owners, name='dashboard-agent-department-owners'),

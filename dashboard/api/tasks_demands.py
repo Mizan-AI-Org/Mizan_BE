@@ -66,7 +66,14 @@ _SCHED_STATUS_TO_WIDGET = {
 _WIDGET_STATUS_TO_SCHED = {v: k for k, v in _SCHED_STATUS_TO_WIDGET.items()}
 
 
-ALLOWED_STATUS = {"PENDING", "IN_PROGRESS", "COMPLETED", "CANCELLED"}
+ALLOWED_STATUS = {
+    "PENDING",
+    "ACCEPTED",
+    "IN_PROGRESS",
+    "COMPLETED",
+    "UNABLE_TO_COMPLETE",
+    "CANCELLED",
+}
 DEFAULT_LIMIT = 5
 MAX_LIMIT = 25
 
@@ -189,12 +196,12 @@ class TasksDemandsView(APIView):
         )
 
         db_pending = list(
-            db_base.filter(status="PENDING")
+            db_base.filter(status__in=["PENDING", "ACCEPTED"])
             .filter(Q(due_date__isnull=True) | Q(due_date__lte=future_cutoff))
             .order_by("priority_rank", "due_date", "-created_at")[: limit * 2]
         )
         db_in_progress = list(
-            db_base.filter(status="IN_PROGRESS")
+            db_base.filter(status__in=["IN_PROGRESS", "UNABLE_TO_COMPLETE"])
             .order_by("priority_rank", "-updated_at")[: limit * 2]
         )
         db_completed = list(
@@ -202,8 +209,10 @@ class TasksDemandsView(APIView):
             .order_by("-updated_at")[: limit * 2]
         )
 
-        db_pending_count = db_base.filter(status="PENDING").count()
-        db_in_progress_count = db_base.filter(status="IN_PROGRESS").count()
+        db_pending_count = db_base.filter(status__in=["PENDING", "ACCEPTED"]).count()
+        db_in_progress_count = db_base.filter(
+            status__in=["IN_PROGRESS", "UNABLE_TO_COMPLETE"]
+        ).count()
         db_completed_count = db_base.filter(
             status="COMPLETED", updated_at__date__gte=completed_floor
         ).count()
@@ -458,7 +467,16 @@ class TaskStatusUpdateView(APIView):
 
         if task is not None:
             task.status = new_status
-            task.save(update_fields=["status", "updated_at"])
+            update_fields = ["status", "updated_at"]
+            if new_status == "COMPLETED":
+                from django.utils import timezone as _tz
+
+                task.completed_at = _tz.now()
+                update_fields.append("completed_at")
+                if getattr(request.user, "id", None):
+                    task.completed_by = request.user
+                    update_fields.append("completed_by")
+            task.save(update_fields=update_fields)
             return Response(_serialize_dashboard_task(task))
 
         # 2) scheduling.Task (TODO vocabulary)
