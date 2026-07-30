@@ -17,13 +17,13 @@ Upload SOPs/menus/policies via Admin → Knowledge, or see `resources/README.md`
 
 Set on the **base Miya** agent (Lua env):
 
-| Variable | Specialist |
-|----------|------------|
-| `MIYA_OPS_AGENT_ID` | miya-ops-agent |
-| `MIYA_FINANCE_AGENT_ID` | miya-finance-agent |
-| `MIYA_HR_AGENT_ID` | miya-hr-agent |
-| `MIYA_COMMS_AGENT_ID` | miya-comms-agent |
-| `MIYA_INTEL_AGENT_ID` | miya-intel-agent |
+| Variable                   | Specialist            |
+| -------------------------- | --------------------- |
+| `MIYA_OPS_AGENT_ID`        | miya-ops-agent        |
+| `MIYA_FINANCE_AGENT_ID`    | miya-finance-agent    |
+| `MIYA_HR_AGENT_ID`         | miya-hr-agent         |
+| `MIYA_COMMS_AGENT_ID`      | miya-comms-agent      |
+| `MIYA_INTEL_AGENT_ID`      | miya-intel-agent      |
 | `MIYA_FACILITIES_AGENT_ID` | miya-facilities-agent |
 
 Without these, `delegate_to_specialist` returns `not_configured` and Miya falls back to her own tools (still works).
