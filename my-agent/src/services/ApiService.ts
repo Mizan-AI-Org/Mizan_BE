@@ -3025,15 +3025,22 @@ export default class ApiService {
     }
 
     // Photo router (vision-based classify-and-act)
-    async parsePhoto(restaurantId: string, payload: {
+    async parsePhoto(
+        restaurantId: string | null | undefined,
+        payload: {
         imageUrl?: string;
         imageBase64?: string;
         contentType?: string;
         note?: string;
         autoCreate?: boolean;
+        phone?: string;
+        userId?: string;
+        sessionId?: string;
+        email?: string;
     }) {
         const agentKey = env('LUA_WEBHOOK_API_KEY') || env('WEBHOOK_API_KEY') || env('MIZAN_SERVICE_TOKEN');
         if (!agentKey) throw new Error("No agent key configured");
+        const rid = restaurantId ? String(restaurantId).trim() : "";
         try {
             // Endpoint expects multipart/form-data with an `image` file.
             // Miya almost always has a remote URL (WhatsApp media) so we
@@ -3042,19 +3049,29 @@ export default class ApiService {
             let imageBytes: Buffer | null = null;
             let contentType = payload.contentType || "image/jpeg";
 
+            const appendIdentity = (form: FormData) => {
+                if (rid) form.append("restaurant_id", rid);
+                if (payload.phone) form.append("phone", payload.phone);
+                if (payload.userId) form.append("user_id", payload.userId);
+                if (payload.sessionId) form.append("sessionId", payload.sessionId);
+                if (payload.email) form.append("email", payload.email);
+                if (payload.note) form.append("note", payload.note);
+                if (payload.autoCreate === false) form.append("auto_create", "false");
+            };
+
             if (payload.imageUrl) {
                 // Prefer server-side download — WhatsApp/Meta URLs need the platform token.
                 const form = new FormData();
                 form.append("image_url", payload.imageUrl);
-                form.append("restaurant_id", restaurantId);
-                if (payload.note) form.append("note", payload.note);
-                if (payload.autoCreate === false) form.append("auto_create", "false");
+                appendIdentity(form);
 
                 const response = await this.axiosInstance.post(
                     "/api/dashboard/agent/parse-photo/",
                     form,
                     {
-                        headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId),
+                        headers: agentKeyBearerHeadersWithRestaurant(agentKey, rid || null, {
+                            sessionId: payload.sessionId,
+                        }),
                         maxContentLength: Infinity,
                         maxBodyLength: Infinity,
                         validateStatus: () => true,
@@ -3077,15 +3094,15 @@ export default class ApiService {
             const form = new FormData();
             const blob = new Blob([imageBytes], { type: contentType });
             form.append("image", blob, "photo.jpg");
-            form.append("restaurant_id", restaurantId);
-            if (payload.note) form.append("note", payload.note);
-            if (payload.autoCreate === false) form.append("auto_create", "false");
+            appendIdentity(form);
 
             const response = await this.axiosInstance.post(
                 "/api/dashboard/agent/parse-photo/",
                 form,
                 {
-                    headers: agentKeyBearerHeadersWithRestaurant(agentKey, restaurantId),
+                    headers: agentKeyBearerHeadersWithRestaurant(agentKey, rid || null, {
+                        sessionId: payload.sessionId,
+                    }),
                     maxContentLength: Infinity,
                     maxBodyLength: Infinity,
                 },

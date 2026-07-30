@@ -516,7 +516,13 @@ def _resolve_restaurant_for_agent(request):
         restaurant, acting_user = resolve_agent_restaurant_and_user(request=request, payload=payload)
 
     if not restaurant:
-        return None, None, {'error': 'Unable to resolve restaurant context. Please ensure restaurant_id is a valid UUID.', 'status': 400}
+        return None, None, {
+            'error': (
+                'Unable to resolve workspace from this WhatsApp number or session. '
+                'Ensure the sender phone is linked to an active staff account.'
+            ),
+            'status': 400,
+        }
 
     return restaurant, acting_user, None
 

@@ -346,7 +346,7 @@ export const tenantContextPreprocessor = new PreProcessor({
             }
             if (!businessVertical) businessVertical = "RESTAURANT";
 
-            const messageAudience = resolveMessageAudience(channel);
+            const messageAudience = resolveMessageAudience(channel, user.uid);
             const contextBlock = [
                 `[SYSTEM: PERSISTENT CONTEXT]`,
                 `Workspace: ${detectedRestaurantName || "Unknown"}`,
