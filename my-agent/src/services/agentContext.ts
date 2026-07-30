@@ -4,7 +4,7 @@ import {
     extractMizanUserIdFromLuaBridgeId,
     extractRestaurantIdFromLuaBridgeId,
 } from "../utils/extractLuaBridgeContext";
-import { resolveMizanUserIdFromLuaUser } from "../utils/resolveTenantForUser";
+import { resolveMizanUserIdFromLuaUser, resolveTenantForUser } from "../utils/resolveTenantForUser";
 
 /** Mizan `CustomUser` id — UUID string from webhooks, runtimeContext, or Lua profile (never Lua's own opaque user id unless it is already a UUID). */
 export function resolveMizanUserIdFromUser(user: any): string | undefined {
@@ -40,10 +40,32 @@ export async function resolveAgentContext(inputRestaurantId?: string): Promise<A
     const profile = user ? ((user as any)._luaProfile || {}) : {};
     const metadata = profile.metadata && typeof profile.metadata === "object" ? profile.metadata : {};
 
+    if (user) {
+        try {
+            const tenant = await resolveTenantForUser(user as UserDataInstance);
+            if (tenant.restaurantId || tenant.userId || tenant.phone || tenant.email) {
+                user.data = {
+                    ...userData,
+                    ...(tenant.restaurantId
+                        ? { restaurantId: tenant.restaurantId, restaurantName: tenant.restaurantName }
+                        : {}),
+                    ...(tenant.userId ? { userId: tenant.userId, mizanUserId: tenant.userId } : {}),
+                    ...(tenant.email ? { email: tenant.email } : {}),
+                    ...(tenant.phone ? { phone: tenant.phone } : {}),
+                };
+            }
+        } catch (e) {
+            console.warn("[agentContext] resolveTenantForUser failed:", (e as Error)?.message);
+        }
+    }
+
+    const refreshedData = user ? ((user as any).data || {}) : userData;
+
     // --- Restaurant ID ---
     let restaurantId: string | undefined =
         inputRestaurantId ||
         (user as any)?.restaurantId ||
+        refreshedData.restaurantId ||
         userData.restaurantId ||
         profile.restaurantId ||
         profile.restaurant_id ||

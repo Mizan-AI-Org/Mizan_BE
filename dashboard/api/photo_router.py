@@ -481,6 +481,7 @@ def agent_parse_photo(request):
     return Response(
         {
             "success": True,
+            "restaurant_id": str(restaurant.id),
             "classification": classification,
             "action_taken": action_envelope,
             "message_for_user": action_envelope.get("message_for_user"),
