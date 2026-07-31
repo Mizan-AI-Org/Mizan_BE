@@ -2402,21 +2402,19 @@ def agent_send_shift_notification(request):
                 phone=phone,
                 template_name='staff_weekly_schedule',
                 language_code='en_US',
-                components=components
+                components=components,
+                fallback_context={
+                    'first_name': staff.first_name or 'Team Member',
+                    'restaurant_name': restaurant_name,
+                    'shift_date': shift_date,
+                    'start_time': start,
+                    'end_time': end,
+                    'role': role,
+                },
             )
             
             if not ok:
-                logger.warning(f"Template send failed, falling back to text: {resp}")
-                # Fallback to text message
-                fallback_message = (
-                    f"Hi {staff.first_name}! 📅\n\n"
-                    f"You've been scheduled for a shift at {restaurant_name}:\n\n"
-                    f"📆 Date: {shift_date}\n"
-                    f"⏰ Time: {start} - {end}\n"
-                    f"👔 Role: {role}\n\n"
-                    f"Please reply 'CONFIRM' to confirm your availability."
-                )
-                ok, resp = notification_service.send_whatsapp_text(phone=phone, body=fallback_message)
+                logger.warning(f"Shift notification failed (template + fallback): {resp}")
         else:
             # No shift data, just send a generic text
             message = f"Hi {staff.first_name}! You have new shift information."

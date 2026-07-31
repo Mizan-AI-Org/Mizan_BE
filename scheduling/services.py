@@ -675,6 +675,19 @@ class SchedulingService:
                                 language_code=template_lang,
                                 components=components,
                                 notification=notification,
+                                fallback_body=message,
+                                fallback_context={
+                                    "first_name": first_name,
+                                    "restaurant_name": rest_name,
+                                    "shift_date": shift_date_str,
+                                    "start_time": start_str,
+                                    "end_time": end_str,
+                                    "role": role,
+                                    "department": dept,
+                                    "shift_title": shift_title,
+                                    "workspace_location": workspace_location,
+                                    "notes": instructions,
+                                },
                             )
                         if not template_name or not wa_ok:
                             wa_ok, wa_resp = notification_service.send_whatsapp_text(

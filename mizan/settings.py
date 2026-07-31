@@ -528,6 +528,8 @@ WHATSAPP_TEMPLATE_MANAGER_MESSAGE = config('WHATSAPP_TEMPLATE_MANAGER_MESSAGE', 
 WHATSAPP_TEMPLATE_MANAGER_MESSAGE_LANGUAGE = config(
     'WHATSAPP_TEMPLATE_MANAGER_MESSAGE_LANGUAGE', default='en'
 )
+# When a Meta template is missing/unapproved, send an intelligent free-form message instead.
+WHATSAPP_TEMPLATE_FALLBACK_TO_TEXT = config('WHATSAPP_TEMPLATE_FALLBACK_TO_TEXT', default=True, cast=str_to_bool)
 
 # ---------------------------
 # Stripe Configuration

@@ -257,6 +257,15 @@ class NotificationService:
                                 template_name=getattr(settings, 'WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', 'staff_clock_in'),
                                 language_code='en_US',
                                 components=components,
+                                fallback_context={
+                                    'first_name': staff.first_name or 'Team Member',
+                                    'start_time': start_time,
+                                    'minutes_until': minutes_from_now,
+                                    'location': location,
+                                    'shift_description': shift_description,
+                                    'duration': duration_str,
+                                },
+                                fallback_body=message,
                             )
                     else:
                         components = [
@@ -275,6 +284,15 @@ class NotificationService:
                             template_name=getattr(settings, 'WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', 'staff_clock_in'),
                             language_code='en_US',
                             components=components,
+                            fallback_context={
+                                'first_name': staff.first_name or 'Team Member',
+                                'start_time': start_time,
+                                'minutes_until': minutes_from_now,
+                                'location': location,
+                                'shift_description': shift_description,
+                                'duration': duration_str,
+                            },
+                            fallback_body=message,
                         )
                 # App/push get plain message in all cases
                 channels = ['app', 'push']
@@ -1069,10 +1087,6 @@ class NotificationService:
         primary = (
             getattr(settings, "WHATSAPP_TEMPLATE_MANAGER_MESSAGE_LANGUAGE", None) or "fr"
         ).strip() or "fr"
-        languages: list[str] = []
-        for lang in (primary, "fr", "en", "en_US", "ar"):
-            if lang and lang not in languages:
-                languages.append(lang)
 
         # Meta rejects some control chars in template params — keep one line.
         text = " ".join((body or "").split())[:1024] or "You have a new message from your manager."
@@ -1082,64 +1096,16 @@ class NotificationService:
                 "parameters": [{"type": "text", "text": text}],
             }
         ]
-        last: dict | None = None
-        for idx, language in enumerate(languages):
-            is_last = idx == len(languages) - 1
-            # Don't write intermediate FAILED rows while probing locales.
-            ok, data = self.send_whatsapp_template(
-                phone_digits,
-                template_name,
-                language_code=language,
-                components=components,
-                notification=notification,
-                audit=False,
-            )
-            last = data if isinstance(data, dict) else {"raw": data}
-            if ok:
-                if audit:
-                    try:
-                        from .models import NotificationLog
-
-                        payload = data.get("data") if isinstance(data, dict) else None
-                        external_id = None
-                        if isinstance(data, dict):
-                            external_id = data.get("external_id")
-                        if not external_id and isinstance(payload, dict) and payload.get("messages"):
-                            external_id = str(payload["messages"][0].get("id") or "") or None
-                        NotificationLog.objects.create(
-                            notification=notification,
-                            channel="whatsapp",
-                            recipient_address=str(phone_digits),
-                            status="SENT",
-                            external_id=external_id,
-                            response_data=(
-                                payload
-                                if isinstance(payload, dict)
-                                else (data if isinstance(data, dict) else {})
-                            ),
-                            error_message=None,
-                        )
-                    except Exception:
-                        pass
-                return True, last
-            if is_last and audit:
-                try:
-                    from .models import NotificationLog
-
-                    payload = data.get("data") if isinstance(data, dict) else data
-                    NotificationLog.objects.create(
-                        notification=notification,
-                        channel="whatsapp",
-                        recipient_address=str(phone_digits),
-                        status="FAILED",
-                        response_data=(
-                            payload if isinstance(payload, dict) else {"raw": str(payload)}
-                        ),
-                        error_message=(parse_whatsapp_api_error(payload) or str(payload))[:500],
-                    )
-                except Exception:
-                    pass
-        return False, last or {"error": "template send failed"}
+        return self.send_whatsapp_template(
+            phone_digits,
+            template_name,
+            language_code=primary,
+            components=components,
+            notification=notification,
+            audit=audit,
+            fallback_body=text,
+            fallback_context={"message": text, "body": text},
+        )
 
     # ----------------------------------------------------------------------
 
@@ -1198,50 +1164,31 @@ class NotificationService:
         """
         Send staff invite WhatsApp template via Meta Cloud API (default path).
         """
-        try:
-            token = get_whatsapp_access_token() or None
-            phone_id = get_whatsapp_phone_number_id() or None
-            if not token or not phone_id or not phone:
-                return False, None
-            phone, phone_err = normalize_whatsapp_phone(phone)
-            if phone_err:
-                return False, {"error": phone_err}
-            url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
-            template_name = getattr(settings, 'WHATSAPP_TEMPLATE_INVITE', 'onboarding_invite_v1')
-            brand = getattr(settings, 'WHATSAPP_BRAND_NAME', 'Mizan AI')
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": phone,
-                "type": "template",
-                "template": {
-                    "name": template_name,
-                    "language": {"code": "en_US"},
-                    "components": [
-                        {
-                            "type": "body",
-                            "parameters": [
-                                {"type": "text", "text": brand},
-                                {"type": "text", "text": first_name or ''},
-                                {"type": "text", "text": invite_link},
-                                {"type": "text", "text": support_contact or ''},
-                            ]
-                        }
-                    ]
-                }
+        template_name = getattr(settings, 'WHATSAPP_TEMPLATE_INVITE', 'onboarding_invite_v1')
+        brand = getattr(settings, 'WHATSAPP_BRAND_NAME', 'Mizan AI')
+        components = [
+            {
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": brand},
+                    {"type": "text", "text": first_name or ''},
+                    {"type": "text", "text": invite_link},
+                    {"type": "text", "text": support_contact or ''},
+                ],
             }
-            resp = requests.post(url, headers={'Authorization': f"Bearer {token}"}, json=payload)
-            try:
-                data = resp.json()
-            except Exception:
-                data = {"error": resp.text}
-            ok = resp.status_code == 200
-            external_id = None
-            if isinstance(data, dict):
-                external_id = str(data.get('messages', [{}])[0].get('id')) if data.get('messages') else None
-            return ok, {"status_code": resp.status_code, "data": data, "external_id": external_id}
-        except Exception as e:
-            logger.error(f"WhatsApp invitation error: {e}")
-            return False, {"error": str(e)}
+        ]
+        return self.send_whatsapp_template(
+            phone,
+            template_name,
+            language_code='en_US',
+            components=components,
+            fallback_context={
+                'brand': brand,
+                'first_name': first_name,
+                'invite_link': invite_link,
+                'support_contact': support_contact,
+            },
+        )
 
     def send_whatsapp_text(self, phone, body, notification=None):
         """Send a plain text WhatsApp message via Meta Cloud API"""
@@ -1515,8 +1462,34 @@ class NotificationService:
         notification=None,
         *,
         audit: bool = True,
+        fallback_body: str | None = None,
+        fallback_context: dict | None = None,
+        allow_text_fallback: bool | None = None,
     ):
-        """Send a WhatsApp template message via Meta Cloud API"""
+        """
+        Send a WhatsApp template via Meta Cloud API.
+
+        When the template is missing or not approved for the locale, optionally falls back
+        to an intelligent free-form message (Miya-style) so staff still get useful updates.
+        """
+        from .whatsapp_fallback import (
+            compose_intelligent_fallback,
+            is_missing_template_error,
+        )
+
+        if allow_text_fallback is None:
+            allow_text_fallback = bool(
+                getattr(settings, "WHATSAPP_TEMPLATE_FALLBACK_TO_TEXT", True)
+            )
+
+        alt_languages = []
+        for lang in (language_code, "en_US", "en", "fr", "fr_FR", "ar"):
+            if lang and lang not in alt_languages:
+                alt_languages.append(lang)
+
+        last_resp: dict = {"error": "WhatsApp template not sent"}
+        last_status = 0
+
         try:
             from .models import NotificationLog
             token = get_whatsapp_access_token() or None
@@ -1527,58 +1500,148 @@ class NotificationService:
             phone, phone_err = normalize_whatsapp_phone(phone)
             if phone_err:
                 return False, {"error": phone_err}
-            
+
             url = f"https://graph.facebook.com/{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
-            payload = {
-                "messaging_product": "whatsapp",
-                "to": phone,
-                "type": "template",
-                "template": {
-                    "name": template_name,
-                    "language": {"code": language_code},
-                    "components": components or []
+
+            for lang in alt_languages:
+                payload = {
+                    "messaging_product": "whatsapp",
+                    "to": phone,
+                    "type": "template",
+                    "template": {
+                        "name": template_name,
+                        "language": {"code": lang},
+                        "components": components or [],
+                    },
                 }
-            }
-            
-            logger.info(f"Sending WhatsApp template '{template_name}' ({language_code}) to {phone}")
-            resp = requests.post(url, headers={'Authorization': f"Bearer {token}"}, json=payload)
-            try:
-                data = resp.json()
-            except Exception:
-                data = {"error": resp.text}
-            
-            ok = resp.status_code == 200
-            if not ok:
-                logger.warning(f"WhatsApp template failed: {resp.status_code} - {data}")
-            external_id = None
-            if isinstance(data, dict):
-                external_id = str(data.get('messages', [{}])[0].get('id')) if data.get('messages') else None
-
-            if audit:
+                logger.info(
+                    "Sending WhatsApp template '%s' (%s) to %s",
+                    template_name,
+                    lang,
+                    phone,
+                )
+                resp = requests.post(
+                    url, headers={"Authorization": f"Bearer {token}"}, json=payload
+                )
                 try:
-                    NotificationLog.objects.create(
-                        notification=notification,
-                        channel='whatsapp',
-                        recipient_address=phone,
-                        status='SENT' if ok else 'FAILED',
-                        external_id=external_id,
-                        response_data=data if isinstance(data, dict) else {"raw": str(data)},
-                        error_message=None if ok else str(data)[:500],
-                    )
+                    data = resp.json()
                 except Exception:
-                    pass
+                    data = {"error": resp.text}
 
-            return ok, {"status_code": resp.status_code, "data": data, "external_id": external_id}
+                ok = resp.status_code == 200
+                last_status = resp.status_code
+                external_id = None
+                if isinstance(data, dict):
+                    external_id = (
+                        str(data.get("messages", [{}])[0].get("id"))
+                        if data.get("messages")
+                        else None
+                    )
+                last_resp = {
+                    "status_code": resp.status_code,
+                    "data": data,
+                    "external_id": external_id,
+                    "language_code": lang,
+                }
+
+                if ok:
+                    if audit:
+                        try:
+                            NotificationLog.objects.create(
+                                notification=notification,
+                                channel="whatsapp",
+                                recipient_address=phone,
+                                status="SENT",
+                                external_id=external_id,
+                                response_data=data if isinstance(data, dict) else {"raw": str(data)},
+                                error_message=None,
+                            )
+                        except Exception:
+                            pass
+                    return True, last_resp
+
+                if not is_missing_template_error(data):
+                    logger.warning(
+                        "WhatsApp template failed: %s - %s", resp.status_code, data
+                    )
+                    if audit:
+                        try:
+                            NotificationLog.objects.create(
+                                notification=notification,
+                                channel="whatsapp",
+                                recipient_address=phone,
+                                status="FAILED",
+                                external_id=external_id,
+                                response_data=data if isinstance(data, dict) else {"raw": str(data)},
+                                error_message=str(data)[:500],
+                            )
+                        except Exception:
+                            pass
+                    return False, last_resp
+
+                logger.info(
+                    "WhatsApp template '%s' unavailable for %s — trying next locale",
+                    template_name,
+                    lang,
+                )
+
+            # All template locales failed (typically missing template) → intelligent text
+            if not allow_text_fallback:
+                logger.warning(
+                    "WhatsApp template '%s' failed; text fallback disabled",
+                    template_name,
+                )
+                if audit:
+                    try:
+                        NotificationLog.objects.create(
+                            notification=notification,
+                            channel="whatsapp",
+                            recipient_address=phone,
+                            status="FAILED",
+                            response_data=last_resp.get("data") if isinstance(last_resp, dict) else {},
+                            error_message=str(last_resp)[:500],
+                        )
+                    except Exception:
+                        pass
+                return False, last_resp
+
+            text_body = compose_intelligent_fallback(
+                template_name,
+                components=components,
+                fallback_body=fallback_body,
+                context=fallback_context,
+            )
+            if not text_body:
+                return False, last_resp
+
+            logger.info(
+                "WhatsApp template '%s' unavailable — sending intelligent free-form fallback",
+                template_name,
+            )
+            ok_text, text_resp = self.send_whatsapp_text(
+                phone, text_body, notification=notification
+            )
+            merged = {
+                **(text_resp if isinstance(text_resp, dict) else {"raw": text_resp}),
+                "fallback": "text",
+                "template_name": template_name,
+                "template_status_code": last_status,
+            }
+            if ok_text:
+                return True, merged
+            return False, merged
+
         except Exception as e:
             logger.error(f"WhatsApp template error: {e}")
             if audit:
                 try:
                     from .models import NotificationLog
+
                     NotificationLog.objects.create(
                         notification=notification,
-                        channel='whatsapp',
-                        recipient_address=''.join(filter(str.isdigit, str(phone or ''))),
-                        status='FAILED',
+                        channel="whatsapp",
+                        recipient_address="".join(filter(str.isdigit, str(phone or ""))),
+                        status="FAILED",
                         response_data={},
                         error_message=str(e)[:500],
                     )
@@ -1610,7 +1673,13 @@ class NotificationService:
                 "type": "header",
                 "parameters": [{"type": "text", "text": first_name}],
             })
-        return self.send_whatsapp_template(phone, template_name, language_code=language_code, components=components)
+        return self.send_whatsapp_template(
+            phone,
+            template_name,
+            language_code=language_code,
+            components=components,
+            fallback_context={"first_name": first_name, "restaurant_name": restaurant_name},
+        )
 
     def send_staff_checklist_step(self, phone, question_text, language_code='en_US'):
         """
@@ -1623,8 +1692,16 @@ class NotificationService:
             return False
         question = (question_text or '').strip()[:1024]
         components = [{"type": "body", "parameters": [{"type": "text", "text": question}]}]
-        ok, _ = self.send_whatsapp_template(phone, template_name, language_code=language_code, components=components)
-        return ok
+        ok, resp = self.send_whatsapp_template(
+            phone,
+            template_name,
+            language_code=language_code,
+            components=components,
+            allow_text_fallback=False,
+        )
+        if ok and not (isinstance(resp, dict) and resp.get("fallback") == "text"):
+            return True
+        return False
 
     def prepare_checklist_for_miya(self, user, active_shift, phone_digits=None):
         """
@@ -2210,7 +2287,8 @@ class NotificationService:
                 phone=phone,
                 template_name=template_name,
                 language_code='en_US',
-                components=[]
+                components=[],
+                allow_text_fallback=False,
             )
             if ok:
                 return ok, resp
