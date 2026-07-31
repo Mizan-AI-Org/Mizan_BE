@@ -17,6 +17,7 @@ from notifications.services import notification_service
 from accounts.rbac_enforce import user_can_use_miya
 from .services.agent import run_miya_chat
 from .services.context import build_session_context, build_system_prompt
+from .services.mastra_client import mastra_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,65 @@ ALLOWED_ROLES = {
 
 def _miya_access_ok(user) -> bool:
     return user_can_use_miya(user)
+
+
+def _should_async_miya_chat() -> bool:
+    return mastra_enabled() and getattr(settings, "MIYA_ASYNC_CHAT", True)
+
+
+def _chat_response_payload(result: dict, *, want_voice: bool = False) -> dict:
+    reply = result.get("reply") or ""
+    payload = {
+        "reply": reply,
+        "tool_trace": result.get("tool_trace") or [],
+    }
+    if want_voice and reply:
+        audio_bytes, mime = notification_service.synthesize_speech_bytes(reply)
+        if audio_bytes:
+            payload["audio"] = {
+                "mime_type": mime or "audio/mpeg",
+                "base64": base64.b64encode(audio_bytes).decode("ascii"),
+            }
+    return payload
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+def miya_chat_status(request):
+    """Poll async Miya dashboard chat (Celery task started by POST /api/miya/chat/)."""
+    from celery.result import AsyncResult
+
+    task_id = (request.query_params.get("task_id") or "").strip()
+    if not task_id:
+        return Response({"error": "task_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    result = AsyncResult(task_id)
+    if not result.ready():
+        return Response({"status": "processing"})
+
+    if result.failed():
+        logger.warning("Miya async chat task %s failed: %s", task_id, result.result)
+        return Response(
+            {
+                "status": "failed",
+                "error": "Miya task failed",
+                "reply": "Miya is temporarily unavailable. Try again shortly.",
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    data = result.result if isinstance(result.result, dict) else {}
+    if data.get("error"):
+        return Response(
+            {
+                "status": "failed",
+                "error": data.get("error"),
+                "reply": data.get("reply") or "Something went wrong talking to Miya.",
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    return Response({"status": "complete", **data})
 
 
 @api_view(["GET"])
@@ -109,6 +169,23 @@ def miya_chat(request):
     auth_header = request.headers.get("Authorization", "")
     access_token = auth_header.replace("Bearer ", "").strip() if auth_header else None
 
+    if _should_async_miya_chat():
+        from .tasks import run_miya_dashboard_chat
+
+        task = run_miya_dashboard_chat.delay(
+            user_id=str(user.id),
+            user_message=message,
+            history=history,
+            channel="dashboard",
+            preferred_restaurant_id=preferred_restaurant_id,
+            access_token=access_token,
+            want_voice=want_voice,
+        )
+        return Response(
+            {"status": "processing", "task_id": task.id},
+            status=status.HTTP_202_ACCEPTED,
+        )
+
     try:
         result = run_miya_chat(
             user=user,
@@ -125,21 +202,7 @@ def miya_chat(request):
             status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
 
-    reply = result.get("reply") or ""
-    payload = {
-        "reply": reply,
-        "tool_trace": result.get("tool_trace") or [],
-    }
-
-    if want_voice and reply:
-        audio_bytes, mime = notification_service.synthesize_speech_bytes(reply)
-        if audio_bytes:
-            payload["audio"] = {
-                "mime_type": mime or "audio/mpeg",
-                "base64": base64.b64encode(audio_bytes).decode("ascii"),
-            }
-
-    return Response(payload)
+    return Response(_chat_response_payload(result, want_voice=want_voice))
 
 
 VOICE_INPUT_ROLES = {"ADMIN", "SUPER_ADMIN", "MANAGER", "OWNER"}

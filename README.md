@@ -251,6 +251,17 @@ docker-compose up -d --build
 
 - **After `up -d --build`:** The backend container runs `migrate`, seeds subscription plans (`seed_subscription_plans`), then starts Daphne. This can take **1–2 minutes**. If the frontend shows “Network error. Please check backend server.”, wait a bit and retry.
 
+**Miya dashboard “Failed to fetch”:** Mastra supervisor turns can take 60–120s. With `MIYA_AGENT_PROVIDER=mastra` and `MIYA_ASYNC_CHAT=True`, `/api/miya/chat/` returns **202** immediately and the widget polls `/api/miya/chat/status/`. Ensure **celery_worker** is running. If you still use synchronous chat, raise nginx `proxy_read_timeout` for `/api/miya/` to at least **180s**:
+
+```nginx
+location /api/miya/ {
+    proxy_read_timeout 180s;
+    proxy_connect_timeout 30s;
+    proxy_send_timeout 180s;
+    # ... existing proxy_pass headers ...
+}
+```
+
 **Billing / pricing cards missing?** The Settings → Billing page reads plans from `GET /api/billing/plans/`. If that endpoint returns an empty list, run:
 
 ```bash

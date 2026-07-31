@@ -2,11 +2,83 @@
 
 from __future__ import annotations
 
+import base64
 import logging
+from typing import Any
 
 from celery import shared_task
 
 logger = logging.getLogger(__name__)
+
+
+@shared_task(
+    name="miya.tasks.run_miya_dashboard_chat",
+    bind=True,
+    max_retries=0,
+    soft_time_limit=280,
+    time_limit=300,
+)
+def run_miya_dashboard_chat(
+    self,
+    *,
+    user_id: str,
+    user_message: str,
+    history: list[dict[str, str]] | None,
+    channel: str = "dashboard",
+    preferred_restaurant_id: str | None = None,
+    access_token: str | None = None,
+    want_voice: bool = False,
+) -> dict[str, Any]:
+    """Run one dashboard Miya turn off the HTTP worker (Mastra can take 60–120s)."""
+    from accounts.models import CustomUser
+    from notifications.services import notification_service
+
+    from .services.agent import run_miya_chat
+
+    user = CustomUser.objects.filter(id=user_id, is_active=True).first()
+    if not user:
+        return {
+            "error": "user_not_found",
+            "reply": "Session expired. Please sign in again.",
+        }
+
+    try:
+        result = run_miya_chat(
+            user=user,
+            access_token=access_token,
+            user_message=user_message,
+            history=history,
+            channel=channel,
+            preferred_restaurant_id=preferred_restaurant_id,
+        )
+    except RuntimeError as exc:
+        logger.warning("run_miya_dashboard_chat runtime error user=%s: %s", user_id, exc)
+        return {
+            "error": str(exc)[:200],
+            "reply": "Miya is temporarily unavailable. Try again shortly.",
+        }
+    except Exception as exc:
+        logger.exception("run_miya_dashboard_chat failed user=%s", user_id)
+        return {
+            "error": str(exc)[:200],
+            "reply": "Something went wrong talking to Miya. Try again in a moment.",
+        }
+
+    reply = (result.get("reply") or "").strip()
+    payload: dict[str, Any] = {
+        "reply": reply or "I'm here. What would you like me to help with?",
+        "tool_trace": result.get("tool_trace") or [],
+    }
+
+    if want_voice and payload["reply"]:
+        audio_bytes, mime = notification_service.synthesize_speech_bytes(payload["reply"])
+        if audio_bytes:
+            payload["audio"] = {
+                "mime_type": mime or "audio/mpeg",
+                "base64": base64.b64encode(audio_bytes).decode("ascii"),
+            }
+
+    return payload
 
 
 @shared_task(name="miya.tasks.run_miya_whatsapp_turn_async", bind=True, max_retries=1)
