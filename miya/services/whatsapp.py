@@ -87,14 +87,28 @@ def enqueue_miya_whatsapp_turn(
 
     from miya.tasks import run_miya_whatsapp_turn_async
 
-    run_miya_whatsapp_turn_async.delay(
-        user_id=str(user.id),
-        phone_digits=phone_digits,
-        message_text=message_text,
-        session_id=str(session.id),
-        voice_reply=voice_reply,
-    )
-    return True
+    try:
+        run_miya_whatsapp_turn_async.delay(
+            user_id=str(user.id),
+            phone_digits=phone_digits,
+            message_text=message_text,
+            session_id=str(session.id),
+            voice_reply=voice_reply,
+        )
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Miya WhatsApp async queue failed (%s) — falling back to sync phone=%s",
+            exc,
+            phone_digits,
+        )
+        return handle_miya_whatsapp_turn(
+            user=user,
+            phone_digits=phone_digits,
+            message_text=message_text,
+            session=session,
+            voice_reply=voice_reply,
+        )
 
 
 def handle_miya_whatsapp_turn(
