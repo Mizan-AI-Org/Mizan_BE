@@ -130,7 +130,11 @@ mizan-backend/
 Copy the right template and fill in values.
 
 - **Local / dev:** copy `.env.example` to `.env`
-- **Production (Docker on EC2):** copy `.env.production.template` to `.env.production`
+- **Production (Docker on EC2):** keep all credentials in `.env`, then generate Docker env:
+  ```bash
+  node scripts/sync-env-production.mjs   # writes .env.production for docker-compose
+  ```
+- **Miya-V2 (Mastra Cloud):** syncs from the same `.env` via `../Miya-V2` → `npm run env:sync`
 
 ### Main variables
 
@@ -243,7 +247,7 @@ docker-compose down
 docker-compose up -d --build
 ```
 
-- **First time:** Copy `.env.production.template` to `.env.production`, fill in all values (DB, Redis, Stripe, Square, WhatsApp, Lua, etc.). Ensure `ALLOWED_HOSTS` includes your API domain (e.g. `api.heymizan.ai`).
+- **First time:** Put production credentials in `.env`, run `node scripts/sync-env-production.mjs`, and ensure `POSTGRES_*` point to RDS. Ensure `ALLOWED_HOSTS` includes your API domain (e.g. `api.heymizan.ai`).
 
 - **After `up -d --build`:** The backend container runs `migrate`, seeds subscription plans (`seed_subscription_plans`), then starts Daphne. This can take **1–2 minutes**. If the frontend shows “Network error. Please check backend server.”, wait a bit and retry.
 

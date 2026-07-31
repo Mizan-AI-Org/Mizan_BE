@@ -25,7 +25,11 @@ from .serializers import (
     AnnouncementCreateSerializer
 )
 from .services import notification_service
-from core.whatsapp_config import get_miya_whatsapp_enabled, get_whatsapp_verify_token
+from core.whatsapp_config import (
+    get_miya_whatsapp_enabled,
+    get_miya_whatsapp_mastra_channel,
+    get_whatsapp_verify_token,
+)
 from .utils import (
     infer_incident_type,
     infer_severity,
@@ -2544,8 +2548,10 @@ def whatsapp_webhook(request):
                                     _interactive_is_clock = True
                         except Exception:
                             pass
+
                         if (
                             miya_wa
+                            and not get_miya_whatsapp_mastra_channel()
                             and session
                             and session.state not in _active_django_states
                             and msg_type not in _django_only_msg_types
@@ -2565,9 +2571,9 @@ def whatsapp_webhook(request):
                             and not _automation_stop_miya
                         ):
                             if miya_wa and user and text_body:
-                                from miya.services.whatsapp import handle_miya_whatsapp_turn
-    
-                                if handle_miya_whatsapp_turn(
+                                from miya.services.whatsapp import enqueue_miya_whatsapp_turn
+
+                                if enqueue_miya_whatsapp_turn(
                                     user=user,
                                     phone_digits=phone_digits,
                                     message_text=text_body,

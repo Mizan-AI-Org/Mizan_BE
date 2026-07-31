@@ -8,6 +8,9 @@ from typing import Any
 import requests
 from django.conf import settings
 
+from core.read_through_cache import get_or_set
+from miya.cache_keys import mastra_health_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -26,6 +29,81 @@ def _agent_id() -> str:
     return (getattr(settings, "MIYA_MASTRA_AGENT_ID", None) or "miya").strip()
 
 
+def _probe_mastra_health() -> dict[str, Any]:
+    url = f"{_base_url()}/api/agents"
+    headers = _auth_headers()
+    timeout = min(int(getattr(settings, "MIYA_MASTRA_TIMEOUT", 120) or 120), 10)
+    try:
+        resp = requests.get(url, headers=headers, timeout=timeout)
+    except requests.RequestException as exc:
+        return {"ok": False, "reason": str(exc)[:200]}
+    if resp.status_code >= 400:
+        return {"ok": False, "reason": f"HTTP {resp.status_code}"}
+    data = resp.json() if resp.content else {}
+    agent_ids: list[str] = []
+    if isinstance(data, dict):
+        if "agents" in data and isinstance(data["agents"], list):
+            items = data["agents"]
+        else:
+            items = list(data.keys())
+        for item in items:
+            if isinstance(item, dict):
+                agent_ids.append(str(item.get("id") or item.get("name") or ""))
+            elif isinstance(item, str):
+                agent_ids.append(item)
+    elif isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                agent_ids.append(str(item.get("id") or item.get("name") or ""))
+            elif isinstance(item, str):
+                agent_ids.append(item)
+    agent_ids = [a for a in agent_ids if a]
+    target = _agent_id()
+    return {
+        "ok": True,
+        "agent_id": target,
+        "agents": agent_ids,
+        "agent_registered": target in agent_ids or not agent_ids,
+    }
+
+
+def mastra_health() -> dict[str, Any]:
+    """Probe Mastra server availability (agents list)."""
+    if not mastra_enabled():
+        return {"ok": False, "reason": "provider_not_mastra"}
+    ttl = int(getattr(settings, "MIYA_MASTRA_HEALTH_CACHE_TTL", 30) or 30)
+    return get_or_set(mastra_health_key(), ttl, _probe_mastra_health)
+
+
+def _auth_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    for setting_name in ("MIYA_MASTRA_API_KEY", "MIYA_MASTRA_API_TOKEN", "MASTRA_API_TOKEN"):
+        token = (getattr(settings, setting_name, None) or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+            return headers
+    return headers
+
+
+def mastra_deployment_mode() -> str:
+    url = (_base_url() or "").lower()
+    if not url:
+        return "disabled"
+    if "localhost" in url or "127.0.0.1" in url:
+        return "local"
+    return "cloud"
+
+
+def _thread_id(session_context: dict[str, Any]) -> str:
+    explicit = session_context.get("thread_id")
+    if explicit:
+        return str(explicit)
+    channel = (session_context.get("channel") or "dashboard").strip().lower()
+    user_id = session_context.get("user_id") or "anonymous"
+    restaurant_id = session_context.get("restaurant_id") or "none"
+    return f"mizan-{channel}-{user_id}-{restaurant_id}"
+
+
 def run_miya_chat_mastra(
     *,
     user_message: str,
@@ -40,7 +118,7 @@ def run_miya_chat_mastra(
     url = f"{_base_url()}/api/agents/{_agent_id()}/generate"
     messages: list[dict[str, str]] = []
 
-    # Mastra manages its own memory thread; send recent history for continuity.
+    # Mastra manages thread memory; still send recent turns for continuity on first call.
     for turn in history or []:
         role = turn.get("role")
         content = (turn.get("content") or "").strip()
@@ -49,32 +127,33 @@ def run_miya_chat_mastra(
 
     messages.append({"role": "user", "content": user_message.strip()})
 
+    resource_id = str(session_context.get("user_id") or "anonymous")
+    thread_id = _thread_id(session_context)
+
     payload: dict[str, Any] = {
         "messages": messages,
-        "resourceId": str(session_context.get("user_id") or "anonymous"),
-        "threadId": session_context.get("thread_id")
-        or f"mizan-{session_context.get('user_id')}-{session_context.get('restaurant_id')}",
-        "runtimeContext": {
+        "instructions": system_prompt[:12000],
+        "maxSteps": 16,
+        "memory": {
+            "thread": thread_id,
+            "resource": resource_id,
+        },
+        "requestContext": {
             "mizan": {
                 "restaurantId": session_context.get("restaurant_id"),
                 "userId": session_context.get("user_id"),
                 "accessToken": access_token,
                 "channel": session_context.get("channel") or "dashboard",
                 "role": session_context.get("role"),
-                "systemPrompt": system_prompt[:8000],
+                "systemPrompt": system_prompt[:12000],
             },
         },
     }
 
-    headers = {"Content-Type": "application/json"}
-    mastra_key = (getattr(settings, "MIYA_MASTRA_API_KEY", None) or "").strip()
-    if mastra_key:
-        headers["Authorization"] = f"Bearer {mastra_key}"
-
     timeout = int(getattr(settings, "MIYA_MASTRA_TIMEOUT", 120) or 120)
 
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        resp = requests.post(url, json=payload, headers=_auth_headers(), timeout=timeout)
     except requests.RequestException as exc:
         logger.exception("Mastra request failed: %s", exc)
         raise RuntimeError("Miya Mastra service unreachable") from exc
@@ -91,7 +170,7 @@ def run_miya_chat_mastra(
     return {
         "reply": reply or "I'm here. What would you like me to help with?",
         "tool_trace": tool_trace,
-        "session_context": session_context,
+        "session_context": {**session_context, "thread_id": thread_id},
         "provider": "mastra",
     }
 
@@ -128,12 +207,12 @@ def _extract_reply(data: dict[str, Any]) -> str:
 
 
 def _extract_tool_trace(data: dict[str, Any]) -> list[dict[str, Any]]:
-    trace = data.get("tool_trace") or data.get("toolTrace")
+    trace = data.get("tool_trace") or data.get("toolTrace") or data.get("toolCalls")
     if isinstance(trace, list):
-        return trace
+        return [{"tool": t.get("name") or t.get("toolName"), "result": t} for t in trace if isinstance(t, dict)]
     inner = data.get("response") or data.get("result")
     if isinstance(inner, dict):
         trace = inner.get("toolCalls") or inner.get("tool_trace")
         if isinstance(trace, list):
-            return [{"tool": t.get("name"), "result": t} for t in trace if isinstance(t, dict)]
+            return [{"tool": t.get("name") or t.get("toolName"), "result": t} for t in trace if isinstance(t, dict)]
     return []
