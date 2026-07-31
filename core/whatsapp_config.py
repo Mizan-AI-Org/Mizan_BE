@@ -132,6 +132,14 @@ def get_miya_whatsapp_voice_default() -> bool:
     return bool(getattr(settings, "MIYA_WHATSAPP_VOICE_DEFAULT", False))
 
 
+def get_miya_whatsapp_mastra_channel() -> bool:
+    """When True, Miya WhatsApp chat is handled by Mastra Cloud webhook (not Django run_miya_chat)."""
+    effective = _platform_whatsapp_effective()
+    if effective and "miya_whatsapp_mastra_channel" in effective:
+        return bool(effective.get("miya_whatsapp_mastra_channel"))
+    return bool(getattr(settings, "MIYA_WHATSAPP_MASTRA_CHANNEL", False))
+
+
 def parse_whatsapp_api_error(payload: Any) -> str:
     """Extract a human-readable message from a Meta Graph API error payload."""
     if payload is None:

@@ -51,6 +51,7 @@ def build_session_context(
         "user_email": user.email,
         "user_phone": phone,
         "role": user.role,
+        "thread_id": hint.get("thread_id") or hint.get("whatsapp_session_id"),
         "tenant_role": (
             next(
                 (m["role"] for m in memberships if m["restaurant_id"] == restaurant_id),

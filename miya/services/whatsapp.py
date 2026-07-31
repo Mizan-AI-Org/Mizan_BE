@@ -62,6 +62,41 @@ def _send_miya_reply(phone_digits: str, reply: str, *, voice: bool = False) -> N
     notification_service.send_whatsapp_text(phone_digits, text)
 
 
+def enqueue_miya_whatsapp_turn(
+    *,
+    user,
+    phone_digits: str,
+    message_text: str,
+    session,
+    voice_reply: bool = False,
+) -> bool:
+    """
+    Queue Miya WhatsApp processing off the webhook hot path when MIYA_ASYNC_CHAT is enabled.
+    Returns True when the message was accepted for handling (sync or async).
+    """
+    from django.conf import settings
+
+    if not getattr(settings, "MIYA_ASYNC_CHAT", True):
+        return handle_miya_whatsapp_turn(
+            user=user,
+            phone_digits=phone_digits,
+            message_text=message_text,
+            session=session,
+            voice_reply=voice_reply,
+        )
+
+    from miya.tasks import run_miya_whatsapp_turn_async
+
+    run_miya_whatsapp_turn_async.delay(
+        user_id=str(user.id),
+        phone_digits=phone_digits,
+        message_text=message_text,
+        session_id=str(session.id),
+        voice_reply=voice_reply,
+    )
+    return True
+
+
 def handle_miya_whatsapp_turn(
     *,
     user,
@@ -100,6 +135,8 @@ def handle_miya_whatsapp_turn(
     session_hint = dict(getattr(session, "context", None) or {})
     if getattr(user, "restaurant_id", None):
         session_hint.setdefault("restaurant_id", str(user.restaurant_id))
+    session_hint["thread_id"] = f"wa-{getattr(session, 'id', phone_digits)}"
+    session_hint["whatsapp_session_id"] = session_hint["thread_id"]
 
     try:
         result = run_miya_chat(

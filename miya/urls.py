@@ -11,4 +11,5 @@ urlpatterns = [
     path("instructions/", views.miya_instructions, name="miya-instructions"),
     path("mastra/execute-tool/", views_mastra.mastra_execute_tool, name="miya-mastra-execute-tool"),
     path("mastra/tools-catalog/", views_mastra.mastra_tools_catalog, name="miya-mastra-tools-catalog"),
+    path("mastra/whatsapp-context/", views_mastra.mastra_whatsapp_context, name="miya-mastra-whatsapp-context"),
 ]

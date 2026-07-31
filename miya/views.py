@@ -48,12 +48,19 @@ def miya_config(request):
     fish_configured = bool(getattr(settings, "FISH_AUDIO_API_KEY", ""))
     stt_configured = fish_configured or bool(getattr(settings, "OPENAI_API_KEY", ""))
 
+    from .services.mastra_client import mastra_deployment_mode, mastra_enabled, mastra_health
+
+    mastra_status = mastra_health() if mastra_enabled() else None
+
     return Response(
         {
             "enabled": True,
             "name": "Miya",
             "agent_provider": getattr(settings, "MIYA_AGENT_PROVIDER", "django"),
             "mastra_configured": bool(getattr(settings, "MIYA_MASTRA_URL", "")),
+            "mastra_mode": mastra_deployment_mode(),
+            "mastra_healthy": bool(mastra_status and mastra_status.get("ok")),
+            "mastra_status": mastra_status,
             "voice_provider": "fish-audio" if fish_configured else "openai-fallback",
             "asr_provider": "fish-audio" if fish_configured else "openai-whisper",
             "fish_audio_configured": fish_configured,
