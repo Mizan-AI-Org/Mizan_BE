@@ -163,11 +163,10 @@ class NotificationService:
                 message = f"You have been assigned a new shift on {start_str}."
                 # Staff are notified via WhatsApp only (not email) for scheduled shifts.
                 channels.append('whatsapp')
-                # Prefer Miya (Lua) to send the WhatsApp so the message comes from the assistant
-                lua_url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
-                lua_agent_id = getattr(settings, 'LUA_AGENT_ID', None)
+                from core.legacy_lua import legacy_lua_user_events_configured
+
                 staff = recipient  # use passed recipient (e.g. when notifying each staff_member)
-                if (lua_url or lua_agent_id) and getattr(staff, 'phone', None):
+                if legacy_lua_user_events_configured() and getattr(staff, 'phone', None):
                     ok, _ = self.send_lua_shift_assigned(
                         phone=staff.phone,
                         first_name=staff.first_name or "Team Member",
@@ -226,10 +225,9 @@ class NotificationService:
                     role = (getattr(shift, 'role', '') or '').upper() or 'Shift'
                     notes = (getattr(shift, 'notes', '') or '').strip()
                     shift_description = f"{role}" + (f" • {notes}" if notes else "")
-                    # Prefer Miya (Lua) so the reminder comes from the assistant
-                    lua_url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
-                    lua_agent_id = getattr(settings, 'LUA_AGENT_ID', None)
-                    if lua_url or lua_agent_id:
+                    from core.legacy_lua import legacy_lua_user_events_configured
+
+                    if legacy_lua_user_events_configured():
                         ok, _ = self.send_lua_clock_in_reminder(
                             phone=staff.phone,
                             first_name=staff.first_name or "Team Member",
@@ -389,11 +387,73 @@ class NotificationService:
     # LUA AGENT INTEGRATION
     # ------------------------------------------------------------------------------------
 
+    def send_staff_invite_whatsapp(
+        self,
+        invitation_token,
+        phone,
+        first_name,
+        restaurant_name,
+        invite_link,
+        role='staff',
+        language='en',
+        support_contact='',
+    ):
+        """Staff invite via Meta template (default) or legacy HeyLua webhook (opt-in)."""
+        from core.legacy_lua import legacy_lua_enabled
+
+        if legacy_lua_enabled():
+            return self.send_lua_staff_invite(
+                invitation_token,
+                phone,
+                first_name,
+                restaurant_name,
+                invite_link,
+                role=role,
+                language=language,
+            )
+        return self.send_whatsapp_invitation(
+            phone,
+            first_name,
+            restaurant_name,
+            invite_link,
+            support_contact or getattr(settings, 'SUPPORT_CONTACT', '') or '',
+        )
+
+    def notify_staff_activated(
+        self,
+        phone,
+        first_name,
+        restaurant_name,
+        user_id,
+        pin_code=None,
+        batch_id=None,
+        language_code='en_US',
+    ):
+        """Welcome message after ONE-TAP activation — Django template by default."""
+        from core.legacy_lua import legacy_lua_enabled
+
+        if legacy_lua_enabled():
+            return self.send_lua_staff_activated(
+                phone=phone,
+                first_name=first_name,
+                restaurant_name=restaurant_name,
+                user_id=user_id,
+                pin_code=pin_code,
+                batch_id=batch_id,
+            )
+        return self.send_staff_activated_welcome(
+            phone, first_name, restaurant_name, language_code=language_code
+        )
+
     def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link, role='staff', language='en'):
         """
         Notify Lua agent about a new staff invitation.
         This triggers Miya to send a WhatsApp template message.
         """
+        from core.legacy_lua import legacy_lua_enabled
+
+        if not legacy_lua_enabled():
+            return False, {"skipped": "legacy_lua_disabled"}
         try:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
@@ -451,6 +511,10 @@ class NotificationService:
         Notify Lua agent that an invitation was accepted.
         This allows Miya to send a 'Welcome' message with the staff person's PIN.
         """
+        from core.legacy_lua import legacy_lua_enabled
+
+        if not legacy_lua_enabled():
+            return False, {"skipped": "legacy_lua_disabled"}
         try:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
@@ -498,6 +562,10 @@ class NotificationService:
         Miya sends the welcome message (schedule, clock in, checklists, updates). No outbound
         message is sent from Django before this; the first message from the user triggered activation.
         """
+        from core.legacy_lua import legacy_lua_enabled
+
+        if not legacy_lua_enabled():
+            return False, {"skipped": "legacy_lua_disabled"}
         try:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
@@ -558,6 +626,10 @@ class NotificationService:
         Miya sends the WhatsApp template (e.g. staff_clock_in or clock_in_reminder) so the reminder comes from the assistant.
         shift_description and duration support 5-parameter templates ({{4}} Shift, {{5}} Duration).
         """
+        from core.legacy_lua import legacy_lua_enabled
+
+        if not legacy_lua_enabled():
+            return False, {"skipped": "legacy_lua_disabled"}
         try:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
@@ -619,6 +691,10 @@ class NotificationService:
         Notify Miya (Lua) that a shift was assigned so Miya can send the WhatsApp message.
         Keeps shift-assigned messages coming from the assistant when the webhook is configured.
         """
+        from core.legacy_lua import legacy_lua_enabled
+
+        if not legacy_lua_enabled():
+            return False, {"skipped": "legacy_lua_disabled"}
         try:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
@@ -662,6 +738,10 @@ class NotificationService:
         Forward incident report to Lua agent for analysis.
         This allows Miya to analyze and respond to incidents.
         """
+        from core.legacy_lua import legacy_lua_enabled
+
+        if not legacy_lua_enabled():
+            return False, {"skipped": "legacy_lua_disabled"}
         try:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
@@ -715,6 +795,10 @@ class NotificationService:
         Notify Lua/Miya that a guest order was captured (voice/text parity with incidents).
         Best-effort; does not block order persistence.
         """
+        from core.legacy_lua import legacy_lua_enabled
+
+        if not legacy_lua_enabled():
+            return False, {"skipped": "legacy_lua_disabled"}
         try:
             from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
             import os
@@ -1112,9 +1196,7 @@ class NotificationService:
 
     def send_whatsapp_invitation(self, phone, first_name, restaurant_name, invite_link, support_contact):
         """
-        Send WhatsApp template via Meta API directly.
-        Do NOT use for staff invites: staff invitations must go through Miya (Lua agent)
-        via send_lua_staff_invite() so the approved Lua template (e.g. staff_invitation) is used.
+        Send staff invite WhatsApp template via Meta Cloud API (default path).
         """
         try:
             token = get_whatsapp_access_token() or None
@@ -2148,7 +2230,15 @@ class NotificationService:
         except Exception:
             pass
         logger.warning("send_whatsapp_location_request: template and interactive failed for %s", phone)
-        return False, {"error": "Location request (template and interactive) failed"}
+        # Last resort: plain text so staff are not left with silence (they can use attachment → Location).
+        plain = (
+            f"{fallback_body}\n\n"
+            "Tap the + button → Location → Send your *current location* to clock in."
+        )
+        ok, resp = self.send_whatsapp_text(phone, plain)
+        if ok:
+            return ok, resp
+        return False, {"error": "Location request (template, interactive, and text) failed"}
 
     def send_whatsapp_location_pin(self, phone, latitude, longitude, name="", address=""):
         """

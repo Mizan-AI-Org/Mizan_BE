@@ -99,11 +99,15 @@ LUA_WEBHOOK_API_KEY = getattr(settings, 'LUA_WEBHOOK_API_KEY', None) or 'mizan-a
 
 def sync_user_to_lua_agent(user, access_token):
     """
-    Sync user context to Lua agent after login.
-    This provisions the user's Lua profile with restaurant context and JWT token,
-    enabling Miya to make API calls on behalf of the user.
+    Sync user context to legacy HeyLua agent after login (opt-in only).
+    In-Django Miya uses JWT from the dashboard directly; this is a no-op by default.
     Returns True on success, False on failure. Never raises; login proceeds regardless.
     """
+    from core.legacy_lua import legacy_lua_enabled
+
+    if not legacy_lua_enabled():
+        return True
+
     import time
     webhook_url = getattr(settings, 'LUA_USER_AUTHENTICATION_WEBHOOK', None)
     if not webhook_url:
@@ -530,9 +534,9 @@ def try_activate_staff_on_inbound_message(phone_digits):
             )
         except Exception:
             pass
-        # Hand off to Lua for welcome message (no outbound from Django before this)
+        # Welcome message via Meta template (in-Django Miya path)
         from notifications.services import notification_service
-        notification_service.send_lua_staff_activated(
+        notification_service.notify_staff_activated(
             phone=full_phone,
             first_name=user.first_name or record.first_name or "Staff",
             restaurant_name=record.restaurant.name,

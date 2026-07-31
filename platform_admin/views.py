@@ -293,7 +293,10 @@ def platform_overview(request):
     )
     stripe_key = (getattr(settings, "STRIPE_SECRET_KEY", None) or "").strip()
     stripe_ok = bool(stripe_key) and not stripe_key.lower().startswith("your-")
-    lua_ok = bool((getattr(settings, "LUA_WHATSAPP_WEBHOOK_URL", None) or "").strip())
+    from core.whatsapp_config import get_miya_whatsapp_enabled
+
+    openai_ok = bool((getattr(settings, "OPENAI_API_KEY", None) or "").strip())
+    miya_wa_ok = bool(wa_ok and get_miya_whatsapp_enabled() and openai_ok)
 
     user_qs = User.objects.filter(restaurant__isnull=False)
     tenant_qs = Restaurant.objects.all()
@@ -333,7 +336,8 @@ def platform_overview(request):
             "growth": growth,
             "health": {
                 "whatsapp_configured": wa_ok,
-                "lua_webhook_configured": lua_ok,
+                "miya_whatsapp_enabled": miya_wa_ok,
+                "lua_webhook_configured": miya_wa_ok,
             },
             "payments": {
                 "stripe_available": stripe_ok,
@@ -1078,7 +1082,10 @@ def platform_health(request):
     wa_activation = bool(activation_digits)
     stripe_key = (getattr(settings, "STRIPE_SECRET_KEY", None) or "").strip()
     stripe_ok = bool(stripe_key) and not stripe_key.lower().startswith("your-")
-    lua_url = (getattr(settings, "LUA_WHATSAPP_WEBHOOK_URL", None) or "").strip()
+    from core.whatsapp_config import get_miya_whatsapp_enabled
+
+    openai_ok = bool((getattr(settings, "OPENAI_API_KEY", None) or "").strip())
+    miya_wa_ok = bool(wa_token and wa_phone_id and get_miya_whatsapp_enabled() and openai_ok)
 
     # Required platform checks — these drive Overall Healthy / Degraded.
     items = [
@@ -1119,15 +1126,15 @@ def platform_health(request):
             ),
         },
         {
-            "id": "lua_whatsapp_webhook",
-            "label": "Lua WhatsApp webhook",
-            "ok": bool(lua_url),
+            "id": "miya_whatsapp",
+            "label": "Miya WhatsApp (in-Django)",
+            "ok": miya_wa_ok,
             "kind": "config",
             "required": True,
             "message": (
-                "LUA_WHATSAPP_WEBHOOK_URL is set"
-                if lua_url
-                else "LUA_WHATSAPP_WEBHOOK_URL is not set"
+                "WhatsApp + OpenAI + MIYA_WHATSAPP_ENABLED are configured"
+                if miya_wa_ok
+                else "Configure WhatsApp credentials, OPENAI_API_KEY, and MIYA_WHATSAPP_ENABLED"
             ),
         },
         {
@@ -1181,7 +1188,8 @@ def platform_health(request):
                 "stripe_available": stripe_ok,
             },
             "details": {
-                "lua_webhook_url_set": bool(lua_url),
+                "miya_whatsapp_enabled": miya_wa_ok,
+                "openai_configured": openai_ok,
                 "redis_error": redis_error,
                 "activation_phone_digits": activation_digits or None,
                 "debug": bool(getattr(settings, "DEBUG", False)),

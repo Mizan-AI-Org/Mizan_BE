@@ -15,7 +15,7 @@ def normalize_phone(phone):
 
 @shared_task
 def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_name, invite_link, support_contact):
-    """Send WhatsApp invitation via Lua Agent webhook."""
+    """Send WhatsApp staff invitation via Meta template (or legacy HeyLua when enabled)."""
     print(f"[Task] send_whatsapp_invitation_task started for {first_name} ({phone})", file=sys.stderr)
     
     # Normalize phone number: digits only, no + or spaces
@@ -31,11 +31,10 @@ def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_n
         print(f"[Task] ERROR: Invitation {invitation_id} not found", file=sys.stderr)
         return
 
-    print(f"[Task] Calling Lua webhook for invitation {token[:8]} via notification_service...", file=sys.stderr)
+    print(f"[Task] Sending staff invite for invitation {token[:8]}...", file=sys.stderr)
     
     try:
-        # Send via Lua Agent which uses Lua's Templates API to send staff_invitation_eng
-        ok, info = notification_service.send_lua_staff_invite(
+        ok, info = notification_service.send_staff_invite_whatsapp(
             invitation_token=token,
             phone=phone,
             first_name=first_name,
@@ -43,6 +42,7 @@ def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_n
             invite_link=invite_link,
             role=role,
             language=language,
+            support_contact=support_contact,
         )
     except Exception as e:
         print(f"[Task] CRITICAL ERROR calling notification_service: {e}", file=sys.stderr)
@@ -73,7 +73,7 @@ def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_n
             print(f"[Task] ERROR saving FAILED delivery log after critical error: {log_e}", file=sys.stderr)
         return
 
-    print(f"[Task] Lua webhook call completed. ok={ok}, info={info}", file=sys.stderr)
+    print(f"[Task] Staff invite send completed. ok={ok}, info={info}", file=sys.stderr)
     
     # Ensure info is a dictionary for logging
     if not isinstance(info, dict):
@@ -116,13 +116,14 @@ def retry_failed_whatsapp_invites():
         phone = log.recipient_address
         invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={inv.invitation_token}"
         language = getattr(inv.restaurant, 'language', 'en') if getattr(inv, 'restaurant', None) else 'en'
-        ok, info = notification_service.send_lua_staff_invite(
+        ok, info = notification_service.send_staff_invite_whatsapp(
             invitation_token=inv.invitation_token,
             phone=phone,
             first_name=inv.first_name,
             restaurant_name=inv.restaurant.name,
             invite_link=invite_link,
             language=language,
+            support_contact=getattr(settings, 'SUPPORT_CONTACT', '') or '',
         )
         log.attempt_count = getattr(log, 'attempt_count', 1) + 1
         log.status = 'SENT' if ok else 'FAILED'

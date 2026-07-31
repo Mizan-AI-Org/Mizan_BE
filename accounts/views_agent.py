@@ -855,13 +855,14 @@ def agent_retry_invite(request):
     phone = log.recipient_address
     invite_link = f"{settings.FRONTEND_URL}/accept-invitation?token={inv.invitation_token}"
     language = getattr(inv.restaurant, 'language', 'en') if getattr(inv, 'restaurant', None) else 'en'
-    ok, info = notification_service.send_lua_staff_invite(
+    ok, info = notification_service.send_staff_invite_whatsapp(
         invitation_token=inv.invitation_token,
         phone=phone,
         first_name=inv.first_name,
         restaurant_name=inv.restaurant.name,
         invite_link=invite_link,
         language=language,
+        support_contact=getattr(settings, 'SUPPORT_CONTACT', '') or '',
     )
     log.attempt_count = getattr(log, 'attempt_count', 1) + 1
     log.status = 'SENT' if ok else 'FAILED'

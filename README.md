@@ -30,7 +30,7 @@ Backend API and services for **Mizan AI** — a restaurant operations platform (
 | **Task queue** | Celery + Redis |
 | **Database** | PostgreSQL |
 | **Real-time** | Django Channels, Redis channel layer |
-| **Integrations** | Firebase (push), WhatsApp Cloud API, Stripe, Square POS, Lua Agent |
+| **Integrations** | Firebase (push), WhatsApp Cloud API, Stripe, Square POS, in-Django Miya (OpenAI) |
 
 ---
 
@@ -143,7 +143,8 @@ Copy the right template and fill in values.
 | `REDIS_HOST`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | Redis and Celery (in Docker use `redis` as host) |
 | `FIREBASE_SERVICE_ACCOUNT_KEY` | JSON string for Firebase Admin (push notifications) |
 | `WHATSAPP_*` | WhatsApp Cloud API (webhook, verify token, etc.) |
-| `LUA_*` | Lua agent (API key, agent ID, webhooks) |
+| `LUA_WEBHOOK_API_KEY` | Agent API auth for Miya tool routes (legacy name; not external Lua) |
+| `LUA_LEGACY_ENABLED` | Set `true` only if you still use external HeyLua webhooks (default off) |
 | `STRIPE_*` | Stripe billing |
 | `SQUARE_*` | Square POS (OAuth, webhooks) |
 | `EMAIL_*` | SMTP for transactional email |
@@ -307,7 +308,7 @@ All API routes are under `/api/` (and optionally behind a reverse proxy at `http
 
 - **Firebase** — Push notifications (FCM); requires `FIREBASE_SERVICE_ACCOUNT_KEY`.
 - **WhatsApp Cloud API** — Webhook at `/api/notifications/whatsapp-webhook/`; invite and notification flows; configure `WHATSAPP_*` in env.
-- **Lua Agent** — Context, accept-invitation, lookup, scheduling, POS sync, WhatsApp send; configure `LUA_*` and webhook URLs.
+- **Miya (in-Django)** — Dashboard chat and WhatsApp AI via OpenAI + Fish Audio; agent tools use `LUA_WEBHOOK_API_KEY`. External HeyLua is opt-in via `LUA_LEGACY_ENABLED=true`.
 - **Stripe** — Billing and subscriptions; set `STRIPE_*` and webhook endpoints as needed.
 - **Square** — POS OAuth and webhooks; set `SQUARE_*` and ensure `SQUARE_WEBHOOK_NOTIFICATION_URL` matches your Square app config.
 
