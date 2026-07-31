@@ -2259,75 +2259,163 @@ class NotificationService:
             logger.error(f"download_media_bytes error: {e}")
             return None
 
-    def transcribe_audio_bytes(self, audio_bytes, input_mime_type=None):
+    def transcribe_audio_bytes(self, audio_bytes, input_mime_type=None, language=None):
         """
         Transcribe voice-note audio bytes.
 
-        Current implementation uses OpenAI Whisper (`whisper-1`) via REST.
+        Prefers Fish Audio ASR when ``FISH_AUDIO_API_KEY`` is set, then falls
+        back to OpenAI Whisper (`whisper-1`) via REST.
         If the incoming audio is OGG/OPUS (common for WhatsApp), we attempt to convert
         to WAV using ffmpeg when available.
         """
         if not audio_bytes:
             return None
 
-        api_key = getattr(settings, 'OPENAI_API_KEY', '') or ''
+        fish_key = getattr(settings, "FISH_AUDIO_API_KEY", "") or ""
+        if fish_key:
+            fish_text = self._transcribe_fish_audio(
+                audio_bytes,
+                input_mime_type=input_mime_type,
+                language=language,
+            )
+            if fish_text:
+                return fish_text
+
+        api_key = getattr(settings, "OPENAI_API_KEY", "") or ""
         if not api_key:
-            logger.warning("OPENAI_API_KEY not configured; skipping transcription")
+            logger.warning("No STT provider configured (Fish Audio or OPENAI_API_KEY)")
+            return None
+
+        return self._transcribe_whisper_audio_bytes(
+            audio_bytes,
+            input_mime_type=input_mime_type,
+            language=language,
+        )
+
+    def _transcribe_fish_audio(self, audio_bytes, input_mime_type=None, language=None):
+        """Fish Audio ASR — https://docs.fish.audio/features/speech-to-text"""
+        api_key = getattr(settings, "FISH_AUDIO_API_KEY", "") or ""
+        if not api_key or not audio_bytes:
+            return None
+
+        mime = (input_mime_type or "audio/webm").split(";")[0].strip().lower()
+        ext_map = {
+            "audio/webm": "webm",
+            "audio/ogg": "ogg",
+            "audio/mpeg": "mp3",
+            "audio/mp3": "mp3",
+            "audio/wav": "wav",
+            "audio/x-wav": "wav",
+            "audio/mp4": "m4a",
+            "audio/m4a": "m4a",
+        }
+        suffix = ext_map.get(mime, "webm")
+        filename = f"voice.{suffix}"
+
+        data = {"ignore_timestamps": "true"}
+        lang = (language or "").strip()
+        if lang:
+            data["language"] = lang.split("-")[0].lower()
+
+        try:
+            resp = requests.post(
+                "https://api.fish.audio/v1/asr",
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"audio": (filename, audio_bytes, mime or "application/octet-stream")},
+                data=data,
+                timeout=60,
+            )
+        except requests.RequestException as exc:
+            logger.warning(f"Fish Audio ASR request failed: {exc}")
+            return None
+
+        if resp.status_code != 200:
+            logger.warning(
+                f"Fish Audio ASR failed: {resp.status_code} - {resp.text[:300]}"
+            )
+            return None
+
+        try:
+            payload = resp.json()
+        except ValueError:
+            logger.warning("Fish Audio ASR returned non-JSON body")
+            return None
+
+        text = payload.get("text")
+        if text:
+            text = str(text).strip()
+        return text or None
+
+    def _transcribe_whisper_audio_bytes(self, audio_bytes, input_mime_type=None, language=None):
+        """OpenAI Whisper fallback STT."""
+        api_key = getattr(settings, "OPENAI_API_KEY", "") or ""
+        if not api_key:
             return None
 
         tmp_in = None
         tmp_out = None
         try:
-            # Write input audio to temp file
-            tmp_in = tempfile.NamedTemporaryFile(delete=False, suffix='.ogg')
+            mime = (input_mime_type or "").lower()
+            suffix = ".ogg"
+            if "webm" in mime:
+                suffix = ".webm"
+            elif "mpeg" in mime or "mp3" in mime:
+                suffix = ".mp3"
+            elif "wav" in mime:
+                suffix = ".wav"
+            elif "mp4" in mime or "m4a" in mime:
+                suffix = ".m4a"
+
+            tmp_in = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
             tmp_in.write(audio_bytes)
             tmp_in.flush()
             tmp_in.close()
 
             audio_path = tmp_in.name
 
-            # Convert if needed/possible (WhatsApp often sends audio/ogg; codecs=opus)
-            ffmpeg = shutil.which('ffmpeg')
+            ffmpeg = shutil.which("ffmpeg")
             if ffmpeg:
-                tmp_out = tempfile.NamedTemporaryFile(delete=False, suffix='.wav')
+                tmp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
                 tmp_out.close()
                 out_path = tmp_out.name
 
-                # -y overwrite, mono 16k improves STT reliability
-                cmd = [ffmpeg, '-y', '-i', audio_path, '-ac', '1', '-ar', '16000', out_path]
+                cmd = [ffmpeg, "-y", "-i", audio_path, "-ac", "1", "-ar", "16000", out_path]
                 try:
-                    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    subprocess.run(
+                        cmd,
+                        check=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
                     audio_path = out_path
-                except Exception as e:
-                    logger.warning(f"ffmpeg convert failed; falling back to original bytes: {e}")
+                except Exception as exc:
+                    logger.warning(f"ffmpeg convert failed; falling back to original bytes: {exc}")
             else:
                 logger.info("ffmpeg not found; sending raw audio bytes to STT provider")
 
             stt_url = "https://api.openai.com/v1/audio/transcriptions"
             headers = {"Authorization": f"Bearer {api_key}"}
-            with open(audio_path, 'rb') as f:
-                files = {
-                    'file': (audio_path.split('/')[-1], f),
-                }
-                data = {
-                    'model': 'whisper-1',
-                    'response_format': 'json',
-                }
-                resp = requests.post(stt_url, headers=headers, files=files, data=data, timeout=60)
+            with open(audio_path, "rb") as f:
+                files = {"file": (audio_path.split("/")[-1], f)}
+                data = {"model": "whisper-1", "response_format": "json"}
+                if language:
+                    data["language"] = language.split("-")[0].lower()
+                resp = requests.post(
+                    stt_url, headers=headers, files=files, data=data, timeout=60
+                )
             if resp.status_code != 200:
                 logger.warning(f"STT failed: {resp.status_code} - {resp.text[:300]}")
                 return None
 
             payload = resp.json()
-            text = payload.get('text')
+            text = payload.get("text")
             if text:
                 text = str(text).strip()
             return text or None
-        except Exception as e:
-            logger.error(f"transcribe_audio_bytes error: {e}")
+        except Exception as exc:
+            logger.error(f"_transcribe_whisper_audio_bytes error: {exc}")
             return None
         finally:
-            # Cleanup temp files
             try:
                 if tmp_in and tmp_in.name:
                     shutil.os.unlink(tmp_in.name)
@@ -2403,6 +2491,8 @@ class NotificationService:
             logger.warning(
                 f"Fish Audio TTS failed: {resp.status_code} - {resp.text[:300]}"
             )
+            if resp.status_code in (402, 403, 429):
+                return self._synthesize_openai_tts(text, voice="alloy", fmt=fmt, speed=speed)
             return None, None
 
         mime = {

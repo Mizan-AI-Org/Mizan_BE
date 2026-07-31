@@ -2386,6 +2386,41 @@ def whatsapp_webhook(request):
                     if user and session.user is None:
                         session.user = user
                         session.save(update_fields=['user'])
+
+                    # Tenant WhatsApp automations (before Miya)
+                    _automation_stop_miya = False
+                    _auto_restaurant = None
+                    if user:
+                        _auto_restaurant = getattr(user, 'restaurant', None)
+                        if not _auto_restaurant:
+                            try:
+                                from miya.services.tenant import resolve_active_tenant
+                                _auto_restaurant = resolve_active_tenant(user)
+                            except Exception:
+                                _auto_restaurant = None
+                    if _auto_restaurant and phone_digits and msg_type == 'text' and text_body:
+                        try:
+                            from automations.services.engine import run_automations_for_whatsapp_message
+                            _is_first = bool(
+                                session
+                                and (getattr(session, 'context', None) or {}).get('message_count', 0) == 0
+                            )
+                            if session:
+                                _ctx = dict(getattr(session, 'context', None) or {})
+                                _ctx['message_count'] = int(_ctx.get('message_count') or 0) + 1
+                                session.context = _ctx
+                                session.save(update_fields=['context'])
+                            _auto_result = run_automations_for_whatsapp_message(
+                                restaurant=_auto_restaurant,
+                                phone_digits=phone_digits,
+                                user=user,
+                                session=session,
+                                message_text=text_body,
+                                is_first_message=_is_first,
+                            )
+                            _automation_stop_miya = bool(_auto_result.get('stop_miya'))
+                        except Exception:
+                            logger.exception('WhatsApp automation run failed')
                     
                     from accounts.utils import calculate_distance
 
@@ -2511,6 +2546,7 @@ def whatsapp_webhook(request):
                         and not _text_is_dashboard_task_reply
                         and not _text_is_checklist_start
                         and not _text_is_clock_float_recovery
+                        and not _automation_stop_miya
                     ):
                         if miya_wa and user and text_body:
                             from miya.services.whatsapp import handle_miya_whatsapp_turn

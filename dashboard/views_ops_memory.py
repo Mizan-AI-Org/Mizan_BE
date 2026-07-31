@@ -224,118 +224,40 @@ def agent_department_owners(request):
         return Response({"error": str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@api_view(["GET"])
+@api_view(["GET", "POST"])
 @authentication_classes([])
 @permission_classes([permissions.AllowAny])
 def agent_search_tasks_and_staff(request):
-    """Cross-cutting search: any task or staff member + what's assigned to them."""
+    """Cross-cutting search — same modules as dashboard ops-search."""
     try:
-        restaurant, _, err = _resolve_dashboard_restaurant(request)
+        restaurant, acting_user, err = _resolve_dashboard_restaurant(request)
         if err:
-            return Response({"error": err["error"]}, status=err["status"])
+            from miya.services.user_errors import sanitize_user_error
+
+            return Response(
+                {"success": False, "error": sanitize_user_error(err["error"])},
+                status=err["status"],
+            )
 
         q = (request.query_params.get("q") or "").strip()
+        if not q and isinstance(getattr(request, "data", None), dict):
+            q = str(request.data.get("q") or "").strip()
         if not q or len(q) < 2:
             return Response({"error": "q must be at least 2 characters"}, status=status.HTTP_400_BAD_REQUEST)
 
-        from accounts.models import CustomUser
-        from dashboard.models import Task
-        from staff.models import StaffRequest
-        from django.db.models import Q
+        from dashboard.ops_search_service import run_ops_search
 
-        staff_hits = list(
-            CustomUser.objects.filter(restaurant=restaurant)
-            .filter(
-                Q(first_name__icontains=q)
-                | Q(last_name__icontains=q)
-                | Q(email__icontains=q)
-                | Q(phone__icontains=q)
-            )[:15]
+        data = request.data if isinstance(getattr(request, "data", None), dict) else {}
+        payload = run_ops_search(
+            restaurant,
+            q=q,
+            module=str(data.get("module") or request.query_params.get("module") or "all"),
+            status_filter=str(data.get("status") or request.query_params.get("status") or ""),
+            category_filter=str(data.get("category") or request.query_params.get("category") or ""),
+            assignee_id=str(data.get("assignee") or request.query_params.get("assignee") or ""),
+            user=acting_user,
         )
-
-        tasks = list(
-            Task.objects.filter(restaurant=restaurant)
-            .filter(Q(title__icontains=q) | Q(description__icontains=q))
-            .select_related("assigned_to")[:20]
-        )
-        requests_hits = list(
-            StaffRequest.objects.filter(restaurant=restaurant)
-            .filter(Q(subject__icontains=q) | Q(description__icontains=q))
-            .select_related("assignee", "staff")[:20]
-        )
-
-        staff_payload = []
-        for u in staff_hits:
-            assigned = list(
-                Task.objects.filter(
-                    restaurant=restaurant,
-                    assigned_to=u,
-                    status__in=["PENDING", "IN_PROGRESS"],
-                ).values("id", "title", "status", "priority")[:10]
-            )
-            absent = _is_user_absent(u, restaurant)
-            staff_payload.append(
-                {
-                    "id": str(u.id),
-                    "name": f"{u.first_name or ''} {u.last_name or ''}".strip() or u.email,
-                    "phone": u.phone or "",
-                    "role": getattr(u, "role", "") or "",
-                    "is_absent": absent,
-                    "open_tasks": [
-                        {"id": str(t["id"]), "title": t["title"], "status": t["status"]}
-                        for t in assigned
-                    ],
-                }
-            )
-
-        def _task_row(t: Task):
-            absent = _is_user_absent(t.assigned_to, restaurant) if t.assigned_to_id else False
-            validated = bool(t.manager_validated_at) if t.requires_manager_validation else None
-            return {
-                "id": str(t.id),
-                "title": t.title,
-                "status": t.status,
-                "category": t.category,
-                "assigned_to": (
-                    f"{t.assigned_to.first_name} {t.assigned_to.last_name}".strip()
-                    if t.assigned_to_id
-                    else None
-                ),
-                "assignee_absent": absent,
-                "requires_manager_validation": t.requires_manager_validation,
-                "manager_validated": validated,
-                "validation_label": (
-                    None
-                    if not t.requires_manager_validation
-                    else ("validated" if t.manager_validated_at else "not validated by manager")
-                ),
-                "has_photo_proof": bool(t.proof_media_url),
-            }
-
-        return Response(
-            {
-                "success": True,
-                "staff": staff_payload,
-                "tasks": [_task_row(t) for t in tasks],
-                "staff_requests": [
-                    {
-                        "id": str(r.id),
-                        "subject": r.subject,
-                        "category": r.category,
-                        "status": r.status,
-                        "assignee": (
-                            f"{r.assignee.first_name} {r.assignee.last_name}".strip()
-                            if r.assignee_id
-                            else None
-                        ),
-                        "assignee_absent": _is_user_absent(r.assignee, restaurant)
-                        if r.assignee_id
-                        else False,
-                    }
-                    for r in requests_hits
-                ],
-            }
-        )
+        return Response(payload)
     except Exception as e:
         logger.exception("agent_search_tasks_and_staff")
         return Response({"error": str(e)[:200]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

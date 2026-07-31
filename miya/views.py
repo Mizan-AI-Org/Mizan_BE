@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 
 from django.conf import settings
@@ -43,15 +44,18 @@ def miya_config(request):
     if user.role not in ALLOWED_ROLES and not _miya_access_ok(user):
         return Response({"enabled": False, "reason": "role_not_allowed"})
 
-    ctx = build_session_context(user)
+    ctx = build_session_context(user, preferred_restaurant_id=getattr(user, "restaurant_id", None))
     fish_configured = bool(getattr(settings, "FISH_AUDIO_API_KEY", ""))
+    stt_configured = fish_configured or bool(getattr(settings, "OPENAI_API_KEY", ""))
 
     return Response(
         {
             "enabled": True,
             "name": "Miya",
             "voice_provider": "fish-audio" if fish_configured else "openai-fallback",
+            "asr_provider": "fish-audio" if fish_configured else "openai-whisper",
             "fish_audio_configured": fish_configured,
+            "voice_input_enabled": stt_configured,
             "session_context": ctx,
         }
     )
@@ -85,6 +89,13 @@ def miya_chat(request):
 
     history = data.get("history") or []
     want_voice = bool(data.get("voice"))
+    preferred_restaurant_id = (
+        data.get("restaurant_id")
+        or getattr(user, "restaurant_id", None)
+        or (getattr(user, "restaurant", None) and str(user.restaurant.id))
+    )
+    if preferred_restaurant_id:
+        preferred_restaurant_id = str(preferred_restaurant_id)
 
     auth_header = request.headers.get("Authorization", "")
     access_token = auth_header.replace("Bearer ", "").strip() if auth_header else None
@@ -96,6 +107,7 @@ def miya_chat(request):
             user_message=message,
             history=history,
             channel="dashboard",
+            preferred_restaurant_id=preferred_restaurant_id,
         )
     except RuntimeError as exc:
         logger.exception("Miya chat failed")
@@ -117,6 +129,127 @@ def miya_chat(request):
                 "mime_type": mime or "audio/mpeg",
                 "base64": base64.b64encode(audio_bytes).decode("ascii"),
             }
+
+    return Response(payload)
+
+
+VOICE_INPUT_ROLES = {"ADMIN", "SUPER_ADMIN", "MANAGER", "OWNER"}
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def miya_voice_chat(request):
+    """
+    POST /api/miya/voice-chat/
+
+    Multipart form:
+      audio (required): recorded voice clip (webm/ogg/wav)
+      history (optional): JSON array of prior turns
+      voice (optional): synthesize reply via Fish Audio TTS (default true)
+      restaurant_id (optional): tenant scope
+      language (optional): BCP-47 hint for ASR (e.g. en, fr, ar)
+    """
+    user = request.user
+    if not _miya_access_ok(user):
+        return Response(
+            {"error": "Miya is not available for your role."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if user.role not in VOICE_INPUT_ROLES:
+        return Response(
+            {"error": "Voice messages are available for managers and admins."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    upload = request.FILES.get("audio")
+    if not upload:
+        return Response(
+            {"error": "audio file is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    audio_bytes = upload.read()
+    if not audio_bytes:
+        return Response(
+            {"error": "audio file is empty"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    language = (request.data.get("language") or request.POST.get("language") or "").strip()
+    if not language:
+        language = "en"
+
+    transcript = notification_service.transcribe_audio_bytes(
+        audio_bytes,
+        input_mime_type=getattr(upload, "content_type", None),
+        language=language,
+    )
+    if not transcript:
+        return Response(
+            {"error": "Could not transcribe audio — check Fish Audio or OpenAI STT configuration."},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    history_raw = request.data.get("history") or request.POST.get("history") or "[]"
+    if isinstance(history_raw, str):
+        try:
+            history = json.loads(history_raw) if history_raw else []
+        except json.JSONDecodeError:
+            history = []
+    else:
+        history = history_raw or []
+
+    want_voice_raw = request.data.get("voice", request.POST.get("voice", "true"))
+    want_voice = str(want_voice_raw).lower() not in ("0", "false", "no")
+
+    preferred_restaurant_id = (
+        request.data.get("restaurant_id")
+        or request.POST.get("restaurant_id")
+        or getattr(user, "restaurant_id", None)
+        or (getattr(user, "restaurant", None) and str(user.restaurant.id))
+    )
+    if preferred_restaurant_id:
+        preferred_restaurant_id = str(preferred_restaurant_id)
+
+    auth_header = request.headers.get("Authorization", "")
+    access_token = auth_header.replace("Bearer ", "").strip() if auth_header else None
+
+    try:
+        result = run_miya_chat(
+            user=user,
+            access_token=access_token,
+            user_message=transcript,
+            history=history,
+            channel="dashboard",
+            preferred_restaurant_id=preferred_restaurant_id,
+        )
+    except RuntimeError as exc:
+        logger.exception("Miya voice chat failed")
+        return Response(
+            {"error": str(exc)},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    reply = result.get("reply") or ""
+    payload = {
+        "transcript": transcript,
+        "reply": reply,
+        "tool_trace": result.get("tool_trace") or [],
+        "asr_provider": "fish-audio"
+        if getattr(settings, "FISH_AUDIO_API_KEY", "")
+        else "openai-whisper",
+    }
+
+    if want_voice and reply:
+        audio_out, mime = notification_service.synthesize_speech_bytes(reply)
+        if audio_out:
+            payload["audio"] = {
+                "mime_type": mime or "audio/mpeg",
+                "base64": base64.b64encode(audio_out).decode("ascii"),
+            }
+            payload["voice_provider"] = (
+                "fish-audio" if getattr(settings, "FISH_AUDIO_API_KEY", "") else "openai-fallback"
+            )
 
     return Response(payload)
 

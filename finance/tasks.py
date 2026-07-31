@@ -23,7 +23,7 @@ def invoice_overdue_reminder_sweep() -> dict:
     summary = {"notified": 0, "checked": 0}
 
     invoices = Invoice.objects.filter(
-        status=Invoice.STATUS_OPEN,
+        status__in=Invoice.UNPAID_ACTIVE_STATUSES,
         due_date__lte=horizon,
     ).select_related("restaurant")
 

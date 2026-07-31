@@ -171,6 +171,13 @@ def _try_create_invoice(
             )
         elif photo_url:
             attach_invoice_from_url(invoice, photo_url)
+        try:
+            from finance.payment_approval import get_policy, start_payment_approval
+
+            if get_policy(restaurant).get("enabled"):
+                start_payment_approval(invoice=invoice, requested_by=acting_user)
+        except Exception:
+            logger.exception("parse_photo: PayGuard auto-start failed for invoice %s", invoice.id)
     except Exception:
         logger.exception("parse_photo: failed to auto-create invoice")
         return None, "I tried to log this invoice but the save failed. Please try from the Finance page."

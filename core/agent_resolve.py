@@ -132,17 +132,21 @@ def _hydrate_resolution(blob) -> tuple:
     if not blob or not isinstance(blob, dict) or not blob.get("rid"):
         return None, None
     from accounts.models import CustomUser, Restaurant
+    from miya.services.tenant import resolve_active_tenant
 
     rid = blob["rid"]
     uid = blob.get("uid")
     try:
+        user_obj = None
         if uid:
-            u = CustomUser.objects.select_related("restaurant").filter(id=uid).first()
-            if u and getattr(u, "restaurant", None):
-                return u.restaurant, u
+            user_obj = CustomUser.objects.select_related("restaurant").filter(id=uid).first()
+        if user_obj:
+            rest = resolve_active_tenant(user_obj, preferred_restaurant_id=rid)
+            if rest:
+                return rest, user_obj
         r = Restaurant.objects.filter(id=rid).first()
         if r:
-            return r, None
+            return r, user_obj
     except Exception:
         pass
     return None, None
@@ -167,10 +171,21 @@ def _store_resolution_cache(data: dict, meta: dict, restaurant, user) -> None:
 
 
 def _resolve_uncached(data: dict, meta: dict):
-    from accounts.models import CustomUser, Restaurant
+    from accounts.models import CustomUser, Restaurant, StaffRestaurantLink
+    from miya.services.tenant import resolve_active_tenant, user_can_access_tenant
 
-    # 1) Direct restaurant id
+    # 1) Direct restaurant id (+ optional user)
     restaurant_id = _get_first(data, meta, "restaurant_id", "restaurantId", "restaurant")
+    user_id = _get_first(data, meta, "userId", "user_id", "staffId", "staff_id")
+    if restaurant_id and user_id:
+        try:
+            user_obj = CustomUser.objects.filter(id=user_id).select_related("restaurant").first()
+            if user_obj and user_can_access_tenant(user_obj, restaurant_id):
+                rest = resolve_active_tenant(user_obj, preferred_restaurant_id=restaurant_id)
+                if rest:
+                    return rest, user_obj
+        except Exception:
+            pass
     if restaurant_id:
         try:
             return Restaurant.objects.get(id=restaurant_id), None
@@ -189,8 +204,10 @@ def _resolve_uncached(data: dict, meta: dict):
                 user_obj = CustomUser.objects.filter(id=user_id).select_related("restaurant").first()
             except Exception:
                 user_obj = None
-            if user_obj and getattr(user_obj, "restaurant_id", None):
-                return user_obj.restaurant, user_obj
+            if user_obj:
+                rest = resolve_active_tenant(user_obj, preferred_restaurant_id=rest_id)
+                if rest:
+                    return rest, user_obj
             try:
                 rest_obj = Restaurant.objects.get(id=rest_id)
                 return rest_obj, user_obj
@@ -202,8 +219,10 @@ def _resolve_uncached(data: dict, meta: dict):
     if user_id:
         try:
             user_obj = CustomUser.objects.filter(id=user_id).select_related("restaurant").first()
-            if user_obj and user_obj.restaurant:
-                return user_obj.restaurant, user_obj
+            if user_obj:
+                rest = resolve_active_tenant(user_obj, preferred_restaurant_id=restaurant_id)
+                if rest:
+                    return rest, user_obj
         except Exception:
             pass
 
@@ -214,8 +233,10 @@ def _resolve_uncached(data: dict, meta: dict):
             user_obj = (
                 CustomUser.objects.filter(email__iexact=str(email).strip()).select_related("restaurant").first()
             )
-            if user_obj and user_obj.restaurant:
-                return user_obj.restaurant, user_obj
+            if user_obj:
+                rest = resolve_active_tenant(user_obj, preferred_restaurant_id=restaurant_id)
+                if rest:
+                    return rest, user_obj
         except Exception:
             pass
 
@@ -240,8 +261,19 @@ def _resolve_uncached(data: dict, meta: dict):
         try:
             for p in patterns:
                 user_obj = CustomUser.objects.filter(phone__icontains=p).select_related("restaurant").first()
-                if user_obj and user_obj.restaurant:
-                    return user_obj.restaurant, user_obj
+                if user_obj:
+                    rest = resolve_active_tenant(user_obj, preferred_restaurant_id=restaurant_id)
+                    if rest:
+                        return rest, user_obj
+            # Staff linked to a tenant via StaffRestaurantLink (no primary FK)
+            for p in patterns:
+                link = (
+                    StaffRestaurantLink.objects.filter(is_active=True, user__phone__icontains=p)
+                    .select_related("user", "restaurant")
+                    .first()
+                )
+                if link and link.user and link.restaurant:
+                    return link.restaurant, link.user
         except Exception:
             pass
 
@@ -254,8 +286,10 @@ def _resolve_uncached(data: dict, meta: dict):
             jwt_auth = JWTAuthentication()
             validated = jwt_auth.get_validated_token(str(token))
             user_obj = jwt_auth.get_user(validated)
-            if user_obj and getattr(user_obj, "restaurant", None):
-                return user_obj.restaurant, user_obj
+            if user_obj:
+                rest = resolve_active_tenant(user_obj, preferred_restaurant_id=restaurant_id)
+                if rest:
+                    return rest, user_obj
         except Exception:
             pass
 

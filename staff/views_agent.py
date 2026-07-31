@@ -1373,13 +1373,20 @@ def agent_chase_operational_record(request):
     POST /api/staff/agent/records/chase/
     Body: restaurant_id, q | record_id, optional record_type
     """
-    is_valid, error = validate_agent_key(request)
-    if not is_valid:
-        return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+    from scheduling.views_agent import _resolve_restaurant_for_agent
 
-    restaurant, err = _resolve_restaurant_for_staff_agent(request)
+    restaurant, _, err = _resolve_restaurant_for_agent(request)
     if err:
-        return Response({'success': False, 'error': err['error']}, status=err['status'])
+        is_valid, error = validate_agent_key(request)
+        if not is_valid:
+            return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+        restaurant, err = _resolve_restaurant_for_staff_agent(request)
+        if err:
+            from miya.services.user_errors import sanitize_user_error
+            return Response(
+                {'success': False, 'error': sanitize_user_error(err['error'])},
+                status=err['status'],
+            )
 
     data = request.data or {}
     record_type, record = _find_operational_record(

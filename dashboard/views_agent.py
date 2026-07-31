@@ -964,17 +964,29 @@ _VALID_TASK_STATUSES = {
 
 def _load_dashboard_task_for_agent(data: dict, restaurant) -> tuple[Task | None, str | None]:
     task_id = str(
-        _get_first(data, "task_id", "taskId", "id", "record_id", "recordId") or ""
-    ).strip()
+        _get_first(data, "task_id", "taskId", "id", "record_id", "recordId", "task_ref") or ""
+    ).strip().lstrip("#")
     if not task_id:
         return None, "Missing required field: task_id"
     try:
         task = Task.objects.select_related("assigned_to").get(
             pk=task_id, restaurant=restaurant
         )
+        return task, None
     except (Task.DoesNotExist, ValueError, TypeError):
-        return None, "Task not found in this workspace."
-    return task, None
+        pass
+
+    needle = task_id.replace("-", "").upper()
+    if len(needle) >= 6:
+        for candidate in Task.objects.filter(restaurant=restaurant).select_related("assigned_to")[
+            :200
+        ]:
+            ref = _short_record_ref(candidate.id)
+            full = str(candidate.id).replace("-", "").upper()
+            if ref == needle or full.endswith(needle) or needle.endswith(ref):
+                return candidate, None
+
+    return None, "Task not found in this workspace."
 
 
 @api_view(["POST"])
@@ -1465,6 +1477,24 @@ def agent_list_dashboard_tasks(request):
         assignee_id = _get_first(data, "assignee_id", "assignee", "user_id")
         if assignee_id:
             qs = qs.filter(assigned_to_id=assignee_id)
+
+        task_id = str(
+            _get_first(data, "task_id", "taskId", "id", "task_ref") or ""
+        ).strip().lstrip("#")
+        if task_id:
+            try:
+                qs = qs.filter(pk=task_id)
+            except (ValueError, TypeError):
+                qs = qs.none()
+            if not qs.exists() and len(task_id.replace("-", "")) >= 6:
+                needle = task_id.replace("-", "").upper()
+                matched_ids = [
+                    t.id
+                    for t in Task.objects.filter(restaurant=restaurant).only("id")[:200]
+                    if _short_record_ref(t.id) == needle
+                    or str(t.id).replace("-", "").upper().endswith(needle)
+                ]
+                qs = Task.objects.filter(restaurant=restaurant, id__in=matched_ids)
 
         try:
             limit = min(int(_get_first(data, "limit") or 20), 50)
