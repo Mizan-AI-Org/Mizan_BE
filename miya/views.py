@@ -52,6 +52,8 @@ def miya_config(request):
         {
             "enabled": True,
             "name": "Miya",
+            "agent_provider": getattr(settings, "MIYA_AGENT_PROVIDER", "django"),
+            "mastra_configured": bool(getattr(settings, "MIYA_MASTRA_URL", "")),
             "voice_provider": "fish-audio" if fish_configured else "openai-fallback",
             "asr_provider": "fish-audio" if fish_configured else "openai-whisper",
             "fish_audio_configured": fish_configured,

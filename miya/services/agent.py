@@ -73,6 +73,20 @@ def run_miya_chat(
         session_hint=session_hint,
     )
 
+    from .mastra_client import mastra_enabled, run_miya_chat_mastra
+
+    if mastra_enabled():
+        try:
+            return run_miya_chat_mastra(
+                user_message=user_message,
+                history=history,
+                session_context=session_context,
+                access_token=access_token,
+                system_prompt=system_prompt,
+            )
+        except Exception as exc:
+            logger.warning("Mastra provider failed, falling back to Django agent: %s", exc)
+
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     for turn in history or []:
         role = turn.get("role")
