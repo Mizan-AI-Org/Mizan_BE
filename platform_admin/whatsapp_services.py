@@ -12,6 +12,7 @@ from django.utils import timezone
 from core.crypto import encrypt_text
 from core.whatsapp_config import (
     clean_whatsapp_env_value,
+    enrich_whatsapp_probe_failure,
     get_whatsapp_access_token,
     get_whatsapp_phone_number_id,
     is_whatsapp_platform_auth_error,
@@ -60,6 +61,19 @@ def effective_whatsapp_values() -> dict[str, str | bool]:
     env_verify = clean_whatsapp_env_value(getattr(settings, "WHATSAPP_VERIFY_TOKEN", ""))
     env_activation = clean_whatsapp_env_value(getattr(settings, "WHATSAPP_ACTIVATION_WA_PHONE", ""))
 
+    if row and row.disconnected_at:
+        return {
+            "phone_number_id": "",
+            "business_account_id": "",
+            "access_token": "",
+            "verify_token": "",
+            "activation_phone": clean_whatsapp_env_value(row.activation_phone) or "212784476751",
+            "api_version": row.api_version or getattr(settings, "WHATSAPP_API_VERSION", "v22.0"),
+            "miya_whatsapp_enabled": False,
+            "miya_voice_default": False,
+            "source": "disconnected",
+        }
+
     if not row:
         return {
             "phone_number_id": env_phone,
@@ -95,6 +109,8 @@ def effective_whatsapp_values() -> dict[str, str | bool]:
 
 def config_has_access_token() -> bool:
     row = get_singleton_config()
+    if row and row.disconnected_at:
+        return False
     if row and (row.access_token_encrypted or "").strip():
         return True
     return bool(get_whatsapp_access_token())
@@ -121,7 +137,36 @@ def serialize_config_for_api(request=None) -> dict[str, Any]:
         if base:
             webhook_url = f"{base}/api/notifications/whatsapp/webhook/"
 
-    connected = bool(row.last_probe_ok) and token_set and bool(effective.get("phone_number_id"))
+    connected = (
+        not row.disconnected_at
+        and bool(row.last_probe_ok)
+        and token_set
+        and bool(effective.get("phone_number_id"))
+    )
+
+    if row.disconnected_at:
+        return {
+            "phone_number_id": "",
+            "business_account_id": "",
+            "verify_token": "",
+            "activation_phone": row.activation_phone or "212784476751",
+            "api_version": row.api_version or "v22.0",
+            "miya_whatsapp_enabled": False,
+            "miya_voice_default": False,
+            "access_token_set": False,
+            "access_token_masked": "",
+            "webhook_callback_url": webhook_url,
+            "connected": False,
+            "disconnected": True,
+            "disconnected_at": row.disconnected_at.isoformat(),
+            "last_probe_at": None,
+            "last_probe_ok": None,
+            "last_probe_message": "",
+            "display_phone_number": "",
+            "verified_name": "",
+            "config_source": "disconnected",
+            "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        }
 
     return {
         "phone_number_id": row.phone_number_id or effective.get("phone_number_id") or "",
@@ -141,8 +186,31 @@ def serialize_config_for_api(request=None) -> dict[str, Any]:
         "display_phone_number": row.display_phone_number or "",
         "verified_name": row.verified_name or "",
         "config_source": effective.get("source"),
+        "disconnected": False,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
+
+
+def disconnect_config(user) -> PlatformWhatsAppConfig:
+    """Clear platform-managed WhatsApp credentials and disable Miya on WhatsApp."""
+    row = get_or_create_singleton_config()
+    row.phone_number_id = ""
+    row.business_account_id = ""
+    row.access_token_encrypted = ""
+    row.verify_token = ""
+    row.display_phone_number = ""
+    row.verified_name = ""
+    row.last_probe_at = None
+    row.last_probe_ok = None
+    row.last_probe_message = ""
+    row.miya_whatsapp_enabled = False
+    row.miya_voice_default = False
+    row.disconnected_at = timezone.now()
+    row.updated_by = user
+    row.save()
+    WhatsAppMessageTemplate.objects.all().delete()
+    logger.info("Platform WhatsApp disconnected by %s", getattr(user, "email", user))
+    return row
 
 
 def save_config(payload: dict[str, Any], user) -> PlatformWhatsAppConfig:
@@ -169,13 +237,75 @@ def save_config(payload: dict[str, Any], user) -> PlatformWhatsAppConfig:
         if token:
             row.access_token_encrypted = _store_encrypted_token(token)
 
+    reconnecting = bool(clean_whatsapp_env_value(row.phone_number_id)) or bool(
+        (row.access_token_encrypted or "").strip()
+    )
+    if reconnecting:
+        row.disconnected_at = None
+
     row.updated_by = user
     row.save()
     return row
 
 
-def run_connection_test(update_row: bool = True) -> dict[str, Any]:
-    result = probe_whatsapp_credentials()
+def run_connection_test(
+    update_row: bool = True,
+    *,
+    phone_number_id: str | None = None,
+    business_account_id: str | None = None,
+    access_token: str | None = None,
+    api_version: str | None = None,
+    activation_phone: str | None = None,
+) -> dict[str, Any]:
+    resolved_token = (
+        resolve_whatsapp_access_token(access_token)
+        if access_token is not None
+        else get_whatsapp_access_token()
+    )
+    resolved_phone = (
+        clean_whatsapp_env_value(phone_number_id)
+        if phone_number_id is not None
+        else get_whatsapp_phone_number_id()
+    )
+    result = probe_whatsapp_credentials(
+        phone_number_id=phone_number_id,
+        access_token=access_token,
+        api_version=api_version,
+    )
+    if not result.get("ok"):
+        enriched = enrich_whatsapp_probe_failure(
+            result,
+            access_token=resolved_token,
+            api_version=api_version,
+            configured_phone_number_id=resolved_phone,
+            configured_waba_id=business_account_id,
+            activation_phone=activation_phone,
+        )
+        suggested_phone = enriched.get("suggested_phone_number_id")
+        if suggested_phone and suggested_phone != resolved_phone:
+            retry = probe_whatsapp_credentials(
+                phone_number_id=str(suggested_phone),
+                access_token=access_token,
+                api_version=api_version,
+            )
+            if retry.get("ok"):
+                result = {
+                    **retry,
+                    "auto_corrected": True,
+                    "previous_phone_number_id": resolved_phone,
+                    "suggested_business_account_id": enriched.get("suggested_business_account_id"),
+                    "available_phone_numbers": enriched.get("available_phone_numbers") or [],
+                    "fix_steps": enriched.get("fix_steps") or [],
+                    "message": (
+                        f"Connected using Phone Number ID {suggested_phone} "
+                        f"({retry.get('display_phone_number') or retry.get('verified_name') or 'verified'}). "
+                        "Save configuration to persist the corrected ID."
+                    ),
+                }
+            else:
+                result = enriched
+        else:
+            result = enriched
     if update_row:
         row = get_or_create_singleton_config()
         row.last_probe_at = timezone.now()
@@ -184,12 +314,19 @@ def run_connection_test(update_row: bool = True) -> dict[str, Any]:
         if result.get("ok"):
             row.display_phone_number = result.get("display_phone_number") or ""
             row.verified_name = result.get("verified_name") or ""
+            if result.get("auto_corrected"):
+                row.phone_number_id = str(result.get("phone_number_id") or row.phone_number_id or "")
+                suggested_waba = result.get("suggested_business_account_id")
+                if suggested_waba:
+                    row.business_account_id = str(suggested_waba)
         row.save(update_fields=[
             "last_probe_at",
             "last_probe_ok",
             "last_probe_message",
             "display_phone_number",
             "verified_name",
+            "phone_number_id",
+            "business_account_id",
         ])
     return result
 

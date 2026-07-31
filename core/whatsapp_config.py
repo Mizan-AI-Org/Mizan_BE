@@ -198,10 +198,199 @@ def user_facing_whatsapp_error(message: str | None) -> str:
     return str(message).strip()[:240]
 
 
-def probe_whatsapp_credentials() -> dict[str, Any]:
+def _graph_get(
+    path: str,
+    token: str,
+    api_version: str,
+    *,
+    params: dict[str, Any] | None = None,
+    timeout: int = 12,
+) -> tuple[int, Any]:
+    url = f"https://graph.facebook.com/{api_version}/{path.lstrip('/')}"
+    try:
+        resp = requests.get(
+            url,
+            params=params or {},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+        )
+        try:
+            return resp.status_code, resp.json()
+        except Exception:
+            return resp.status_code, {"error": {"message": resp.text[:240]}}
+    except requests.RequestException as exc:
+        return 0, {"error": {"message": str(exc)[:240]}}
+
+
+def _digits_only(value: str | None) -> str:
+    return re.sub(r"\D+", "", str(value or ""))
+
+
+def fetch_assigned_whatsapp_phone_numbers(
+    access_token: str,
+    *,
+    api_version: str | None = None,
+) -> dict[str, Any]:
+    """List phone numbers reachable by this token via assigned WhatsApp Business Accounts."""
+    token = resolve_whatsapp_access_token(access_token)
+    version = (api_version or get_whatsapp_api_version()).strip() or "v22.0"
+    if not token:
+        return {"ok": False, "message": "Access token is not set", "phone_numbers": []}
+
+    status_code, me_data = _graph_get("me", token, version, params={"fields": "id,name"})
+    if status_code != 200 or not isinstance(me_data, dict):
+        return {
+            "ok": False,
+            "message": parse_whatsapp_api_error(me_data) or "Could not read Meta token identity",
+            "phone_numbers": [],
+        }
+
+    user_id = str(me_data.get("id") or "")
+    status_code, assigned_data = _graph_get(
+        f"{user_id}/assigned_whatsapp_business_accounts",
+        token,
+        version,
+        params={"fields": "id,name"},
+    )
+    if status_code != 200 or not isinstance(assigned_data, dict):
+        return {
+            "ok": False,
+            "message": parse_whatsapp_api_error(assigned_data) or "Could not list assigned WhatsApp accounts",
+            "phone_numbers": [],
+            "token_identity": me_data,
+        }
+
+    waba_rows = assigned_data.get("data") or []
+    phone_numbers: list[dict[str, str]] = []
+    for waba in waba_rows:
+        if not isinstance(waba, dict):
+            continue
+        waba_id = str(waba.get("id") or "")
+        if not waba_id:
+            continue
+        status_code, phones_data = _graph_get(
+            f"{waba_id}/phone_numbers",
+            token,
+            version,
+            params={"fields": "id,display_phone_number,verified_name"},
+        )
+        if status_code != 200 or not isinstance(phones_data, dict):
+            continue
+        for phone in phones_data.get("data") or []:
+            if not isinstance(phone, dict):
+                continue
+            phone_id = str(phone.get("id") or "")
+            if not phone_id:
+                continue
+            phone_numbers.append(
+                {
+                    "phone_number_id": phone_id,
+                    "display_phone_number": str(phone.get("display_phone_number") or ""),
+                    "verified_name": str(phone.get("verified_name") or ""),
+                    "business_account_id": waba_id,
+                    "business_account_name": str(waba.get("name") or ""),
+                }
+            )
+
+    return {
+        "ok": True,
+        "token_identity": {"id": user_id, "name": me_data.get("name") or ""},
+        "assigned_waba_count": len(waba_rows),
+        "phone_numbers": phone_numbers,
+    }
+
+
+def enrich_whatsapp_probe_failure(
+    result: dict[str, Any],
+    *,
+    access_token: str,
+    api_version: str | None = None,
+    configured_phone_number_id: str | None = None,
+    configured_waba_id: str | None = None,
+    activation_phone: str | None = None,
+) -> dict[str, Any]:
+    """Turn Meta (#100) failures into actionable platform-admin guidance."""
+    if result.get("ok"):
+        return result
+
+    token = resolve_whatsapp_access_token(access_token)
+    assigned = fetch_assigned_whatsapp_phone_numbers(token, api_version=api_version)
+    phone_numbers = assigned.get("phone_numbers") or []
+    assigned_count = int(assigned.get("assigned_waba_count") or 0)
+
+    result["assigned_waba_count"] = assigned_count
+    result["available_phone_numbers"] = phone_numbers
+    result["token_identity"] = assigned.get("token_identity") or {}
+
+    fix_steps = [
+        "Meta Business Settings → Users → System users → open the system user that owns this token.",
+        "Add assets → WhatsApp accounts → select the Mizan central number (+212784476751).",
+        "Grant Full control, save, then generate a new permanent token for the Mizan AI app.",
+        "Paste the new token here, save, and run Test API Connection again.",
+    ]
+    result["fix_steps"] = fix_steps
+
+    if assigned_count == 0:
+        result["reason"] = "no_assigned_waba"
+        result["message"] = (
+            "Your Meta token is valid but this system user has no WhatsApp Business Account assigned. "
+            "Assign the WhatsApp account to the system user in Meta Business Settings, regenerate the token, "
+            "then test again."
+        )
+        return result
+
+    configured_id = clean_whatsapp_env_value(configured_phone_number_id or "")
+    known_ids = {p.get("phone_number_id") for p in phone_numbers}
+    if configured_id and configured_id not in known_ids:
+        readable = ", ".join(
+            f"{p.get('display_phone_number') or 'number'} (ID {p.get('phone_number_id')})"
+            for p in phone_numbers
+        )
+        result["reason"] = "wrong_phone_number_id"
+        result["message"] = (
+            f"Phone Number ID {configured_id} is not accessible with this token. "
+            f"Use one of: {readable}."
+        )
+
+    activation_digits = _digits_only(activation_phone)
+    if activation_digits:
+        for phone in phone_numbers:
+            display_digits = _digits_only(phone.get("display_phone_number"))
+            if display_digits.endswith(activation_digits) or activation_digits.endswith(display_digits):
+                result["suggested_phone_number_id"] = phone.get("phone_number_id")
+                result["suggested_business_account_id"] = phone.get("business_account_id")
+                break
+
+    if phone_numbers and not result.get("suggested_phone_number_id"):
+        first = phone_numbers[0]
+        result["suggested_phone_number_id"] = first.get("phone_number_id")
+        result["suggested_business_account_id"] = first.get("business_account_id")
+
+    configured_waba = clean_whatsapp_env_value(configured_waba_id or "")
+    known_wabas = {p.get("business_account_id") for p in phone_numbers}
+    if configured_waba and configured_waba not in known_wabas and phone_numbers:
+        result["suggested_business_account_id"] = phone_numbers[0].get("business_account_id")
+
+    return result
+
+
+def probe_whatsapp_credentials(
+    *,
+    phone_number_id: str | None = None,
+    access_token: str | None = None,
+    api_version: str | None = None,
+) -> dict[str, Any]:
     """Lightweight live check against Meta Graph API (phone-number profile)."""
-    token = get_whatsapp_access_token()
-    phone_id = get_whatsapp_phone_number_id()
+    token = (
+        resolve_whatsapp_access_token(access_token)
+        if access_token is not None
+        else get_whatsapp_access_token()
+    )
+    phone_id = (
+        clean_whatsapp_env_value(phone_number_id)
+        if phone_number_id is not None
+        else get_whatsapp_phone_number_id()
+    )
     if not token:
         return {
             "ok": False,
@@ -215,8 +404,8 @@ def probe_whatsapp_credentials() -> dict[str, Any]:
             "message": "WHATSAPP_PHONE_NUMBER_ID is not set",
         }
 
-    api_version = get_whatsapp_api_version()
-    url = f"https://graph.facebook.com/{api_version}/{phone_id}"
+    version = (api_version or get_whatsapp_api_version()).strip() or "v22.0"
+    url = f"https://graph.facebook.com/{version}/{phone_id}"
     try:
         resp = requests.get(
             url,

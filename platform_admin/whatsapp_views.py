@@ -11,6 +11,7 @@ from .permissions import IsPlatformOperator
 from .whatsapp_services import (
     create_meta_template,
     delete_meta_template,
+    disconnect_config,
     list_templates,
     run_connection_test,
     save_config,
@@ -34,13 +35,42 @@ def platform_whatsapp_config(request):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated, IsPlatformOperator])
 def platform_whatsapp_test(request):
-    result = run_connection_test(update_row=True)
+    payload = request.data if isinstance(request.data, dict) else {}
+    raw_token = payload.get("access_token")
+    token_override = None
+    if raw_token is not None:
+        token_override = str(raw_token).strip() or None
+    phone_override = payload.get("phone_number_id")
+    phone_override = str(phone_override).strip() if phone_override is not None else None
+    waba_override = payload.get("business_account_id")
+    waba_override = str(waba_override).strip() if waba_override is not None else None
+    activation_override = payload.get("activation_phone")
+    activation_override = str(activation_override).strip() if activation_override is not None else None
+    api_override = payload.get("api_version")
+    api_override = str(api_override).strip() if api_override is not None else None
+
+    result = run_connection_test(
+        update_row=True,
+        phone_number_id=phone_override or None,
+        business_account_id=waba_override or None,
+        access_token=token_override,
+        api_version=api_override or None,
+        activation_phone=activation_override or None,
+    )
+    message = (result.get("message") or "").strip()
     body = {
         **result,
+        "error": message if not result.get("ok") else "",
         "config": serialize_config_for_api(request),
     }
-    code = status.HTTP_200_OK if result.get("ok") else status.HTTP_400_BAD_REQUEST
-    return Response(body, status=code)
+    return Response(body, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsPlatformOperator])
+def platform_whatsapp_disconnect(request):
+    disconnect_config(request.user)
+    return Response(serialize_config_for_api(request))
 
 
 @api_view(["GET", "POST"])

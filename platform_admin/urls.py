@@ -38,6 +38,11 @@ urlpatterns = [
     path("impersonate/", views.platform_impersonate, name="platform_impersonate"),
     path("whatsapp/config/", whatsapp_views.platform_whatsapp_config, name="platform_whatsapp_config"),
     path("whatsapp/config/test/", whatsapp_views.platform_whatsapp_test, name="platform_whatsapp_test"),
+    path(
+        "whatsapp/config/disconnect/",
+        whatsapp_views.platform_whatsapp_disconnect,
+        name="platform_whatsapp_disconnect",
+    ),
     path("whatsapp/templates/", whatsapp_views.platform_whatsapp_templates, name="platform_whatsapp_templates"),
     path(
         "whatsapp/templates/sync/",
