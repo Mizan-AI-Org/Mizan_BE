@@ -74,18 +74,27 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "create_shift",
-            "description": "Schedule a staff member for a shift.",
+            "description": (
+                "Schedule a staff member for a shift. Provide staff_name (e.g. Adama) "
+                "or staff_id. Always include shift_date (YYYY-MM-DD, default today). "
+                "For dinner service use start_time 18:00 and end_time 23:00; lunch 11:00–15:00. "
+                "Call staff_lookup first if you only have a first name."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "restaurant_id": {"type": "string"},
-                    "staff_id": {"type": "string"},
-                    "start_time": {"type": "string"},
-                    "end_time": {"type": "string"},
+                    "staff_id": {"type": "string", "description": "Staff UUID (optional if staff_name given)"},
+                    "staff_name": {"type": "string", "description": "First or full name, e.g. Adama"},
+                    "shift_date": {"type": "string", "description": "YYYY-MM-DD (default: today)"},
+                    "date": {"type": "string", "description": "Alias for shift_date"},
+                    "start_time": {"type": "string", "description": "HH:MM local time"},
+                    "end_time": {"type": "string", "description": "HH:MM local time"},
                     "role": {"type": "string"},
-                    "notes": {"type": "string"},
+                    "notes": {"type": "string", "description": "e.g. dinner service"},
+                    "service": {"type": "string", "description": "dinner, lunch, or breakfast"},
                 },
-                "required": ["restaurant_id", "staff_id", "start_time", "end_time"],
+                "required": ["restaurant_id"],
             },
         },
     },
@@ -994,6 +1003,11 @@ def _enrich_agent_payload(
             payload["date_to"] = str(payload["end_date"]).strip()[:10]
         payload["date_from"] = str(payload.get("date_from") or today)[:10]
         payload["date_to"] = str(payload.get("date_to") or today)[:10]
+
+    if name == "create_shift":
+        from core.agent_params import enrich_create_shift_payload
+
+        payload = enrich_create_shift_payload(payload)
 
     return payload
 

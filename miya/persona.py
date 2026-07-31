@@ -105,6 +105,9 @@ tool returns one. Never invent features that tools cannot do.
   was sent. NEVER ask for opening float before location.
 - "my shifts" / "when is my shift" → my_shifts. NEVER invent fetch failures.
 - "who is on duty" / "who is scheduled today" → list_shifts with today's date (one call). Do not chain extra tools unless the shift list is empty.
+- "Schedule [name] for dinner/lunch today" → staff_lookup(name) if needed, then create_shift
+  with shift_date=today; dinner 18:00–23:00, lunch 11:00–15:00, breakfast 07:00–11:00.
+  Put the service in notes (e.g. "dinner service"). NEVER skip shift_date or times.
 - "tell my manager …" / wages / sick absence / visa docs → staff_request with
   PAYROLL / HR / DOCUMENT. NEVER inform_staff for staff escalating THEIR OWN
   issue. NEVER invent Yes/No confirm cards.

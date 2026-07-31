@@ -6,7 +6,13 @@ from django.test import SimpleTestCase
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory
 
-from core.agent_params import agent_date, agent_scalar, resolve_shift_date_range
+from core.agent_params import (
+    agent_date,
+    agent_scalar,
+    agent_time,
+    enrich_create_shift_payload,
+    resolve_shift_date_range,
+)
 
 
 class AgentScalarTests(SimpleTestCase):
@@ -46,3 +52,31 @@ class AgentListShiftsDateFilterTests(SimpleTestCase):
         # Must not 500 / TypeError from list-valued date params
         self.assertIn(response.status_code, (200, 400, 401))
         self.assertNotIn("fromisoformat", str(response.data))
+
+
+class EnrichCreateShiftPayloadTests(SimpleTestCase):
+    def test_dinner_service_defaults_today(self):
+        payload = enrich_create_shift_payload(
+            {"restaurant_id": "x", "staff_name": "Adama", "notes": "dinner service"}
+        )
+        self.assertEqual(payload["staff_name"], "Adama")
+        self.assertEqual(payload["start_time"], "18:00")
+        self.assertEqual(payload["end_time"], "23:00")
+        self.assertRegex(payload["shift_date"], r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_parses_iso_datetimes(self):
+        payload = enrich_create_shift_payload(
+            {
+                "staff_name": "Adama",
+                "start_time": "2026-07-31T18:00:00",
+                "end_time": "2026-07-31T23:00:00",
+            }
+        )
+        self.assertEqual(payload["shift_date"], "2026-07-31")
+        self.assertEqual(payload["start_time"], "18:00")
+        self.assertEqual(payload["end_time"], "23:00")
+
+    def test_agent_time_formats(self):
+        self.assertEqual(agent_time("18:30"), "18:30")
+        self.assertEqual(agent_time("18:30:00"), "18:30")
+        self.assertEqual(agent_time("2026-07-31T18:30:00Z"), "18:30")
