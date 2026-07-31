@@ -20,6 +20,7 @@ MY_SHIFTS_RE = re.compile(
     r"\b("
     rf"my\s+{_SHIFT}|my\s+schedule|"
     rf"when\s+(?:is|are|was)\s+my\s+(?:{_SHIFT}|work|schedule)|"
+    r"when\s+(?:is|are)\s+my\s+(?:shift|shifts|work|schedule)\s+next\s+week|"
     rf"what(?:'s|\s+is|\s+are)\s+my\s+(?:{_SHIFT}|schedule|work)|"
     rf"what\s+time\s+(?:is\s+)?(?:my\s+)?(?:{_SHIFT}|work)|"
     r"when\s+do\s+i\s+work|"

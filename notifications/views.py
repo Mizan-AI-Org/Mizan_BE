@@ -27,7 +27,6 @@ from .serializers import (
 from .services import notification_service
 from core.whatsapp_config import (
     get_miya_whatsapp_enabled,
-    get_miya_whatsapp_mastra_channel,
     get_whatsapp_verify_token,
 )
 from .utils import (
@@ -2476,7 +2475,6 @@ def whatsapp_webhook(request):
 
                         if (
                             miya_wa
-                            and not get_miya_whatsapp_mastra_channel()
                             and session
                             and session.state not in _active_django_states
                             and msg_type not in _django_only_msg_types
@@ -3311,7 +3309,6 @@ def whatsapp_webhook(request):
                             # Miya (Django path): transcribed voice → same agent pipeline; reply with voice note.
                             if (
                                 miya_wa
-                                and not get_miya_whatsapp_mastra_channel()
                                 and session
                                 and session.state not in _active_django_states
                             ):
@@ -4272,9 +4269,9 @@ def whatsapp_webhook(request):
                                     pass
     
                         # Final fallback — Miya handles free-form ops chat on shared Mizan number
-                        if miya_wa and user and raw_body and session and session.state == 'idle':
+                        if miya_wa and user and raw_body and session:
                             from miya.services.whatsapp import handle_miya_whatsapp_turn
-    
+
                             if handle_miya_whatsapp_turn(
                                 user=user,
                                 phone_digits=phone_digits,
