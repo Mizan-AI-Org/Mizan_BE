@@ -12,10 +12,30 @@ from accounts.views_agent import (
 )
 from accounts.vertical_playbooks import vertical_playbook_for_api
 from miya.persona import MIYA_SUPER_AGENT_PERSONA, channel_runtime_note
+from miya.services.tenant import (
+    resolve_active_tenant,
+    tenant_context_note,
+    user_tenant_memberships,
+)
 
 
-def build_session_context(user, *, channel: str = "dashboard") -> dict[str, Any]:
-    restaurant = getattr(user, "restaurant", None)
+def build_session_context(
+    user,
+    *,
+    channel: str = "dashboard",
+    preferred_restaurant_id: str | None = None,
+    session_hint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    hint = dict(session_hint or {})
+    if preferred_restaurant_id and not hint.get("restaurant_id"):
+        hint["restaurant_id"] = preferred_restaurant_id
+
+    restaurant = resolve_active_tenant(
+        user,
+        preferred_restaurant_id=preferred_restaurant_id,
+        session_hint=hint,
+    )
+    memberships = user_tenant_memberships(user)
     restaurant_id = str(restaurant.id) if restaurant else None
     restaurant_name = getattr(restaurant, "name", None) or "Unknown"
     business_vertical = _effective_business_vertical(restaurant)
@@ -31,8 +51,17 @@ def build_session_context(user, *, channel: str = "dashboard") -> dict[str, Any]
         "user_email": user.email,
         "user_phone": phone,
         "role": user.role,
+        "tenant_role": (
+            next(
+                (m["role"] for m in memberships if m["restaurant_id"] == restaurant_id),
+                user.role,
+            )
+            if restaurant_id
+            else user.role
+        ),
         "restaurant_id": restaurant_id,
         "restaurant_name": restaurant_name,
+        "tenant_memberships": memberships,
         "business_vertical": business_vertical,
         "vertical_playbook": vertical_playbook_for_api(business_vertical),
         "local_time": now.strftime("%Y-%m-%d %H:%M %Z"),
@@ -41,8 +70,19 @@ def build_session_context(user, *, channel: str = "dashboard") -> dict[str, Any]
     }
 
 
-def build_system_prompt(user, *, channel: str = "dashboard") -> str:
-    ctx = build_session_context(user, channel=channel)
+def build_system_prompt(
+    user,
+    *,
+    channel: str = "dashboard",
+    preferred_restaurant_id: str | None = None,
+    session_hint: dict[str, Any] | None = None,
+) -> str:
+    ctx = build_session_context(
+        user,
+        channel=channel,
+        preferred_restaurant_id=preferred_restaurant_id,
+        session_hint=session_hint,
+    )
     vertical_note = _miya_vertical_runtime_note(ctx["business_vertical"])
     channel_note = channel_runtime_note(ctx["channel"])
 
@@ -57,6 +97,7 @@ def build_system_prompt(user, *, channel: str = "dashboard") -> str:
         f"Channel: {ctx['channel']}\n"
         f"Voice: Fish Audio TTS when voice mode is on. Keep speakable replies concise.\n"
         f"Shared WhatsApp number: +212784476751 (identity from phone → tenant + RBAC).\n"
+        + tenant_context_note(ctx.get("tenant_memberships") or [], ctx.get("restaurant_id"))
     )
 
     return (

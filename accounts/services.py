@@ -364,8 +364,15 @@ def resolve_restaurant_and_staff_by_phone(phone_raw, *, exclude_super_admin=True
     normalized = normalize_activation_phone_inbound(phone_digits) or phone_digits
 
     user = _find_active_user_by_phone(normalized)
-    if user and getattr(user, 'restaurant_id', None):
-        if not (exclude_super_admin and getattr(user, 'role', None) == 'SUPER_ADMIN'):
+    if user:
+        from miya.services.tenant import resolve_active_tenant
+
+        rest = resolve_active_tenant(user)
+        if rest and not (exclude_super_admin and getattr(user, 'role', None) == 'SUPER_ADMIN'):
+            return rest, user
+        if getattr(user, 'restaurant_id', None) and not (
+            exclude_super_admin and getattr(user, 'role', None) == 'SUPER_ADMIN'
+        ):
             return user.restaurant, user
 
     pending = _find_staff_activation_record_by_phone(normalized)

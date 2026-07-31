@@ -77,6 +77,7 @@ INSTALLED_APPS = [
     'payroll',
     'platform_admin.apps.PlatformAdminConfig',
     'miya.apps.MiyaConfig',
+    'automations.apps.AutomationsConfig',
 ]
 
 # ---------------------------

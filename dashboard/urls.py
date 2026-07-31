@@ -5,6 +5,7 @@ from .views_ops_ui import (
     ManagerValidateOrderView,
     ManagerRequireValidationView,
     DashboardOpsSearchView,
+    ManagerChaseRecordView,
     StaffDailyTaskProgressView,
 )
 from .views import (
@@ -248,6 +249,11 @@ urlpatterns = [
         'ops-search/',
         DashboardOpsSearchView.as_view(),
         name='dashboard-ops-search',
+    ),
+    path(
+        'records/chase/',
+        ManagerChaseRecordView.as_view(),
+        name='dashboard-records-chase',
     ),
     path(
         'staff-daily-progress/',

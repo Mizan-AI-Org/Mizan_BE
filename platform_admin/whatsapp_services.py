@@ -62,16 +62,20 @@ def effective_whatsapp_values() -> dict[str, str | bool]:
     env_activation = clean_whatsapp_env_value(getattr(settings, "WHATSAPP_ACTIVATION_WA_PHONE", ""))
 
     if row and row.disconnected_at:
+        env_token_resolved = resolve_whatsapp_access_token(env_token)
+        has_env_creds = bool(env_token_resolved and env_phone)
         return {
-            "phone_number_id": "",
-            "business_account_id": "",
-            "access_token": "",
-            "verify_token": "",
-            "activation_phone": clean_whatsapp_env_value(row.activation_phone) or "212784476751",
+            "phone_number_id": env_phone if has_env_creds else "",
+            "business_account_id": env_waba if has_env_creds else "",
+            "access_token": env_token_resolved if has_env_creds else "",
+            "verify_token": env_verify if has_env_creds else "",
+            "activation_phone": clean_whatsapp_env_value(row.activation_phone) or env_activation or "212784476751",
             "api_version": row.api_version or getattr(settings, "WHATSAPP_API_VERSION", "v22.0"),
-            "miya_whatsapp_enabled": False,
-            "miya_voice_default": False,
-            "source": "disconnected",
+            "miya_whatsapp_enabled": bool(
+                getattr(settings, "MIYA_WHATSAPP_ENABLED", True) and has_env_creds
+            ),
+            "miya_voice_default": bool(getattr(settings, "MIYA_WHATSAPP_VOICE_DEFAULT", False)),
+            "source": "env_fallback" if has_env_creds else "disconnected",
         }
 
     if not row:
@@ -110,7 +114,7 @@ def effective_whatsapp_values() -> dict[str, str | bool]:
 def config_has_access_token() -> bool:
     row = get_singleton_config()
     if row and row.disconnected_at:
-        return False
+        return bool(get_whatsapp_access_token())
     if row and (row.access_token_encrypted or "").strip():
         return True
     return bool(get_whatsapp_access_token())

@@ -14,7 +14,7 @@ from .tools import execute_tool, serialize_tool_result, tools_for_user
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_STEPS = 8
+MAX_TOOL_STEPS = 12
 
 
 def _openai_chat(messages: list[dict[str, Any]], *, tools: list | None = None) -> dict[str, Any]:
@@ -56,10 +56,22 @@ def run_miya_chat(
     user_message: str,
     history: list[dict[str, str]] | None = None,
     channel: str = "dashboard",
+    preferred_restaurant_id: str | None = None,
+    session_hint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one Miya turn (may include multiple tool calls). Returns reply text + metadata."""
-    session_context = build_session_context(user, channel=channel)
-    system_prompt = build_system_prompt(user, channel=channel)
+    session_context = build_session_context(
+        user,
+        channel=channel,
+        preferred_restaurant_id=preferred_restaurant_id,
+        session_hint=session_hint,
+    )
+    system_prompt = build_system_prompt(
+        user,
+        channel=channel,
+        preferred_restaurant_id=preferred_restaurant_id,
+        session_hint=session_hint,
+    )
 
     messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
     for turn in history or []:
@@ -71,7 +83,13 @@ def run_miya_chat(
     messages.append({"role": "user", "content": user_message.strip()})
 
     tool_trace: list[dict[str, Any]] = []
-    active_tools = tools_for_user(user)
+    tenant_rest = None
+    rid = session_context.get("restaurant_id")
+    if rid:
+        from accounts.models import Restaurant
+
+        tenant_rest = Restaurant.objects.filter(id=rid).first()
+    active_tools = tools_for_user(user, restaurant=tenant_rest)
 
     for _ in range(MAX_TOOL_STEPS + 1):
         data = _openai_chat(messages, tools=active_tools or None)
@@ -113,6 +131,32 @@ def run_miya_chat(
                     "content": serialize_tool_result(result),
                 }
             )
+
+    # Last resort: synthesize from tool results we already have
+    if tool_trace:
+        try:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Using ONLY the tool results above, answer the user's last message clearly. "
+                        "Do not call any more tools."
+                    ),
+                }
+            )
+            data = _openai_chat(messages, tools=None)
+            choice = (data.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            reply = (message.get("content") or "").strip()
+            if reply:
+                return {
+                    "reply": reply,
+                    "tool_trace": tool_trace,
+                    "session_context": session_context,
+                    "step_limit_fallback": True,
+                }
+        except Exception:
+            logger.exception("Miya step-limit synthesis fallback failed")
 
     return {
         "reply": (

@@ -27,6 +27,11 @@ from .serializers import AssignedShiftSerializer
 from .services import SchedulingService
 import logging
 from core.utils import resolve_agent_restaurant_and_user
+from core.agent_params import (
+    agent_scalar,
+    agent_params_from_request as _agent_params_from_request,
+    resolve_shift_date_range as _resolve_shift_date_range,
+)
 from core.read_through_cache import get_or_set
 from django.core.cache import cache
 from .shift_auto_templates import (
@@ -100,14 +105,21 @@ def _try_jwt_restaurant_and_user(request):
 
 def _agent_payload_from_request(request):
     """Build payload from query params and, for POST, body/metadata so Lua can send context either way."""
-    payload = dict(request.query_params)
+    payload = {
+        k: v for k, v in _agent_params_from_request(request).items() if v is not None
+    }
     if request.method == 'POST' and isinstance(getattr(request, 'data', None), dict):
         for k, v in request.data.items():
             if k == 'metadata' and isinstance(v, dict):
+                payload['metadata'] = v
                 for mk, mv in v.items():
-                    payload.setdefault(mk, mv)
+                    scalar = agent_scalar(mv)
+                    if scalar is not None:
+                        payload.setdefault(mk, scalar)
             else:
-                payload.setdefault(k, v)
+                scalar = agent_scalar(v)
+                if scalar is not None:
+                    payload.setdefault(k, scalar)
     return payload
 
 
@@ -441,7 +453,7 @@ def agent_staff_count(request):
         payload = _agent_payload_from_request(request)
         if not restaurant:
             return Response(
-                {'error': 'Unable to resolve restaurant context (no restaurant_id/sessionId/userId/email/phone/token provided).'},
+                {'error': 'Unable to determine your workspace. Make sure your account or WhatsApp number is linked to this restaurant.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -503,9 +515,13 @@ def _resolve_restaurant_for_agent(request):
     jwt_rest, jwt_user = _try_jwt_restaurant_and_user(request)
     if jwt_user:
         acting_user = jwt_user
-        # If we didn't have an explicit restaurant, or explicit resolve failed, use JWT restaurant
         if not restaurant:
-            restaurant = jwt_rest
+            from miya.services.tenant import resolve_active_tenant
+
+            pref = explicit_rid
+            if isinstance(pref, (list, tuple)) and pref:
+                pref = pref[0]
+            restaurant = resolve_active_tenant(jwt_user, preferred_restaurant_id=pref) or jwt_rest
 
     # 3) Fallback to agent key + payload resolution
     if not restaurant:
@@ -2009,7 +2025,7 @@ def agent_create_recurring_shifts(request):
         if not restaurant:
             return Response({
                 'success': False,
-                'error': 'Unable to resolve restaurant context.'
+                'error': 'Unable to determine your workspace.'
             }, status=status.HTTP_400_BAD_REQUEST)
 
         task_template_ids_raw = data.get('task_template_ids') or data.get('taskTemplateIds') or []
@@ -2443,7 +2459,7 @@ def agent_optimize_schedule(request):
         if not restaurant:
             return Response({
                 'success': False,
-                'error': 'Unable to resolve restaurant context (provide restaurant_id or include sessionId/userId/email/phone/token).'
+                'error': 'Unable to determine your workspace. Make sure your account or WhatsApp number is linked to this restaurant.'
             }, status=status.HTTP_400_BAD_REQUEST)
 
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
@@ -2537,7 +2553,7 @@ def agent_get_restaurant_details(request):
         restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
         if not restaurant:
             return Response(
-                {'error': 'Unable to resolve restaurant context (no restaurant_id/sessionId/userId/email/phone/token provided).'},
+                {'error': 'Unable to determine your workspace. Make sure your account or WhatsApp number is linked to this restaurant.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -2762,13 +2778,18 @@ def agent_get_my_shifts(request):
     - day: alias for when (optional)
     """
     try:
-        is_valid, error = validate_agent_key(request)
-        if not is_valid:
-            return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
+        jwt_rest, jwt_user = _try_jwt_restaurant_and_user(request)
+        if not jwt_user:
+            is_valid, error = validate_agent_key(request)
+            if not is_valid:
+                return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
 
-        qp = dict(request.query_params)
-        # Flatten QueryDict values
-        qp = {k: (v[0] if isinstance(v, list) and v else v) for k, v in qp.items()}
+        qp = {
+            k: v for k, v in _agent_params_from_request(request).items() if v is not None
+        }
+
+        if jwt_user and not qp.get('staff_id') and not qp.get('staffId') and not qp.get('user_id'):
+            qp['staff_id'] = str(jwt_user.id)
 
         staff_id = qp.get('staff_id') or qp.get('staffId') or qp.get('userId') or qp.get('user_id')
         phone = qp.get('phone') or qp.get('phoneNumber') or qp.get('from')
@@ -2997,7 +3018,7 @@ def agent_detect_conflicts(request):
         return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-@api_view(['GET'])
+@api_view(['GET', 'POST'])
 @authentication_classes([])
 @permission_classes([permissions.AllowAny])
 def agent_list_shifts(request):
@@ -3021,21 +3042,22 @@ def agent_list_shifts(request):
             is_valid, error = validate_agent_key(request)
             if not is_valid:
                 return Response({'error': error}, status=status.HTTP_401_UNAUTHORIZED)
-            restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=dict(request.query_params))
+            params = _agent_params_from_request(request)
+            restaurant, _ = resolve_agent_restaurant_and_user(request=request, payload=params)
         if not restaurant:
             return Response(
-                {'error': 'Unable to resolve restaurant context.'},
+                {'error': 'Unable to determine your workspace.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
+        params = _agent_params_from_request(request)
+
         queryset = AssignedShift.objects.filter(schedule__restaurant=restaurant)
 
-        # Filters
-        date_from = request.query_params.get('date_from')
-        date_to = request.query_params.get('date_to')
-        staff_id = request.query_params.get('staff_id') or request.query_params.get('staffId')
-        staff_name = (request.query_params.get('staff_name') or request.query_params.get('name') or '').strip()
-        role = request.query_params.get('role')
+        date_from, date_to = _resolve_shift_date_range(params, default_today=True)
+        staff_id = params.get('staff_id') or params.get('staffId')
+        staff_name = (params.get('staff_name') or params.get('name') or '').strip()
+        role = params.get('role')
 
         # Resolve staff by name so Miya can ask "who is scheduled" / "does X have a shift" by name
         if not staff_id and staff_name and restaurant:
@@ -3071,22 +3093,53 @@ def agent_list_shifts(request):
 
         queryset = queryset.select_related('staff').prefetch_related('staff_members').order_by('shift_date', 'start_time')
 
-        qp_sig = json.dumps(
-            sorted((k, request.query_params.getlist(k)) for k in sorted(request.query_params.keys())),
-            default=str,
-        )
+        qp_sig = json.dumps(sorted(params.items()), default=str)
         qh = hashlib.sha256(qp_sig.encode()).hexdigest()[:32]
         ck = f"agent:sched:list_shifts:{restaurant.id}:{qh}"
 
         def _shifts_payload():
             serializer = AssignedShiftSerializer(queryset, many=True)
-            return serializer.data
+            rows = serializer.data
+            staff_on_duty = []
+            seen = set()
+            for row in rows:
+                sid = row.get("staff")
+                name = row.get("staff_name") or ""
+                if sid and sid not in seen:
+                    seen.add(sid)
+                    staff_on_duty.append({"staff_id": str(sid), "name": name})
+            return {
+                'success': True,
+                'shifts': rows,
+                'count': len(rows),
+                'staff_on_duty': staff_on_duty,
+                'date_from': date_from.isoformat() if date_from else None,
+                'date_to': date_to.isoformat() if date_to else None,
+                'message_for_user': (
+                    f"{len(rows)} shift(s) scheduled"
+                    + (f" for {date_from.isoformat()}" if date_from else "")
+                    + "."
+                    if rows
+                    else "No one is scheduled on duty for that date."
+                ),
+            }
 
         return Response(get_or_set(ck, 30, _shifts_payload))
 
     except Exception as e:
         logger.exception("Agent list shifts error")
-        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response(
+            {
+                'success': False,
+                'shifts': [],
+                'count': 0,
+                'error': 'Unable to load shifts.',
+                'message_for_user': (
+                    'I could not load the shift schedule right now. Please try again in a moment.'
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 # --- Agent Memory (Miya context persistence, corrections, explainability) ---
