@@ -27,6 +27,7 @@ class PlatformWhatsAppConfig(models.Model):
     last_probe_at = models.DateTimeField(null=True, blank=True)
     last_probe_ok = models.BooleanField(null=True, blank=True)
     last_probe_message = models.TextField(blank=True, default="")
+    disconnected_at = models.DateTimeField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
