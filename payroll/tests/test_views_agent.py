@@ -16,7 +16,7 @@ from payroll.views_agent import (
 )
 
 
-@override_settings(LUA_WEBHOOK_API_KEY="test-agent-key")
+@override_settings(MIYA_MASTRA_API_KEY="test-agent-key")
 class PayrollAgentViewsTests(TestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
@@ -109,7 +109,7 @@ class PayrollAgentViewsTests(TestCase):
         self.assertEqual(response.data["item_count"], 0)
 
 
-@override_settings(LUA_WEBHOOK_API_KEY="test-agent-key")
+@override_settings(MIYA_MASTRA_API_KEY="test-agent-key")
 class FinanceBankPaymentStatusTests(TestCase):
     def setUp(self):
         self.factory = APIRequestFactory()

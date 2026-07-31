@@ -27,9 +27,9 @@ class MiyaToolRegistryTests(TestCase):
             self.assertIn(name, _ROUTE_MAP)
 
     def test_list_tasks_dispatch(self):
-        key = getattr(settings, "LUA_WEBHOOK_API_KEY", "")
+        key = getattr(settings, "MIYA_MASTRA_API_KEY", "")
         if not key:
-            self.skipTest("LUA_WEBHOOK_API_KEY not configured")
+            self.skipTest("MIYA_MASTRA_API_KEY not configured")
 
         from accounts.models import Restaurant
 
@@ -51,9 +51,9 @@ class MiyaToolRegistryTests(TestCase):
         self.assertTrue(body.get("success"))
 
     def test_ops_search_dispatch_accepts_body_q(self):
-        key = getattr(settings, "LUA_WEBHOOK_API_KEY", "")
+        key = getattr(settings, "MIYA_MASTRA_API_KEY", "")
         if not key:
-            self.skipTest("LUA_WEBHOOK_API_KEY not configured")
+            self.skipTest("MIYA_MASTRA_API_KEY not configured")
 
         from accounts.models import Restaurant
 

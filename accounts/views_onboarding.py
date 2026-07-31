@@ -537,6 +537,17 @@ class OnboardingCategoryOwnersView(APIView):
         'incident.other': 'Other',
     }
 
+    def get(self, request):
+        restaurant = getattr(request.user, 'restaurant', None)
+        if not restaurant:
+            return Response(
+                {'detail': 'No restaurant associated with user.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        gs = dict(restaurant.general_settings or {})
+        owners = gs.get('category_owners') or {}
+        return Response({'success': True, 'owners': owners})
+
     def put(self, request):
         if not _is_owner_like(request.user):
             return Response(

@@ -487,16 +487,6 @@ CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', f'redis://{REDIS_HOST
 CELERY_TASK_ALWAYS_EAGER = config('CELERY_TASK_ALWAYS_EAGER', default=False, cast=str_to_bool)
 CELERY_TASK_EAGER_PROPAGATES = True
 
-LUA_API_URL = config('LUA_API_URL', default='https://api.heylua.ai')
-LUA_API_KEY = config('LUA_API_KEY', default='')
-LUA_AGENT_ID = config('LUA_AGENT_ID', default='')
-LUA_WEBHOOK_API_KEY = config('LUA_WEBHOOK_API_KEY', default='')
-LUA_USER_EVENTS_WEBHOOK = config('LUA_USER_EVENTS_WEBHOOK', default='')
-LUA_USER_AUTHENTICATION_WEBHOOK = config('LUA_USER_AUTHENTICATION_WEBHOOK', default='')
-LUA_WHATSAPP_WEBHOOK_URL = config('LUA_WHATSAPP_WEBHOOK_URL', default='')
-# Legacy external HeyLua agent — default off; Mizan uses in-Django Miya + Fish Audio.
-LUA_LEGACY_ENABLED = config('LUA_LEGACY_ENABLED', default=False, cast=str_to_bool)
-
 # Fish Audio — Miya voice (https://fish.audio/app/)
 FISH_AUDIO_API_KEY = config('FISH_AUDIO_API_KEY', default='')
 FISH_AUDIO_REFERENCE_ID = config('FISH_AUDIO_REFERENCE_ID', default='')
@@ -519,19 +509,25 @@ MIYA_WHATSAPP_VOICE_DEFAULT = config('MIYA_WHATSAPP_VOICE_DEFAULT', default=Fals
 # When True, Meta webhook points at Mastra; Django skips in-process Miya WhatsApp chat turns.
 MIYA_WHATSAPP_MASTRA_CHANNEL = config('MIYA_WHATSAPP_MASTRA_CHANNEL', default=False, cast=str_to_bool)
 # Process Miya WhatsApp turns via Celery (webhook returns immediately)
-MIYA_ASYNC_CHAT = config('MIYA_ASYNC_CHAT', default=True, cast=str_to_bool)
+# Local dev (DEBUG): default off — Celery prefork often SIGSEGV on Python 3.14/macOS; use sync chat or `celery --pool=solo`.
+MIYA_ASYNC_CHAT = config(
+    'MIYA_ASYNC_CHAT',
+    default=not config('DEBUG', default=False, cast=str_to_bool),
+    cast=str_to_bool,
+)
 # Read-through cache TTLs (seconds) for Mastra bridge — reduces RDS load on repeated tool calls
 MIYA_CACHE_TTL_WHATSAPP_CTX = config('MIYA_CACHE_TTL_WHATSAPP_CTX', default=300, cast=int)
 MIYA_CACHE_TTL_TOOL = config('MIYA_CACHE_TTL_TOOL', default=90, cast=int)
 MIYA_CACHE_TTL_CONTEXT = config('MIYA_CACHE_TTL_CONTEXT', default=120, cast=int)
 MIYA_MASTRA_HEALTH_CACHE_TTL = config('MIYA_MASTRA_HEALTH_CACHE_TTL', default=30, cast=int)
+MIYA_MASTRA_MAX_STEPS = config('MIYA_MASTRA_MAX_STEPS', default=8, cast=int)
 
-# WhatsApp Invitation Automation (Delegates to Lua Agent by default)
+# WhatsApp Invitation Automation
 AUTO_WHATSAPP_INVITES = str_to_bool(os.getenv('AUTO_WHATSAPP_INVITES', True))
 WHATSAPP_INVITE_DELAY_SECONDS = int(os.getenv('WHATSAPP_INVITE_DELAY_SECONDS', 0))
 SUPPORT_CONTACT = os.getenv('SUPPORT_CONTACT', '+212626154332') # Default support contact if needed
 
-# WhatsApp templates (align with Lua/Meta approved names)
+# WhatsApp templates (Meta-approved names)
 WHATSAPP_TEMPLATE_STAFF_CLOCK_IN = config('WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', default='staff_clock_in')
 WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION = config('WHATSAPP_TEMPLATE_CLOCK_IN_LOCATION', default='clock_in_location_request')
 WHATSAPP_TEMPLATE_CLOCK_IN_SUCCESSFUL = config('WHATSAPP_TEMPLATE_CLOCK_IN_SUCCESSFUL', default='clock_in_success')

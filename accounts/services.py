@@ -91,116 +91,6 @@ logger = logging.getLogger(__name__)
 from core.i18n import get_effective_language
 
 
-# Lua Webhook Configuration
-LUA_AGENT_ID = "baseAgent_agent_1762796132079_ob3ln5fkl"
-LUA_USER_AUTH_WEBHOOK_ID = "df2d840c-b80e-4e6b-98d8-af4e95c0d96a"
-LUA_WEBHOOK_API_KEY = getattr(settings, 'LUA_WEBHOOK_API_KEY', None) or 'mizan-agent-webhook-secret-2026'
-
-
-def sync_user_to_lua_agent(user, access_token):
-    """
-    Sync user context to legacy HeyLua agent after login (opt-in only).
-    In-Django Miya uses JWT from the dashboard directly; this is a no-op by default.
-    Returns True on success, False on failure. Never raises; login proceeds regardless.
-    """
-    from core.legacy_lua import legacy_lua_enabled
-
-    if not legacy_lua_enabled():
-        return True
-
-    import time
-    webhook_url = getattr(settings, 'LUA_USER_AUTHENTICATION_WEBHOOK', None)
-    if not webhook_url:
-        webhook_url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{LUA_USER_AUTH_WEBHOOK_ID}"
-
-    lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '').strip()
-    if not lua_api_key:
-        logger.warning(
-            "[LuaSync] Skipping sync for %s: LUA_API_KEY is not configured. "
-            "Set LUA_API_KEY in .env to enable Miya context sync.",
-            user.email
-        )
-        return False
-
-    try:
-        mobile_number = getattr(user, 'phone', None)
-        if mobile_number:
-            mobile_number = ''.join(filter(str.isdigit, mobile_number))
-
-        session_id = f"tenant-{str(user.restaurant.id) if user.restaurant else ''}-user-{str(user.id)}"
-        effective_lang = get_effective_language(user=user, restaurant=getattr(user, 'restaurant', None))
-        business_vertical = "RESTAURANT"
-        if user.restaurant:
-            gs = user.restaurant.general_settings or {}
-            bv_raw = str(gs.get("business_vertical") or "RESTAURANT").strip().upper()
-            if bv_raw in ALLOWED_BUSINESS_VERTICALS:
-                business_vertical = bv_raw
-        payload = {
-            "emailAddress": user.email,
-            "mobileNumber": mobile_number,
-            "fullName": f"{user.first_name} {user.last_name}".strip(),
-            "restaurantId": str(user.restaurant.id) if user.restaurant else None,
-            "restaurantName": user.restaurant.name if user.restaurant else None,
-            "businessVertical": business_vertical,
-            "role": user.role.lower() if user.role else "staff",
-            "language": effective_lang,
-            "rtl": True if effective_lang == "ar" else False,
-            "metadata": {
-                "token": access_token,
-                "userId": str(user.id),
-                "sessionId": session_id,
-                "language": effective_lang,
-                "businessVertical": business_vertical,
-            }
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {lua_api_key}",
-            "Api-Key": lua_api_key,
-            "x-api-key": LUA_WEBHOOK_API_KEY
-        }
-
-        max_retries = 2
-        last_error = None
-
-        for attempt in range(max_retries + 1):
-            try:
-                response = requests.post(webhook_url, json=payload, headers=headers, timeout=10)
-                if response.status_code in (200, 201):
-                    logger.info("[LuaSync] Successfully synced user %s to Lua agent", user.email)
-                    return True
-                last_error = f"HTTP {response.status_code}: {response.text[:200]}"
-                logger.warning(
-                    "[LuaSync] Attempt %d/%d failed for %s: %s",
-                    attempt + 1, max_retries + 1, user.email, last_error
-                )
-                if attempt < max_retries:
-                    time.sleep(1)
-            except requests.RequestException as e:
-                last_error = str(e)
-                logger.warning(
-                    "[LuaSync] Attempt %d/%d network error for %s: %s",
-                    attempt + 1, max_retries + 1, user.email, last_error
-                )
-                if attempt < max_retries:
-                    time.sleep(1)
-
-        logger.error(
-            "[LuaSync] All %d attempts failed for %s. Last error: %s",
-            max_retries + 1, user.email, last_error
-        )
-        return False
-
-    except Exception as e:
-        logger.error(
-            "[LuaSync] Unexpected error syncing user %s: %s",
-            user.email, str(e),
-            exc_info=True
-        )
-        return False
-
-
 def _normalize_phone_digits(phone):
     """Return digits only from phone string (e.g. for lookup)."""
     if not phone:
@@ -449,7 +339,7 @@ def get_activation_status_by_phone(phone_digits):
 def try_activate_staff_on_inbound_message(phone_digits):
     """
     ONE-TAP activation: on first inbound WhatsApp message, match by phone and activate.
-    Phone number is the ONLY identity; no tokens. Creates CustomUser, links session, hands off to Lua.
+    Phone number is the ONLY identity; no tokens. Creates CustomUser, links session, hands off to Mastra.
     Returns CustomUser if activated, else None.
     """
     record = _find_staff_activation_record_by_phone(phone_digits)
@@ -1297,18 +1187,6 @@ class UserManagementService:
                     email=email,
                     is_accepted=False,
                 ).update(status='EXPIRED', expires_at=dj_tz.now())
-
-                # Notify Lua agent if phone is available
-                if phone:
-                    from notifications.services import notification_service
-                    lang = get_effective_language(user=user, restaurant=invitation.restaurant)
-                    notification_service.send_lua_invitation_accepted(
-                        invitation_token=invitation.invitation_token,
-                        phone=phone,
-                        first_name=user.first_name,
-                        flow_data={'last_name': user.last_name, 'email': user.email},
-                        language=lang,
-                    )
 
                 return user, None
         except UserInvitation.DoesNotExist:

@@ -78,6 +78,14 @@ def document_urgency(expires_at: date | None, today: date | None = None) -> str:
 def serialize_document(doc) -> dict[str, Any]:
     today = timezone.now().date()
     dleft = days_until(getattr(doc, "expires_at", None), today)
+    file_url = ""
+    if getattr(doc, "file", None):
+        try:
+            from core.s3_storage import file_field_download_url
+
+            file_url = file_field_download_url(doc.file) or doc.file.url or ""
+        except Exception:
+            file_url = ""
     return {
         "id": str(doc.id),
         "title": doc.title,
@@ -89,6 +97,8 @@ def serialize_document(doc) -> dict[str, Any]:
         "remind_days_before": doc.remind_days_before,
         "status": doc.status,
         "reference_number": doc.reference_number or "",
+        "file_url": file_url,
+        "has_file": bool(file_url or getattr(doc, "file", None)),
         "last_notified_at": doc.last_notified_at.isoformat() if doc.last_notified_at else None,
         "created_at": doc.created_at.isoformat() if doc.created_at else None,
     }

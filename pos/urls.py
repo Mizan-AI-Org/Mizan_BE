@@ -40,7 +40,7 @@ urlpatterns = [
     path('webhooks/square/<uuid:restaurant_id>/', webhooks.SquareWebhookTenantView.as_view(), name='square-webhook-tenant'),
    path('webhooks/clover/', webhooks.CloverWebhookView.as_view(), name='clover-webhook'),
 
-    # Agent (Lua) integration
+    # Agent (Mastra) integration
     path('agent/sync/menu/', views_agent.agent_sync_menu, name='agent-pos-sync-menu'),
     path('agent/sync/orders/', views_agent.agent_sync_orders, name='agent-pos-sync-orders'),
     path('agent/external/', views_agent.agent_get_external_objects, name='agent-pos-external-objects'),

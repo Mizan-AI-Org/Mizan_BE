@@ -12,9 +12,9 @@ class ToolDispatchTests(TestCase):
         self.assertTrue(should_dispatch_in_process("https://api.heymizan.ai"))
 
     def test_list_tasks_in_process(self):
-        key = getattr(settings, "LUA_WEBHOOK_API_KEY", "")
+        key = getattr(settings, "MIYA_MASTRA_API_KEY", "")
         if not key:
-            self.skipTest("LUA_WEBHOOK_API_KEY not configured")
+            self.skipTest("MIYA_MASTRA_API_KEY not configured")
 
         from accounts.models import Restaurant
 

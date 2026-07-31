@@ -230,15 +230,14 @@ def staff_profile_report_pdf(request, pk):
 def agent_staff_report_pdf(request):
     """
     GET /api/agent/staff-report-pdf/?staff_id=<uuid>&restaurant_id=<uuid>
-    Returns the same branded staff profile PDF. Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Returns the same branded staff profile PDF.     Auth: Bearer MIYA_MASTRA_API_KEY.
     """
-    from django.conf import settings as django_settings
-    auth_header = request.headers.get("Authorization")
-    expected_key = getattr(django_settings, "LUA_WEBHOOK_API_KEY", None)
-    if not expected_key:
-        return Response({"detail": "Agent key not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    if not auth_header or auth_header != f"Bearer {expected_key}":
-        return Response({"detail": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED)
+    from core.agent_auth import validate_agent_bearer
+
+    ok, err = validate_agent_bearer(request)
+    if not ok:
+        code = status.HTTP_500_INTERNAL_SERVER_ERROR if err == "Agent key not configured" else status.HTTP_401_UNAUTHORIZED
+        return Response({"detail": err}, status=code)
 
     staff_id = request.query_params.get("staff_id") or request.META.get("HTTP_X_STAFF_ID")
     restaurant_id = request.query_params.get("restaurant_id") or request.META.get("HTTP_X_RESTAURANT_ID")

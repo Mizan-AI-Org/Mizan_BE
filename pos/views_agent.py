@@ -1,6 +1,6 @@
 """
 Agent-specific views for POS operations.
-These endpoints use LUA_WEBHOOK_API_KEY authentication instead of JWT.
+These endpoints use MIYA_MASTRA_API_KEY authentication instead of JWT.
 """
 
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
@@ -15,18 +15,12 @@ from pos.models import POSExternalObject
 from pos.tasks import sync_square_menu_for_restaurant, sync_square_orders_for_restaurant
 
 
+from core.agent_auth import validate_agent_bearer
+
+
 def validate_agent_key(request):
     """Validate the agent API key from Authorization header."""
-    auth_header = request.headers.get("Authorization")
-    expected_key = getattr(settings, "LUA_WEBHOOK_API_KEY", None)
-
-    if not expected_key:
-        return False, "Agent key not configured"
-
-    if not auth_header or auth_header != f"Bearer {expected_key}":
-        return False, "Unauthorized"
-
-    return True, None
+    return validate_agent_bearer(request)
 
 
 @api_view(["POST"])

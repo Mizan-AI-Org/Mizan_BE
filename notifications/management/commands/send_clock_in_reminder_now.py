@@ -1,6 +1,5 @@
 """
-Trigger Miya to send a clock-in reminder to a specific phone number.
-POSTs the clock_in_reminder event to the Lua user-events webhook; Miya then sends the WhatsApp.
+Send a clock-in reminder WhatsApp to a specific phone number.
 Usage:
   python manage.py send_clock_in_reminder_now 2203736808
   python manage.py send_clock_in_reminder_now 2203736808 --name "Salima" --time "15:00" --location "Ima Restaurant"
@@ -10,7 +9,7 @@ from notifications.services import notification_service
 
 
 class Command(BaseCommand):
-    help = "Trigger Miya to send a clock-in reminder to the given phone number (POSTs to user-events webhook)."
+    help = "Send a clock-in reminder WhatsApp to the given phone number."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -55,9 +54,9 @@ class Command(BaseCommand):
         location = (options["location"] or "Restaurant").strip()
 
         self.stdout.write(
-            f"Sending clock_in_reminder event to Miya for {phone} (name={first_name}, time={start_time_str or '(default)'}, location={location})..."
+            f"Sending clock-in reminder to {phone} (name={first_name}, time={start_time_str or '(default)'}, location={location})..."
         )
-        ok, result = notification_service.send_lua_clock_in_reminder(
+        ok, result = notification_service.send_clock_in_reminder_whatsapp(
             phone=phone,
             first_name=first_name,
             start_time_str=start_time_str or "soon",
@@ -67,9 +66,9 @@ class Command(BaseCommand):
             template_name=None,
         )
         if ok:
-            self.stdout.write(self.style.SUCCESS("Miya was notified. You should receive the clock-in reminder on WhatsApp shortly."))
+            self.stdout.write(self.style.SUCCESS("Clock-in reminder sent via WhatsApp."))
         else:
             self.stderr.write(self.style.ERROR(f"Failed: {result}"))
             self.stderr.write(
-                "Ensure LUA_USER_EVENTS_WEBHOOK or LUA_AGENT_ID and LUA_API_KEY are set in .env."
+                "Ensure WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID are set in .env."
             )

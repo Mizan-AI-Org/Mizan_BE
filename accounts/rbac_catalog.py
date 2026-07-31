@@ -84,7 +84,7 @@ ACTIONS: list[dict[str, str]] = [
     {"id": "approve_invoice_payment", "label": "Approve / reject invoice payments (PayGuard)"},
     {"id": "create_widget_category", "label": "Create dashboard widget categories"},
     {"id": "manage_widgets", "label": "Create / edit dashboard shortcuts"},
-    {"id": "miya_full_tools", "label": "Use all Miya / Lua agent tools"},
+    {"id": "miya_full_tools", "label": "Use all Miya / Mastra agent tools"},
 ]
 
 

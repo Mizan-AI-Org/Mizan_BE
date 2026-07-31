@@ -12,7 +12,7 @@ user JWT, validated by ``_resolve_restaurant_for_agent`` so the same
 contract is honoured across every Miya tool.
 
 Inputs are deliberately forgiving (camelCase or snake_case) since
-chat-driven payloads come from many places (LLM tool calls, Lua,
+chat-driven payloads come from many places (LLM tool calls, Mastra,
 WhatsApp preprocessor) — we normalise here so callers don't all have
 to agree on a casing convention.
 """

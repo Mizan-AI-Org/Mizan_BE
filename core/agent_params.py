@@ -111,7 +111,7 @@ def _infer_service_times(*hints: str) -> tuple[str, str] | None:
 
 def enrich_create_shift_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """
-    Normalize Miya/Lua create_shift args: default date to today, resolve staff_name
+    Normalize Miya/Mastra create_shift args: default date to today, resolve staff_name
     aliases, parse ISO datetimes, infer dinner/lunch/breakfast hours.
     """
     from django.utils import timezone

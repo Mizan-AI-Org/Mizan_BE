@@ -129,7 +129,7 @@ urlpatterns = [
     # Task Management
     path('', include(router.urls)),
     
-    # Agent Integration (authenticated via LUA_WEBHOOK_API_KEY; csrf_exempt for Bearer-token API calls)
+    # Agent Integration (authenticated via MIYA_MASTRA_API_KEY; csrf_exempt for Bearer-token API calls)
     path('agent/staff/', csrf_exempt(agent_list_staff), name='agent_list_staff'),
     path('agent/staff-count/', csrf_exempt(agent_staff_count), name='agent_staff_count'),
     path('agent/task-templates/', csrf_exempt(agent_list_task_templates), name='agent_list_task_templates'),

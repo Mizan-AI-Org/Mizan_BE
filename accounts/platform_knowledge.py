@@ -1,7 +1,7 @@
 """
 Platform-level knowledge for Miya (features, workflows, RBAC) — not tenant SOPs.
 
-Searched by keyword for MVP; tenant operational docs stay in Lua knowledge_base.
+Searched by keyword for MVP; tenant operational docs stay in Mastra knowledge_base.
 """
 from __future__ import annotations
 

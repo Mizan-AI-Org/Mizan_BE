@@ -21,6 +21,7 @@ Hard rules:
 """
 from __future__ import annotations
 
+import base64
 import csv
 import io
 import json
@@ -216,6 +217,81 @@ def _extract_pdf(blob: bytes) -> str:
         return ""
 
 
+def _extract_pdf_via_vision(blob: bytes, content_type: str = "application/pdf") -> str:
+    """OCR fallback for scanned PDFs — render first pages and ask GPT-4o vision."""
+    api_key = getattr(settings, "OPENAI_API_KEY", "") or ""
+    if not api_key:
+        return ""
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except Exception:
+        try:
+            from PyPDF2 import PdfReader  # type: ignore
+        except Exception:
+            return ""
+
+    try:
+        reader = PdfReader(io.BytesIO(blob))
+        if not reader.pages:
+            return ""
+    except Exception:
+        return ""
+
+    # Prefer rendering to PNG when pdf2image is available; else send raw PDF bytes.
+    images: list[tuple[bytes, str]] = []
+    try:
+        from pdf2image import convert_from_bytes  # type: ignore
+
+        for img in convert_from_bytes(blob, first_page=1, last_page=min(3, len(reader.pages)), fmt="png"):
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            images.append((buf.getvalue(), "image/png"))
+    except Exception:
+        images = [(blob, content_type or "application/pdf")]
+
+    chunks: list[str] = []
+    for img_bytes, mime in images[:3]:
+        b64 = base64.standard_b64encode(img_bytes).decode("ascii")
+        payload = {
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "Extract ALL readable text from this document page verbatim. "
+                                "Return plain text only — no commentary."
+                            ),
+                        },
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+                    ],
+                }
+            ],
+            "max_tokens": 2000,
+        }
+        try:
+            r = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json=payload,
+                timeout=45,
+            )
+            r.raise_for_status()
+            text = (
+                ((r.json() or {}).get("choices") or [{}])[0]
+                .get("message", {})
+                .get("content")
+                or ""
+            ).strip()
+            if text:
+                chunks.append(text)
+        except Exception as exc:
+            logger.warning("parse_document: vision OCR page failed: %s", exc)
+    return "\n\n".join(chunks).strip()
+
+
 _DOCX_MIMES = {
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/msword",
@@ -385,18 +461,18 @@ def parse_document(blob: bytes, content_type: str = "", name: str = "") -> dict[
             "extracted_kind": kind,
         }
     if not extracted.strip():
-        # File was the right type but we couldn't get any text out (e.g. PDF without
-        # pypdf, scanned PDF without OCR, password-protected docx). Be honest with
-        # the caller — never run the classifier on an empty string.
-        return {
-            "category": "other",
-            "confidence": 0.0,
-            "summary": "Couldn't extract any text from the document.",
-            "error": "empty_extraction",
-            "suggested_action": "ask_manager",
-            "fields": {},
-            "extracted_kind": kind,
-        }
+        if kind == "pdf":
+            extracted = _extract_pdf_via_vision(blob, content_type=content_type or "application/pdf")
+        if not extracted.strip():
+            return {
+                "category": "other",
+                "confidence": 0.0,
+                "summary": "Couldn't extract any text from the document.",
+                "error": "empty_extraction",
+                "suggested_action": "ask_manager",
+                "fields": {},
+                "extracted_kind": kind,
+            }
 
     classification = _classify_text(extracted)
     classification["extracted_kind"] = kind

@@ -9,7 +9,7 @@ from accounts.models import CustomUser, Restaurant, StaffProfile
 from dashboard.api.staff_messages import StaffMessagesSendView
 
 
-@override_settings(LUA_WEBHOOK_API_KEY="test-agent-key")
+@override_settings(MIYA_MASTRA_API_KEY="test-agent-key")
 class StaffMessagesSendViewTests(TestCase):
     def setUp(self):
         self.factory = APIRequestFactory()

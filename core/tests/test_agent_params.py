@@ -46,7 +46,7 @@ class AgentListShiftsDateFilterTests(SimpleTestCase):
                 "date_to": [today],
             },
         )
-        request.META["HTTP_AUTHORIZATION"] = f"Bearer {settings.LUA_WEBHOOK_API_KEY or 'test-key'}"
+        request.META["HTTP_AUTHORIZATION"] = f"Bearer {settings.MIYA_MASTRA_API_KEY or 'test-key'}"
 
         response = agent_list_shifts(request)
         # Must not 500 / TypeError from list-valued date params

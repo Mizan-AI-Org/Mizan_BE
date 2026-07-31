@@ -57,8 +57,8 @@ def config_audit() -> None:
     fish = bool(getattr(settings, "FISH_AUDIO_API_KEY", "") or os.environ.get("FISH_AUDIO_API_KEY"))
     record(area, "FISH_AUDIO_API_KEY", "pass" if fish else "partial", "Voice TTS; chat works without it")
 
-    lua_key = bool(getattr(settings, "LUA_WEBHOOK_API_KEY", ""))
-    record(area, "LUA_WEBHOOK_API_KEY", "pass" if lua_key else "fail", "Agent tool auth")
+    mastra_key = bool(getattr(settings, "MIYA_MASTRA_API_KEY", ""))
+    record(area, "MIYA_MASTRA_API_KEY", "pass" if mastra_key else "fail", "Mastra bridge auth")
 
     wa_token = bool(get_whatsapp_access_token())
     wa_phone = bool(get_whatsapp_phone_number_id())
@@ -145,9 +145,9 @@ def probe_tool(name: str, method: str, path: str, payload: dict, headers: dict) 
 
 def tool_probes(restaurant: Restaurant, mgr: CustomUser | None, staff: CustomUser | None) -> None:
     area = "Tools (in-process)"
-    key = getattr(settings, "LUA_WEBHOOK_API_KEY", "")
+    key = getattr(settings, "MIYA_MASTRA_API_KEY", "")
     if not key:
-        record(area, "All tools", "skip", "LUA_WEBHOOK_API_KEY missing")
+        record(area, "All tools", "skip", "MIYA_MASTRA_API_KEY missing")
         return
 
     rid = str(restaurant.id)

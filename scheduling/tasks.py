@@ -129,7 +129,7 @@ def send_shift_reminder_30min():
 def clock_in_reminder(shift, recipient):
     """
     Send clock-in reminder to one recipient. Used by send_clock_in_reminder_10min.
-    Delegates to NotificationService so Miya (Lua) sends the reminder when configured.
+    Delegates to NotificationService for WhatsApp delivery.
     """
     try:
         if not getattr(recipient, 'phone', None) or not recipient.phone:

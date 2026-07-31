@@ -427,7 +427,7 @@ class AuditLoggingMiddleware(MiddlewareMixin):
 class AgentPathCsrfExemptMiddleware(MiddlewareMixin):
     """
     Exempts /api/scheduling/agent/ paths from CSRF.
-    Lua agent (Miya) calls these from server-to-server with Bearer token auth;
+    Mastra/Miya agent calls these from server-to-server with Bearer token auth;
     no Referer header is sent, causing Django's CSRF to reject with 403.
     Must run before CsrfViewMiddleware.
     """

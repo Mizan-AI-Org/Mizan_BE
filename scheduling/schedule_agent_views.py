@@ -24,19 +24,14 @@ from .schedule_photo_views import _match_employee_name_to_staff
 logger = logging.getLogger(__name__)
 
 
+from core.agent_auth import validate_agent_bearer
+
+
 def _validate_agent_key(request):
-    auth_header = request.headers.get("Authorization")
-    expected = getattr(settings, "LUA_WEBHOOK_API_KEY", None)
-    if not expected:
-        return False, Response(
-            {"detail": "Agent key not configured"},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-    if not auth_header or auth_header != f"Bearer {expected}":
-        return False, Response(
-            {"detail": "Unauthorized"},
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
+    ok, err = validate_agent_bearer(request)
+    if not ok:
+        code = status.HTTP_500_INTERNAL_SERVER_ERROR if err == "Agent key not configured" else status.HTTP_401_UNAUTHORIZED
+        return False, Response({"detail": err}, status=code)
     return True, None
 
 
@@ -76,7 +71,7 @@ def agent_parse_schedule_photo(request):
     """
     POST JSON: { "base64_image": "<base64 string>", "content_type": "image/jpeg" (optional) }.
     Returns: template_name, shifts (same as parse_schedule_photo).
-    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Auth: Bearer MIYA_MASTRA_API_KEY.
     """
     ok, err_response = _validate_agent_key(request)
     if not ok:
@@ -117,7 +112,7 @@ def agent_parse_schedule_document(request):
     POST JSON: { "base64_content": "<base64 string>", "filename": "schedule.xlsx" }.
     filename must end with .csv, .xlsx, or .xls.
     Returns: template_name, shifts.
-    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Auth: Bearer MIYA_MASTRA_API_KEY.
     """
     ok, err_response = _validate_agent_key(request)
     if not ok:
@@ -163,7 +158,7 @@ def agent_apply_parsed_schedule(request):
     """
     POST JSON: restaurant_id (or X-Restaurant-Id), template_name?, shifts, save_as_template?, week_start?.
     Same semantics as apply_parsed_schedule; uses first manager as acting_user when no JWT.
-    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Auth: Bearer MIYA_MASTRA_API_KEY.
     """
     ok, err_response = _validate_agent_key(request)
     if not ok:

@@ -100,5 +100,5 @@ def build_tenant_context(request):
     }
 
 
-# Agent (Lua/Miya) restaurant+user resolution — cached; see core/agent_resolve.py
+# Agent (Mastra/Miya) restaurant+user resolution — cached; see core/agent_resolve.py
 from core.agent_resolve import resolve_agent_restaurant_and_user  # noqa: E402,F401

@@ -1,4 +1,4 @@
-"""Tests for Miya dashboard widget user resolution (admin LuaPop)."""
+"""Tests for Miya dashboard widget user resolution (admin widget)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from accounts.models import CustomUser, Restaurant
 from dashboard.views_widget_layout import _resolve_user_from_agent_payload
 
 
-@override_settings(LUA_WEBHOOK_API_KEY="test-agent-key")
+@override_settings(MIYA_MASTRA_API_KEY="test-agent-key")
 class WidgetUserResolveTests(TestCase):
     def setUp(self):
         self.factory = RequestFactory()

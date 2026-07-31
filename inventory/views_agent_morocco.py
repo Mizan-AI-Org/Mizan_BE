@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 def _validate_agent(request):
     auth = request.headers.get("Authorization")
-    key = getattr(settings, "LUA_WEBHOOK_API_KEY", None)
+    key = getattr(settings, "MIYA_MASTRA_API_KEY", None)
     if not key:
         return False, Response({"success": False, "error": "Agent key not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     if not auth or auth != f"Bearer {key}":

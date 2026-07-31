@@ -74,6 +74,14 @@ class NotificationConsumer(AsyncWebsocketConsumer):
             "notification": notification_data,
         }, default=str))
 
+    async def tasks_invalidate(self, event):
+        await self.send(text_data=json.dumps({
+            "type": "tasks_invalidate",
+            "reason": event.get("reason"),
+            "task_id": event.get("task_id"),
+            "restaurant_id": event.get("restaurant_id"),
+        }, default=str))
+
     # REQUIRED FIX
     async def notification_message(self, event):
         await self.send(text_data=json.dumps({

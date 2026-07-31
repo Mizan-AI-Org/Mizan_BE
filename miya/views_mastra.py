@@ -24,21 +24,14 @@ from .services.whatsapp_identity import (
     resolve_whatsapp_user,
     whatsapp_session_hint,
 )
+from core.agent_auth import is_agent_bearer, mastra_bridge_api_key, validate_agent_bearer
 
 logger = logging.getLogger(__name__)
 
 
 def _validate_mastra_or_agent_key(request) -> bool:
-    expected = (getattr(settings, "MIYA_MASTRA_API_KEY", None) or "").strip()
-    if not expected:
-        expected = (getattr(settings, "LUA_WEBHOOK_API_KEY", None) or "").strip()
-    if not expected:
-        return False
-    auth = (request.META.get("HTTP_AUTHORIZATION") or "").strip()
-    if auth.lower().startswith("bearer "):
-        token = auth[7:].strip()
-        return token == expected
-    return False
+    ok, _ = validate_agent_bearer(request)
+    return ok
 
 
 @api_view(["POST"])
@@ -47,7 +40,7 @@ def _validate_mastra_or_agent_key(request) -> bool:
 def mastra_execute_tool(request):
     """
     Execute a Mizan tool on behalf of the Mastra Miya agent.
-    Auth: Bearer MIYA_MASTRA_API_KEY or LUA_WEBHOOK_API_KEY, or user JWT.
+    Auth: Bearer MIYA_MASTRA_API_KEY, or user JWT.
     """
     if not _validate_mastra_or_agent_key(request):
         jwt_user = getattr(request, "user", None)
@@ -90,8 +83,7 @@ def mastra_execute_tool(request):
     auth = (request.META.get("HTTP_AUTHORIZATION") or "").strip()
     if auth.lower().startswith("bearer ") and user:
         token = auth[7:].strip()
-        agent_key = (getattr(settings, "LUA_WEBHOOK_API_KEY", None) or "").strip()
-        if token != agent_key:
+        if not is_agent_bearer(token):
             access_token = token
 
     def _run_tool() -> dict:
@@ -206,7 +198,7 @@ def _build_whatsapp_context_payload(phone_digits: str) -> dict:
 def mastra_whatsapp_context(request):
     """
     Resolve WhatsApp phone → tenant context for Mastra channel handler.
-    Auth: Bearer MIYA_MASTRA_API_KEY or LUA_WEBHOOK_API_KEY.
+    Auth: Bearer MIYA_MASTRA_API_KEY.
     """
     if not _validate_mastra_or_agent_key(request):
         return Response({"success": False, "error": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED)
@@ -223,3 +215,67 @@ def mastra_whatsapp_context(request):
     ttl = whatsapp_context_cache_ttl()
     payload = get_or_set(whatsapp_context_key(phone_digits), ttl, lambda: _build_whatsapp_context_payload(phone_digits))
     return Response(payload)
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def mastra_transcribe_audio(request):
+    """
+    Transcribe voice-note bytes for Mastra WhatsApp (Fish Audio ASR or OpenAI Whisper fallback).
+    Auth: Bearer MIYA_MASTRA_API_KEY.
+
+    Body JSON:
+      audio_base64 (required)
+      mime_type (optional, default audio/ogg)
+      language (optional BCP-47 hint, default en)
+    """
+    if not _validate_mastra_or_agent_key(request):
+        return Response({"success": False, "error": "Unauthorized"}, status=status.HTTP_401_UNAUTHORIZED)
+
+    import base64
+
+    from notifications.services import notification_service
+
+    data = request.data if isinstance(request.data, dict) else {}
+    raw_b64 = (data.get("audio_base64") or "").strip()
+    if not raw_b64:
+        return Response(
+            {"success": False, "error": "audio_base64 is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        audio_bytes = base64.b64decode(raw_b64)
+    except Exception:
+        return Response(
+            {"success": False, "error": "invalid audio_base64"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not audio_bytes:
+        return Response(
+            {"success": False, "error": "audio payload is empty"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    mime_type = (data.get("mime_type") or "audio/ogg").strip()
+    language = (data.get("language") or "en").strip() or "en"
+
+    transcript = notification_service.transcribe_audio_bytes(
+        audio_bytes,
+        input_mime_type=mime_type,
+        language=language,
+    )
+    transcript = (transcript or "").strip()
+    if not transcript:
+        return Response(
+            {
+                "success": False,
+                "error": "transcription_failed",
+                "message_for_user": "I couldn't understand that voice note — please try again or type your message.",
+            },
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return Response({"success": True, "transcript": transcript})

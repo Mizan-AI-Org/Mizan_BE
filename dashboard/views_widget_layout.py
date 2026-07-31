@@ -1,5 +1,5 @@
 """
-Persisted dashboard widget layout per user + agent API for Miya/Lua to add widgets
+Persisted dashboard widget layout per user + agent API for Miya to add widgets
 and create custom dashboard tiles (custom:<uuid>).
 """
 
@@ -7,6 +7,7 @@ import logging
 import uuid
 
 from django.conf import settings
+from core.agent_auth import is_agent_bearer
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -61,14 +62,11 @@ def _widget_label(widget_id: str, fallback: str | None = None) -> str:
     return WIDGET_CANONICAL_LABELS.get(widget_id, fallback or widget_id.replace("_", " ").title())
 
 
+from core.agent_auth import validate_agent_bearer
+
+
 def _validate_agent_key(request):
-    expected = getattr(settings, "LUA_WEBHOOK_API_KEY", None)
-    if not expected:
-        return False, "Agent key not configured"
-    auth = request.headers.get("Authorization") or ""
-    if auth != f"Bearer {expected}":
-        return False, "Unauthorized"
-    return True, None
+    return validate_agent_bearer(request)
 
 
 def _parse_custom_slot_id(s: str) -> uuid.UUID | None:
@@ -161,11 +159,10 @@ def _resolve_user_from_explicit_fields(data: dict) -> CustomUser | None:
 
 
 def _resolve_user_from_session_or_jwt(data: dict, request=None) -> CustomUser | None:
-    """Resolve user from LuaPop sessionId or dashboard JWT without restaurant-only short-circuit."""
+    """Resolve user from Miya sessionId or dashboard JWT without restaurant-only short-circuit."""
     import re
 
     from core.agent_resolve import _get_first, _merge_agent_request_data
-    from django.conf import settings
 
     merged, meta = _merge_agent_request_data(request, data)
 
@@ -186,8 +183,7 @@ def _resolve_user_from_session_or_jwt(data: dict, request=None) -> CustomUser | 
 
     token = _get_first(merged, meta, "token", "accessToken", "access_token")
     if token:
-        expected_key = getattr(settings, "LUA_WEBHOOK_API_KEY", None)
-        if not (expected_key and str(token) == expected_key):
+        if not is_agent_bearer(str(token)):
             try:
                 from rest_framework_simplejwt.authentication import JWTAuthentication
 
@@ -207,8 +203,8 @@ def _resolve_user_from_agent_payload(data: dict | None, request=None) -> CustomU
     Resolve the dashboard owner for Miya widget agent endpoints.
 
     Accepts explicit user_id / email / phone in the JSON body, nested
-    ``metadata`` from LuaPop, and falls back to the shared agent resolver
-    (sessionId, JWT via X-User-Token, etc.) so admin LuaPop works without the
+    ``metadata`` from the widget session, and falls back to the shared agent resolver
+    (sessionId, JWT via X-User-Token, etc.) so admin dashboard Miya works without the
     LLM passing user_id on every tool call.
     """
     data = data or {}
@@ -403,8 +399,8 @@ class DashboardCustomWidgetListView(APIView):
 
 class AgentDashboardWidgetsAddView(APIView):
     """
-    Miya/Lua: add one or more built-in dashboard widgets for a manager user.
-    Auth: Bearer LUA_WEBHOOK_API_KEY
+    Miya: add one or more built-in dashboard widgets for a manager user.
+    Auth: Bearer MIYA_MASTRA_API_KEY
 
     Body:
       - widgets: required list of widget id strings
@@ -494,9 +490,9 @@ class AgentDashboardWidgetsAddView(APIView):
 
 class AgentDashboardWidgetCreateView(APIView):
     """
-    Miya/Lua: create a new custom dashboard tile and optionally add it to the user's layout.
+    Miya: create a new custom dashboard tile and optionally add it to the user's layout.
 
-    Auth: Bearer LUA_WEBHOOK_API_KEY
+    Auth: Bearer MIYA_MASTRA_API_KEY
 
     Body:
       - title: required string
@@ -846,11 +842,11 @@ class AgentDashboardWidgetCreateView(APIView):
 
 class AgentDashboardWidgetListView(APIView):
     """
-    Miya/Lua: list a user's current dashboard widget layout + the catalogue of
+    Miya: list a user's current dashboard widget layout + the catalogue of
     built-in widgets the agent may `add`. Includes any Miya-created custom
     tiles owned by the user.
 
-    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Auth: Bearer MIYA_MASTRA_API_KEY.
     Body: user_id | email | phone (at least one).
     """
 
@@ -923,11 +919,11 @@ class AgentDashboardWidgetListView(APIView):
 
 class AgentTenantBootstrapView(APIView):
     """
-    Miya/Lua: resolve ``restaurant_id`` (and confirm ``user_id``) when the
+    Miya: resolve ``restaurant_id`` (and confirm ``user_id``) when the
     conversation metadata is missing ``restaurantId`` but we still have
     ``user_id``, ``email``, or ``phone`` from the WhatsApp / dashboard bridge.
 
-    Auth: Bearer LUA_WEBHOOK_API_KEY
+    Auth: Bearer MIYA_MASTRA_API_KEY
     Body: user_id | email | phone (at least one, same semantics as other
     dashboard agent endpoints).
     """
@@ -973,9 +969,9 @@ class AgentTenantBootstrapView(APIView):
 
 class AgentDashboardWidgetsRemoveView(APIView):
     """
-    Miya/Lua: remove one or more widgets from the user's dashboard layout.
+    Miya: remove one or more widgets from the user's dashboard layout.
 
-    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Auth: Bearer MIYA_MASTRA_API_KEY.
     Body:
       - widgets: required list of widget ids (built-in IDs or `custom:<uuid>`
                  slots). Unknown ids are silently ignored so partial success
@@ -1042,9 +1038,9 @@ class AgentDashboardWidgetsRemoveView(APIView):
 
 class AgentDashboardWidgetsReorderView(APIView):
     """
-    Miya/Lua: replace the user's full dashboard widget order.
+    Miya: replace the user's full dashboard widget order.
 
-    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Auth: Bearer MIYA_MASTRA_API_KEY.
     Body:
       - order: required list of widget ids. Invalid / unknown ids are
                dropped but the call still succeeds so Miya can reorder the
@@ -1108,10 +1104,10 @@ class AgentDashboardWidgetsReorderView(APIView):
 
 class AgentDashboardCustomWidgetDeleteView(APIView):
     """
-    Miya/Lua: permanently delete a Miya-created custom widget tile and remove
+    Miya: permanently delete a Miya-created custom widget tile and remove
     it from the user's saved layout.
 
-    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Auth: Bearer MIYA_MASTRA_API_KEY.
     Body:
       - widget_id: required UUID of the DashboardCustomWidget, OR `custom:<uuid>` slot.
       - user_id | email | phone: target user (must own the widget or be a
@@ -1203,11 +1199,11 @@ class AgentDashboardCustomWidgetDeleteView(APIView):
 
 class AgentDashboardCategoryCreateView(APIView):
     """
-    Miya/Lua: create a dashboard category (tenant-wide) for grouping custom
+    Miya: create a dashboard category (tenant-wide) for grouping custom
     shortcuts. Idempotent — if a category with the same name already exists in
     the tenant we return it instead of creating a duplicate.
 
-    Auth: Bearer LUA_WEBHOOK_API_KEY
+    Auth: Bearer MIYA_MASTRA_API_KEY
 
     Body:
       - name: required string (max 100 chars)

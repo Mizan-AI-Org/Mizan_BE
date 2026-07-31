@@ -9,6 +9,7 @@ from .services import UserManagementService
 import requests
 import logging
 from django.conf import settings
+from core.agent_auth import validate_agent_bearer
 from core.read_through_cache import get_or_set
 
 from .business_vertical import ALLOWED_BUSINESS_VERTICALS
@@ -38,7 +39,7 @@ def _miya_vertical_runtime_note(business_vertical: str) -> str:
     return format_vertical_runtime_note(business_vertical)
 
 
-# Full OPERATIONAL INTELLIGENCE & EXECUTION SYSTEM PROMPT for Miya (enhancement to existing Lua instructions).
+# Full OPERATIONAL INTELLIGENCE & EXECUTION SYSTEM PROMPT for Miya (enhancement to supervisor instructions).
 MIYA_OPERATIONAL_INSTRUCTIONS = """You are **Miya**, the AI Operations Manager for a specific **organization workspace** inside Mizan AI.
 
 Mizan is **multi-vertical**: the same product serves restaurants, retail, manufacturing, construction, healthcare **operations**, hotels/hospitality, professional services, and other/mixed businesses. The account's **business_vertical** (workspace settings) defines which sector applies—**align language and examples with that vertical** once you know it. Until then, use neutral terms: organization, team, workspace, shifts/roster, tasks, inventory.
@@ -141,14 +142,14 @@ The backend sends the **first checklist item immediately** via WhatsApp in the s
 ---
 13. DASHBOARD WIDGETS (MANAGERS — LUA / MIYA)
 When a manager asks to add **existing** dashboard widgets (e.g. "Add the retail stock widget", "Put crew schedule on my dashboard", "Add reports and team inbox"):
-* Call **POST /api/dashboard/agent/widgets/add/** with header `Authorization: Bearer <LUA_WEBHOOK_API_KEY>` (same key as other agent tools).
+* Call **POST /api/dashboard/agent/widgets/add/** with header `Authorization: Bearer <MIYA_MASTRA_API_KEY>` (same key as other agent tools).
 * Body JSON: `widgets` (required array of widget id strings), and **one** of: `user_id` (UUID), `email` (manager email), or `phone` (WhatsApp/digits) to identify the user.
 * Valid widget ids include: insights, staffing, sales_or_tasks, operations, wellbeing, live_attendance, compliance_risk, inventory_delivery, task_execution, take_orders, reservations, retail_store_ops, jobsite_crew, ops_reports, staff_inbox.
 * On success, relay `message_for_user` to confirm; on error, relay the `error` string only.
 * Only managers/owners (roles that can customize the dashboard) can have widgets added; otherwise explain they need a manager account.
 
 When a manager asks for a **new custom** dashboard card (e.g. "Create a widget for weekly safety walkthrough", "Add a tile that links to processes", "Put a shortcut to inventory on my dashboard"):
-* Call **POST /api/dashboard/agent/widgets/create/** with the same `Authorization: Bearer <LUA_WEBHOOK_API_KEY>` header.
+* Call **POST /api/dashboard/agent/widgets/create/** with the same `Authorization: Bearer <MIYA_MASTRA_API_KEY>` header.
 * Body JSON: `title` (required), optional `subtitle`, optional `icon` (e.g. sparkles, clipboard-check, list-todo, calendar, users, package, shopping-cart, file-text, bar-chart-2, clipboard-list, hard-hat, store, inbox, activity, shield-alert, clock, heart, calendar-days, layout-grid), optional `add_to_dashboard` (default true), optional `category_id` **or** `category_name` (server find-or-creates a tenant category), and **one** of `user_id`, `email`, or `phone`.
 * **Do NOT ask the manager for a link/URL.** The server resolves the destination route automatically from the title (e.g. "Supplier contacts" → suppliers page). Only pass `link_url` if the manager explicitly provided a URL themselves or it's an external link.
 * Response includes `widget_id` (format `custom:<uuid>`) and `message_for_user`; relay that message. The card appears on the user's dashboard after refresh.
@@ -157,13 +158,13 @@ When a manager asks for a **new custom** dashboard card (e.g. "Create a widget f
 14. GUEST ORDERS FROM VOICE / TEXT (F&B STAFF — LUA / MIYA)
 When a staff member sends a **voice note** (or text) that is clearly a guest order (e.g. "table 7, two burgers, customer Sarah 07712345678, deliver to 14 Oxford Street"):
 * Django's WhatsApp webhook already transcribes audio (OpenAI Whisper) and auto-creates the **Today's Orders** row with heuristic parsing — you do **not** need to do anything. Confirm back to the staff with the short order id if asked.
-* If the agent/bridge (not the Django webhook) has the transcript in hand and needs to create the order itself, call **POST /api/notifications/agent/staff-captured-order/** with header `Authorization: Bearer <LUA_WEBHOOK_API_KEY>`.
+* If the agent/bridge (not the Django webhook) has the transcript in hand and needs to create the order itself, call **POST /api/notifications/agent/staff-captured-order/** with header `Authorization: Bearer <MIYA_MASTRA_API_KEY>`.
 * Body JSON: `restaurant_id` (required UUID), `items_summary` **or** `transcript` (required — the raw voice/text), `user_id` or `phone`/`staff_phone` (to attribute the capture to the staff member), optional `channel` (`VOICE`/`TEXT`/`MANUAL`, default `VOICE`), and optional explicit overrides: `customer_name`, `customer_phone`, `order_type` (`DINE_IN`/`TAKEOUT`/`DELIVERY`/`OTHER`), `table_or_location`, `dietary_notes`, `special_instructions`.
 * The server auto-parses the transcript for customer name, phone, order type (dine-in/takeout/delivery), table/location, dietary/allergens, and special instructions — you can pass the raw transcript and trust the parser, or pass explicit fields to override.
 * Response includes `order_id` and `short_id`; relay the short id back to the staff in the confirmation.
 
 When a manager asks to **create a dashboard category / group of shortcuts** (e.g. "Create a Kitchen KPIs section", "Group these shortcuts under Supplier", "Add a Back-of-house category"):
-* Call **POST /api/dashboard/agent/categories/create/** with the same `Authorization: Bearer <LUA_WEBHOOK_API_KEY>` header.
+* Call **POST /api/dashboard/agent/categories/create/** with the same `Authorization: Bearer <MIYA_MASTRA_API_KEY>` header.
 * Body JSON: `name` (required, max 100 chars), optional `order_index`, and **one** of `user_id`, `email`, or `phone`.
 * Categories are tenant-wide (shared across that workspace) and the endpoint is idempotent — if the category already exists you'll get it back with `created: false`.
 * After creating a category, if the manager also asked for widgets inside it, call the widgets/create endpoint above with the returned `category_id` (or just pass `category_name` to do it in one shot).
@@ -171,7 +172,7 @@ When a manager asks to **create a dashboard category / group of shortcuts** (e.g
 ---
 15. CREATE A TASK FOR A STAFF MEMBER + WHATSAPP NOTIFY (MANAGER — LUA / MIYA)
 When a manager tells you to **create a task/demand and assign it to a staff member** (e.g. "Create a task for Ahmed to clean the fryer by tomorrow and let him know", "Ask Salima to restock the bar before Friday", "Assign a high-priority task to Sarah: call the supplier"):
-* Call **POST /api/dashboard/agent/tasks/create/** with `Authorization: Bearer <LUA_WEBHOOK_API_KEY>` (same header as other agent tools).
+* Call **POST /api/dashboard/agent/tasks/create/** with `Authorization: Bearer <MIYA_MASTRA_API_KEY>` (same header as other agent tools).
 * This single call creates the task on the **Tasks & Demands** dashboard widget AND sends a WhatsApp message to the staff member in one shot. Do **not** also call the WhatsApp send endpoint — it's already handled server-side.
 * Body JSON:
   - `title` (required, <=255 chars) — short imperative ("Clean the fryer", "Restock the bar").
@@ -240,8 +241,8 @@ class AgentContextView(APIView):
 def agent_miya_instructions(request):
     """
     Return the full OPERATIONAL INTELLIGENCE & EXECUTION system prompt for Miya.
-    Auth: JWT (Bearer user token) or LUA_WEBHOOK_API_KEY.
-    Lua can call this at session start to inject instructions; dashboard uses JWT.
+    Auth: JWT (Bearer user token) or MIYA_MASTRA_API_KEY.
+    Mastra can call this at session start to inject instructions; dashboard uses JWT.
     """
     if not request.headers.get('Authorization'):
         return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
@@ -258,11 +259,11 @@ def agent_miya_instructions(request):
                 'instructions': full,
                 'business_vertical': bv,
                 'vertical_playbook': vertical_playbook_for_api(bv),
-                'note': 'Append or merge with existing Miya system prompt in Lua Admin.',
+                'note': 'Append or merge with existing Miya system prompt in Miya Studio.',
             })
     except Exception:
         pass
-    # Else allow agent key (Lua calling with LUA_WEBHOOK_API_KEY)
+    # Else allow agent key (Mastra calling with MIYA_MASTRA_API_KEY)
     is_valid, _ = _validate_agent_key(request)
     if is_valid:
         rid = (
@@ -405,16 +406,11 @@ def get_invitation_by_phone(request):
     Used by the agent to find the token for a user who clicked 'Accept' on WhatsApp.
     """
     try:
-        # Validate Agent Key
-        auth_header = request.headers.get('Authorization')
-        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
-        
-        if not expected_key:
-            return Response({'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-             
-        if not auth_header or auth_header != f"Bearer {expected_key}":
-            return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-             
+        ok, err = validate_agent_bearer(request)
+        if not ok:
+            code = status.HTTP_500_INTERNAL_SERVER_ERROR if err == "Agent key not configured" else status.HTTP_401_UNAUTHORIZED
+            return Response({'error': err}, status=code)
+
         phone = request.query_params.get('phone')
         if not phone:
             return Response({'error': 'phone query parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -503,16 +499,10 @@ def account_activation_from_agent(request):
     Payload: { "phone": "212600959067" }. Returns { "success", "template_sent?", "user?", "message_for_user" }.
     """
     try:
-        auth_header = request.headers.get('Authorization')
-        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
-        if not expected_key:
-            return Response({
-                'success': False,
-                'error': 'Agent key not configured',
-                'message_for_user': "We couldn't complete your request. Please try again later.",
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        if not auth_header or auth_header != f"Bearer {expected_key}":
-            return Response({'success': False, 'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
+        ok, err = validate_agent_bearer(request)
+        if not ok:
+            code = status.HTTP_500_INTERNAL_SERVER_ERROR if err == "Agent key not configured" else status.HTTP_401_UNAUTHORIZED
+            return Response({'success': False, 'error': err}, status=code)
 
         phone = request.data.get('phone') or ''
         clean_phone = ''.join(filter(str.isdigit, str(phone)))
@@ -619,7 +609,7 @@ def account_activation_from_agent(request):
 @permission_classes([permissions.AllowAny])  # Authenticated via Agent Key
 def accept_invitation_from_agent(request):
     """
-    Endpoint for Lua Agent to accept invitations on behalf of staff.
+    Endpoint for Miya agent to accept invitations on behalf of staff.
     
     Expected payload:
     {
@@ -631,22 +621,11 @@ def accept_invitation_from_agent(request):
     }
     """
     try:
-        # Validate Agent Key
-        auth_header = request.headers.get('Authorization')
-        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
-        
-        if not expected_key:
-            return Response({
-                'success': False,
-                'error': 'Agent key not configured'
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-             
-        if not auth_header or auth_header != f"Bearer {expected_key}":
-            return Response({
-                'success': False,
-                'error': 'Unauthorized'
-            }, status=status.HTTP_401_UNAUTHORIZED)
-             
+        ok, err = validate_agent_bearer(request)
+        if not ok:
+            code = status.HTTP_500_INTERNAL_SERVER_ERROR if err == "Agent key not configured" else status.HTTP_401_UNAUTHORIZED
+            return Response({'success': False, 'error': err}, status=code)
+
         # Extract parameters
         invitation_token = request.data.get('invitation_token')
         phone = request.data.get('phone', '')
@@ -751,14 +730,8 @@ def accept_invitation_from_agent(request):
 
 
 def _validate_agent_key(request):
-    """Validate LUA_WEBHOOK_API_KEY for agent-only endpoints."""
-    auth_header = request.headers.get('Authorization')
-    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
-    if not expected_key:
-        return False, "Agent key not configured"
-    if not auth_header or auth_header != f"Bearer {expected_key}":
-        return False, "Unauthorized"
-    return True, None
+    """Validate Mastra bridge key for agent-only endpoints."""
+    return validate_agent_bearer(request)
 
 
 def _resolve_restaurant_id_agent(request):
@@ -885,7 +858,7 @@ def agent_retry_invite(request):
 def agent_list_reservations(request):
     """
     List reservations/appointments for the workspace.
-    Auth: LUA_WEBHOOK_API_KEY.
+    Auth: MIYA_MASTRA_API_KEY.
     Query: restaurant_id (required), date=today|tomorrow|YYYY-MM-DD (default today),
            days_ahead=N (returns next N days starting from date), status (optional filter),
            q (free-text search on guest_name/phone/email), limit (default 50, max 200).
@@ -982,7 +955,7 @@ def agent_create_reservation(request):
     Create a reservation/booking from Miya so it lands directly on the
     Reservations / Bookings page (not the staff-requests inbox).
 
-    Auth: LUA_WEBHOOK_API_KEY.
+    Auth: MIYA_MASTRA_API_KEY.
     Body:
       restaurant_id (required),
       guest_name (required),
@@ -1131,7 +1104,7 @@ def agent_create_reservation(request):
 def agent_recognize_staff(request):
     """
     Give a recognition/kudos to a staff member. Also lists recent recognitions via GET.
-    Auth: LUA_WEBHOOK_API_KEY.
+    Auth: MIYA_MASTRA_API_KEY.
     Body: restaurant_id, staff_id OR phone, title, description (optional),
           recognition_type (default 'Kudos'), points (default 0),
           awarded_by_phone OR awarded_by_user_id (optional — defaults to null).
@@ -1216,7 +1189,7 @@ def agent_recognize_staff(request):
 def agent_list_recognitions(request):
     """
     List recent recognitions.
-    Auth: LUA_WEBHOOK_API_KEY.
+    Auth: MIYA_MASTRA_API_KEY.
     Query: restaurant_id (required), days (default 30), staff_id (optional), limit (default 25, max 100).
     """
     is_valid, error = _validate_agent_key(request)
@@ -1282,7 +1255,7 @@ def agent_list_recognitions(request):
 @permission_classes([permissions.AllowAny])
 def agent_hr_lifecycle(request):
     """
-    Manager-facing HR lifecycle actions. Auth: LUA_WEBHOOK_API_KEY.
+    Manager-facing HR lifecycle actions. Auth: MIYA_MASTRA_API_KEY.
 
     GET (list): ?restaurant_id=&status=active|inactive|all&role=&limit=50
       → returns staff roster with role, status, start date, phone.
@@ -1407,7 +1380,7 @@ def agent_hr_lifecycle(request):
 def agent_grant_role(request):
     """
     Grant (or change) a staff member's role within the workspace.
-    Auth: LUA_WEBHOOK_API_KEY.
+    Auth: MIYA_MASTRA_API_KEY.
     Body: restaurant_id, staff_id OR phone, role (required).
     Convenience wrapper — effective permissions for that role are controlled via the
     RolePermissionSet managed in the dashboard (rbac/).
@@ -1458,7 +1431,7 @@ def agent_staff_documents(request):
     GET: list staff documents. Query: restaurant_id, staff_id (optional), expiring_within_days (optional).
     POST: record a new document. Body: restaurant_id, staff_id OR phone, title, document_type,
           file_url (if uploaded elsewhere) OR notes, expires_at (optional ISO).
-    Auth: LUA_WEBHOOK_API_KEY.
+    Auth: MIYA_MASTRA_API_KEY.
     """
     is_valid, error = _validate_agent_key(request)
     if not is_valid:
@@ -1579,7 +1552,7 @@ def agent_staff_documents(request):
 def agent_activity_log(request):
     """Return audit-log rows scoped to the agent's workspace.
 
-    Auth: ``Authorization: Bearer <LUA_WEBHOOK_API_KEY>``.
+    Auth: ``Authorization: Bearer <MIYA_MASTRA_API_KEY>``.
 
     Query params (all optional):
         * ``restaurant_id`` / ``X-Restaurant-Id`` — tenant (required)

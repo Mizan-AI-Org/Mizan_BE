@@ -1,6 +1,6 @@
 """
 Agent-authenticated endpoints for staff app.
-Used to ingest Staff Requests coming from Lua/WhatsApp into the manager inbox.
+Used to ingest Staff Requests coming from WhatsApp into the manager inbox.
 """
 
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
@@ -134,14 +134,11 @@ def _normalize_category(raw) -> str:
     return cat if cat in STAFF_REQUEST_CATEGORIES else 'OTHER'
 
 
+from core.agent_auth import validate_agent_bearer
+
+
 def validate_agent_key(request):
-    auth_header = request.headers.get('Authorization')
-    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
-    if not expected_key:
-        return False, "Agent key not configured"
-    if not auth_header or auth_header != f"Bearer {expected_key}":
-        return False, "Unauthorized"
-    return True, None
+    return validate_agent_bearer(request)
 
 
 def _coerce_bool(val, default=True):
@@ -301,7 +298,7 @@ def _notify_managers_of_staff_request(req: StaffRequest):
 @permission_classes([permissions.AllowAny])
 def agent_ingest_staff_request(request):
     """
-    Ingest a staff request coming from Lua/WhatsApp into Mizan.
+    Ingest a staff request coming from WhatsApp into Mizan.
 
     Expected payload (flexible):
     - subject/title
@@ -800,7 +797,7 @@ def _resolve_restaurant_for_staff_agent(request):
 def agent_list_staff_requests(request):
     """
     List pending staff requests for the restaurant. Used by Miya so managers can approve/reject from WhatsApp.
-    Auth: Bearer LUA_WEBHOOK_API_KEY. Query or X-Restaurant-Id: restaurant_id.
+    Auth: Bearer MIYA_MASTRA_API_KEY. Query or X-Restaurant-Id: restaurant_id.
     """
     is_valid, error = validate_agent_key(request)
     if not is_valid:
@@ -851,7 +848,7 @@ def agent_list_staff_requests(request):
 def agent_approve_staff_request(request):
     """
     Approve a staff request. Miya uses this so managers can approve from WhatsApp. Notifies staff via WhatsApp.
-    Auth: Bearer LUA_WEBHOOK_API_KEY. Body: request_id, restaurant_id (or X-Restaurant-Id).
+    Auth: Bearer MIYA_MASTRA_API_KEY. Body: request_id, restaurant_id (or X-Restaurant-Id).
     """
     is_valid, error = validate_agent_key(request)
     if not is_valid:
@@ -903,7 +900,7 @@ def agent_approve_staff_request(request):
 def agent_reject_staff_request(request):
     """
     Reject a staff request. Miya uses this so managers can reject from WhatsApp. Notifies staff via WhatsApp.
-    Auth: Bearer LUA_WEBHOOK_API_KEY. Body: request_id, reason (optional), restaurant_id (or X-Restaurant-Id).
+    Auth: Bearer MIYA_MASTRA_API_KEY. Body: request_id, reason (optional), restaurant_id (or X-Restaurant-Id).
     """
     is_valid, error = validate_agent_key(request)
     if not is_valid:
@@ -958,7 +955,7 @@ def agent_assign_staff_request(request):
     Miya calls this when a manager says e.g. "reassign that plumbing
     request to Yassine" or when a category owner changes.
 
-    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Auth: Bearer MIYA_MASTRA_API_KEY.
     Body: request_id, assignee_id OR assignee_email, note (optional),
           restaurant_id (or X-Restaurant-Id).
     """

@@ -1,7 +1,7 @@
 """
 WhatsApp staff "when is my shift" / my schedule replies (Django-owned).
 
-Keeps Lua/Space from inventing "trouble fetching your shift details".
+Keeps Mastra/Space from inventing "trouble fetching your shift details".
 """
 
 from __future__ import annotations

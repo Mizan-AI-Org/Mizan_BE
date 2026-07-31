@@ -49,7 +49,7 @@ mizan-backend/
 ├── accounts/                 # Auth, users, restaurant, invitations
 │   ├── models.py             # CustomUser, Restaurant, StaffInvitation, etc.
 │   ├── views.py              # Login, register, JWT, password reset
-│   ├── views_agent.py        # Lua agent: context, accept-invitation, lookup
+│   ├── views_agent.py        # Mastra agent: context, accept-invitation, lookup
 │   ├── urls.py               # /api/ → auth, register, staff, restaurant, agent
 │   └── ...
 │
@@ -130,11 +130,8 @@ mizan-backend/
 Copy the right template and fill in values.
 
 - **Local / dev:** copy `.env.example` to `.env`
-- **Production (Docker on EC2):** keep all credentials in `.env`, then generate Docker env:
-  ```bash
-  node scripts/sync-env-production.mjs   # writes .env.production for docker-compose
-  ```
-- **Miya-V2 (Mastra Cloud):** syncs from the same `.env` via `../Miya-V2` → `npm run env:sync`
+- **Production (Docker on EC2):** put all credentials in **`mizan-backend/.env`** — Docker Compose reads it directly (no separate `.env.production` file)
+- **Miya-V2 (Mastra Cloud):** `npm run env:sync` copies Mastra vars from `mizan-backend/.env` into `Miya-V2/.env` before deploy
 
 ### Main variables
 
@@ -147,8 +144,7 @@ Copy the right template and fill in values.
 | `REDIS_HOST`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | Redis and Celery (in Docker use `redis` as host) |
 | `FIREBASE_SERVICE_ACCOUNT_KEY` | JSON string for Firebase Admin (push notifications) |
 | `WHATSAPP_*` | WhatsApp Cloud API (webhook, verify token, etc.) |
-| `LUA_WEBHOOK_API_KEY` | Agent API auth for Miya tool routes (legacy name; not external Lua) |
-| `LUA_LEGACY_ENABLED` | Set `true` only if you still use external HeyLua webhooks (default off) |
+| `MIYA_MASTRA_API_KEY` | Shared secret for Mastra Cloud → Django agent tool routes |
 | `STRIPE_*` | Stripe billing |
 | `SQUARE_*` | Square POS (OAuth, webhooks) |
 | `EMAIL_*` | SMTP for transactional email |
@@ -195,12 +191,15 @@ See `.env.example` and `.env.production.template` for full lists and comments.
    # Admin: http://localhost:8000/admin/
    ```
 
-6. **Celery (optional, for tasks and beat)**
+6. **Celery (optional — async Miya chat / scheduled tasks)**
 
-   Start Redis, then:
+   With `MIYA_ASYNC_CHAT=False` (default when `DEBUG=True`), Miya dashboard chat runs synchronously and Celery is not required for the widget.
+
+   For async chat or beat schedules, start Redis then:
 
    ```bash
-   celery -A mizan worker --loglevel=info
+   # Python 3.14 on macOS: use solo pool (prefork can SIGSEGV)
+   celery -A mizan worker --loglevel=info --pool=solo
    celery -A mizan beat --loglevel=info
    ```
 
@@ -221,16 +220,16 @@ See `.env.example` and `.env.production.template` for full lists and comments.
 - **Dockerfile:** Python 3.13-slim image; installs system deps and `requirements.txt`; default `CMD` waits for `db` and runs migrate + Daphne (for setups that use a `db` service).
 - **docker-compose.yml** defines:
   - **redis** — Redis 7, port 6379, healthcheck
-  - **web** — Django app: `collectstatic`, `migrate`, then `daphne -b 0.0.0.0 -p 8000`; uses `.env.production`; port 8000
+  - **backend** — Django app: `migrate`, then `daphne -b 0.0.0.0 -p 8000`; uses `.env`; port 8000
   - **celery_worker** — Celery worker
   - **celery_beat** — Celery beat
 
-Database is expected **outside** the compose stack (e.g. RDS); set `POSTGRES_HOST` (or `DB_HOST`) in `.env.production` to your RDS endpoint.
+Database is expected **outside** the compose stack (e.g. RDS); set `POSTGRES_HOST` (or `DB_HOST`) in `.env` to your RDS endpoint.
 
 **Run locally with Docker:**
 
 ```bash
-# Ensure .env.production exists and POSTGRES_* point to a running DB
+# Ensure .env exists and POSTGRES_* point to a running DB
 docker-compose up -d --build
 # API: http://localhost:8000/api/
 ```
@@ -247,9 +246,23 @@ docker-compose down
 docker-compose up -d --build
 ```
 
-- **First time:** Put production credentials in `.env`, run `node scripts/sync-env-production.mjs`, and ensure `POSTGRES_*` point to RDS. Ensure `ALLOWED_HOSTS` includes your API domain (e.g. `api.heymizan.ai`).
+- **First time:** Put production credentials in **`mizan-backend/.env`** (use `.env.production.template` as a checklist). Ensure `POSTGRES_*` point to RDS and `ALLOWED_HOSTS` includes your API domain (e.g. `api.heymizan.ai`).
 
 - **After `up -d --build`:** The backend container runs `migrate`, seeds subscription plans (`seed_subscription_plans`), then starts Daphne. This can take **1–2 minutes**. If the frontend shows “Network error. Please check backend server.”, wait a bit and retry.
+
+**Miya voice (WhatsApp + dashboard widget):** Voice notes are transcribed (OpenAI Whisper on Mastra Cloud; Django `/api/miya/mastra/transcribe-audio/` when deployed). Replies can be spoken via Fish Audio when `FISH_AUDIO_API_KEY` is set. **Redeploy EC2 backend** after pulling latest `dev` — production currently missing the transcribe route (404) and may be missing `MIYA_MASTRA_API_KEY` / `OPENAI_API_KEY` in the running container. Sync env then rebuild:
+
+```bash
+git pull origin dev
+docker-compose up -d --build
+# confirm celery_worker is up (async chat + voice)
+curl -s -o /dev/null -w "%{http_code}\n" -X POST https://api.heymizan.ai/api/miya/mastra/transcribe-audio/ \
+  -H "Authorization: Bearer $MIYA_MASTRA_API_KEY" -H "Content-Type: application/json" \
+  -d '{"audio_base64":"dGVzdA==","mime_type":"audio/webm"}'
+# expect 502 (bad audio) or 200 — not 404
+```
+
+**Miya tools / schedule queries:** Mastra calls Django `execute-tool` → internal agent routes. Set `MIYA_MASTRA_API_KEY` in **`mizan-backend/.env`** on EC2.
 
 **Miya dashboard “Failed to fetch”:** Mastra supervisor turns can take 60–120s. With `MIYA_AGENT_PROVIDER=mastra` and `MIYA_ASYNC_CHAT=True`, `/api/miya/chat/` returns **202** immediately and the widget polls `/api/miya/chat/status/`. Ensure **celery_worker** is running. If you still use synchronous chat, raise nginx `proxy_read_timeout` for `/api/miya/` to at least **180s**:
 
@@ -323,7 +336,7 @@ All API routes are under `/api/` (and optionally behind a reverse proxy at `http
 
 - **Firebase** — Push notifications (FCM); requires `FIREBASE_SERVICE_ACCOUNT_KEY`.
 - **WhatsApp Cloud API** — Webhook at `/api/notifications/whatsapp-webhook/`; invite and notification flows; configure `WHATSAPP_*` in env.
-- **Miya (in-Django)** — Dashboard chat and WhatsApp AI via OpenAI + Fish Audio; agent tools use `LUA_WEBHOOK_API_KEY`. External HeyLua is opt-in via `LUA_LEGACY_ENABLED=true`.
+- **Miya (Mastra)** — Dashboard chat and WhatsApp AI via Mastra Cloud; agent tools use `MIYA_MASTRA_API_KEY`.
 - **Stripe** — Billing and subscriptions; set `STRIPE_*` and webhook endpoints as needed.
 - **Square** — POS OAuth and webhooks; set `SQUARE_*` and ensure `SQUARE_WEBHOOK_NOTIFICATION_URL` matches your Square app config.
 

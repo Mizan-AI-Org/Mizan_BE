@@ -16,14 +16,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+from core.agent_auth import validate_agent_bearer
+
+
 def validate_agent_key(request):
-    auth_header = request.headers.get('Authorization')
-    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
-    if not expected_key:
-        return False, "Agent key not configured"
-    if not auth_header or auth_header != f"Bearer {expected_key}":
-        return False, "Unauthorized"
-    return True, None
+    return validate_agent_bearer(request)
 
 
 def _resolve_restaurant(request):

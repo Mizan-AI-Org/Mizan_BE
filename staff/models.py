@@ -311,7 +311,7 @@ class PerformanceMetric(models.Model):
 class StaffRequest(models.Model):
     """
     Manager-facing staff requests inbox item.
-    Created from WhatsApp/Lua agent ingestion (and can later be created from in-app staff UI).
+    Created from WhatsApp/Mastra agent ingestion (and can later be created from in-app staff UI).
     """
     STATUS_CHOICES = (
         ('PENDING', 'Pending'),

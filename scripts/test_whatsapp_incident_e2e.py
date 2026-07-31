@@ -40,12 +40,10 @@ FAKE_JPEG = bytes.fromhex(
 orig_send = notification_service.send_whatsapp_text
 orig_fetch = notification_service.fetch_whatsapp_media_url
 orig_download = notification_service.download_media_bytes
-orig_lua = notification_service.send_lua_incident
 
 notification_service.send_whatsapp_text = fake_send_whatsapp_text
 notification_service.fetch_whatsapp_media_url = lambda mid: (f"https://fake.media/{mid}", "image/jpeg")
 notification_service.download_media_bytes = lambda url: FAKE_JPEG
-notification_service.send_lua_incident = lambda *a, **kw: print("  [LUA incident notified]")
 
 
 def make_payload(msg):
@@ -153,7 +151,6 @@ assert t3.location == "Table 12"
 notification_service.send_whatsapp_text = orig_send
 notification_service.fetch_whatsapp_media_url = orig_fetch
 notification_service.download_media_bytes = orig_download
-notification_service.send_lua_incident = orig_lua
 
 print("\nCleanup: deleting test tickets + notifications...")
 for t in (t1, t2, t2b, t3):

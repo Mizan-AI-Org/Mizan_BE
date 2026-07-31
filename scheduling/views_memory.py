@@ -1,6 +1,6 @@
 """
 Agent API for WhatsApp-first memory layer (notes, lists, reminders, briefing, serendipity).
-Auth: same as scheduling.views_agent — LUA_WEBHOOK_API_KEY or user JWT.
+Auth: same as scheduling.views_agent — MIYA_MASTRA_API_KEY or user JWT.
 """
 from __future__ import annotations
 
@@ -134,7 +134,9 @@ def _reminder_payload(r: PersonalReminder) -> dict:
     attachment_href = ""
     if getattr(r, "attachment", None):
         try:
-            attachment_href = r.attachment.url or ""
+            from core.s3_storage import file_field_download_url
+
+            attachment_href = file_field_download_url(r.attachment) or r.attachment.url or ""
         except Exception:
             attachment_href = ""
     if not attachment_href:
@@ -739,7 +741,7 @@ def agent_memory_serendipity(request):
 @permission_classes([permissions.AllowAny])
 def agent_reminders_due(request):
     """
-    Internal sweep endpoint: list pending reminders due now (for Celery / Lua jobs).
+    Internal sweep endpoint: list pending reminders due now (for Celery / Mastra jobs).
     Query: within_minutes (default 5), limit (default 100).
     Optional restaurant_id to scope; omit for all-tenant sweep (agent key required).
     """

@@ -65,7 +65,6 @@ settings_ctx = override_settings(
     WHATSAPP_VERIFY_TOKEN="",
     WHATSAPP_ACTIVATION_WA_PHONE="",
     MIYA_WHATSAPP_ENABLED=True,
-    LUA_WHATSAPP_WEBHOOK_URL="",
     ALLOWED_HOSTS=["localhost", "127.0.0.1", "testserver", "app.heymizan.ai", "api.heymizan.ai"],
 )
 settings_ctx.enable()

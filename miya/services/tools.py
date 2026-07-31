@@ -10,6 +10,7 @@ import requests
 from django.conf import settings
 
 from accounts.rbac_enforce import allowed_tools_for_user
+from core.agent_auth import is_agent_bearer, primary_agent_bearer_token
 from miya.services.tenant import bind_tool_payload_to_tenant, resolve_active_tenant
 
 logger = logging.getLogger(__name__)
@@ -847,6 +848,174 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "list_compliance_documents",
+            "description": (
+                "List compliance documents (insurance, hygiene, registration, fire safety) "
+                "with expiry dates and urgency. Prefer [TENANT SNAPSHOT] when present."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "expiring_within_days": {"type": "integer"},
+                    "attention_only": {"type": "boolean"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_compliance_document",
+            "description": (
+                "Set or change a compliance document expiry date, title, or reminder window. "
+                "Use id from [TENANT SNAPSHOT] or list_compliance_documents."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "id": {"type": "string"},
+                    "document_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "expires_at": {"type": "string"},
+                    "expiry_date": {"type": "string"},
+                    "due_date": {"type": "string"},
+                    "remind_days_before": {"type": "integer"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "seed_compliance_documents",
+            "description": (
+                "Create the suggested starter compliance document set for this workspace "
+                "(registration, insurance, fire extinguisher, hygiene, health permit)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "parse_photo",
+            "description": (
+                "Classify a photo (invoice, schedule, incident, cert) and optionally "
+                "auto-create records. Use document_id from a recent upload, media_url, "
+                "or when the user just sent an image on WhatsApp."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "document_id": {"type": "string"},
+                    "media_url": {"type": "string"},
+                    "image_url": {"type": "string"},
+                    "image_base64": {"type": "string"},
+                    "auto_create": {"type": "boolean"},
+                    "note": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "parse_document",
+            "description": (
+                "Read a PDF / Word / Excel / CSV document and optionally log invoices "
+                "or import process checklists. Use document_id or media_url from uploads."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "document_id": {"type": "string"},
+                    "media_url": {"type": "string"},
+                    "document_url": {"type": "string"},
+                    "document_base64": {"type": "string"},
+                    "auto_create": {"type": "boolean"},
+                    "import_processes": {"type": "boolean"},
+                    "note": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mark_invoice_paid",
+            "description": (
+                "Mark a supplier invoice as paid. Pass invoice_id or vendor + invoice_number."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "invoice_id": {"type": "string"},
+                    "vendor": {"type": "string"},
+                    "vendor_name": {"type": "string"},
+                    "invoice_number": {"type": "string"},
+                    "method": {"type": "string"},
+                    "reference": {"type": "string"},
+                    "paid_on": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_tenant_documents",
+            "description": (
+                "List files managers/staff uploaded to Miya (PDFs, photos, certs). "
+                "Use for 'what documents do we have?' or to find a document_id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "limit": {"type": "integer"},
+                    "q": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_tenant_document",
+            "description": (
+                "Get full details and extracted text for one uploaded tenant document by id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "document_id": {"type": "string"},
+                    "id": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_business_context",
             "description": "Load workspace details and vertical playbook for sector-aware replies.",
             "parameters": {
@@ -913,6 +1082,14 @@ _ROUTE_MAP: dict[str, tuple[str, str]] = {
     "proactive_insights": ("GET", "/api/scheduling/agent/proactive-insights/"),
     "send_announcement": ("POST", "/api/notifications/agent/announcement/"),
     "get_business_context": ("GET", "/api/scheduling/agent/restaurant-details/"),
+    "list_compliance_documents": ("GET", "/api/payroll/agent/compliance-documents/"),
+    "update_compliance_document": ("PATCH", "/api/payroll/agent/compliance-documents/"),
+    "seed_compliance_documents": ("POST", "/api/payroll/agent/compliance-documents/seed/"),
+    "parse_photo": ("POST", "/api/dashboard/agent/parse-photo/"),
+    "parse_document": ("POST", "/api/dashboard/agent/parse-document/"),
+    "mark_invoice_paid": ("POST", "/api/finance/agent/invoices/mark-paid/"),
+    "list_tenant_documents": ("GET", "/api/dashboard/tenant-documents/"),
+    "get_tenant_document": ("GET", "/api/dashboard/tenant-documents/"),
 }
 
 # Tools that must use GET (query params) — kept in sync with scheduling agent views.
@@ -926,6 +1103,7 @@ _GET_METHOD_TOOLS = frozenset(
         "list_staff_requests",
         "list_inventory",
         "sales_summary",
+        "list_compliance_documents",
     }
 )
 
@@ -937,13 +1115,17 @@ def _api_base() -> str:
     return "http://127.0.0.1:8000"
 
 
+from core.agent_auth import primary_agent_bearer_token, is_agent_bearer
+
+
 def _auth_headers(access_token: str | None, session_context: dict[str, Any] | None = None) -> dict[str, str]:
     headers = {"Content-Type": "application/json"}
-    agent_key = getattr(settings, "LUA_WEBHOOK_API_KEY", "") or ""
-    if access_token:
+    if access_token and not is_agent_bearer(access_token):
         headers["Authorization"] = f"Bearer {access_token}"
-    elif agent_key:
-        headers["Authorization"] = f"Bearer {agent_key}"
+    else:
+        agent_key = primary_agent_bearer_token()
+        if agent_key:
+            headers["Authorization"] = f"Bearer {agent_key}"
 
     ctx = session_context or {}
     rid = ctx.get("restaurant_id")
@@ -1009,6 +1191,14 @@ def _enrich_agent_payload(
 
         payload = enrich_create_shift_payload(payload)
 
+    if name == "update_compliance_document":
+        if not payload.get("id") and payload.get("document_id"):
+            payload["id"] = payload["document_id"]
+        payload.setdefault("action", "update")
+
+    if name == "seed_compliance_documents":
+        payload.setdefault("action", "seed")
+
     return payload
 
 
@@ -1038,6 +1228,51 @@ def execute_tool(
             "error": "You don't have permission for this action on Mizan.",
             "required_rbac": True,
         }
+
+    if name == "list_tenant_documents":
+        from miya.models import TenantDocument
+        from miya.services.tenant_documents import serialize_tenant_document
+
+        rid = (session_context or {}).get("restaurant_id")
+        if not rid:
+            return {"success": False, "error": "restaurant_id required"}
+        limit = min(int((arguments or {}).get("limit") or 20), 40)
+        q = str((arguments or {}).get("q") or "").strip().lower()
+        qs = TenantDocument.objects.filter(restaurant_id=rid).order_by("-created_at")
+        rows = []
+        for doc in qs[: limit * 3]:
+            if q and q not in doc.title.lower() and q not in (doc.summary or "").lower():
+                continue
+            rows.append(serialize_tenant_document(doc))
+            if len(rows) >= limit:
+                break
+        return {"success": True, "count": len(rows), "documents": rows}
+
+    if name == "get_tenant_document":
+        from miya.models import TenantDocument
+        from miya.services.tenant_documents import serialize_tenant_document
+
+        rid = (session_context or {}).get("restaurant_id")
+        doc_id = str((arguments or {}).get("document_id") or (arguments or {}).get("id") or "").strip()
+        if not rid or not doc_id:
+            return {"success": False, "error": "restaurant_id and document_id required"}
+        doc = TenantDocument.objects.filter(restaurant_id=rid, id=doc_id).first()
+        if not doc:
+            return {"success": False, "error": "Document not found"}
+        return {"success": True, "document": serialize_tenant_document(doc, include_text=True)}
+
+    if name in ("parse_photo", "parse_document"):
+        from miya.services.media_tools import dispatch_parse_document, dispatch_parse_photo
+
+        hdrs = _auth_headers(access_token, session_context)
+        agent_key = primary_agent_bearer_token()
+        if agent_key:
+            hdrs = {**hdrs, "Authorization": f"Bearer {agent_key}"}
+        dispatch_fn = dispatch_parse_photo if name == "parse_photo" else dispatch_parse_document
+        status_code, body = dispatch_fn(dict(arguments or {}), session_context, headers=hdrs)
+        if isinstance(body, dict):
+            body.setdefault("success", 200 <= status_code < 300)
+        return body if isinstance(body, dict) else {"success": False, "raw": body}
 
     route = _ROUTE_MAP.get(name)
     if not route:
@@ -1126,8 +1361,7 @@ def execute_tool(
         from .tool_dispatch import dispatch_agent_request, should_dispatch_in_process
 
         if should_dispatch_in_process(_api_base()):
-            # In-process agent views authenticate via LUA key; user/tenant context is in payload.
-            agent_key = getattr(settings, "LUA_WEBHOOK_API_KEY", "") or ""
+            agent_key = primary_agent_bearer_token()
             if agent_key:
                 headers = {**headers, "Authorization": f"Bearer {agent_key}"}
             status_code, body = dispatch_agent_request(

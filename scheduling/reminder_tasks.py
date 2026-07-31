@@ -93,7 +93,7 @@ def _shift_recipients(shift):
 def send_clock_in_reminders():
     """
     Send clock-in reminders 10 minutes before shift.
-    Uses WhatsApp template (staff_clock_in / WHATSAPP_TEMPLATE_STAFF_CLOCK_IN) via Miya (Lua) or directly.
+    Uses WhatsApp template (staff_clock_in / WHATSAPP_TEMPLATE_STAFF_CLOCK_IN) via Miya (Mastra) or directly.
     Runs every 5 minutes via Celery Beat.
     """
     now = timezone.now()

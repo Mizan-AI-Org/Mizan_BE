@@ -9,6 +9,7 @@ import requests
 from django.conf import settings
 
 from core.read_through_cache import get_or_set
+from miya.services.reply_format import format_miya_reply
 from miya.cache_keys import mastra_health_key
 
 logger = logging.getLogger(__name__)
@@ -76,7 +77,11 @@ def mastra_health() -> dict[str, Any]:
 
 
 def _auth_headers() -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        # Mastra Cloud: only Django bridge calls require MIYA_MASTRA_API_KEY (Studio uses platform auth).
+        "X-Miya-Django-Bridge": "1",
+    }
     for setting_name in ("MIYA_MASTRA_API_KEY", "MIYA_MASTRA_API_TOKEN", "MASTRA_API_TOKEN"):
         token = (getattr(settings, setting_name, None) or "").strip()
         if token:
@@ -119,7 +124,8 @@ def run_miya_chat_mastra(
     messages: list[dict[str, str]] = []
 
     # Mastra manages thread memory; still send recent turns for continuity on first call.
-    for turn in history or []:
+    max_history = 8
+    for turn in (history or [])[-max_history:]:
         role = turn.get("role")
         content = (turn.get("content") or "").strip()
         if role in ("user", "assistant") and content:
@@ -130,10 +136,12 @@ def run_miya_chat_mastra(
     resource_id = str(session_context.get("user_id") or "anonymous")
     thread_id = _thread_id(session_context)
 
+    max_steps = int(getattr(settings, "MIYA_MASTRA_MAX_STEPS", 8) or 8)
+
     payload: dict[str, Any] = {
         "messages": messages,
-        "instructions": system_prompt[:12000],
-        "maxSteps": 16,
+        "instructions": system_prompt[:8000],
+        "maxSteps": max_steps,
         "memory": {
             "thread": thread_id,
             "resource": resource_id,
@@ -145,7 +153,7 @@ def run_miya_chat_mastra(
                 "accessToken": access_token,
                 "channel": session_context.get("channel") or "dashboard",
                 "role": session_context.get("role"),
-                "systemPrompt": system_prompt[:12000],
+                "systemPrompt": system_prompt[:8000],
             },
         },
     }
@@ -168,11 +176,26 @@ def run_miya_chat_mastra(
     tool_trace = _extract_tool_trace(data)
 
     return {
-        "reply": reply or "I'm here. What would you like me to help with?",
+        "reply": format_miya_reply(reply) or "I'm here. What would you like me to help with?",
         "tool_trace": tool_trace,
         "session_context": {**session_context, "thread_id": thread_id},
         "provider": "mastra",
     }
+
+
+def _text_from_message_content(content: Any) -> str:
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    if isinstance(content, list):
+        texts = [
+            p.get("text", "")
+            for p in content
+            if isinstance(p, dict) and p.get("type") == "text" and p.get("text")
+        ]
+        joined = "\n".join(t for t in texts if t).strip()
+        if joined:
+            return joined
+    return ""
 
 
 def _extract_reply(data: dict[str, Any]) -> str:
@@ -181,29 +204,109 @@ def _extract_reply(data: dict[str, Any]) -> str:
         if isinstance(val, str) and val.strip():
             return val.strip()
 
-    inner = data.get("response") or data.get("result") or data.get("data")
-    if isinstance(inner, dict):
+    for bucket_key in ("response", "result", "data"):
+        inner = data.get(bucket_key)
+        if not isinstance(inner, dict):
+            continue
         for key in ("text", "reply", "content"):
             val = inner.get(key)
             if isinstance(val, str) and val.strip():
                 return val.strip()
         messages = inner.get("messages") or inner.get("uiMessages")
-        if isinstance(messages, list) and messages:
-            last = messages[-1]
-            if isinstance(last, dict):
-                parts = last.get("content")
-                if isinstance(parts, str):
-                    return parts.strip()
-                if isinstance(parts, list):
-                    texts = [
-                        p.get("text", "")
-                        for p in parts
-                        if isinstance(p, dict) and p.get("type") == "text"
-                    ]
-                    joined = "\n".join(t for t in texts if t).strip()
-                    if joined:
-                        return joined
+        if isinstance(messages, list):
+            for msg in reversed(messages):
+                if not isinstance(msg, dict):
+                    continue
+                if msg.get("role") not in (None, "assistant"):
+                    continue
+                text = _text_from_message_content(msg.get("content"))
+                if text:
+                    return text
+
+    steps = data.get("steps")
+    if isinstance(steps, list):
+        for step in reversed(steps):
+            if not isinstance(step, dict):
+                continue
+            for key in ("text", "response", "output"):
+                val = step.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+                if isinstance(val, dict):
+                    nested = _extract_reply(val)
+                    if nested:
+                        return nested
+
+    fallback = _fallback_reply_from_tool_results(data)
+    if fallback:
+        return fallback
     return ""
+
+
+def _fallback_reply_from_tool_results(data: dict[str, Any]) -> str:
+    """When Mastra stops on tool-calls with empty text, surface tool/auth failures clearly."""
+    tool_results = data.get("toolResults") or data.get("tool_results") or []
+    if not isinstance(tool_results, list):
+        return ""
+
+    for entry in reversed(tool_results):
+        if not isinstance(entry, dict):
+            continue
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else entry
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        text = (result.get("text") or "").strip()
+        if text:
+            return text
+
+        sub_results = result.get("subAgentToolResults") or result.get("toolResults") or []
+        if isinstance(sub_results, list):
+            for sub in reversed(sub_results):
+                if not isinstance(sub, dict):
+                    continue
+                sub_payload = sub.get("payload") if isinstance(sub.get("payload"), dict) else sub
+                inner = sub_payload.get("result")
+                if isinstance(inner, dict):
+                    data_block = inner.get("data") if isinstance(inner.get("data"), dict) else inner
+                    if data_block.get("shifts"):
+                        return _format_shifts_reply(data_block.get("shifts") or [])
+                    err = (
+                        inner.get("error")
+                        or inner.get("message_for_user")
+                        or (data_block.get("error") if isinstance(data_block, dict) else None)
+                    )
+                    if err:
+                        return (
+                            f"I couldn't reach Mizan tools ({err}). "
+                            "If you're on localhost, set MIYA_AGENT_PROVIDER=django in .env "
+                            "or redeploy production with MIYA_MASTRA_API_KEY."
+                        )
+
+    if tool_results:
+        return (
+            "I tried to look that up but didn't get a final answer from Miya. "
+            "On localhost use MIYA_AGENT_PROVIDER=django; in production ensure MIYA_MASTRA_API_KEY is on the API server."
+        )
+    return ""
+
+
+def _format_shifts_reply(shifts: list[dict[str, Any]]) -> str:
+    if not shifts:
+        return "No one is scheduled for that date."
+    parts: list[str] = []
+    for shift in shifts[:12]:
+        if not isinstance(shift, dict):
+            continue
+        name = shift.get("staff_name") or shift.get("staff") or "Staff"
+        start = shift.get("start_time") or shift.get("start") or ""
+        end = shift.get("end_time") or shift.get("end") or ""
+        area = shift.get("area") or shift.get("location") or shift.get("role") or ""
+        slot = f"{start} to {end}".strip() if start or end else ""
+        detail = ", ".join(p for p in (slot, str(area).strip()) if p)
+        parts.append(f"{name} ({detail})" if detail else name)
+    body = ". ".join(parts)
+    if len(shifts) > 12:
+        body += f". Plus {len(shifts) - 12} more."
+    return format_miya_reply(f"Here's who's scheduled: {body}.")
 
 
 def _extract_tool_trace(data: dict[str, Any]) -> list[dict[str, Any]]:

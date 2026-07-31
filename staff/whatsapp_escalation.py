@@ -2,7 +2,7 @@
 Detect staff → manager escalations on WhatsApp (wages, payslip, HR docs).
 
 Used by the Django WhatsApp webhook so these land as StaffRequest rows
-before Lua/Space can invent inform_staff confirm flows.
+before Mastra/Space can invent inform_staff confirm flows.
 """
 
 from __future__ import annotations
@@ -224,7 +224,7 @@ def extract_escalation_text_from_whatsapp_message(msg: dict | None, raw_body: st
 
 
 def looks_like_staff_manager_escalation(text: str) -> bool:
-    """True when Django should own this inbound text (block Lua/Space)."""
+    """True when Django should own this inbound text (block Mastra/Space)."""
     t = _strip_you_prefix((text or "").strip())
     if classify_whatsapp_escalation(t):
         return True
@@ -242,8 +242,8 @@ def is_explicit_confirm_send_reply(text: str) -> bool:
     """
     True for \"Yes, send it\" / \"send it\" / \"confirm\" — not bare \"Yes\" / \"Ok\".
 
-    Bare affirmatives must stay with Lua (checklists). Explicit send confirms
-    are owned by Django even when session pending was never set (Lua invented
+    Bare affirmatives must stay with Mastra (checklists). Explicit send confirms
+    are owned by Django even when session pending was never set (Mastra invented
     a confirm card first).
     """
     t = _strip_you_prefix((text or "").strip())
@@ -265,7 +265,7 @@ def is_cancel_send_reply(text: str) -> bool:
 def looks_like_cash_clock_in_followup(text: str) -> bool:
     """
     User reply after Space/LLM wrongly asked for opening float before clock-in.
-    Django re-prompts Share Location instead of letting Lua invent technical errors.
+    Django re-prompts Share Location instead of letting Mastra invent technical errors.
     """
     t = _strip_you_prefix((text or "").strip())
     if not t:

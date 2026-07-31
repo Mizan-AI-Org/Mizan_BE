@@ -88,7 +88,7 @@ class DashboardTaskWhatsAppHandlerTests(TestCase):
         self.assertEqual(self.task.status, "UNABLE_TO_COMPLETE")
 
 
-@override_settings(LUA_WEBHOOK_API_KEY="test-agent-key")
+@override_settings(MIYA_MASTRA_API_KEY="test-agent-key")
 class AgentTaskStatusReassignTests(TestCase):
     def setUp(self):
         self.restaurant = Restaurant.objects.create(name="Agent Task Bistro")

@@ -1,5 +1,5 @@
 """
-Resolve (restaurant, user) for Lua/Miya agent calls with read-through caching.
+Resolve (restaurant, user) for Mastra/Miya agent calls with read-through caching.
 
 Cuts repeated RDS lookups when the agent sends the same sessionId, userId, phone, or JWT
 across multiple tool calls in one conversation.
