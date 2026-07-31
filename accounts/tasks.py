@@ -15,7 +15,7 @@ def normalize_phone(phone):
 
 @shared_task
 def send_whatsapp_invitation_task(invitation_id, phone, first_name, restaurant_name, invite_link, support_contact):
-    """Send WhatsApp staff invitation via Meta template (or legacy HeyLua when enabled)."""
+    """Send WhatsApp staff invitation via Meta template."""
     print(f"[Task] send_whatsapp_invitation_task started for {first_name} ({phone})", file=sys.stderr)
     
     # Normalize phone number: digits only, no + or spaces

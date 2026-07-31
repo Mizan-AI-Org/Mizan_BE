@@ -31,7 +31,7 @@ from django.utils.html import strip_tags
 from django.template.loader import render_to_string
 from notifications.services import notification_service
 from .models import InvitationDeliveryLog
-from .services import sync_user_to_lua_agent, UserManagementService, _find_active_user_by_phone, apply_invitation_locations
+from .services import UserManagementService, _find_active_user_by_phone, apply_invitation_locations
 from .permissions import IsAdminOrManager
 from core.permissions import IsOwnerOrSuperAdmin, IsRestaurantOwnerOrManager
 
@@ -126,12 +126,6 @@ def pin_login(request):
         # Generate JWT tokens
         refresh = RefreshToken.for_user(user)
         access_token = str(refresh.access_token)
-        
-        # Sync user context to Lua AI agent (non-blocking)
-        try:
-            sync_user_to_lua_agent(user, access_token)
-        except Exception:
-            pass  # Don't fail login if Lua sync fails
         
         return Response({
             'refresh': str(refresh),
@@ -495,12 +489,6 @@ class LoginView(APIView):
             
             refresh = RefreshToken.for_user(authenticated_user)
             access_token = str(refresh.access_token)
-            
-            # Sync user context to Lua AI agent (non-blocking)
-            try:
-                sync_user_to_lua_agent(authenticated_user, access_token)
-            except Exception:
-                pass  # Don't fail login if Lua sync fails
             
             return Response({
                 'user': UserSerializer(authenticated_user).data,
@@ -1690,10 +1678,6 @@ class StaffPhoneLoginView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
         refresh = RefreshToken.for_user(user)
-        try:
-            sync_user_to_lua_agent(user, str(refresh.access_token))
-        except Exception:
-            pass
         return Response({
             'user': CustomUserSerializer(user).data,
             'tokens': {

@@ -28,6 +28,7 @@ def run_miya_dashboard_chat(
     preferred_restaurant_id: str | None = None,
     access_token: str | None = None,
     want_voice: bool = False,
+    attachment_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run one dashboard Miya turn off the HTTP worker (Mastra can take 60–120s)."""
     from accounts.models import CustomUser
@@ -50,6 +51,7 @@ def run_miya_dashboard_chat(
             history=history,
             channel=channel,
             preferred_restaurant_id=preferred_restaurant_id,
+            attachment_ids=attachment_ids,
         )
     except RuntimeError as exc:
         logger.warning("run_miya_dashboard_chat runtime error user=%s: %s", user_id, exc)

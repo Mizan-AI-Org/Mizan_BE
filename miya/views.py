@@ -125,6 +125,7 @@ def miya_config(request):
             "asr_provider": "fish-audio" if fish_configured else "openai-whisper",
             "fish_audio_configured": fish_configured,
             "voice_input_enabled": stt_configured,
+            "attachments_enabled": True,
             "session_context": ctx,
         }
     )
@@ -150,11 +151,18 @@ def miya_chat(request):
 
     data = request.data or {}
     message = (data.get("message") or "").strip()
-    if not message:
+    attachment_ids = data.get("attachment_ids") or []
+    if not isinstance(attachment_ids, list):
+        attachment_ids = []
+    attachment_ids = [str(x).strip() for x in attachment_ids if str(x).strip()]
+
+    if not message and not attachment_ids:
         return Response(
-            {"error": "message is required"},
+            {"error": "message or attachment_ids is required"},
             status=status.HTTP_400_BAD_REQUEST,
         )
+    if not message and attachment_ids:
+        message = "Please review the document(s) I attached and remember the details."
 
     history = data.get("history") or []
     want_voice = bool(data.get("voice"))
@@ -180,6 +188,7 @@ def miya_chat(request):
             preferred_restaurant_id=preferred_restaurant_id,
             access_token=access_token,
             want_voice=want_voice,
+            attachment_ids=attachment_ids,
         )
         return Response(
             {"status": "processing", "task_id": task.id},
@@ -194,6 +203,7 @@ def miya_chat(request):
             history=history,
             channel="dashboard",
             preferred_restaurant_id=preferred_restaurant_id,
+            attachment_ids=attachment_ids,
         )
     except RuntimeError as exc:
         logger.exception("Miya chat failed")
@@ -286,6 +296,27 @@ def miya_voice_chat(request):
     auth_header = request.headers.get("Authorization", "")
     access_token = auth_header.replace("Bearer ", "").strip() if auth_header else None
 
+    if _should_async_miya_chat():
+        from .tasks import run_miya_dashboard_chat
+
+        task = run_miya_dashboard_chat.delay(
+            user_id=str(user.id),
+            user_message=transcript,
+            history=history,
+            channel="dashboard",
+            preferred_restaurant_id=preferred_restaurant_id,
+            access_token=access_token,
+            want_voice=want_voice,
+        )
+        return Response(
+            {
+                "status": "processing",
+                "task_id": task.id,
+                "transcript": transcript,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
     try:
         result = run_miya_chat(
             user=user,
@@ -348,6 +379,78 @@ def miya_voice(request):
         {
             "mime_type": mime or "audio/mpeg",
             "base64": base64.b64encode(audio_bytes).decode("ascii"),
+        }
+    )
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def miya_upload_attachment(request):
+    """
+    POST /api/miya/attachments/  (multipart)
+
+    file (required): PDF, image, or office document
+    caption (optional): short label or question about the file
+    restaurant_id (optional): tenant scope
+    """
+    user = request.user
+    if not _miya_access_ok(user):
+        return Response(
+            {"error": "Miya is not available for your role."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    upload = (
+        request.FILES.get("file")
+        or request.FILES.get("attachment")
+        or request.FILES.get("document")
+    )
+    if not upload:
+        return Response({"error": "file is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+    from miya.services.tenant import resolve_active_tenant
+    from miya.services.tenant_documents import serialize_tenant_document, store_tenant_document
+
+    preferred_restaurant_id = (
+        request.data.get("restaurant_id")
+        or getattr(user, "restaurant_id", None)
+        or (getattr(user, "restaurant", None) and str(user.restaurant.id))
+    )
+    restaurant = resolve_active_tenant(user, preferred_restaurant_id=str(preferred_restaurant_id or ""))
+    if not restaurant:
+        return Response({"error": "No workspace linked"}, status=status.HTTP_400_BAD_REQUEST)
+
+    file_bytes = upload.read()
+    caption = (request.data.get("caption") or request.data.get("message") or "").strip()
+
+    try:
+        doc = store_tenant_document(
+            restaurant=restaurant,
+            uploaded_by=user,
+            source="WIDGET",
+            file_bytes=file_bytes,
+            filename=getattr(upload, "name", "") or "upload.bin",
+            mime_type=getattr(upload, "content_type", "") or "",
+            caption=caption,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        if code == "file_too_large":
+            return Response({"error": "File too large (max 12 MB)."}, status=status.HTTP_400_BAD_REQUEST)
+        if code == "unsupported_type":
+            return Response({"error": "Unsupported file type."}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Could not save file."}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception:
+        logger.exception("Miya attachment upload failed user=%s", user.id)
+        return Response({"error": "Upload failed."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    row = serialize_tenant_document(doc)
+    return Response(
+        {
+            "success": True,
+            "document": row,
+            "document_id": row["id"],
+            "message_for_user": f"Saved {row['title']}. I will remember the details from this file.",
         }
     )
 

@@ -60,7 +60,6 @@ def _wa_payload(from_phone: str, body: str, msg_id: str | None = None) -> dict:
     WHATSAPP_VERIFY_TOKEN="",
     WHATSAPP_ACTIVATION_WA_PHONE="",
     MIYA_WHATSAPP_ENABLED=True,
-    LUA_WHATSAPP_WEBHOOK_URL="",
     PLATFORM_OPS_EMAILS=["ops-e2e@heymizan.ai"],
     ALLOWED_HOSTS=["localhost", "127.0.0.1", "testserver"],
 )

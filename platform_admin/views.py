@@ -337,6 +337,7 @@ def platform_overview(request):
             "health": {
                 "whatsapp_configured": wa_ok,
                 "miya_whatsapp_enabled": miya_wa_ok,
+                "mastra_bridge_configured": miya_wa_ok,
                 "lua_webhook_configured": miya_wa_ok,
             },
             "payments": {

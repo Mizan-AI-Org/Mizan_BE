@@ -1,6 +1,6 @@
 """
 Agent-specific views for scheduling operations.
-These endpoints use LUA_WEBHOOK_API_KEY authentication instead of JWT.
+These endpoints use MIYA_MASTRA_API_KEY authentication instead of JWT.
 """
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes, authentication_classes, parser_classes
@@ -49,26 +49,22 @@ from .recurring_views import _dates_for_frequency, _dates_for_days_of_week
 
 logger = logging.getLogger(__name__)
 
+from core.agent_auth import is_agent_bearer
+
+
+from core.agent_auth import validate_agent_bearer
+
 
 def validate_agent_key(request):
     """Validate the agent API key from Authorization header."""
-    auth_header = request.headers.get('Authorization')
-    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
-    
-    if not expected_key:
-        return False, "Agent key not configured"
-    
-    if not auth_header or auth_header != f"Bearer {expected_key}":
-        return False, "Unauthorized"
-    
-    return True, None
+    return validate_agent_bearer(request)
 
 
 def _try_jwt_restaurant_and_user(request):
     """
     If Authorization is a valid user JWT (e.g. token from dashboard metadata),
     return (restaurant, user) so agent endpoints can resolve context without
-    Lua forwarding restaurant_id in the body. Lets Miya work when Lua sends
+    Mastra forwarding restaurant_id in the body. Lets Miya work when Mastra sends
     the user's token as Bearer. If user has no direct restaurant (e.g. super admin),
     use first restaurant from restaurant_roles.
     """
@@ -78,9 +74,8 @@ def _try_jwt_restaurant_and_user(request):
     token = auth_header[7:].strip()
     if not token:
         return None, None
-    # Avoid treating the fixed API key as JWT
-    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
-    if expected_key and token == expected_key:
+    # Avoid treating the Mastra bridge key as JWT
+    if is_agent_bearer(token):
         return None, None
     try:
         from rest_framework_simplejwt.authentication import JWTAuthentication
@@ -104,7 +99,7 @@ def _try_jwt_restaurant_and_user(request):
 
 
 def _agent_payload_from_request(request):
-    """Build payload from query params and, for POST, body/metadata so Lua can send context either way."""
+    """Build payload from query params and, for POST, body/metadata so Mastra can send context either way."""
     payload = {
         k: v for k, v in _agent_params_from_request(request).items() if v is not None
     }
@@ -161,9 +156,9 @@ def _explicit_restaurant_id_from_request(request):
 def agent_list_staff(request):
     """
     List all staff members for a restaurant.
-    Used by the Lua agent to look up staff for scheduling.
+    Used by the Miya agent to look up staff for scheduling.
     Accepts GET (params in query) or POST (params in body/metadata).
-    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT> (dashboard token).
+    Auth: Bearer MIYA_MASTRA_API_KEY or Bearer <user JWT> (dashboard token).
     """
     try:
         restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
@@ -444,7 +439,7 @@ def agent_staff_count(request):
     """
     Return staff count and optional breakdown for the restaurant.
     Used by Miya to answer "how many staff do I have?" and similar queries.
-    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT> (dashboard token).
+    Auth: Bearer MIYA_MASTRA_API_KEY or Bearer <user JWT> (dashboard token).
     """
     try:
         restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
@@ -550,7 +545,7 @@ def agent_list_task_templates(request):
     """
     List task templates for the restaurant.
     Used by Miya to assign tasks/processes to shifts (e.g. "assign the opening checklist").
-    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
+    Auth: Bearer MIYA_MASTRA_API_KEY or Bearer <user JWT>.
     Query: restaurant_id (or X-Restaurant-Id header).
     """
     try:
@@ -583,7 +578,7 @@ def agent_create_task_template(request):
     """
     Create a task template for the restaurant.
     Used by Miya when a requested template doesn't exist - Miya can create the perfect template for that shift.
-    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
+    Auth: Bearer MIYA_MASTRA_API_KEY or Bearer <user JWT>.
     Payload: restaurant_id, name, description (optional), template_type (optional, default CUSTOM),
              tasks: [{title, description?, priority?}]
     """
@@ -684,7 +679,7 @@ def agent_import_process_templates(request):
     Import Processes & Tasks (TaskTemplate) from an uploaded document.
     Used by Miya when a manager attaches CSV/PDF/DOCX/XLSX and wants checklists recreated.
 
-    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
+    Auth: Bearer MIYA_MASTRA_API_KEY or Bearer <user JWT>.
     Multipart: document (file), optional note, optional skip_duplicates (default true).
     """
     from scheduling.process_template_import_service import (
@@ -834,7 +829,7 @@ def agent_attach_templates_to_shift(request):
     """
     Attach task templates to an existing shift.
     Used by Miya when manager says "add the opening checklist to Maria's shift".
-    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
+    Auth: Bearer MIYA_MASTRA_API_KEY or Bearer <user JWT>.
     Payload: shift_id, task_template_ids: [uuid1, uuid2]
     """
     try:
@@ -917,7 +912,7 @@ def agent_generate_tasks(request):
     """
     Generate standalone tasks from a task template (due date + optional assignees).
     Payload: template_id (UUID), due_date (YYYY-MM-DD), assigned_to (optional list of staff UUIDs), restaurant_id (or X-Restaurant-Id).
-    Auth: Bearer LUA_WEBHOOK_API_KEY or JWT.
+    Auth: Bearer MIYA_MASTRA_API_KEY or JWT.
     """
     try:
         restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
@@ -986,7 +981,7 @@ def agent_run_recurring(request):
     """
     Trigger recurrence generation for active task templates.
     Payload: frequency (optional: DAILY, WEEKLY, MONTHLY, etc.), date (optional YYYY-MM-DD), restaurant_id (or X-Restaurant-Id).
-    Auth: Bearer LUA_WEBHOOK_API_KEY or JWT.
+    Auth: Bearer MIYA_MASTRA_API_KEY or JWT.
     """
     try:
         restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
@@ -1078,7 +1073,7 @@ def _resolve_business_location(restaurant, location_id=None, location_name=None)
 def agent_create_shift(request):
     """
     Create a single shift for a staff member.
-    Used by the Lua agent (Miya) to schedule staff.
+    Used by the Miya agent (Miya) to schedule staff.
     For recurring shifts on specific days until an end date (e.g. "Mon–Sat until June 30"),
     use POST /api/scheduling/agent/create-recurring-shifts/ instead.
 
@@ -1102,7 +1097,7 @@ def agent_create_shift(request):
         
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
         payload = _agent_payload_from_request(request)
-        # Merge nested tool payloads so Lua/webhook can send args in body, metadata, input, or arguments
+        # Merge nested tool payloads so Mastra/webhook can send args in body, metadata, input, or arguments
         def _merged_source(*sources):
             out = {}
             for d in sources:
@@ -2446,8 +2441,8 @@ def agent_send_shift_notification(request):
 def agent_optimize_schedule(request):
     """
     Generate optimized schedule for a week.
-    Used by the Lua agent to automatically fill a week's schedule.
-    Auth: Bearer user JWT or Bearer LUA_WEBHOOK_API_KEY; context via body or X-Restaurant-Id.
+    Used by the Miya agent to automatically fill a week's schedule.
+    Auth: Bearer user JWT or Bearer MIYA_MASTRA_API_KEY; context via body or X-Restaurant-Id.
     """
     try:
         # Resolve restaurant: try JWT first (dashboard token)
@@ -2726,7 +2721,7 @@ def agent_staff_by_phone(request):
         if not is_valid:
             return Response({'success': False, 'error': error}, status=status.HTTP_401_UNAUTHORIZED)
         
-        # Accept multiple common parameter names used by WhatsApp/Lua
+        # Accept multiple common parameter names used by WhatsApp/Mastra
         phone = (
             request.query_params.get('phone')
             or request.query_params.get('phoneNumber')
@@ -3039,7 +3034,7 @@ def agent_detect_conflicts(request):
 def agent_list_shifts(request):
     """
     List assigned shifts for a restaurant.
-    Used by the Lua agent to show schedules and find who is on duty.
+    Used by the Miya agent to show schedules and find who is on duty.
     """
     try:
         restaurant = None
@@ -3166,7 +3161,7 @@ def agent_memory_list_or_save(request):
     """
     GET: List memories for the restaurant (optional filter: memory_type, key).
     POST: Save a memory (key, value, memory_type, scope optional).
-    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
+    Auth: Bearer MIYA_MASTRA_API_KEY or Bearer <user JWT>.
     """
     try:
         restaurant, _, err = _resolve_restaurant_for_agent(request)
@@ -3412,7 +3407,7 @@ def agent_proactive_insights(request):
     """
     Proactive intelligence: no-shows today, understaffed shifts, late patterns, staffing suggestions.
     Used by Miya to surface alerts and recommendations without being asked.
-    Auth: Bearer LUA_WEBHOOK_API_KEY or Bearer <user JWT>.
+    Auth: Bearer MIYA_MASTRA_API_KEY or Bearer <user JWT>.
     Query: restaurant_id (or X-Restaurant-Id), date (optional, default today).
     """
     try:
@@ -3441,7 +3436,7 @@ def agent_proactive_insights(request):
 def agent_mark_no_show(request):
     """
     Mark a shift as no-show. Used by Miya when manager confirms or from proactive flow.
-    Auth: Bearer LUA_WEBHOOK_API_KEY or JWT. Body: shift_id, restaurant_id (or X-Restaurant-Id).
+    Auth: Bearer MIYA_MASTRA_API_KEY or JWT. Body: shift_id, restaurant_id (or X-Restaurant-Id).
     """
     try:
         restaurant, _, err = _resolve_restaurant_for_agent(request)
@@ -3478,7 +3473,7 @@ def agent_mark_no_show(request):
 def agent_assign_coverage(request):
     """
     Assign a staff member to a shift (e.g. to cover a no-show). Reassigns the shift to the new staff.
-    Auth: Bearer LUA_WEBHOOK_API_KEY or JWT. Body: shift_id, staff_id, restaurant_id (or X-Restaurant-Id).
+    Auth: Bearer MIYA_MASTRA_API_KEY or JWT. Body: shift_id, staff_id, restaurant_id (or X-Restaurant-Id).
     """
     try:
         restaurant, _, err = _resolve_restaurant_for_agent(request)

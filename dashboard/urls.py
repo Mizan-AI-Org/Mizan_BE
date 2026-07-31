@@ -39,6 +39,9 @@ from .api.staff_messages import (
     StaffMessagesSendView,
 )
 from .api.meetings_reminders import MeetingsRemindersView
+from .api.my_tasks import MyTasksView
+from .api.personal_reminders_ui import PersonalReminderDetailView, PersonalRemindersUIView
+from .api.tenant_documents_ui import TenantDocumentsListView
 from .api.clock_ins import DashboardClockInsView
 from .api.category_tasks import CategoryTasksView
 from .views import mark_shift_no_show
@@ -211,6 +214,22 @@ urlpatterns = [
         'meetings-reminders/',
         MeetingsRemindersView.as_view(),
         name='dashboard-meetings-reminders',
+    ),
+    path('my-tasks/', MyTasksView.as_view(), name='dashboard-my-tasks'),
+    path(
+        'personal-reminders/',
+        PersonalRemindersUIView.as_view(),
+        name='dashboard-personal-reminders',
+    ),
+    path(
+        'personal-reminders/<uuid:pk>/',
+        PersonalReminderDetailView.as_view(),
+        name='dashboard-personal-reminder-detail',
+    ),
+    path(
+        'tenant-documents/',
+        TenantDocumentsListView.as_view(),
+        name='dashboard-tenant-documents',
     ),
     path(
         'clock-ins/',

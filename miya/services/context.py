@@ -12,6 +12,7 @@ from accounts.views_agent import (
 )
 from accounts.vertical_playbooks import vertical_playbook_for_api
 from miya.persona import MIYA_SUPER_AGENT_PERSONA, channel_runtime_note
+from miya.services.tenant_snapshot import build_tenant_snapshot_block
 from miya.services.tenant import (
     resolve_active_tenant,
     tenant_context_note,
@@ -101,10 +102,18 @@ def build_system_prompt(
         + tenant_context_note(ctx.get("tenant_memberships") or [], ctx.get("restaurant_id"))
     )
 
+    snapshot = ""
+    if ctx.get("restaurant_id"):
+        from accounts.models import Restaurant
+
+        restaurant = Restaurant.objects.filter(id=ctx["restaurant_id"]).first()
+        snapshot = build_tenant_snapshot_block(restaurant)
+
     return (
         MIYA_SUPER_AGENT_PERSONA
         + "\n"
         + channel_note
         + vertical_note
         + persistent
+        + snapshot
     )

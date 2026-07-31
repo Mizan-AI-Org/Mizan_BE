@@ -135,8 +135,12 @@ def handle_miya_whatsapp_turn(
     session_hint = dict(getattr(session, "context", None) or {})
     if getattr(user, "restaurant_id", None):
         session_hint.setdefault("restaurant_id", str(user.restaurant_id))
+    attachment_ids = session_hint.pop("attachment_ids", None)
     session_hint["thread_id"] = f"wa-{getattr(session, 'id', phone_digits)}"
     session_hint["whatsapp_session_id"] = session_hint["thread_id"]
+    if attachment_ids:
+        session.context = session_hint
+        session.save(update_fields=["context"])
 
     try:
         result = run_miya_chat(
@@ -147,6 +151,7 @@ def handle_miya_whatsapp_turn(
             channel="whatsapp",
             preferred_restaurant_id=session_hint.get("restaurant_id"),
             session_hint=session_hint,
+            attachment_ids=attachment_ids,
         )
     except RuntimeError as exc:
         logger.exception("Miya WhatsApp chat failed for %s: %s", phone_digits, exc)

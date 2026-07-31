@@ -1,8 +1,8 @@
 """
 Agent endpoints for the dashboard's Tasks & Demands surface.
 
-Exposes HTTP endpoints that Miya / the Lua agent can call (using
-`Authorization: Bearer <LUA_WEBHOOK_API_KEY>` OR a user JWT) to create a
+Exposes HTTP endpoints that Miya / the Mastra agent can call (using
+`Authorization: Bearer <MIYA_MASTRA_API_KEY>` OR a user JWT) to create a
 dashboard.Task, assign it to a staff member, and send a WhatsApp
 notification to that staff member in the same call.
 
@@ -518,7 +518,7 @@ def agent_create_dashboard_task(request):
     says e.g. "Create a task for Ahmed to clean the fryer by tomorrow
     and let him know."
 
-    Auth: `Authorization: Bearer <LUA_WEBHOOK_API_KEY>` OR a user JWT
+    Auth: `Authorization: Bearer <MIYA_MASTRA_API_KEY>` OR a user JWT
     (same convention as every other agent endpoint under /api/.../agent/).
 
     Body (all fields accept camelCase or snake_case):
@@ -808,6 +808,13 @@ def agent_create_dashboard_task(request):
             task.id, title, assignee.id, restaurant.id,
         )
 
+        try:
+            from dashboard.task_sync import broadcast_tasks_invalidate
+
+            broadcast_tasks_invalidate(restaurant, reason="task_created", task_id=str(task.id))
+        except Exception:
+            pass
+
         # In-app notification — create unconditionally so the staff member
         # sees it in their bell even if WhatsApp fails. Best-effort: if
         # this fails we still consider the task created.
@@ -1048,6 +1055,13 @@ def agent_reassign_dashboard_task(request):
         task.assigned_to = assignee
         task.save(update_fields=["assigned_to", "updated_at"])
 
+        try:
+            from dashboard.task_sync import broadcast_tasks_invalidate
+
+            broadcast_tasks_invalidate(restaurant, reason="task_reassigned", task_id=str(task.id))
+        except Exception:
+            pass
+
         assignee_display = (
             f"{(assignee.first_name or '').strip()} {(assignee.last_name or '').strip()}".strip()
             or assignee.email
@@ -1230,6 +1244,13 @@ def agent_update_dashboard_task_status(request):
                 task.completed_by = acting_user
                 update_fields.append("completed_by")
         task.save(update_fields=update_fields)
+
+        try:
+            from dashboard.task_sync import broadcast_tasks_invalidate
+
+            broadcast_tasks_invalidate(restaurant, reason="task_status", task_id=str(task.id))
+        except Exception:
+            pass
 
         # Notify managers when a task is completed or blocked (best-effort).
         if new_status in ("COMPLETED", "UNABLE_TO_COMPLETE") and old_status != new_status:

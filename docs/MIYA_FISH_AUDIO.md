@@ -62,7 +62,7 @@ MIYA_WHATSAPP_VOICE_DEFAULT=False   # set True for Fish Audio voice notes by def
 
 # Shared Mizan WhatsApp (Meta API uses PHONE_NUMBER_ID; this is the dialable number)
 WHATSAPP_ACTIVATION_WA_PHONE=212784476751
-LUA_WEBHOOK_API_KEY=                  # agent API auth for tool calls
+MIYA_MASTRA_API_KEY=                  # agent API auth for tool calls
 ```
 
 ## API
@@ -74,4 +74,4 @@ LUA_WEBHOOK_API_KEY=                  # agent API auth for tool calls
 | `GET /api/miya/config/` | JWT | Widget config |
 | WhatsApp webhook | Meta | Inbound messages → Miya |
 
-Legacy Lua swarm code: [github.com/Mizan-AI-Org/Miya](https://github.com/Mizan-AI-Org/Miya) (optional; disabled when `MIYA_WHATSAPP_ENABLED=True`).
+Legacy Mastra swarm code: [github.com/Mizan-AI-Org/Miya](https://github.com/Mizan-AI-Org/Miya) (optional; disabled when `MIYA_WHATSAPP_ENABLED=True`).

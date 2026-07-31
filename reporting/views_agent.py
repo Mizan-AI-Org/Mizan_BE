@@ -1,6 +1,6 @@
 """
 Agent-authenticated views for reporting app.
-These endpoints use the LUA_WEBHOOK_API_KEY for authentication instead of JWT.
+These endpoints use the MIYA_MASTRA_API_KEY for authentication instead of JWT.
 """
 from rest_framework import status, permissions
 from rest_framework.decorators import api_view, authentication_classes, permission_classes
@@ -15,20 +15,17 @@ from core.utils import resolve_agent_restaurant_and_user
 logger = logging.getLogger(__name__)
 
 
+from core.agent_auth import validate_agent_bearer
+
+
 def validate_agent_key(request):
     """Validate the agent API key from Authorization header."""
-    auth_header = request.headers.get('Authorization', '')
-    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', '')
-    
-    if not expected_key:
-        return False, 'Agent authentication not configured'
-    
-    if auth_header.startswith('Bearer '):
-        token = auth_header[7:]
-        if token == expected_key:
-            return True, None
-    
-    return False, 'Invalid or missing agent key'
+    ok, err = validate_agent_bearer(request)
+    if ok:
+        return True, None
+    if err == "Agent key not configured":
+        return False, "Agent authentication not configured"
+    return False, "Invalid or missing agent key"
 
 
 @api_view(['POST'])

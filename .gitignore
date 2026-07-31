@@ -55,7 +55,7 @@ node_modules/
 # Localization compiled files
 locale/**/*.mo
 
-# Lua Agent: deployed separately from https://github.com/Mizan-AI-Org/Miya
+# Miya-V2 (Mastra): deployed from ../Miya-V2 — see Miya-V2/README.md
 # (removed from this repo)
 
 # Redis

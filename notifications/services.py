@@ -22,9 +22,6 @@ from core.whatsapp_config import (
 
 logger = logging.getLogger(__name__)
 
-# Lua webhooks may take time (template lookup + WhatsApp API). Use a generous timeout.
-LUA_WEBHOOK_TIMEOUT = 25
-
 
 def _is_outside_messaging_window_error(payload) -> bool:
     """True when Meta rejects free-form send because the 24h window closed."""
@@ -163,21 +160,6 @@ class NotificationService:
                 message = f"You have been assigned a new shift on {start_str}."
                 # Staff are notified via WhatsApp only (not email) for scheduled shifts.
                 channels.append('whatsapp')
-                from core.legacy_lua import legacy_lua_user_events_configured
-
-                staff = recipient  # use passed recipient (e.g. when notifying each staff_member)
-                if legacy_lua_user_events_configured() and getattr(staff, 'phone', None):
-                    ok, _ = self.send_lua_shift_assigned(
-                        phone=staff.phone,
-                        first_name=staff.first_name or "Team Member",
-                        start_str=start_str,
-                        message=message,
-                        shift_id=getattr(shift, 'id', None),
-                    )
-                    if ok:
-                        pass  # Miya sent WhatsApp; channel already added
-                    # If Lua failed, send_custom_notification will still send via 'whatsapp' channel
-                # else: whatsapp already in channels for direct send
             elif notification_type == 'SHIFT_UPDATED':
                 title = "Shift Updated"
                 message = f"Your shift on {start_str} has been updated."
@@ -191,7 +173,7 @@ class NotificationService:
                 message = f"Reminder: You have a shift starting soon on {start_str}."
                 channels.append('whatsapp')
             elif notification_type == 'CLOCK_IN_REMINDER':
-                # Clock-in reminder: send via Miya (Lua) when configured, else direct WhatsApp template
+                # Clock-in reminder via direct WhatsApp template
                 title = "Clock-In Reminder"
                 message = f"Please clock in for your shift starting at {start_str}."
                 staff = recipient
@@ -225,75 +207,32 @@ class NotificationService:
                     role = (getattr(shift, 'role', '') or '').upper() or 'Shift'
                     notes = (getattr(shift, 'notes', '') or '').strip()
                     shift_description = f"{role}" + (f" • {notes}" if notes else "")
-                    from core.legacy_lua import legacy_lua_user_events_configured
-
-                    if legacy_lua_user_events_configured():
-                        ok, _ = self.send_lua_clock_in_reminder(
-                            phone=staff.phone,
-                            first_name=staff.first_name or "Team Member",
-                            start_time_str=start_time,
-                            minutes_until_str=minutes_from_now,
-                            location=location,
-                            shift_id=getattr(shift, 'id', None),
-                            template_name=getattr(settings, 'WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', 'staff_clock_in'),
-                            shift_description=shift_description,
-                            duration=duration_str,
-                        )
-                        if not ok:
-                            # Fallback: send direct WhatsApp if Miya webhook failed
-                            components = [
-                                {
-                                    "type": "body",
-                                    "parameters": [
-                                        {"type": "text", "text": (staff.first_name or "Team Member")[:255]},
-                                        {"type": "text", "text": str(start_time)[:20]},
-                                        {"type": "text", "text": str(minutes_from_now)[:50]},
-                                        {"type": "text", "text": str(location)[:255]},
-                                    ],
-                                }
-                            ]
-                            self.send_whatsapp_template(
-                                phone=staff.phone,
-                                template_name=getattr(settings, 'WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', 'staff_clock_in'),
-                                language_code='en_US',
-                                components=components,
-                                fallback_context={
-                                    'first_name': staff.first_name or 'Team Member',
-                                    'start_time': start_time,
-                                    'minutes_until': minutes_from_now,
-                                    'location': location,
-                                    'shift_description': shift_description,
-                                    'duration': duration_str,
-                                },
-                                fallback_body=message,
-                            )
-                    else:
-                        components = [
-                            {
-                                "type": "body",
-                                "parameters": [
-                                    {"type": "text", "text": (staff.first_name or "Team Member")[:255]},
-                                    {"type": "text", "text": str(start_time)[:20]},
-                                    {"type": "text", "text": str(minutes_from_now)[:50]},
-                                    {"type": "text", "text": str(location)[:255]},
-                                ],
-                            }
-                        ]
-                        self.send_whatsapp_template(
-                            phone=staff.phone,
-                            template_name=getattr(settings, 'WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', 'staff_clock_in'),
-                            language_code='en_US',
-                            components=components,
-                            fallback_context={
-                                'first_name': staff.first_name or 'Team Member',
-                                'start_time': start_time,
-                                'minutes_until': minutes_from_now,
-                                'location': location,
-                                'shift_description': shift_description,
-                                'duration': duration_str,
-                            },
-                            fallback_body=message,
-                        )
+                    components = [
+                        {
+                            "type": "body",
+                            "parameters": [
+                                {"type": "text", "text": (staff.first_name or "Team Member")[:255]},
+                                {"type": "text", "text": str(start_time)[:20]},
+                                {"type": "text", "text": str(minutes_from_now)[:50]},
+                                {"type": "text", "text": str(location)[:255]},
+                            ],
+                        }
+                    ]
+                    self.send_whatsapp_template(
+                        phone=staff.phone,
+                        template_name=getattr(settings, 'WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', 'staff_clock_in'),
+                        language_code='en_US',
+                        components=components,
+                        fallback_context={
+                            'first_name': staff.first_name or 'Team Member',
+                            'start_time': start_time,
+                            'minutes_until': minutes_from_now,
+                            'location': location,
+                            'shift_description': shift_description,
+                            'duration': duration_str,
+                        },
+                        fallback_body=message,
+                    )
                 # App/push get plain message in all cases
                 channels = ['app', 'push']
 
@@ -396,13 +335,13 @@ class NotificationService:
         return True, channels_used
 
     def _normalize_phone(self, phone):
-        """Normalize phone number to digits only for Lua Agent."""
+        """Normalize phone number to digits only for WhatsApp."""
         if not phone:
             return ""
         return ''.join(filter(str.isdigit, str(phone)))
 
     # ------------------------------------------------------------------------------------
-    # LUA AGENT INTEGRATION
+    # WhatsApp notifications (Mastra / in-Django Miya)
     # ------------------------------------------------------------------------------------
 
     def send_staff_invite_whatsapp(
@@ -416,19 +355,7 @@ class NotificationService:
         language='en',
         support_contact='',
     ):
-        """Staff invite via Meta template (default) or legacy HeyLua webhook (opt-in)."""
-        from core.legacy_lua import legacy_lua_enabled
-
-        if legacy_lua_enabled():
-            return self.send_lua_staff_invite(
-                invitation_token,
-                phone,
-                first_name,
-                restaurant_name,
-                invite_link,
-                role=role,
-                language=language,
-            )
+        """Staff invite via Meta WhatsApp template."""
         return self.send_whatsapp_invitation(
             phone,
             first_name,
@@ -447,187 +374,12 @@ class NotificationService:
         batch_id=None,
         language_code='en_US',
     ):
-        """Welcome message after ONE-TAP activation — Django template by default."""
-        from core.legacy_lua import legacy_lua_enabled
-
-        if legacy_lua_enabled():
-            return self.send_lua_staff_activated(
-                phone=phone,
-                first_name=first_name,
-                restaurant_name=restaurant_name,
-                user_id=user_id,
-                pin_code=pin_code,
-                batch_id=batch_id,
-            )
+        """Welcome message after ONE-TAP activation via Django WhatsApp template."""
         return self.send_staff_activated_welcome(
             phone, first_name, restaurant_name, language_code=language_code
         )
 
-    def send_lua_staff_invite(self, invitation_token, phone, first_name, restaurant_name, invite_link, role='staff', language='en'):
-        """
-        Notify Lua agent about a new staff invitation.
-        This triggers Miya to send a WhatsApp template message.
-        """
-        from core.legacy_lua import legacy_lua_enabled
-
-        if not legacy_lua_enabled():
-            return False, {"skipped": "legacy_lua_disabled"}
-        try:
-            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
-            import os
-            lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"  # user-events-production production
-            url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
-            if not url:
-                url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
-            
-            payload = {
-                "eventType": "staff_invite",
-                "staffId": f"invite_{str(invitation_token)[:8]}",
-                "staffName": first_name or "Staff Member",
-                "role": role.lower() if role else "staff",
-                "details": {
-                    "phone": self._normalize_phone(phone),
-                    "inviteLink": invite_link,
-                    "restaurantName": restaurant_name,
-                    "invitationToken": invitation_token,
-                    "language": language
-                },
-                "timestamp": timezone.now().isoformat()
-            }
-
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {lua_api_key}",
-                "Api-Key": lua_api_key,
-                "x-api-key": LUA_WEBHOOK_API_KEY,
-                "x-role": "manager"
-            }
-            
-            print(f"[LuaInvite] Calling webhook for {first_name} at {url}", file=sys.stderr)
-            print(f"[LuaInvite] Payload: {json.dumps(payload)}", file=sys.stderr)
-            resp = requests.post(url, json=payload, headers=headers, timeout=LUA_WEBHOOK_TIMEOUT)
-            print(f"[LuaInvite] Response: {resp.status_code} - {resp.text}", file=sys.stderr)
-
-            try:
-                info = resp.json()
-            except Exception:
-                info = {"error": "Invalid JSON response", "raw": resp.text}
-
-            if resp.status_code in (200, 201):
-                return True, info
-            else:
-                logger.warning(f"[LuaInvite] Failed: {resp.status_code} - {resp.text}")
-                return False, {"error": resp.text, "status_code": resp.status_code, "info": info}
-                
-        except Exception as e:
-            logger.error(f"[LuaInvite] Unexpected error: {str(e)}")
-            return False, {"error": str(e)}
-
-    def send_lua_invitation_accepted(self, invitation_token, phone, first_name, flow_data=None):
-        """
-        Notify Lua agent that an invitation was accepted.
-        This allows Miya to send a 'Welcome' message with the staff person's PIN.
-        """
-        from core.legacy_lua import legacy_lua_enabled
-
-        if not legacy_lua_enabled():
-            return False, {"skipped": "legacy_lua_disabled"}
-        try:
-            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
-            import os
-            lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"  # user-events-production
-            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
-            
-            payload = {
-                "eventType": "staff_invitation_accepted",
-                "staffId": "invitation_" + str(invitation_token)[:8],
-                "staffName": first_name,
-                "role": "server",
-                "details": {
-                    "phoneNumber": self._normalize_phone(phone),
-                    "invitationToken": invitation_token,
-                    "flowData": flow_data or {}
-                },
-                "timestamp": timezone.now().isoformat()
-            }
-            
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {lua_api_key}",
-                "Api-Key": lua_api_key,
-                "x-api-key": LUA_WEBHOOK_API_KEY,
-                "x-role": "manager"
-            }
-            
-            logger.info(f"[LuaAccept] Calling webhook for {first_name} at {url}")
-            resp = requests.post(url, json=payload, headers=headers, timeout=LUA_WEBHOOK_TIMEOUT)
-            
-            if resp.status_code in (200, 201):
-                return True, resp.json()
-            else:
-                logger.warning(f"[LuaAccept] Failed: {resp.status_code} - {resp.text}")
-                return False, {"error": resp.text, "status_code": resp.status_code}
-                
-        except Exception as e:
-            logger.error(f"[LuaAccept] Unexpected error: {str(e)}")
-            return False, {"error": str(e)}
-
-    def send_lua_staff_activated(self, phone, first_name, restaurant_name, user_id, pin_code=None, batch_id=None):
-        """
-        ONE-TAP activation handoff: notify Lua agent that a staff account was just activated.
-        Miya sends the welcome message (schedule, clock in, checklists, updates). No outbound
-        message is sent from Django before this; the first message from the user triggered activation.
-        """
-        from core.legacy_lua import legacy_lua_enabled
-
-        if not legacy_lua_enabled():
-            return False, {"skipped": "legacy_lua_disabled"}
-        try:
-            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
-            import os
-            lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"
-            url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
-            if not url:
-                url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
-            success_message = (
-                "Congratulations! Your account has been successfully activated. Welcome to the team!"
-            )
-            payload = {
-                "eventType": "staff_activated",
-                "staffId": user_id,
-                "staffName": first_name or "Staff",
-                "messageForUser": success_message,
-                "details": {
-                    "phoneNumber": self._normalize_phone(phone),
-                    "restaurantName": restaurant_name,
-                    "userId": user_id,
-                    "pinCode": pin_code,
-                    "batchId": batch_id or "",
-                    "messageForUser": success_message,
-                },
-                "timestamp": timezone.now().isoformat(),
-            }
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {lua_api_key}",
-                "Api-Key": lua_api_key,
-                "x-api-key": LUA_WEBHOOK_API_KEY,
-                "x-role": "manager",
-            }
-            logger.info(f"[LuaStaffActivated] Handoff for {first_name} at {restaurant_name}")
-            resp = requests.post(url, json=payload, headers=headers, timeout=LUA_WEBHOOK_TIMEOUT)
-            if resp.status_code in (200, 201):
-                return True, (resp.json() if resp.text else {})
-            logger.warning(f"[LuaStaffActivated] Failed: {resp.status_code} - {resp.text}")
-            return False, {"error": resp.text, "status_code": resp.status_code}
-        except Exception as e:
-            logger.error(f"[LuaStaffActivated] Unexpected error: {str(e)}")
-            return False, {"error": str(e)}
-
-    def send_lua_clock_in_reminder(
+    def send_clock_in_reminder_whatsapp(
         self,
         phone,
         first_name,
@@ -639,238 +391,37 @@ class NotificationService:
         shift_description=None,
         duration=None,
     ):
-        """
-        Notify Miya (Lua) to send the clock-in reminder shortly before a staff shift.
-        Miya sends the WhatsApp template (e.g. staff_clock_in or clock_in_reminder) so the reminder comes from the assistant.
-        shift_description and duration support 5-parameter templates ({{4}} Shift, {{5}} Duration).
-        """
-        from core.legacy_lua import legacy_lua_enabled
-
-        if not legacy_lua_enabled():
-            return False, {"skipped": "legacy_lua_disabled"}
-        try:
-            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
-            import os
-            lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"
-            url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
-            if not url:
-                url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
-            template_name = template_name or getattr(
-                settings, 'WHATSAPP_TEMPLATE_STAFF_CLOCK_IN', 'staff_clock_in'
-            )
-            payload = {
-                "eventType": "clock_in_reminder",
-                "details": {
-                    "phoneNumber": self._normalize_phone(phone),
-                    "staffFirstName": (first_name or "Team Member").strip(),
-                    "shiftStartTime": start_time_str or "",
-                    "minutesUntil": minutes_until_str or "",
-                    "location": (location or "Restaurant").strip(),
-                    "shiftId": str(shift_id) if shift_id else None,
-                    "templateName": template_name,
-                    "shiftDescription": (shift_description or "").strip() or (start_time_str or ""),
-                    "duration": (duration or "").strip() or "",
-                },
-                "timestamp": timezone.now().isoformat(),
+        """Send clock-in reminder via Meta WhatsApp template."""
+        components = [
+            {
+                "type": "body",
+                "parameters": [
+                    {"type": "text", "text": first_name or "Team Member"},
+                    {"type": "text", "text": minutes_until_str or "10 minutes"},
+                    {"type": "text", "text": location or "Restaurant"},
+                    {"type": "text", "text": shift_description or start_time_str or "your shift"},
+                    {"type": "text", "text": duration or ""},
+                ],
             }
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {lua_api_key}",
-                "Api-Key": lua_api_key,
-                "x-api-key": LUA_WEBHOOK_API_KEY,
-                "x-role": "manager",
-            }
-            logger.info(
-                f"[LuaClockInReminder] Sending clock-in reminder for {first_name} at {url}"
-            )
-            resp = requests.post(
-                url, json=payload, headers=headers, timeout=LUA_WEBHOOK_TIMEOUT
-            )
-            if resp.status_code in (200, 201):
-                return True, (resp.json() if resp.text else {})
-            logger.warning(
-                f"[LuaClockInReminder] Failed: {resp.status_code} - {resp.text}"
-            )
-            return False, {"error": resp.text, "status_code": resp.status_code}
-        except Exception as e:
-            logger.error(f"[LuaClockInReminder] Unexpected error: {str(e)}")
-            return False, {"error": str(e)}
+        ]
+        return self.send_whatsapp_template(
+            phone=phone,
+            template_name=template_name or "clock_in_reminder",
+            language_code="en_US",
+            components=components,
+            fallback_context={
+                "first_name": first_name or "Team Member",
+                "minutes_until": minutes_until_str or "10 minutes",
+                "location": location or "Restaurant",
+                "shift_description": shift_description or start_time_str or "your shift",
+                "duration": duration or "",
+            },
+        )
 
-    def send_lua_shift_assigned(
-        self,
-        phone,
-        first_name,
-        start_str,
-        message,
-        shift_id=None,
-    ):
-        """
-        Notify Miya (Lua) that a shift was assigned so Miya can send the WhatsApp message.
-        Keeps shift-assigned messages coming from the assistant when the webhook is configured.
-        """
-        from core.legacy_lua import legacy_lua_enabled
+    def notify_staff_captured_order(self, user, order, transcript_preview=None, metadata=None):
+        """No-op — orders are persisted in Django; Mastra handles conversational follow-up."""
+        return False, {"skipped": "miya_mastra"}
 
-        if not legacy_lua_enabled():
-            return False, {"skipped": "legacy_lua_disabled"}
-        try:
-            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
-            import os
-            lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"
-            url = getattr(settings, 'LUA_USER_EVENTS_WEBHOOK', None)
-            if not url:
-                url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}" if getattr(settings, 'LUA_AGENT_ID', None) else None
-            if not url:
-                return False, {"error": "No Lua user-events webhook configured"}
-            payload = {
-                "eventType": "shift_assigned",
-                "details": {
-                    "phoneNumber": self._normalize_phone(phone),
-                    "staffFirstName": (first_name or "Team Member").strip(),
-                    "shiftStartTime": start_str or "",
-                    "message": (message or "").strip(),
-                    "shiftId": str(shift_id) if shift_id else None,
-                },
-                "timestamp": timezone.now().isoformat(),
-            }
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {lua_api_key}",
-                "Api-Key": lua_api_key,
-                "x-api-key": LUA_WEBHOOK_API_KEY,
-                "x-role": "manager",
-            }
-            logger.info(f"[LuaShiftAssigned] Sending shift-assigned event for {first_name} to {url}")
-            resp = requests.post(url, json=payload, headers=headers, timeout=LUA_WEBHOOK_TIMEOUT)
-            if resp.status_code in (200, 201):
-                return True, (resp.json() if resp.text else {})
-            logger.warning(f"[LuaShiftAssigned] Failed: {resp.status_code} - {resp.text}")
-            return False, {"error": resp.text, "status_code": resp.status_code}
-        except Exception as e:
-            logger.error(f"[LuaShiftAssigned] Unexpected error: {str(e)}")
-            return False, {"error": str(e)}
-
-    def send_lua_incident(self, user, description, metadata=None):
-        """
-        Forward incident report to Lua agent for analysis.
-        This allows Miya to analyze and respond to incidents.
-        """
-        from core.legacy_lua import legacy_lua_enabled
-
-        if not legacy_lua_enabled():
-            return False, {"skipped": "legacy_lua_disabled"}
-        try:
-            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
-            import os
-            lua_api_key = getattr(settings, 'LUA_API_KEY', None) or os.environ.get('LUA_API_KEY', '')
-            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"  # user-events-production
-            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
-            
-            # Normalize role for the webhook
-            user_role = getattr(user, 'role', 'server')
-            if user_role:
-                user_role = user_role.lower()
-            else:
-                user_role = 'server'
-            
-            payload = {
-                "eventType": "incident_reported",
-                "staffId": str(user.id),
-                "staffName": user.get_full_name(),
-                "role": user_role,
-                "details": {
-                    "incidentDescription": description,
-                    "phone": self._normalize_phone(getattr(user, 'phone', None)),
-                    **(metadata or {})
-                },
-                "timestamp": timezone.now().isoformat()
-            }
-            
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {lua_api_key}",
-                "Api-Key": lua_api_key,
-                "x-api-key": LUA_WEBHOOK_API_KEY,
-                "x-role": user_role
-            }
-            
-            logger.info(f"[LuaIncident] Calling webhook for {user.get_full_name()} at {url}")
-            resp = requests.post(url, json=payload, headers=headers, timeout=LUA_WEBHOOK_TIMEOUT)
-            
-            if resp.status_code in (200, 201):
-                return True, resp.json()
-            else:
-                logger.warning(f"[LuaIncident] Failed: {resp.status_code} - {resp.text}")
-                return False, {"error": resp.text, "status_code": resp.status_code}
-                
-        except Exception as e:
-            logger.error(f"[LuaIncident] Unexpected error: {str(e)}")
-            return False, {"error": str(e)}
-
-    def send_lua_staff_captured_order(self, user, order, transcript_preview=None, metadata=None):
-        """
-        Notify Lua/Miya that a guest order was captured (voice/text parity with incidents).
-        Best-effort; does not block order persistence.
-        """
-        from core.legacy_lua import legacy_lua_enabled
-
-        if not legacy_lua_enabled():
-            return False, {"skipped": "legacy_lua_disabled"}
-        try:
-            from accounts.services import LUA_AGENT_ID, LUA_WEBHOOK_API_KEY
-            import os
-
-            lua_api_key = getattr(settings, "LUA_API_KEY", None) or os.environ.get("LUA_API_KEY", "")
-            if not lua_api_key:
-                return False, {"skipped": "no_lua_api_key"}
-            webhook_id = "77f06520-d115-41b1-865e-afe7814ce82d"
-            url = f"https://webhook.heylua.ai/{LUA_AGENT_ID}/{webhook_id}"
-
-            user_role = getattr(user, "role", "server") or "server"
-            user_role = str(user_role).lower()
-            phone_set = bool((getattr(order, "customer_phone", None) or "").strip())
-
-            payload = {
-                "eventType": "guest_order_recorded",
-                "staffId": str(user.id),
-                "staffName": user.get_full_name(),
-                "role": user_role,
-                "details": {
-                    "orderId": str(order.id),
-                    "itemsSummary": getattr(order, "items_summary", "") or "",
-                    "customerName": getattr(order, "customer_name", "") or "",
-                    "customerPhone": getattr(order, "customer_phone", "") or "",
-                    "orderType": getattr(order, "order_type", "") or "",
-                    "tableOrLocation": getattr(order, "table_or_location", "") or "",
-                    "channel": getattr(order, "channel", "") or "",
-                    "transcriptPreview": (transcript_preview or "")[:2000],
-                    # Lets Miya know the order is valid without a phone; staff can complete in app.
-                    "guestPhoneMissing": not phone_set,
-                    **(metadata or {}),
-                },
-                "timestamp": timezone.now().isoformat(),
-            }
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {lua_api_key}",
-                "Api-Key": lua_api_key,
-                "x-api-key": LUA_WEBHOOK_API_KEY,
-                "x-role": user_role,
-            }
-            logger.info("[LuaGuestOrder] Sending guest_order_recorded for order %s", order.id)
-            resp = requests.post(url, json=payload, headers=headers, timeout=LUA_WEBHOOK_TIMEOUT)
-            if resp.status_code in (200, 201):
-                return True, resp.json() if resp.text else {}
-            logger.warning("[LuaGuestOrder] Failed: %s - %s", resp.status_code, resp.text[:300])
-            return False, {"error": resp.text, "status_code": resp.status_code}
-        except Exception as e:
-            logger.error("[LuaGuestOrder] Unexpected error: %s", e)
-            return False, {"error": str(e)}
-
-    # ====================================================================================
-    # INTERNAL METHODS (UNCHANGED EXCEPT NEVER CREATE A NOTIFICATION TWICE)
-    # ====================================================================================
     def _send_in_app_notification(self, notification_data, existing_notification=None):
         """WebSocket real-time event without creating duplicate notifications."""
         try:

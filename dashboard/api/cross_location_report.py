@@ -16,7 +16,7 @@ Plus a tenant-wide ``totals`` object so Miya can answer either
 question shape ("which branch...?" / "across all my branches...?").
 
 Auth: same agent / JWT chain as every other ``/api/.../agent/`` view —
-``Authorization: Bearer <LUA_WEBHOOK_API_KEY>`` or a user JWT.
+``Authorization: Bearer <MIYA_MASTRA_API_KEY>`` or a user JWT.
 
 Period selector accepts ``today`` (default), ``week`` (7-day rolling),
 ``month`` (30-day rolling). Anything else falls back to today.

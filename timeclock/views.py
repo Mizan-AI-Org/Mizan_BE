@@ -1263,13 +1263,13 @@ def manager_clock_out(request, staff_id):
 @authentication_classes([])
 def agent_clock_in(request):
     """
-    Clock-in for Lua Agent on behalf of staff.
+    Clock-in for Mastra Agent on behalf of staff.
     Bypasses PIN requirement but requires Agent API Key.
     """
     try:
         # Validate Agent Key
         auth_header = request.headers.get('Authorization')
-        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        expected_key = getattr(settings, 'MIYA_MASTRA_API_KEY', None)
         
         if not expected_key:
             return Response({'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1335,7 +1335,7 @@ def agent_clock_in(request):
                     event_type='out',
                     latitude=None,
                     longitude=None,
-                    device_id="Lua Agent (auto)",
+                    device_id="Mastra Agent (auto)",
                     notes=(
                         "Auto clock-out: previous clock-in was left open "
                         "across days. Closed so today's clock-in can be "
@@ -1359,7 +1359,7 @@ def agent_clock_in(request):
             event_type='in',
             latitude=latitude,
             longitude=longitude,
-            device_id="Lua Agent",
+            device_id="Mastra Agent",
             notes="Clock-in via WhatsApp Agent (location verified)",
             location=matched_loc_fk,
             location_mismatch=location_mismatch,
@@ -1398,13 +1398,13 @@ def agent_clock_in_by_phone(request):
     """
     Clock-in by phone (for Miya fallback when staff say "clock in").
     Resolves staff from phone; optionally validates location against restaurant geofence.
-    Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Auth: Bearer MIYA_MASTRA_API_KEY.
     Body: phone (required), latitude (optional), longitude (optional).
     Returns: success, message_for_user (for Miya to send), staff_id, error.
     """
     try:
         auth_header = request.headers.get('Authorization')
-        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        expected_key = getattr(settings, 'MIYA_MASTRA_API_KEY', None)
         if not expected_key:
             return Response({
                 'success': False,
@@ -1420,7 +1420,7 @@ def agent_clock_in_by_phone(request):
         delivery_channel = str(
             request.data.get('delivery_channel') or request.data.get('channel') or 'whatsapp'
         ).strip().lower()
-        is_web_channel = delivery_channel in ('web', 'webchat', 'luapop', 'pop', 'dashboard') or 'web' in delivery_channel
+        is_web_channel = delivery_channel in ('web', 'webchat', 'pop', 'dashboard') or 'web' in delivery_channel
 
         from accounts.services import _find_active_user_by_phone, normalize_activation_phone_inbound
 
@@ -1624,7 +1624,7 @@ def agent_clock_in_by_phone(request):
                         event_type='out',
                         latitude=None,
                         longitude=None,
-                        device_id="Lua Agent (auto)",
+                        device_id="Mastra Agent (auto)",
                         notes=(
                             "Auto clock-out: previous clock-in was left open "
                             "across days. Closed so today's clock-in can be "
@@ -1653,7 +1653,7 @@ def agent_clock_in_by_phone(request):
                 event_type='in',
                 latitude=latitude,
                 longitude=longitude,
-                device_id="Lua Agent",
+                device_id="Mastra Agent",
                 notes="Clock-in via Miya (by phone, location verified)",
                 location=matched_loc_fk,
                 location_mismatch=location_mismatch,
@@ -1680,18 +1680,11 @@ def agent_clock_in_by_phone(request):
                 or ensure_checklist_shift_for_staff(user, create_adhoc=True)
             )
             if active_shift:
-                lua_url = (getattr(settings, "LUA_WHATSAPP_WEBHOOK_URL", None) or "").strip()
-                if lua_url:
-                    # Miya owns WhatsApp delivery — prepare progress only, no direct send.
-                    notification_service.prepare_checklist_for_miya(
-                        user, active_shift, phone_digits=clean_phone
-                    )
-                else:
-                    started = notification_service.start_conversational_checklist_after_clock_in(
-                        user, active_shift, phone_digits=clean_phone
-                    )
-                    if not started and getattr(user, 'phone', None):
-                        notification_service.start_conversational_checklist_after_clock_in(user, active_shift)
+                started = notification_service.start_conversational_checklist_after_clock_in(
+                    user, active_shift, phone_digits=clean_phone
+                )
+                if not started and getattr(user, 'phone', None):
+                    notification_service.start_conversational_checklist_after_clock_in(user, active_shift)
         except Exception as e:
             logger.warning(
                 "start_conversational_checklist_after_clock_in failed after agent_clock_in_by_phone: %s", e
@@ -1718,12 +1711,12 @@ def agent_clock_in_by_phone(request):
 def agent_clock_out_by_phone(request):
     """
     Clock-out by phone (for Miya when staff say "clock out" in chat).
-    Auth: Bearer LUA_WEBHOOK_API_KEY. Body: phone (required).
+    Auth: Bearer MIYA_MASTRA_API_KEY. Body: phone (required).
     Returns: success, message_for_user.
     """
     try:
         auth_header = request.headers.get('Authorization')
-        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        expected_key = getattr(settings, 'MIYA_MASTRA_API_KEY', None)
         if not expected_key:
             return Response({
                 'success': False,
@@ -1765,7 +1758,7 @@ def agent_clock_out_by_phone(request):
         ClockEvent.objects.create(
             staff=user,
             event_type='out',
-            device_id="Lua Agent",
+            device_id="Mastra Agent",
             notes="Clock-out via Miya (by phone)",
         )
         first_name = getattr(user, 'first_name', None) or 'Team Member'
@@ -1785,12 +1778,12 @@ def agent_clock_out_by_phone(request):
 @permission_classes([permissions.AllowAny])
 def agent_clock_out(request):
     """
-    Clock-out for Lua Agent on behalf of staff.
+    Clock-out for Mastra Agent on behalf of staff.
     """
     try:
         # Validate Agent Key
         auth_header = request.headers.get('Authorization')
-        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        expected_key = getattr(settings, 'MIYA_MASTRA_API_KEY', None)
         
         if not expected_key:
             return Response({'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1814,7 +1807,7 @@ def agent_clock_out(request):
         clock_event = ClockEvent.objects.create(
             staff=user,
             event_type='out',
-            device_id="Lua Agent",
+            device_id="Mastra Agent",
             notes="Clock-out via WhatsApp Agent"
         )
         
@@ -1834,7 +1827,7 @@ def agent_attendance_report(request):
     try:
         # Validate agent key
         auth_header = request.headers.get('Authorization')
-        expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+        expected_key = getattr(settings, 'MIYA_MASTRA_API_KEY', None)
         
         if not expected_key:
             return Response({'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -1187,7 +1187,7 @@ def agent_get_shift_checklists(request):
     """
     # Validate Agent Key (same pattern as timeclock)
     auth_header = request.headers.get('Authorization')
-    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+    expected_key = getattr(settings, 'MIYA_MASTRA_API_KEY', None)
     
     if not expected_key:
         return Response({'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1295,7 +1295,7 @@ def agent_initiate_shift_checklists(request):
     """
     # Validate Agent Key
     auth_header = request.headers.get('Authorization')
-    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+    expected_key = getattr(settings, 'MIYA_MASTRA_API_KEY', None)
     
     if not expected_key:
         return Response({'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -1387,7 +1387,7 @@ def agent_initiate_shift_checklists(request):
                 old_values={},
                 new_values={'status': 'IN_PROGRESS'},
                 ip_address=request.META.get('REMOTE_ADDR', ''),
-                user_agent='Lua Agent'
+                user_agent='Mastra Agent'
             )
         except Exception:
             pass
@@ -1431,7 +1431,7 @@ def agent_sync_checklist_response(request, execution_id):
     """
     # Validate Agent Key
     auth_header = request.headers.get('Authorization')
-    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+    expected_key = getattr(settings, 'MIYA_MASTRA_API_KEY', None)
     
     if not expected_key or auth_header != f"Bearer {expected_key}":
         return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
@@ -1460,7 +1460,7 @@ def agent_sync_checklist_response(request, execution_id):
                 old_values={},
                 new_values={'synced_items': result['synced_items']},
                 ip_address=request.META.get('REMOTE_ADDR', ''),
-                user_agent='Lua Agent'
+                user_agent='Mastra Agent'
             )
         except Exception:
             pass
@@ -1482,7 +1482,7 @@ def agent_complete_checklist_execution(request, execution_id):
     """
     # Validate Agent Key
     auth_header = request.headers.get('Authorization')
-    expected_key = getattr(settings, 'LUA_WEBHOOK_API_KEY', None)
+    expected_key = getattr(settings, 'MIYA_MASTRA_API_KEY', None)
     
     if not expected_key or auth_header != f"Bearer {expected_key}":
         return Response({'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
@@ -1509,7 +1509,7 @@ def agent_complete_checklist_execution(request, execution_id):
             old_values={},
             new_values={'status': 'COMPLETED'},
             ip_address=request.META.get('REMOTE_ADDR', ''),
-            user_agent='Lua Agent'
+            user_agent='Mastra Agent'
         )
     except Exception:
         pass

@@ -56,7 +56,7 @@ from .order_parsing import merge_parsed_order_fields
 
 def _looks_like_voice_ui_placeholder(body: str) -> bool:
     """
-    WhatsApp/Lua sometimes surfaces a voice note as text with no transcript (e.g. 'Voice message (0:13)').
+    WhatsApp/Mastra sometimes surfaces a voice note as text with no transcript (e.g. 'Voice message (0:13)').
     Forwarding that to Miya as plain text caused refusals ('use the POS'). Django handles this path instead.
     """
     if not body or not isinstance(body, str):
@@ -94,16 +94,16 @@ def _text_looks_like_shared_gps_clock_in(body: str) -> bool:
     return any(n in bl for n in needles)
 
 
-def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> bool:
-    """True if Django should process this message and Lua must not see the webhook.
+def _django_owns_whatsapp_inbound_message(msg: dict, django_owned_types: set) -> bool:
+    """True if Django should process this message and Mastra must not see the webhook.
 
     Shared GPS replies occasionally omit ``type: \"location\"`` or echo ``type: null``
     while still including a ``location`` object. Replies to the Location Request
     interactive often arrive as ``type: interactive`` / ``location_reply`` —
-    those must never be forwarded to Lua while Django skips its handlers after the
+    those must never be forwarded to Mastra while Django skips its handlers after the
     early defer guard.
 
-    Own ``location_reply`` even when coordinates are in a non-standard shape so Lua
+    Own ``location_reply`` even when coordinates are in a non-standard shape so Mastra
     never races ahead with a generic error before Django parses coords.
 
     Coordinate extraction mirrors `_extract_whatsapp_inbound_location` (runs later
@@ -133,7 +133,7 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
                 return True
 
     t = msg.get("type")
-    if t in lua_skip_types:
+    if t in django_owned_types:
         return True
     if t == "interactive" and (msg.get("interactive") or {}).get("type") == "location_reply":
         return True
@@ -164,7 +164,7 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
                 ):
                     return True
             except Exception:
-                # Fail closed: keep escalations/confirm buttons out of Lua.
+                # Fail closed: keep escalations/confirm buttons out of Mastra.
                 return True
     _, lat_raw, lon_raw = _extract_whatsapp_inbound_location(msg)
     lat_c, lon_c = _coerce_whatsapp_location_lat_lon(lat_raw, lon_raw)
@@ -175,7 +175,7 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
         if _looks_like_voice_ui_placeholder(body):
             return True
         # Clock-in / clock-out are owned by Django (Share Location + geofence).
-        # Never forward to Lua/Space — Space invents "technical issue" / "opening float".
+        # Never forward to Mastra/Space — Space invents "technical issue" / "opening float".
         if _normalize_clock_in_intent(body):
             return True
         body_l = body.strip().lower().replace("-", " ")
@@ -189,7 +189,7 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
         except Exception:
             pass
         # Staff → manager escalations (wages, payslip, absence) must land as
-        # StaffRequest on the dashboard — never Lua leave-form / confirm invents.
+        # StaffRequest on the dashboard — never Mastra leave-form / confirm invents.
         try:
             from staff.whatsapp_escalation import (
                 is_cancel_send_reply,
@@ -203,7 +203,7 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
                 return True
             # Own confirm/cancel only when explicit ("Yes, send it") or this
             # session already has a pending escalate-to-manager ask. Bare
-            # "Yes"/"Ok" stay with Lua for checklists.
+            # "Yes"/"Ok" stay with Mastra for checklists.
             if is_explicit_confirm_send_reply(body) or (
                 (is_cancel_send_reply(body) or is_confirm_send_reply(body))
                 and session_has_staff_escalation_context(
@@ -250,34 +250,10 @@ def _django_owns_whatsapp_inbound_message(msg: dict, lua_skip_types: set) -> boo
     return False
 
 
-def _payload_should_skip_lua_forward(payload: dict, lua_skip_types: set) -> bool:
-    """
-    Forward WhatsApp webhooks to Lua only when at least one message needs Miya.
-    Skip when every message is handled in Django (image/location/audio/voice media, or voice UI placeholder text).
-    """
-    try:
-        msgs = []
-        for entry in payload.get('entry', []) or []:
-            for change in entry.get('changes', []) or []:
-                for msg in (change.get('value') or {}).get('messages', []) or []:
-                    msgs.append(msg)
-        if not msgs:
-            return False
-        for msg in msgs:
-            if _django_owns_whatsapp_inbound_message(msg, lua_skip_types):
-                continue
-            return False
-        return True
-    except Exception:
-        # Fail closed: never race Lua when ownership detection itself errors.
-        logger.exception("WhatsApp Lua-skip ownership check failed — skipping Lua forward")
-        return True
-
-
 def _create_staff_captured_order_parsed(restaurant, user, text, channel):
     """
     Persist Today's Orders row with heuristic parsing (customer, phone, table, dietary, etc.)
-    and notify Lua/Miya (best-effort), matching incident voice parity.
+    and notify Miya (best-effort), matching incident voice parity.
     """
     fields = merge_parsed_order_fields(text, {})
     fields["channel"] = channel
@@ -287,9 +263,9 @@ def _create_staff_captured_order_parsed(restaurant, user, text, channel):
         **fields,
     )
     try:
-        notification_service.send_lua_staff_captured_order(user, order, (text or "")[:2000])
+        notification_service.notify_staff_captured_order(user, order, (text or "")[:2000])
     except Exception:
-        logger.exception("send_lua_staff_captured_order failed (non-fatal)")
+        logger.exception("notify_staff_captured_order failed (non-fatal)")
     return order
 
 
@@ -419,7 +395,7 @@ def _gps_clock_in_applies_to_whatsapp_message(msg, session) -> bool:
     inter = msg.get("interactive") or {}
     # Always handle native location pins and replies to "share location" in Django — even if
     # coords are missing/malformed (handler re-prompts). Otherwise ``interactive`` falls through
-    # the defer guard while idle and Lua answers with a useless generic error.
+    # the defer guard while idle and Mastra answers with a useless generic error.
     if t == "location":
         return True
     if t == "interactive" and inter.get("type") == "location_reply":
@@ -721,7 +697,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
         return True
 
     # Match ``timeclock.views.agent_clock_in_by_phone`` / Miya relay of ``message_for_user``
-    # so WhatsApp-direct GPS clock-in reads the same as the Lua tool path.
+    # so WhatsApp-direct GPS clock-in reads the same as the Mastra tool path.
     first_name = getattr(user, "first_name", None) or "Team Member"
     success_body = f"Clock-in recorded. Have a great shift {first_name}!"
     if not _safe_whatsapp_text_send(phone_digits, success_body, log_ctx="whatsapp_clock_in_gps_success"):
@@ -922,7 +898,7 @@ def _process_whatsapp_staff_escalation(
             return True
         return False
 
-    # Remember for a possible follow-up "Yes, send it" if Lua raced a confirm UI.
+    # Remember for a possible follow-up "Yes, send it" if Mastra raced a confirm UI.
     if session:
         try:
             ctx = dict(getattr(session, "context", None) or {})
@@ -1444,7 +1420,7 @@ def _notify_managers_of_whatsapp_incident(ticket):
 
 
 def _finalize_whatsapp_incident(notification_service, ticket, session, raw_body, user, phone_digits, *, incident_type: str):
-    """Attach stored photo, pin widgets, notify Lua + managers after SafetyConcernReport create."""
+    """Attach stored photo, pin widgets, notify Mastra + managers after SafetyConcernReport create."""
     try:
         from dashboard.category_routing import ensure_dashboard_widgets_for_managers
 
@@ -1462,20 +1438,6 @@ def _finalize_whatsapp_incident(notification_service, ticket, session, raw_body,
         if session:
             session.context.pop('incident_photo_media_id', None)
             session.context.pop('incident_photo_mime_type', None)
-
-    try:
-        notification_service.send_lua_incident(
-            user,
-            raw_body,
-            metadata={
-                'channel': 'whatsapp',
-                'phone': phone_digits,
-                'ticket_id': str(ticket.id),
-                'incident_type': incident_type,
-            },
-        )
-    except Exception:
-        pass
 
     _notify_managers_of_whatsapp_incident(ticket)
 
@@ -2038,31 +2000,6 @@ def _miya_whatsapp_enabled() -> bool:
     return get_miya_whatsapp_enabled()
 
 
-def _lua_owns_whatsapp_conversation() -> bool:
-    """Deprecated external Lua — never owns conversation when legacy mode is off."""
-    from core.legacy_lua import legacy_lua_enabled, legacy_lua_whatsapp_url
-
-    if not legacy_lua_enabled():
-        return False
-    if _miya_whatsapp_enabled():
-        return False
-    return bool(legacy_lua_whatsapp_url())
-
-
-def _forward_to_lua_whatsapp(payload):
-    """Fire-and-forget forward to legacy Lua (opt-in only)."""
-    from core.legacy_lua import legacy_lua_enabled, legacy_lua_whatsapp_url
-
-    lua_url = legacy_lua_whatsapp_url()
-    if not legacy_lua_enabled() or not lua_url:
-        return
-    try:
-        resp = http_requests.post(lua_url, json=payload, timeout=10)
-        logger.info("Forwarded WhatsApp payload to legacy Lua: %s %s", resp.status_code, resp.text[:200])
-    except Exception as exc:
-        logger.warning("Failed to forward WhatsApp payload to legacy Lua: %s", exc)
-
-
 @api_view(['GET', 'POST'])
 @permission_classes([permissions.AllowAny])
 def whatsapp_webhook(request):
@@ -2077,19 +2014,7 @@ def whatsapp_webhook(request):
         
         payload = request.data
 
-        from core.legacy_lua import legacy_lua_enabled, legacy_lua_whatsapp_url
-
         miya_wa = _miya_whatsapp_enabled()
-        lua_url = legacy_lua_whatsapp_url()
-        # Legacy Lua forward (opt-in only). Default: in-Django Miya + Django-owned flows.
-        _lua_skip_types = {'image', 'location', 'audio', 'voice'}
-        if legacy_lua_enabled() and lua_url and not miya_wa:
-            if not _payload_should_skip_lua_forward(payload, _lua_skip_types):
-                threading.Thread(
-                    target=_forward_to_lua_whatsapp,
-                    args=(payload,),
-                    daemon=True
-                ).start()
 
         entries = payload.get('entry', [])
         
@@ -2444,7 +2369,7 @@ def whatsapp_webhook(request):
                         
                         from accounts.utils import calculate_distance
     
-                        # When Lua/Miya handles WhatsApp, Django only processes messages
+                        # When Mastra/Miya handles WhatsApp, Django only processes messages
                         # for flows that Miya cannot handle (location sharing, photo uploads).
                         # Checklists are now fully Miya-driven (she sends tasks & records responses).
                         _active_django_states = {
@@ -2455,7 +2380,7 @@ def whatsapp_webhook(request):
                             'awaiting_order_voice',
                             'awaiting_order_clarification',
                         }
-                        # Image and location messages are always handled by Django (Lua
+                        # Image and location messages are always handled by Django (Mastra
                         # cannot download WhatsApp media). Django processes incident photos,
                         # verification photos, and clock-in locations directly.
                         _django_only_msg_types = {'image', 'location', 'audio', 'voice'}
@@ -2790,6 +2715,23 @@ def whatsapp_webhook(request):
                         # ------------------------------------------------------------------
                         # 2. HANDLE IMAGE (Verification)
                         # ------------------------------------------------------------------
+                        if msg_type in ('image', 'document'):
+                            if (
+                                miya_wa
+                                and user
+                                and session
+                                and session.state == 'idle'
+                            ):
+                                from miya.services.whatsapp_attachments import try_miya_whatsapp_attachment
+
+                                if try_miya_whatsapp_attachment(
+                                    user=user,
+                                    phone_digits=phone_digits,
+                                    msg=msg,
+                                    session=session,
+                                ):
+                                    continue
+
                         if msg_type == 'image':
                             # Dashboard Task photo proof (Miya-assigned ops tasks)
                             pending_dash_proof = (session.context or {}).get(
@@ -3365,6 +3307,27 @@ def whatsapp_webhook(request):
                             if not user:
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                                 continue
+
+                            # Miya (Django path): transcribed voice → same agent pipeline; reply with voice note.
+                            if (
+                                miya_wa
+                                and not get_miya_whatsapp_mastra_channel()
+                                and session
+                                and session.state not in _active_django_states
+                            ):
+                                from accounts.rbac_enforce import user_can_use_miya
+                                from miya.services.whatsapp import enqueue_miya_whatsapp_turn
+
+                                tstrip_miya = (transcript or '').strip()
+                                if user_can_use_miya(user) and tstrip_miya:
+                                    if enqueue_miya_whatsapp_turn(
+                                        user=user,
+                                        phone_digits=phone_digits,
+                                        message_text=tstrip_miya,
+                                        session=session,
+                                        voice_reply=True,
+                                    ):
+                                        continue
     
                             # --- Guest order (staff texted "order" / similar first, or clarification follow-up) ---
                             if session.state in ('awaiting_order_voice', 'awaiting_order_clarification'):
@@ -3703,7 +3666,7 @@ def whatsapp_webhook(request):
                         except Exception:
                             logger.exception("WhatsApp my-shifts handler failed phone=%s", phone_digits)
     
-                        # Dashboard.Task lifecycle — accept / start / done / unable (never Lua).
+                        # Dashboard.Task lifecycle — accept / start / done / unable (never Mastra).
                         try:
                             from notifications.dashboard_task_whatsapp import (
                                 handle_dashboard_task_whatsapp_reply,
@@ -3722,7 +3685,7 @@ def whatsapp_webhook(request):
                                 "WhatsApp dashboard-task handler failed phone=%s", phone_digits
                             )
     
-                        # Voice surfaced as placeholder text (no transcript): do not fall through to Lua or incident heuristics.
+                        # Voice surfaced as placeholder text (no transcript): do not fall through to Mastra or incident heuristics.
                         if _looks_like_voice_ui_placeholder(raw_body):
                             if not user:
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))

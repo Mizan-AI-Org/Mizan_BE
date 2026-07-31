@@ -477,6 +477,12 @@ class TaskStatusUpdateView(APIView):
                     task.completed_by = request.user
                     update_fields.append("completed_by")
             task.save(update_fields=update_fields)
+            try:
+                from dashboard.task_sync import broadcast_tasks_invalidate
+
+                broadcast_tasks_invalidate(restaurant, reason="widget_status", task_id=str(task.id))
+            except Exception:
+                pass
             return Response(_serialize_dashboard_task(task))
 
         # 2) scheduling.Task (TODO vocabulary)

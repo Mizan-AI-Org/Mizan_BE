@@ -17,10 +17,10 @@ from core.read_through_cache import get_or_set
 def agent_list_inventory_items(request):
     """
     GET /api/inventory/agent/items/?restaurant_id=<uuid>
-    Returns list of inventory items for the restaurant. Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Returns list of inventory items for the restaurant. Auth: Bearer MIYA_MASTRA_API_KEY.
     """
     auth_header = request.headers.get("Authorization")
-    expected_key = getattr(settings, "LUA_WEBHOOK_API_KEY", None)
+    expected_key = getattr(settings, "MIYA_MASTRA_API_KEY", None)
     if not expected_key:
         return Response({"detail": "Agent key not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     if not auth_header or auth_header != f"Bearer {expected_key}":

@@ -28,7 +28,7 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      - .env.production
+      - .env
     environment:
       - REDIS_HOST=redis
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -60,7 +60,7 @@ services:
     container_name: mizan-celery-worker
     restart: unless-stopped
     env_file:
-      - .env.production
+      - .env
     environment:
       - REDIS_HOST=redis
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -89,7 +89,7 @@ services:
     container_name: mizan-celery-beat
     restart: unless-stopped
     env_file:
-      - .env.production
+      - .env
     environment:
       - REDIS_HOST=redis
       - CELERY_BROKER_URL=redis://redis:6379/0

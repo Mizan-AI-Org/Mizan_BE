@@ -5,6 +5,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.serializers import ModelSerializer, CharField, DateField, IntegerField
 
@@ -51,6 +52,7 @@ class ComplianceDocumentViewSet(viewsets.ModelViewSet):
 
     serializer_class = ComplianceDocumentSerializer
     permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
     def get_restaurant(self):
         user = self.request.user
@@ -138,6 +140,9 @@ class ComplianceDocumentViewSet(viewsets.ModelViewSet):
             remind_days_before=remind_days,
             created_by=request.user,
         )
+        uploaded = request.FILES.get("file") or request.FILES.get("attachment")
+        if uploaded:
+            doc.file.save(uploaded.name, uploaded, save=True)
         return Response(
             {"success": True, "document": serialize_document(doc)},
             status=status.HTTP_201_CREATED,
@@ -176,6 +181,9 @@ class ComplianceDocumentViewSet(viewsets.ModelViewSet):
                 ComplianceDocument.STATUS_ARCHIVED,
             }:
                 doc.status = st
+        uploaded = request.FILES.get("file") or request.FILES.get("attachment")
+        if uploaded:
+            doc.file.save(uploaded.name, uploaded, save=False)
         doc.save()
         return Response({"success": True, "document": serialize_document(doc)})
 

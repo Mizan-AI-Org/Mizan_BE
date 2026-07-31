@@ -185,11 +185,11 @@ def agent_attendance_export(request):
     """
     Export Staff Attendance Report for HR/payroll (agent-authenticated).
     Query params: format=pdf|excel, start_date=YYYY-MM-DD, end_date=YYYY-MM-DD.
-    Header: X-Restaurant-Id or query param restaurant_id. Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Header: X-Restaurant-Id or query param restaurant_id. Auth: Bearer MIYA_MASTRA_API_KEY.
     """
     from django.conf import settings as django_settings
     auth_header = request.headers.get("Authorization")
-    expected_key = getattr(django_settings, "LUA_WEBHOOK_API_KEY", None)
+    expected_key = getattr(django_settings, "MIYA_MASTRA_API_KEY", None)
     if not expected_key:
         return Response({"detail": "Agent key not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     if not auth_header or auth_header != f"Bearer {expected_key}":

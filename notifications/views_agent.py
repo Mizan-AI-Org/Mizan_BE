@@ -13,19 +13,14 @@ logger = logging.getLogger(__name__)
 User = get_user_model()
 
 
+from core.agent_auth import validate_agent_bearer
+
+
 def _validate_agent_key(request):
-    auth_header = request.headers.get("Authorization")
-    expected = getattr(dj_settings, "LUA_WEBHOOK_API_KEY", None)
-    if not expected:
-        return False, Response(
-            {"success": False, "error": "Agent key not configured"},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        )
-    if not auth_header or auth_header != f"Bearer {expected}":
-        return False, Response(
-            {"success": False, "error": "Unauthorized"},
-            status=status.HTTP_401_UNAUTHORIZED,
-        )
+    ok, err = validate_agent_bearer(request)
+    if not ok:
+        code = status.HTTP_500_INTERNAL_SERVER_ERROR if err == "Agent key not configured" else status.HTTP_401_UNAUTHORIZED
+        return False, Response({"success": False, "error": err}, status=code)
     return True, None
 
 
@@ -34,7 +29,7 @@ def _validate_agent_key(request):
 @permission_classes([AllowAny])
 def agent_send_announcement(request):
     """
-    Miya/Lua endpoint: manager sends an announcement from the chat widget.
+    Miya endpoint: manager sends an announcement from the chat widget.
     Request body:
       - restaurant_id (required): UUID of the restaurant.
       - message (required): Announcement text (e.g. "No work tomorrow due to public holiday").
@@ -156,20 +151,15 @@ def agent_send_announcement(request):
 @permission_classes([AllowAny]) # Authenticated via Agent Key manually in the view
 def send_whatsapp_from_agent(request):
     """
-    Endpoint for Lua Agent to send WhatsApp messages/templates via the backend.
+    Endpoint for Miya agent to send WhatsApp messages/templates via the backend.
     """
     logger.info(f"Incoming WhatsApp request from agent. Type: {request.data.get('type', 'text')}")
     try:
-        # Validate Agent Key
-        auth_header = request.headers.get('Authorization')
-        expected_key = getattr(dj_settings, 'LUA_WEBHOOK_API_KEY', None)
-        
-        if not expected_key:
-             return Response({'success': False, 'error': 'Agent key not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-             
-        if not auth_header or auth_header != f"Bearer {expected_key}":
-             return Response({'success': False, 'error': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-             
+        ok, err = validate_agent_bearer(request)
+        if not ok:
+            code = status.HTTP_500_INTERNAL_SERVER_ERROR if err == "Agent key not configured" else status.HTTP_401_UNAUTHORIZED
+            return Response({'success': False, 'error': err}, status=code)
+
         phone = request.data.get('phone')
         type = request.data.get('type', 'text')
         
@@ -209,8 +199,8 @@ def send_whatsapp_from_agent(request):
 @permission_classes([AllowAny])
 def agent_create_staff_captured_order(request):
     """
-    Miya/Lua: create a staff-captured order for Today's Orders when the agent has the transcript
-    (e.g. parallel WhatsApp routing). Auth: Bearer LUA_WEBHOOK_API_KEY.
+    Miya: create a staff-captured order for Today's Orders when the agent has the transcript
+    (e.g. parallel WhatsApp routing). Auth: Bearer MIYA_MASTRA_API_KEY.
 
     Body (JSON):
       - restaurant_id (required): UUID
@@ -324,9 +314,9 @@ def agent_create_staff_captured_order(request):
             **merged,
         )
         try:
-            notification_service.send_lua_staff_captured_order(user, order, items_summary[:2000])
+            notification_service.notify_staff_captured_order(user, order, items_summary[:2000])
         except Exception:
-            logger.exception("agent_create_staff_captured_order: Lua notify failed (non-fatal)")
+            logger.exception("agent_create_staff_captured_order: Miya notify failed (non-fatal)")
     except Exception as e:
         logger.exception("agent_create_staff_captured_order: %s", e)
         return Response({"success": False, "error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -438,7 +428,7 @@ def _cl_tr(user, key, **kwargs):
 
 def agent_preview_checklist(request):
     """
-    Miya/Lua endpoint: preview OR auto-start the checklist for a staff member's shift.
+    Miya endpoint: preview OR auto-start the checklist for a staff member's shift.
     - If staff is clocked in: automatically starts the conversational checklist
       (tasks sent one-by-one via WhatsApp) so progress is recorded on the Live Board.
     - If staff is NOT clocked in: returns a preview of the tasks and asks them to clock in.
@@ -654,7 +644,7 @@ def _collect_shift_task_items(active_shift):
 @permission_classes([AllowAny])
 def agent_start_whatsapp_checklist(request):
     """
-    Miya/Lua endpoint: start (or resume) the checklist for a staff member.
+    Miya endpoint: start (or resume) the checklist for a staff member.
     Returns the task list so Miya delivers tasks conversationally — Django
     never sends WhatsApp messages for checklists.
     Body: {phone}
@@ -791,7 +781,7 @@ def agent_start_whatsapp_checklist(request):
 @permission_classes([AllowAny])
 def agent_checklist_respond(request):
     """
-    Miya/Lua endpoint: record a staff response to the current checklist task
+    Miya endpoint: record a staff response to the current checklist task
     and return the next task (or completion status).
     Body: {phone, response: "yes"|"no"|"n_a", notes?: str}
     """

@@ -88,6 +88,22 @@ def reminder_attachment_upload_path(instance, filename):
     )
 
 
+def compliance_document_upload_path(instance, filename):
+    """Compliance certificate / permit scan linked to ComplianceDocument."""
+    restaurant_id = getattr(instance, "restaurant_id", None)
+    doc_id = getattr(instance, "pk", None) or uuid.uuid4()
+    ext = _extension(filename) or ".bin"
+    return (
+        f"{_org_prefix(restaurant_id, 'compliance-documents')}/{doc_id}/"
+        f"{uuid.uuid4()}{ext}"
+    )
+
+
+def tenant_document_upload_path(instance, filename):
+    """Miya tenant knowledge documents (widget + WhatsApp)."""
+    return organization_upload_path(instance, filename, category="tenant-documents")
+
+
 def org_media_folder(restaurant_id, category: str) -> str:
     """Build a folder prefix for programmatic uploads (WhatsApp re-hosting)."""
     return _org_prefix(restaurant_id, category)

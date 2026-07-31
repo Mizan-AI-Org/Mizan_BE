@@ -149,6 +149,14 @@ TOOL_REQUIRED_ACTIONS: dict[str, str | None] = {
     "proactive_insights": "run_reports",
     "recognize_staff": "miya_full_tools",
     "send_announcement": "miya_full_tools",
+    "list_compliance_documents": "manage_compliance_docs",
+    "update_compliance_document": "manage_compliance_docs",
+    "seed_compliance_documents": "manage_compliance_docs",
+    "list_tenant_documents": None,
+    "get_tenant_document": None,
+    "parse_photo": "run_reports",
+    "parse_document": "run_reports",
+    "mark_invoice_paid": "run_reports",
 }
 
 

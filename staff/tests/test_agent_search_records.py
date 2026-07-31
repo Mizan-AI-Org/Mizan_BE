@@ -9,7 +9,7 @@ from staff.models import StaffRequest
 from staff.views_agent import agent_search_operational_records
 
 
-@override_settings(LUA_WEBHOOK_API_KEY="test-agent-key")
+@override_settings(MIYA_MASTRA_API_KEY="test-agent-key")
 class AgentSearchOperationalRecordsTests(TestCase):
     def setUp(self):
         self.factory = APIRequestFactory()

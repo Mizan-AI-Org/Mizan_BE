@@ -2,7 +2,7 @@
 WhatsApp lifecycle for ``dashboard.Task`` (Miya-assigned ops tasks).
 
 Staff can reply with accept / start / done / unable so status syncs to the
-dashboard without waiting for Lua. Managers still use Miya for create/reassign.
+dashboard without waiting for Mastra. Managers still use Miya for create/reassign.
 """
 from __future__ import annotations
 
@@ -187,6 +187,13 @@ def handle_dashboard_task_whatsapp_reply(
             task.completed_by = user
             update_fields.append("completed_by")
     task.save(update_fields=update_fields)
+
+    try:
+        from dashboard.task_sync import broadcast_tasks_invalidate
+
+        broadcast_tasks_invalidate(task.restaurant, reason="whatsapp_task_status", task_id=str(task.id))
+    except Exception:
+        pass
 
     label = intent.replace("_", " ").title()
     notification_service.send_whatsapp_text(

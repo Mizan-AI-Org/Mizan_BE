@@ -13,7 +13,7 @@ from accounts.models import CustomUser, Restaurant
 from dashboard.models import Task
 
 
-@override_settings(LUA_WEBHOOK_API_KEY="test-agent-key")
+@override_settings(MIYA_MASTRA_API_KEY="test-agent-key")
 class AgentTaskUpdateListTests(TestCase):
     def setUp(self):
         self.client = APIClient()

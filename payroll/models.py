@@ -7,6 +7,7 @@ from django.db import models
 from django.utils import timezone
 
 from accounts.models import CustomUser, Restaurant
+from core.storage_paths import compliance_document_upload_path
 
 
 class Payslip(models.Model):
@@ -149,6 +150,12 @@ class ComplianceDocument(models.Model):
     )
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default=STATUS_ACTIVE)
     last_notified_at = models.DateTimeField(null=True, blank=True)
+    file = models.FileField(
+        upload_to=compliance_document_upload_path,
+        blank=True,
+        default="",
+        help_text="Scanned certificate / permit file (PDF or image).",
+    )
     created_by = models.ForeignKey(
         CustomUser,
         on_delete=models.SET_NULL,

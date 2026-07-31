@@ -210,7 +210,7 @@ def extract_incident_location(text: str) -> str:
 def looks_like_whatsapp_incident_report(text: str) -> bool:
     """
     True when inbound WhatsApp text should be owned by Django as an incident
-    (not deferred to Lua/Space, which invents clock-in / unable-to-report replies).
+    (not deferred to Mastra/Space, which invents clock-in / unable-to-report replies).
     """
     import re
 
