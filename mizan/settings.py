@@ -494,6 +494,8 @@ LUA_WEBHOOK_API_KEY = config('LUA_WEBHOOK_API_KEY', default='')
 LUA_USER_EVENTS_WEBHOOK = config('LUA_USER_EVENTS_WEBHOOK', default='')
 LUA_USER_AUTHENTICATION_WEBHOOK = config('LUA_USER_AUTHENTICATION_WEBHOOK', default='')
 LUA_WHATSAPP_WEBHOOK_URL = config('LUA_WHATSAPP_WEBHOOK_URL', default='')
+# Legacy external HeyLua agent — default off; Mizan uses in-Django Miya + Fish Audio.
+LUA_LEGACY_ENABLED = config('LUA_LEGACY_ENABLED', default=False, cast=str_to_bool)
 
 # Fish Audio — Miya voice (https://fish.audio/app/)
 FISH_AUDIO_API_KEY = config('FISH_AUDIO_API_KEY', default='')
