@@ -95,7 +95,14 @@ def shift_reminder(task):
         phone=staff.phone,
         template_name='clock_in_reminder',
         language_code='en_US',
-        components=components
+        components=components,
+        fallback_context={
+            'first_name': first_name,
+            'minutes_until': minutes_from_now,
+            'location': str(location),
+            'shift_description': shift_details,
+            'duration': duration_text,
+        },
     )
     return 200 if ok else 400
 

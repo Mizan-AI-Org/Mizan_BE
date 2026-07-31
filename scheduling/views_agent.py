@@ -1119,6 +1119,9 @@ def agent_create_shift(request):
                         out.setdefault(k, v)
             return out
         merged = _merged_source(data, payload, data.get('metadata') or {})
+        from core.agent_params import enrich_create_shift_payload
+
+        merged = enrich_create_shift_payload(merged)
         def _get_val(d, *keys):
             for k in keys:
                 v = d.get(k)
@@ -1173,10 +1176,24 @@ def agent_create_shift(request):
         
         logger.info(f"agent_create_shift input: staff_id={staff_id}, staff_name={staff_name}, date={shift_date_str}, start={start_time_str}, end={end_time_str}")
         
-        if not all([shift_date_str, start_time_str, end_time_str]):
+        if not shift_date_str:
+            shift_date_str = timezone.localdate().isoformat()
+
+        if not all([start_time_str, end_time_str]):
             return Response({
                 'success': False,
-                'error': 'Missing required fields: staff_id or staff_name, shift_date, start_time, end_time'
+                'error': 'Missing required fields: start_time and end_time (HH:MM). For dinner use 18:00–23:00.',
+                'message_for_user': (
+                    'I need shift start and end times (for example dinner 18:00–23:00). '
+                    'Please specify the service or times and try again.'
+                ),
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if not staff_id and not staff_name:
+            return Response({
+                'success': False,
+                'error': 'Either staff_id (UUID) or staff_name is required',
+                'message_for_user': 'Which team member should I schedule? Give me their first name.',
             }, status=status.HTTP_400_BAD_REQUEST)
 
         # Resolve staff: staff_id (UUID) or staff_name (fallback for Miya when names are used)
@@ -2385,21 +2402,19 @@ def agent_send_shift_notification(request):
                 phone=phone,
                 template_name='staff_weekly_schedule',
                 language_code='en_US',
-                components=components
+                components=components,
+                fallback_context={
+                    'first_name': staff.first_name or 'Team Member',
+                    'restaurant_name': restaurant_name,
+                    'shift_date': shift_date,
+                    'start_time': start,
+                    'end_time': end,
+                    'role': role,
+                },
             )
             
             if not ok:
-                logger.warning(f"Template send failed, falling back to text: {resp}")
-                # Fallback to text message
-                fallback_message = (
-                    f"Hi {staff.first_name}! 📅\n\n"
-                    f"You've been scheduled for a shift at {restaurant_name}:\n\n"
-                    f"📆 Date: {shift_date}\n"
-                    f"⏰ Time: {start} - {end}\n"
-                    f"👔 Role: {role}\n\n"
-                    f"Please reply 'CONFIRM' to confirm your availability."
-                )
-                ok, resp = notification_service.send_whatsapp_text(phone=phone, body=fallback_message)
+                logger.warning(f"Shift notification failed (template + fallback): {resp}")
         else:
             # No shift data, just send a generic text
             message = f"Hi {staff.first_name}! You have new shift information."
