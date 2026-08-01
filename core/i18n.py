@@ -174,6 +174,40 @@ _CATALOG: dict[str, dict[str, str]] = {
             "Type: {doc_type}. Renew it so you don't miss compliance — reply to Miya when updated."
         ),
         "compliance.expiry.app": "{title} — {when_plain}",
+        # Staff escalations (wages, payslip, etc. sent to a manager)
+        "escalation.cancelled": "Okay — I cancelled that. Nothing was sent to your manager.",
+        "escalation.retry_prompt": (
+            "Please say again what you'd like me to tell your manager "
+            '(e.g. "Tell my manager I haven\'t received last week\'s wages") '
+            "and I'll pass it on right away — they'll see it under Human Resources."
+        ),
+        "escalation.ingest_failed": "I couldn't pass that to your manager just now. Please try again in a moment.",
+        # Miya WhatsApp turn handling (miya/services/whatsapp.py)
+        "miya.wa.no_account": (
+            "Please ask your manager for a Mizan invite link so I can recognize your number. "
+            "Open the link on this phone and send the prefilled activation message."
+        ),
+        "miya.wa.not_enabled": (
+            "I recognize this number, but Miya isn't enabled for this account yet. "
+            "Ask your manager to share the staff activation link "
+            "(https://api.heymizan.ai/api/go/wa) and send the prefilled message."
+        ),
+        "miya.wa.not_enabled_retry": (
+            "I recognize this number, but Miya isn't enabled for this account yet. "
+            "Ask your manager to share the staff activation link and try again."
+        ),
+        "miya.wa.temporarily_unavailable": "Miya is temporarily unavailable. Try again shortly or use the Mizan dashboard.",
+        "miya.wa.unexpected_error": "Something went wrong on my side. Please try again in a moment.",
+        "miya.wa.empty_reply": "I couldn't process that message. Please try again in a moment.",
+        "miya.wa.idle_prompt": "I'm here. What would you like me to help with?",
+        # Mastra bridge endpoints (miya/views_mastra.py)
+        "miya.mastra.no_miya_access": "Your role doesn't have Miya access for this workspace. Contact your manager.",
+        "miya.mastra.voice_unrecognized": "I couldn't understand that voice note — please try again or type your message.",
+        # WhatsApp activation (accounts/services.py)
+        "activation.welcome_back": (
+            "Welcome back {name}! Your WhatsApp is linked to {restaurant}. How can I help you today?"
+        ),
+        "activation.your_workspace": "your workspace",
     },
     "fr": {
         "time.minutes_from_now": "{n} minutes",
@@ -272,6 +306,36 @@ _CATALOG: dict[str, dict[str, str]] = {
             "Type : {doc_type}. Renouvelez-le pour rester conforme — répondez à Miya une fois mis à jour."
         ),
         "compliance.expiry.app": "{title} — {when_plain}",
+        "escalation.cancelled": "D’accord — c’est annulé. Rien n’a été envoyé à votre responsable.",
+        "escalation.retry_prompt": (
+            "Merci de reformuler ce que vous voulez dire à votre responsable "
+            "(ex. « Dis à mon responsable que je n’ai pas reçu ma paie de la semaine dernière ») "
+            "et je transmettrai tout de suite — ce sera visible sous Ressources humaines."
+        ),
+        "escalation.ingest_failed": "Je n’ai pas pu transmettre cela à votre responsable pour le moment. Réessayez dans un instant.",
+        "miya.wa.no_account": (
+            "Demandez à votre responsable un lien d’invitation Mizan pour que je reconnaisse votre numéro. "
+            "Ouvrez le lien sur ce téléphone et envoyez le message d’activation prérempli."
+        ),
+        "miya.wa.not_enabled": (
+            "Je reconnais ce numéro, mais Miya n’est pas encore activée pour ce compte. "
+            "Demandez à votre responsable de partager le lien d’activation du personnel "
+            "(https://api.heymizan.ai/api/go/wa) et envoyez le message prérempli."
+        ),
+        "miya.wa.not_enabled_retry": (
+            "Je reconnais ce numéro, mais Miya n’est pas encore activée pour ce compte. "
+            "Demandez à votre responsable de partager le lien d’activation et réessayez."
+        ),
+        "miya.wa.temporarily_unavailable": "Miya est temporairement indisponible. Réessayez sous peu ou utilisez le tableau de bord Mizan.",
+        "miya.wa.unexpected_error": "Un problème est survenu de mon côté. Réessayez dans un instant.",
+        "miya.wa.empty_reply": "Je n’ai pas pu traiter ce message. Réessayez dans un instant.",
+        "miya.wa.idle_prompt": "Je suis là. Comment puis-je vous aider ?",
+        "miya.mastra.no_miya_access": "Votre rôle n’a pas accès à Miya pour cet espace de travail. Contactez votre responsable.",
+        "miya.mastra.voice_unrecognized": "Je n’ai pas compris cette note vocale — réessayez ou tapez votre message.",
+        "activation.welcome_back": (
+            "Bon retour {name} ! Votre WhatsApp est lié à {restaurant}. Comment puis-je vous aider aujourd’hui ?"
+        ),
+        "activation.your_workspace": "votre espace de travail",
     },
     "ar": {
         "time.minutes_from_now": "{n} دقيقة",
@@ -370,6 +434,34 @@ _CATALOG: dict[str, dict[str, str]] = {
             "النوع: {doc_type}. جدّده للبقاء ملتزماً — رد على ميّا بعد التحديث."
         ),
         "compliance.expiry.app": "{title} — {when_plain}",
+        "escalation.cancelled": "تم — ألغيت ذلك. لم يُرسل أي شيء إلى مديرك.",
+        "escalation.retry_prompt": (
+            "يرجى إعادة صياغة ما تريد إخبار مديرك به "
+            "(مثال: \"أخبر مديري أنني لم أستلم راتب الأسبوع الماضي\") "
+            "وسأرسله فوراً — سيظهر تحت الموارد البشرية."
+        ),
+        "escalation.ingest_failed": "تعذّر إرسال ذلك إلى مديرك الآن. يرجى المحاولة مرة أخرى بعد قليل.",
+        "miya.wa.no_account": (
+            "يرجى طلب رابط دعوة ميزان من مديرك حتى أتمكن من التعرّف على رقمك. "
+            "افتح الرابط من هذا الهاتف وأرسل رسالة التفعيل الجاهزة."
+        ),
+        "miya.wa.not_enabled": (
+            "أتعرّف على هذا الرقم، لكن ميّا غير مفعّلة لهذا الحساب بعد. "
+            "اطلب من مديرك مشاركة رابط تفعيل الموظفين "
+            "(https://api.heymizan.ai/api/go/wa) وأرسل الرسالة الجاهزة."
+        ),
+        "miya.wa.not_enabled_retry": (
+            "أتعرّف على هذا الرقم، لكن ميّا غير مفعّلة لهذا الحساب بعد. "
+            "اطلب من مديرك مشاركة رابط التفعيل وحاول مرة أخرى."
+        ),
+        "miya.wa.temporarily_unavailable": "ميّا غير متاحة مؤقتاً. حاول مرة أخرى بعد قليل أو استخدم لوحة تحكم ميزان.",
+        "miya.wa.unexpected_error": "حدث خطأ من جهتي. يرجى المحاولة مرة أخرى بعد قليل.",
+        "miya.wa.empty_reply": "تعذّر معالجة تلك الرسالة. يرجى المحاولة مرة أخرى بعد قليل.",
+        "miya.wa.idle_prompt": "أنا هنا. كيف يمكنني مساعدتك؟",
+        "miya.mastra.no_miya_access": "دورك لا يملك صلاحية استخدام ميّا في مساحة العمل هذه. تواصل مع مديرك.",
+        "miya.mastra.voice_unrecognized": "لم أفهم تلك الملاحظة الصوتية — حاول مرة أخرى أو اكتب رسالتك.",
+        "activation.welcome_back": "مرحباً بعودتك {name}! تم ربط واتساب بحسابك في {restaurant}. كيف يمكنني مساعدتك اليوم؟",
+        "activation.your_workspace": "مساحة عملك",
     },
 }
 

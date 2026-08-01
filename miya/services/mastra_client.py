@@ -8,6 +8,7 @@ from typing import Any
 import requests
 from django.conf import settings
 
+from core.i18n import tr
 from core.read_through_cache import get_or_set
 from miya.services.reply_format import format_miya_reply
 from miya.cache_keys import mastra_health_key
@@ -153,6 +154,7 @@ def run_miya_chat_mastra(
                 "accessToken": access_token,
                 "channel": session_context.get("channel") or "dashboard",
                 "role": session_context.get("role"),
+                "language": session_context.get("language") or "en",
                 "systemPrompt": system_prompt[:8000],
             },
         },
@@ -174,9 +176,10 @@ def run_miya_chat_mastra(
 
     reply = _extract_reply(data)
     tool_trace = _extract_tool_trace(data)
+    lang = session_context.get("language") or "en"
 
     return {
-        "reply": format_miya_reply(reply) or "I'm here. What would you like me to help with?",
+        "reply": format_miya_reply(reply) or tr("miya.wa.idle_prompt", lang),
         "tool_trace": tool_trace,
         "session_context": {**session_context, "thread_id": thread_id},
         "provider": "mastra",

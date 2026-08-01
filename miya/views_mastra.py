@@ -12,6 +12,7 @@ from rest_framework.response import Response
 
 from accounts.models import CustomUser
 from accounts.rbac_enforce import user_can_use_miya
+from core.i18n import get_effective_language, normalize_language, tr
 from core.read_through_cache import get_or_set, safe_cache_get, safe_cache_set
 
 from .cache_keys import mastra_tool_key, whatsapp_context_key
@@ -157,23 +158,21 @@ def _build_whatsapp_context_payload(phone_digits: str) -> dict:
         return {
             "success": True,
             "can_use_miya": False,
-            "message_for_user": (
-                "Please ask your manager for a Mizan invite link so I can recognize your number."
-            ),
+            "message_for_user": tr("miya.wa.no_account", "en"),
         }
 
+    lang = get_effective_language(user=user)
     if not user_can_use_miya(user):
         return {
             "success": True,
             "can_use_miya": False,
-            "message_for_user": (
-                "Your role doesn't have Miya access for this workspace. Contact your manager."
-            ),
+            "message_for_user": tr("miya.mastra.no_miya_access", lang),
         }
 
     hint = whatsapp_session_hint(session, phone_digits)
     session_ctx = build_session_context(user, channel="whatsapp", session_hint=hint)
     system_prompt = build_system_prompt(user, channel="whatsapp", session_hint=hint)
+    lang = session_ctx.get("language") or lang
 
     return {
         "success": True,
@@ -183,11 +182,18 @@ def _build_whatsapp_context_payload(phone_digits: str) -> dict:
             "userId": session_ctx.get("user_id"),
             "role": session_ctx.get("role"),
             "channel": "whatsapp",
+            "language": lang,
             "systemPrompt": system_prompt[:12000],
             "phone": phone_digits,
             "userName": session_ctx.get("user_name"),
             "restaurantName": session_ctx.get("restaurant_name"),
             "businessVertical": session_ctx.get("business_vertical"),
+        },
+        # Localized fallbacks for the Mastra WhatsApp channel (no Django i18n there).
+        "ui": {
+            "voice_unrecognized": tr("miya.mastra.voice_unrecognized", lang),
+            "handler_failed": tr("miya.wa.unexpected_error", lang),
+            "temporarily_unavailable": tr("miya.wa.temporarily_unavailable", lang),
         },
     }
 
@@ -273,7 +279,7 @@ def mastra_transcribe_audio(request):
             {
                 "success": False,
                 "error": "transcription_failed",
-                "message_for_user": "I couldn't understand that voice note — please try again or type your message.",
+                "message_for_user": tr("miya.mastra.voice_unrecognized", normalize_language(language)),
             },
             status=status.HTTP_502_BAD_GATEWAY,
         )

@@ -19,6 +19,8 @@ from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.conf import settings
 
+from core.i18n import get_effective_language, tr
+
 from .models import (
     Restaurant, CustomUser, StaffProfile,
     Role, Permission, RolePermission, UserInvitation,
@@ -540,11 +542,15 @@ def try_activate_staff_on_inbound_message(phone_digits):
 
         if linked_existing:
             # Account already existed (email invite / prior staff) — confirm and continue.
+            lang = get_effective_language(user=user)
             notification_service.send_whatsapp_text(
                 full_phone,
-                f"Welcome back {first_name}! Your WhatsApp is linked to "
-                f"{restaurant_name or 'your workspace'}. "
-                f"How can I help you today?",
+                tr(
+                    "activation.welcome_back",
+                    lang,
+                    name=first_name,
+                    restaurant=restaurant_name or tr("activation.your_workspace", lang),
+                ),
             )
         else:
             notification_service.notify_staff_activated(
