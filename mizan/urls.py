@@ -22,8 +22,13 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 from rest_framework.routers import DefaultRouter
 
+from accounts.views import redirect_to_wa_activation, redirect_to_wa_chat
+
 urlpatterns = [
     path('admin/', admin.site.urls),
+    # Short public WhatsApp redirects (shareable activation / chat links)
+    path('wa', redirect_to_wa_activation, name='wa_activation_short'),
+    path('wa/hi', redirect_to_wa_chat, name='wa_chat_short'),
     path('api/analytics/', include('dashboard.urls_analytics')),
     path('api/', include('accounts.urls')),
     path('api/dashboard/', include('dashboard.urls')),

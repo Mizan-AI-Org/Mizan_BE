@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from accounts.rbac_enforce import user_can_use_miya
 from core.whatsapp_config import get_miya_whatsapp_enabled, get_miya_whatsapp_voice_default
@@ -41,11 +40,11 @@ def _save_history(session, history: list[dict[str, str]]) -> None:
     session.save(update_fields=["context"])
 
 
-def _send_miya_reply(phone_digits: str, reply: str, *, voice: bool = False) -> None:
+def _send_miya_reply(phone_digits: str, reply: str, *, voice: bool = False) -> bool:
     """Deliver Miya reply on WhatsApp — text and optional Fish Audio voice note."""
     text = (reply or "").strip()
     if not text:
-        return
+        return False
 
     if voice:
         audio_bytes, mime = notification_service.synthesize_speech_bytes(text)
@@ -57,9 +56,31 @@ def _send_miya_reply(phone_digits: str, reply: str, *, voice: bool = False) -> N
                 voice_note=True,
             )
             if sent_ok:
-                return
+                return True
 
-    notification_service.send_whatsapp_text(phone_digits, text)
+    ok, info = notification_service.send_whatsapp_text(phone_digits, text)
+    if not ok:
+        logger.error(
+            "Miya WhatsApp reply failed to send phone=%s info=%s",
+            phone_digits,
+            info,
+        )
+    return bool(ok)
+
+
+def _celery_workers_available() -> bool:
+    """True only when at least one Celery worker answers ping (avoid silent queue drops)."""
+    try:
+        from celery import current_app
+
+        inspector = current_app.control.inspect(timeout=0.8)
+        if inspector is None:
+            return False
+        ping = inspector.ping() or {}
+        return bool(ping)
+    except Exception as exc:
+        logger.warning("Celery worker ping failed: %s", exc)
+        return False
 
 
 def enqueue_miya_whatsapp_turn(
@@ -71,12 +92,24 @@ def enqueue_miya_whatsapp_turn(
     voice_reply: bool = False,
 ) -> bool:
     """
-    Queue Miya WhatsApp processing off the webhook hot path when MIYA_ASYNC_CHAT is enabled.
+    Queue Miya WhatsApp processing off the webhook hot path when MIYA_ASYNC_CHAT is enabled
+    and a Celery worker is alive. Otherwise run sync so the user always gets a reply.
     Returns True when the message was accepted for handling (sync or async).
     """
     from django.conf import settings
 
-    if not getattr(settings, "MIYA_ASYNC_CHAT", True):
+    use_async = bool(getattr(settings, "MIYA_ASYNC_CHAT", True))
+    if use_async and not user:
+        # Async task requires a user_id; unknown numbers always run sync invite reply.
+        use_async = False
+    if use_async and not _celery_workers_available():
+        logger.warning(
+            "MIYA_ASYNC_CHAT on but no Celery workers — sync fallback phone=%s",
+            phone_digits,
+        )
+        use_async = False
+
+    if not use_async:
         return handle_miya_whatsapp_turn(
             user=user,
             phone_digits=phone_digits,
@@ -128,14 +161,15 @@ def handle_miya_whatsapp_turn(
         return False
 
     if not user:
-        notification_service.send_whatsapp_text(
+        _send_miya_reply(
             phone_digits,
-            "Please ask your manager for a Mizan invite link so I can recognize your number.",
+            "Please ask your manager for a Mizan invite link so I can recognize your number. "
+            "Open the link on this phone and send the prefilled activation message.",
         )
         return True
 
     if not user_can_use_miya(user):
-        notification_service.send_whatsapp_text(
+        _send_miya_reply(
             phone_digits,
             "Your role doesn't have Miya access for this workspace. Contact your manager.",
         )
@@ -169,15 +203,22 @@ def handle_miya_whatsapp_turn(
         )
     except RuntimeError as exc:
         logger.exception("Miya WhatsApp chat failed for %s: %s", phone_digits, exc)
-        notification_service.send_whatsapp_text(
+        _send_miya_reply(
             phone_digits,
             "Miya is temporarily unavailable. Try again shortly or use the Mizan dashboard.",
+        )
+        return True
+    except Exception as exc:
+        logger.exception("Miya WhatsApp unexpected error for %s: %s", phone_digits, exc)
+        _send_miya_reply(
+            phone_digits,
+            "Something went wrong on my side. Please try again in a moment.",
         )
         return True
 
     reply = (result.get("reply") or "").strip()
     if not reply:
-        notification_service.send_whatsapp_text(
+        _send_miya_reply(
             phone_digits,
             "I couldn't process that message. Please try again in a moment.",
         )

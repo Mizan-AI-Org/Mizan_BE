@@ -10,6 +10,7 @@ from .views import (
     StaffActivationUploadView, StaffActivationInviteLinkView, StaffActivationPendingListView,
     StaffActivationPendingDeleteView,
     redirect_to_wa_activation,
+    redirect_to_wa_chat,
 )
 from .views_staff_transfer import StaffTransferLocationsView
 from .views_extended import RestaurantSettingsViewSet, StaffLocationViewSet

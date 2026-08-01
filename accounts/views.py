@@ -624,9 +624,7 @@ class InviteStaffView(APIView):
             if err:
                 return Response({'error': err}, status=status.HTTP_400_BAD_REQUEST)
             invite_link = UserManagementService.get_activation_invite_link()
-            short_link = request.build_absolute_uri('/api/go/wa')
-            if not invite_link or 'localhost' in short_link or '127.0.0.1' in short_link:
-                short_link = invite_link or ''
+            short_link = UserManagementService.get_activation_short_link(request)
             try:
                 AuditLog.create_log(
                     restaurant=request.user.restaurant,
@@ -828,9 +826,7 @@ class StaffActivationUploadView(APIView):
                 staff_list=staff_list,
             )
             full_link = results.get('invite_link', '')
-            short_link = request.build_absolute_uri('/api/go/wa')
-            if 'localhost' in short_link or '127.0.0.1' in short_link:
-                short_link = full_link
+            short_link = UserManagementService.get_activation_short_link(request) or full_link
             return Response({
                 'created': results['created'],
                 'failed': results['failed'],
@@ -852,14 +848,14 @@ class StaffActivationInviteLinkView(APIView):
     def get(self, request):
         link = UserManagementService.get_activation_invite_link()
         chat_link = UserManagementService.get_miya_whatsapp_link("Hi Miya")
-        short_link = request.build_absolute_uri('/api/go/wa')
-        if not link or 'localhost' in short_link or '127.0.0.1' in short_link:
-            short_link = link or ''
+        short_link = UserManagementService.get_activation_short_link(request)
+        chat_short = UserManagementService.get_miya_chat_short_link(request)
         return Response({
             'invite_link': link,
             'invite_short_link': short_link or link,
             # For already-active managers/staff who just need to open WhatsApp to Miya
             'chat_link': chat_link or link,
+            'chat_short_link': chat_short or chat_link or link,
         })
 
 
@@ -869,6 +865,15 @@ def redirect_to_wa_activation(request):
     if not link:
         from django.http import HttpResponse
         return HttpResponse("Activation link not configured.", status=503)
+    return HttpResponseRedirect(link)
+
+
+def redirect_to_wa_chat(request):
+    """Public redirect: short URL → WhatsApp chat with Miya (Hi Miya)."""
+    link = UserManagementService.get_miya_whatsapp_link("Hi Miya")
+    if not link:
+        from django.http import HttpResponse
+        return HttpResponse("WhatsApp chat link not configured.", status=503)
     return HttpResponseRedirect(link)
 
 

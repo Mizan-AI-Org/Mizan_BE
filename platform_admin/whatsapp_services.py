@@ -15,6 +15,7 @@ from core.whatsapp_config import (
     enrich_whatsapp_probe_failure,
     get_whatsapp_access_token,
     get_whatsapp_phone_number_id,
+    get_whatsapp_verify_token,
     is_whatsapp_platform_auth_error,
     parse_whatsapp_api_error,
     probe_whatsapp_credentials,
@@ -332,7 +333,66 @@ def run_connection_test(
             "phone_number_id",
             "business_account_id",
         ])
+    if result.get("ok"):
+        try:
+            sub = ensure_django_whatsapp_webhook_subscription()
+            result["webhook_subscription"] = sub
+        except Exception as exc:
+            logger.warning("WhatsApp webhook subscription ensure failed: %s", exc)
+            result["webhook_subscription"] = {"ok": False, "error": str(exc)[:200]}
     return result
+
+
+def ensure_django_whatsapp_webhook_subscription() -> dict[str, Any]:
+    """
+    Point Meta WABA override callback at Django's WhatsApp webhook.
+
+    Mastra's channel webhook is not used for production inbound — without this,
+    messages can show as delivered in WhatsApp while Miya never receives them.
+    """
+    waba = _waba_id()
+    token = get_whatsapp_access_token()
+    verify = get_whatsapp_verify_token()
+    base = (getattr(settings, "PUBLIC_API_BASE_URL", None) or "https://api.heymizan.ai").rstrip("/")
+    callback = f"{base}/api/notifications/whatsapp/webhook/"
+    if not waba or not token or not verify:
+        return {
+            "ok": False,
+            "error": "missing_waba_token_or_verify",
+            "callback_uri": callback,
+        }
+
+    version = _api_version()
+    url = f"https://graph.facebook.com/{version}/{waba}/subscribed_apps"
+    try:
+        resp = requests.post(
+            url,
+            headers=_graph_headers(token),
+            data={
+                "override_callback_uri": callback,
+                "verify_token": verify,
+            },
+            timeout=20,
+        )
+        data = resp.json() if resp.content else {}
+        ok = resp.status_code < 400 and bool(data.get("success", True))
+        if not ok:
+            logger.warning(
+                "WABA subscribed_apps override failed status=%s body=%s",
+                resp.status_code,
+                data,
+            )
+        else:
+            logger.info("WABA webhook override set to %s", callback)
+        return {
+            "ok": ok,
+            "callback_uri": callback,
+            "status_code": resp.status_code,
+            "response": data,
+        }
+    except Exception as exc:
+        logger.exception("WABA subscribed_apps override error")
+        return {"ok": False, "error": str(exc)[:200], "callback_uri": callback}
 
 
 def _graph_headers(token: str | None = None) -> dict[str, str]:
