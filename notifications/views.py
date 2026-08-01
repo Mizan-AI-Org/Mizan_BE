@@ -1807,7 +1807,7 @@ def health_check_notifications(request):
                 for k in ('reason', 'message', 'status_code', 'token_length')
                 if k in probe
             }
-        checks['whatsapp_webhook_configured'] = bool(getattr(dj_settings, 'WHATSAPP_WEBHOOK_VERIFY_TOKEN', None))
+        checks['whatsapp_webhook_configured'] = bool(get_whatsapp_verify_token())
         # SMS/Twilio
         checks['twilio_configured'] = bool(getattr(dj_settings, 'TWILIO_ACCOUNT_SID', None)) and bool(getattr(dj_settings, 'TWILIO_AUTH_TOKEN', None)) and bool(getattr(dj_settings, 'TWILIO_FROM_NUMBER', None))
         # Device tokens count
@@ -1990,8 +1990,11 @@ def whatsapp_webhook(request):
             token = request.query_params.get('hub.verify_token') or request.GET.get('hub.verify_token')
             challenge = request.query_params.get('hub.challenge') or request.GET.get('hub.challenge')
             from core.whatsapp_config import get_whatsapp_verify_token
-            if token and token == get_whatsapp_verify_token():
-                return Response(int(challenge))
+            from django.http import HttpResponse
+
+            if token and challenge is not None and token == get_whatsapp_verify_token():
+                # Meta requires the raw challenge string (not JSON / not int-cast).
+                return HttpResponse(str(challenge), content_type="text/plain")
             return Response(status=status.HTTP_403_FORBIDDEN)
         
         payload = request.data
@@ -2277,6 +2280,13 @@ def whatsapp_webhook(request):
                         # Normalize phone (Meta sends digits; Morocco national → 212… for DB/session consistency)
                         phone_digits = ''.join(filter(str.isdigit, str(from_phone or '')))
                         phone_digits = normalize_activation_phone_inbound(phone_digits) or phone_digits
+                        logger.info(
+                            "WhatsApp inbound wamid=%s type=%s phone=%s preview=%s",
+                            wamid,
+                            msg_type,
+                            phone_digits,
+                            (text_body or "")[:80],
+                        )
                         # ONE-TAP activation: on first inbound message, match NOT_ACTIVATED staff by phone and activate
                         activated_user = try_activate_staff_on_inbound_message(phone_digits)
                         if activated_user:
@@ -2476,9 +2486,10 @@ def whatsapp_webhook(request):
                             and not _text_is_clock_float_recovery
                             and not _automation_stop_miya
                         ):
-                            if miya_wa and user and text_body:
+                            if miya_wa and text_body:
                                 from miya.services.whatsapp import enqueue_miya_whatsapp_turn
 
+                                # Unknown numbers still get an invite/help reply from Miya.
                                 if enqueue_miya_whatsapp_turn(
                                     user=user,
                                     phone_digits=phone_digits,
@@ -4271,17 +4282,17 @@ def whatsapp_webhook(request):
                                     pass
     
                         # Final fallback — Miya handles free-form ops chat on shared Mizan number
-                        if miya_wa and user and raw_body and session:
-                            from miya.services.whatsapp import handle_miya_whatsapp_turn
+                        if miya_wa and raw_body and session:
+                            from miya.services.whatsapp import enqueue_miya_whatsapp_turn
 
-                            if handle_miya_whatsapp_turn(
+                            if enqueue_miya_whatsapp_turn(
                                 user=user,
                                 phone_digits=phone_digits,
                                 message_text=raw_body,
                                 session=session,
                             ):
                                 continue
-    
+
                         notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_failed' if 'chair' in raw_body.lower() or 'broken' in raw_body.lower() else 'unrecognized'))
     
                     except Exception:

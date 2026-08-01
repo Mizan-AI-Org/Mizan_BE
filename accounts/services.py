@@ -706,6 +706,46 @@ class UserManagementService:
         )
 
     @staticmethod
+    def _public_api_base(request=None) -> str:
+        """Prefer PUBLIC_API_BASE_URL so local managers copy a public short URL."""
+        base = (getattr(settings, "PUBLIC_API_BASE_URL", None) or "").rstrip("/")
+        if base and "localhost" not in base and "127.0.0.1" not in base:
+            return base
+        if request is not None:
+            try:
+                built = request.build_absolute_uri("/")
+                if built and "localhost" not in built and "127.0.0.1" not in built:
+                    return built.rstrip("/")
+            except Exception:
+                pass
+        return ""
+
+    @staticmethod
+    def get_activation_short_link(request=None) -> str:
+        """
+        Short shareable redirect to the activation wa.me link.
+
+        Prefer /wa when available; /api/go/wa is the stable path already on production.
+        With PUBLIC_API_BASE_URL=https://api.heymizan.ai → https://api.heymizan.ai/api/go/wa
+        """
+        base = UserManagementService._public_api_base(request)
+        if base:
+            # /api/go/wa is deployed today; /wa is the shorter alias after deploy.
+            return f"{base}/api/go/wa"
+        return UserManagementService.get_activation_invite_link() or ""
+
+    @staticmethod
+    def get_miya_chat_short_link(request=None) -> str:
+        """
+        Short shareable redirect that opens WhatsApp with 'Hi Miya'.
+        Uses /wa/hi when PUBLIC_API_BASE_URL is set (deploy the /wa routes).
+        """
+        base = UserManagementService._public_api_base(request)
+        if base:
+            return f"{base}/wa/hi"
+        return UserManagementService.get_miya_whatsapp_link("Hi Miya") or ""
+
+    @staticmethod
     def bulk_create_staff_activation_records(restaurant, invited_by=None, csv_content=None, staff_list=None):
         """
         ONE-TAP: Create staff profiles (pre-activation) from CSV or JSON. No outbound message.

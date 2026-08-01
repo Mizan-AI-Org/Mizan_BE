@@ -506,7 +506,8 @@ MASTRA_API_TOKEN = config('MASTRA_API_TOKEN', default='')
 MIYA_MASTRA_TIMEOUT = config('MIYA_MASTRA_TIMEOUT', default=120, cast=int)
 MIYA_WHATSAPP_ENABLED = config('MIYA_WHATSAPP_ENABLED', default=True, cast=str_to_bool)
 MIYA_WHATSAPP_VOICE_DEFAULT = config('MIYA_WHATSAPP_VOICE_DEFAULT', default=False, cast=str_to_bool)
-# When True, Meta webhook points at Mastra; Django skips in-process Miya WhatsApp chat turns.
+# Legacy / unused for inbound routing. Meta must call Django's WhatsApp webhook.
+# Agent brain is MIYA_AGENT_PROVIDER (django|mastra), not this flag.
 MIYA_WHATSAPP_MASTRA_CHANNEL = config('MIYA_WHATSAPP_MASTRA_CHANNEL', default=False, cast=str_to_bool)
 # Process Miya WhatsApp turns via Celery (webhook returns immediately)
 # Local dev (DEBUG): default off — Celery prefork often SIGSEGV on Python 3.14/macOS; use sync chat or `celery --pool=solo`.
