@@ -2308,11 +2308,21 @@ def whatsapp_webhook(request):
                                 phone=phone_digits,
                                 defaults={'user': activated_user, 'state': 'idle'}
                             )
-                            # Welcome template/notify is sent inside try_activate (after DB commit).
-                            continue
-                        # Resolve user: prefer session's user (restaurant-scoped); else match by phone
-                        session = WhatsAppSession.objects.filter(phone=phone_digits).first()
-                        user = session.user if (session and session.user_id) else None
+                            # Welcome is sent inside try_activate. Pure activation
+                            # phrases stop here; otherwise continue Miya with the
+                            # linked/created user (including already-existing accounts).
+                            _act_text = (text_body or "").strip().lower()
+                            _is_activation_phrase = (
+                                "ready to activate" in _act_text
+                                or "activate my account" in _act_text
+                            )
+                            if _is_activation_phrase:
+                                continue
+                            user = activated_user
+                        else:
+                            # Resolve user: prefer session's user; else match by phone
+                            session = WhatsAppSession.objects.filter(phone=phone_digits).first()
+                            user = session.user if (session and session.user_id) else None
                         if not user:
                             from accounts.services import _find_active_user_by_phone
                             user = _find_active_user_by_phone(phone_digits)

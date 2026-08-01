@@ -336,55 +336,109 @@ def get_activation_status_by_phone(phone_digits):
     return {'status': 'not_found', 'user': None, 'record': None}
 
 
+def _prefer_existing_user_for_activation(full_phone, restaurant=None):
+    """
+    If this WhatsApp number already belongs to a staff/manager account, reuse it.
+    When restaurant is set, only return a same-restaurant match (never steal
+    another tenant's user). Without restaurant, use the global phone lookup.
+    """
+    normalized = normalize_activation_phone_inbound(full_phone) or full_phone
+    email = f"wa_{normalized}@mizan.activation"
+    by_email = CustomUser.objects.filter(email=email, is_active=True).first()
+    if by_email:
+        if restaurant is None or (
+            by_email.restaurant_id
+            and str(by_email.restaurant_id) == str(restaurant.id)
+        ):
+            return by_email
+
+    if restaurant is None:
+        return _find_active_user_by_phone(normalized)
+
+    suffix = _phone_suffix(normalized, 9)
+    qs = (
+        CustomUser.objects.filter(is_active=True, restaurant_id=restaurant.id)
+        .exclude(phone__isnull=True)
+        .exclude(phone="")
+    )
+    exact = qs.filter(phone=normalized).first()
+    if exact:
+        return exact
+    for u in qs.filter(phone__endswith=suffix)[:10]:
+        stored = _normalize_phone_digits(u.phone)
+        if stored == normalized or _phone_suffix(stored, 9) == suffix:
+            return u
+    return None
+
+
 def try_activate_staff_on_inbound_message(phone_digits):
     """
     ONE-TAP activation: on first inbound WhatsApp message, match by phone and activate.
-    Phone number is the ONLY identity; no tokens. Creates CustomUser, links session, hands off to Mastra.
-    Returns CustomUser if activated, else None.
+    Phone number is the ONLY identity; no tokens.
 
-    Welcome WhatsApp sends happen *after* the DB commit so a Meta/template failure
-    cannot roll back a successful activation (which previously surfaced as
-    "Sorry, something went wrong on our side").
+    If an account already exists for this phone, link the pending record to that
+    user and continue with them (do not create a duplicate wa_* user).
+
+    Returns CustomUser if activated or linked, else None.
+    Welcome WhatsApp sends happen *after* the DB commit.
     """
     record = _find_staff_activation_record_by_phone(phone_digits)
     if not record:
+        # No pending invite — leave normal webhook user resolution / Miya path.
         return None
+    pending_record_id = record.id
+    pending_restaurant = record.restaurant
     full_phone = _normalize_phone_digits(record.phone) or phone_digits
     pin_code = None
     user = None
     restaurant_name = ""
     first_name = "Staff"
+    linked_existing = False
     try:
         with transaction.atomic():
             record = StaffActivationRecord.objects.select_for_update().filter(
-                id=record.id, status=StaffActivationRecord.STATUS_NOT_ACTIVATED
+                id=pending_record_id, status=StaffActivationRecord.STATUS_NOT_ACTIVATED
             ).first()
             if not record:
-                return None  # Already activated by another process
+                # Race: already activated — resume the linked / phone-matched user.
+                done = (
+                    StaffActivationRecord.objects.filter(id=pending_record_id)
+                    .select_related("user", "restaurant")
+                    .first()
+                )
+                if done and done.user_id:
+                    return done.user
+                return (
+                    _prefer_existing_user_for_activation(
+                        full_phone, restaurant=pending_restaurant
+                    )
+                    or _find_active_user_by_phone(full_phone)
+                )
 
             email = f"wa_{full_phone}@mizan.activation"
-            # Prefer an existing account on this phone (email invite / prior WA user)
-            # over creating a duplicate wa_* user.
-            existing = CustomUser.objects.filter(email=email).first()
-            if not existing:
-                existing = _find_active_user_by_phone(full_phone)
-                if existing and getattr(record, "restaurant_id", None):
-                    if (
-                        existing.restaurant_id
-                        and str(existing.restaurant_id) != str(record.restaurant_id)
-                    ):
-                        # Same phone on another tenant — do not steal that user.
-                        existing = None
+            existing = _prefer_existing_user_for_activation(
+                full_phone, restaurant=record.restaurant
+            )
             if existing:
+                updates = []
                 if not existing.phone:
                     existing.phone = full_phone
-                    existing.save(update_fields=["phone"])
+                    updates.append("phone")
+                if not existing.is_active:
+                    existing.is_active = True
+                    updates.append("is_active")
+                if not existing.is_verified:
+                    existing.is_verified = True
+                    updates.append("is_verified")
+                if updates:
+                    existing.save(update_fields=updates)
                 record.status = StaffActivationRecord.STATUS_ACTIVATED
                 record.user = existing
                 record.activated_at = timezone.now()
                 record.save(update_fields=["status", "user", "activated_at", "updated_at"])
                 user = existing
                 pin_code = None
+                linked_existing = True
             else:
                 # Manager/Admin/Owner roles use password (no PIN); staff roles use PIN.
                 admin_roles = ["SUPER_ADMIN", "ADMIN", "OWNER", "MANAGER"]
@@ -464,7 +518,8 @@ def try_activate_staff_on_inbound_message(phone_digits):
             except Exception:
                 pass
             logger.info(
-                "[ONE-TAP] Activated staff %s for phone %s batch=%s (%s)",
+                "[ONE-TAP] %s staff %s for phone %s batch=%s (%s)",
+                "Linked existing" if linked_existing else "Activated",
                 user.id,
                 full_phone,
                 getattr(record, "batch_id", "") or "",
@@ -483,14 +538,23 @@ def try_activate_staff_on_inbound_message(phone_digits):
     try:
         from notifications.services import notification_service
 
-        notification_service.notify_staff_activated(
-            phone=full_phone,
-            first_name=first_name,
-            restaurant_name=restaurant_name,
-            user_id=str(user.id),
-            pin_code=pin_code,
-            batch_id=getattr(record, "batch_id", "") or "",
-        )
+        if linked_existing:
+            # Account already existed (email invite / prior staff) — confirm and continue.
+            notification_service.send_whatsapp_text(
+                full_phone,
+                f"Welcome back {first_name}! Your WhatsApp is linked to "
+                f"{restaurant_name or 'your workspace'}. "
+                f"How can I help you today?",
+            )
+        else:
+            notification_service.notify_staff_activated(
+                phone=full_phone,
+                first_name=first_name,
+                restaurant_name=restaurant_name,
+                user_id=str(user.id),
+                pin_code=pin_code,
+                batch_id=getattr(record, "batch_id", "") or "",
+            )
     except Exception:
         logger.exception(
             "[ONE-TAP] Welcome notify failed after activation phone=%s user=%s",
