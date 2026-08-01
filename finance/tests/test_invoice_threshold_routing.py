@@ -79,6 +79,33 @@ class InvoiceThresholdRoutingTests(TestCase):
         self.assertIsNotNone(tier)
         self.assertEqual(str(tier.get("max_amount")), "1000")
 
+    def test_resolve_tier_by_invoice_currency(self):
+        gs = dict(self.restaurant.general_settings or {})
+        gs[SETTINGS_KEY] = {
+            "enabled": True,
+            "currency": "MAD",
+            "currencies": ["MAD", "EUR"],
+            "tiers": [
+                {
+                    "currency": "MAD",
+                    "max_amount": "1000",
+                    "steps": [{"role": "MANAGER", "label": "Manager"}],
+                },
+                {
+                    "currency": "EUR",
+                    "max_amount": "500",
+                    "steps": [{"role": "OWNER", "label": "Owner"}],
+                },
+            ],
+        }
+        self.restaurant.general_settings = gs
+        self.restaurant.save(update_fields=["general_settings"])
+        policy = get_policy(self.restaurant)
+        mad_tier = resolve_tier(policy, Decimal("800"), currency="MAD")
+        eur_tier = resolve_tier(policy, Decimal("800"), currency="EUR")
+        self.assertEqual(str(mad_tier.get("max_amount")), "1000")
+        self.assertEqual(str(eur_tier.get("max_amount")), "500")
+
     def test_above_threshold_resolves_open_ended_tier(self):
         inv = self._invoice("1500.00")
         policy = get_policy(self.restaurant)

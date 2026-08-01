@@ -41,7 +41,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from django.db import transaction
-from django.db.models import Q, Value
+from django.db.models import Case, IntegerField, Q, Value, When
 from django.db.models.functions import Concat
 from django.utils import timezone
 from rest_framework import permissions, status
@@ -683,6 +683,70 @@ def agent_create_dashboard_task(request):
         else:
             assignee, assignee_err = _resolve_assignee(data, restaurant)
 
+        # Manager delegation: "tell HR / payroll to …" without naming a person.
+        assign_to_category = str(
+            _get_first(
+                data,
+                "assign_to_category",
+                "assign_to_category_owner",
+                "delegate_category",
+                "category_owner",
+            )
+            or ""
+        ).strip().upper()
+        if (assignee_err or not assignee) and assign_to_category:
+            from staff.request_routing import resolve_default_assignee_for_category
+
+            assignee = resolve_default_assignee_for_category(restaurant, assign_to_category)
+            if assignee:
+                assignee_err = None
+            elif acting_user and getattr(acting_user, "restaurant_id", None) == getattr(
+                restaurant, "id", None
+            ):
+                # Still create a trackable task when HR/payroll owners aren't
+                # configured — assign to the manager who asked so the widget
+                # isn't empty and they can reassign in the task detail pane.
+                assignee = acting_user
+                assignee_err = None
+                owner_hint = (
+                    f"No {assign_to_category} owner is configured in Settings → "
+                    "Who owns what? — assigned to you for now."
+                )
+                ai_summary = (ai_summary + " · " + owner_hint).strip(" ·") if ai_summary else owner_hint
+            else:
+                from accounts.models import CustomUser as AssigneeUser
+
+                assignee = (
+                    AssigneeUser.objects.filter(
+                        restaurant=restaurant,
+                        is_active=True,
+                        role__in=("OWNER", "ADMIN", "MANAGER"),
+                    )
+                    .exclude(role="SUPER_ADMIN")
+                    .order_by(
+                        Case(
+                            When(role="OWNER", then=Value(0)),
+                            When(role="ADMIN", then=Value(1)),
+                            When(role="MANAGER", then=Value(2)),
+                            default=Value(3),
+                            output_field=IntegerField(),
+                        )
+                    )
+                    .first()
+                )
+                if assignee:
+                    assignee_err = None
+                    owner_hint = (
+                        f"No {assign_to_category} owner is configured — assigned to "
+                        f"{assignee.get_full_name() or assignee.email} for now."
+                    )
+                    ai_summary = (ai_summary + " · " + owner_hint).strip(" ·") if ai_summary else owner_hint
+                else:
+                    assignee_err = (
+                        f"No one is configured as the owner for {assign_to_category}. "
+                        "Add category owners in Settings → General → Who owns what?"
+                    )
+
         if assignee_err or not assignee:
             return Response(
                 {
@@ -693,6 +757,27 @@ def agent_create_dashboard_task(request):
                 },
                 status=status.HTTP_404_NOT_FOUND,
             )
+
+        if acting_user:
+            from accounts.rbac_enforce import miya_has_full_tenant_access, user_can_action
+
+            if not miya_has_full_tenant_access(acting_user, restaurant) and not user_can_action(
+                acting_user,
+                "manage_widgets",
+                restaurant=restaurant,
+            ):
+                if assignee.id != acting_user.id:
+                    return Response(
+                        {
+                            "success": False,
+                            "error": "Staff may only create dashboard tasks assigned to themselves.",
+                            "message_for_user": (
+                                "I can add that to your dashboard task list for you — "
+                                "ask your manager if you need it assigned to someone else."
+                            ),
+                        },
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
 
         # Acting user display for source_label (assignee block above may have
         # already resolved acting_user from JWT/session).
@@ -708,7 +793,7 @@ def agent_create_dashboard_task(request):
         # honours an explicit agent-supplied category first and only then
         # falls back to the keyword-based intent router.
         task_category = _resolve_task_category(
-            raw=_get_first(data, "category", "bucket", "widget"),
+            raw=_get_first(data, "category", "bucket", "widget") or assign_to_category or None,
             title=title,
             description=description,
         )

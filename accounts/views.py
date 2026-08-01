@@ -1502,6 +1502,14 @@ class StaffListAPIView(generics.ListAPIView):
                 | Q(phone__icontains=search)
             ).distinct()
 
+        # Optional comma-separated UUID filter so pickers can resolve
+        # already-selected owners without loading the full roster.
+        ids_filter = (self.request.query_params.get('ids') or '').strip()
+        if ids_filter:
+            id_list = [x.strip() for x in ids_filter.split(',') if x.strip()]
+            if id_list:
+                qs = qs.filter(id__in=id_list).distinct()
+
         # Optional comma-separated role filter so callers can ask for
         # e.g. "managers + owners only" when escalating something
         # sensitive. ``role`` is canonicalised to upper-case.

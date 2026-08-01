@@ -252,7 +252,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "create_dashboard_task",
             "description": (
                 "Create a trackable dashboard task and WhatsApp the assignee by default. "
-                "Use for deliverables with owners — not for pure 'tell X' pings."
+                "Tasks auto-route to custom widgets when the title/description/source_text "
+                "matches routing_keywords (e.g. 'wedding' → Wedding tile). "
+                "Call list_dashboard_widgets first when widget names/keywords are unclear. "
+                "Pass custom_widget_id when the manager names a specific tile. "
+                "Include source_text with the user's original WhatsApp phrase for keyword matching. "
+                "Staff without manage_widgets: use assign_to_self=true only."
             ),
             "parameters": {
                 "type": "object",
@@ -264,10 +269,52 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "priority": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH", "URGENT"]},
                     "due_date": {"type": "string"},
                     "category": {"type": "string"},
+                    "assign_to_category": {
+                        "type": "string",
+                        "description": (
+                            "When the manager delegates to a lane without naming a person "
+                            "(e.g. 'tell HR to pay all staff'), set PAYROLL or HR — "
+                            "resolves the configured category owner as assignee."
+                        ),
+                    },
                     "assign_to_self": {"type": "boolean"},
                     "notify_whatsapp": {"type": "boolean"},
+                    "custom_widget_id": {
+                        "type": "string",
+                        "description": "UUID of a custom widget tile (from list_dashboard_widgets).",
+                    },
+                    "widget_title": {
+                        "type": "string",
+                        "description": "Human widget name hint (e.g. Wedding) when id unknown.",
+                    },
+                    "source_text": {
+                        "type": "string",
+                        "description": "Original user message for keyword routing into widgets.",
+                    },
                 },
                 "required": ["restaurant_id", "title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_dashboard_widgets",
+            "description": (
+                "List dashboard widget layout and routing_catalog for the workspace. "
+                "routing_catalog has every custom tile with routing_keywords — use before "
+                "create_dashboard_task when filing items onto Wedding/Event/etc. widgets."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "user_id": {
+                        "type": "string",
+                        "description": "Manager user_id for layout; defaults to caller.",
+                    },
+                },
+                "required": ["restaurant_id"],
             },
         },
     },
@@ -1055,6 +1102,7 @@ _ROUTE_MAP: dict[str, tuple[str, str]] = {
     "report_incident": ("POST", "/api/reporting/agent/create-incident/"),
     "request_time_off": ("POST", "/api/scheduling/agent/time-off/request/"),
     "create_dashboard_task": ("POST", "/api/dashboard/agent/tasks/create/"),
+    "list_dashboard_widgets": ("POST", "/api/dashboard/agent/widgets/list/"),
     "list_dashboard_tasks": ("POST", "/api/dashboard/agent/tasks/list/"),
     "get_dashboard_task": ("POST", "/api/dashboard/agent/tasks/list/"),
     "update_dashboard_task_status": ("POST", "/api/dashboard/agent/tasks/status/"),
@@ -1199,6 +1247,25 @@ def _enrich_agent_payload(
     if name == "seed_compliance_documents":
         payload.setdefault("action", "seed")
 
+    if name == "create_dashboard_task":
+        source_bits = [
+            payload.get("source_text"),
+            payload.get("sourceText"),
+            payload.get("user_message"),
+            payload.get("userMessage"),
+            payload.get("context"),
+            payload.get("conversation"),
+            session_context.get("last_user_message"),
+        ]
+        merged_source = " ".join(str(b).strip() for b in source_bits if b and str(b).strip())
+        if merged_source:
+            payload["source_text"] = merged_source
+        widget_hint = str(payload.get("widget_title") or payload.get("widgetTitle") or "").strip()
+        if widget_hint and widget_hint.lower() not in (payload.get("source_text") or "").lower():
+            payload["source_text"] = f"{payload.get('source_text', '')} {widget_hint}".strip()
+        if not payload.get("custom_widget_id") and payload.get("widget_id"):
+            payload["custom_widget_id"] = payload["widget_id"]
+
     return payload
 
 
@@ -1210,6 +1277,9 @@ def execute_tool(
     session_context: dict[str, Any],
     user=None,
 ) -> dict[str, Any]:
+    if name == "dashboard_widgets":
+        name = "list_dashboard_widgets"
+
     tenant_rest = None
     rid = (session_context or {}).get("restaurant_id")
     if rid:
@@ -1222,12 +1292,14 @@ def execute_tool(
     if tenant_rest is None and user is not None:
         tenant_rest = resolve_active_tenant(user, session_hint=session_context)
 
+    staff_self_task = name == "create_dashboard_task"
     if user is not None and name not in allowed_tools_for_user(user, restaurant=tenant_rest):
-        return {
-            "success": False,
-            "error": "You don't have permission for this action on Mizan.",
-            "required_rbac": True,
-        }
+        if not staff_self_task:
+            return {
+                "success": False,
+                "error": "You don't have permission for this action on Mizan.",
+                "required_rbac": True,
+            }
 
     if name == "list_tenant_documents":
         from miya.models import TenantDocument
@@ -1321,6 +1393,20 @@ def execute_tool(
 
     if name == "create_dashboard_task" and payload.get("assign_to_self") and not payload.get("assignee_id"):
         payload["assignee_id"] = uid
+
+    if name == "create_dashboard_task" and user is not None and staff_self_task:
+        from accounts.rbac_enforce import miya_has_full_tenant_access, user_can_action
+
+        if not miya_has_full_tenant_access(user, tenant_rest) and not user_can_action(
+            user, "manage_widgets", restaurant=tenant_rest
+        ):
+            payload["assign_to_self"] = True
+            if uid:
+                payload["assignee_id"] = uid
+            payload.setdefault("notify_whatsapp", False)
+
+    if name in ("list_dashboard_widgets", "dashboard_widgets") and not payload.get("user_id"):
+        payload["user_id"] = uid
 
     if name == "dashboard_widgets_add" and not payload.get("user_id"):
         payload["user_id"] = uid

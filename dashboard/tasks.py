@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 
+from datetime import timedelta
+
 from celery import shared_task
 from django.db.models import F
 from django.utils import timezone
@@ -108,4 +110,38 @@ def task_follow_up_sweep() -> dict:
 
     if summary['followed_up'] or summary['escalated']:
         logger.info('task_follow_up_sweep: %s', summary)
+    return summary
+
+
+@shared_task(name='dashboard.tasks.snapshot_staff_daily_progress')
+def snapshot_staff_daily_progress_task() -> dict:
+    """
+    Archive yesterday's per-staff task progress for every restaurant.
+    Runs shortly after midnight so the live widget can reset to today only.
+    """
+    from accounts.models import Restaurant
+    from dashboard.services.staff_daily_progress import (
+        close_stale_shift_checklists,
+        snapshot_staff_daily_progress,
+    )
+
+    report_date = timezone.localdate() - timedelta(days=1)
+    summary = {"date": str(report_date), "restaurants": 0, "staff_rows": 0, "errors": 0, "stale_checklists_closed": 0}
+
+    for restaurant in Restaurant.objects.all().iterator(chunk_size=50):
+        try:
+            summary["stale_checklists_closed"] += close_stale_shift_checklists(restaurant=restaurant)
+            count = snapshot_staff_daily_progress(restaurant, report_date)
+            summary["restaurants"] += 1
+            summary["staff_rows"] += count
+        except Exception:
+            summary["errors"] += 1
+            logger.exception(
+                "staff daily progress snapshot failed restaurant=%s date=%s",
+                restaurant.id,
+                report_date,
+            )
+
+    if summary["staff_rows"] or summary["errors"]:
+        logger.info("snapshot_staff_daily_progress: %s", summary)
     return summary

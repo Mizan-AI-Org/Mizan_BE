@@ -534,7 +534,7 @@ class OnboardingCategoryOwnersView(APIView):
         'incident.customer': 'Customer Issue',
         'incident.security': 'Security',
         'incident.quality': 'Food Quality',
-        'incident.other': 'Other',
+        'incident.other': 'General',
     }
 
     def get(self, request):

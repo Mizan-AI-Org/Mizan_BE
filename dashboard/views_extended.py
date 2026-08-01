@@ -480,20 +480,21 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['get'])
     def staff_live_metrics(self, request):
-        """Get live operational metrics for each staff member on shift"""
-        from datetime import timedelta
+        """Get live operational metrics for each staff member on shift (today only)."""
+        from datetime import datetime, time, timedelta
         from scheduling.models import AssignedShift
-        from django.utils import timezone
-        
+        from dashboard.services.staff_daily_progress import staff_has_today_live_activity
+
         user = request.user
         if not user.restaurant:
             return Response({'error': 'No restaurant associated'}, status=status.HTTP_400_BAD_REQUEST)
-            
-        today = timezone.now().date()
+
+        today = timezone.localdate()
         now = timezone.now()
-        
-        # Get active shifts (today's shifts that are confirmed, in_progress, or scheduled).
-        # Prefetch staff_members so we can show one row per staff on each shift (each with their own progress).
+        day_start = timezone.make_aware(datetime.combine(today, time.min))
+        day_end = day_start + timedelta(days=1)
+
+        # Today's shifts only — stale rows from prior days belong in archives.
         active_shifts = AssignedShift.objects.filter(
             schedule__restaurant=user.restaurant,
             shift_date=today,
@@ -501,36 +502,43 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         ).select_related('staff').prefetch_related('tasks', 'task_templates', 'staff_members')
 
         staff_metrics = []
-        seen_staff_shift = set()  # (staff_id, shift_id) to avoid duplicate rows when staff is both primary and in staff_members
+        seen_staff_shift = set()  # (staff_id, shift_id) to avoid duplicate rows
 
-        # Also include shifts with an in-progress checklist today (ad-hoc / standing
-        # checklists may not appear in SCHEDULED+today filters alone).
+        # Ad-hoc checklists on today's shifts touched today (not carry-over from prior days).
         prog_shift_ids = set(
             ShiftChecklistProgress.objects.filter(
                 staff__restaurant=user.restaurant,
+                shift__shift_date=today,
                 status="IN_PROGRESS",
-                updated_at__date=today,
+            ).filter(
+                Q(created_at__gte=day_start, created_at__lt=day_end)
+                | Q(updated_at__gte=day_start, updated_at__lt=day_end)
             ).values_list("shift_id", flat=True)
         )
         if prog_shift_ids:
             extra = AssignedShift.objects.filter(
                 id__in=prog_shift_ids,
                 schedule__restaurant=user.restaurant,
+                shift_date=today,
             ).select_related("staff").prefetch_related("tasks", "task_templates", "staff_members")
-            # Merge without losing queryset laziness — materialize unique shifts
             by_id = {s.id: s for s in active_shifts}
             for s in extra:
                 by_id[s.id] = s
             active_shifts = list(by_id.values())
 
         for shift in active_shifts:
-            # All staff on this shift: primary staff + staff_members (same checklist, different live progress per person)
+            if shift.shift_date != today:
+                continue
+
             staff_list = list(shift.staff_members.all())
             if shift.staff and shift.staff not in staff_list:
                 staff_list.append(shift.staff)
-            # Staff with their own checklist progress on this shift (even if not on staff_members)
             for prog in ShiftChecklistProgress.objects.filter(
-                shift=shift, status="IN_PROGRESS"
+                shift=shift,
+                status="IN_PROGRESS",
+            ).filter(
+                Q(created_at__gte=day_start, created_at__lt=day_end)
+                | Q(updated_at__gte=day_start, updated_at__lt=day_end)
             ).select_related("staff"):
                 if prog.staff and prog.staff not in staff_list:
                     staff_list.append(prog.staff)
@@ -542,6 +550,8 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             for staff in staff_list:
                 key = (str(staff.id), str(shift.id))
                 if key in seen_staff_shift:
+                    continue
+                if not staff_has_today_live_activity(user.restaurant, staff, on_date=today):
                     continue
                 seen_staff_shift.add(key)
 
@@ -559,7 +569,14 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                 follow_up_needed = False
                 photo_evidence_count = 0
 
-                checklist_prog = ShiftChecklistProgress.objects.filter(shift=shift, staff=staff).first()
+                checklist_prog = ShiftChecklistProgress.objects.filter(
+                    shift=shift,
+                    staff=staff,
+                    status="IN_PROGRESS",
+                ).filter(
+                    Q(created_at__gte=day_start, created_at__lt=day_end)
+                    | Q(updated_at__gte=day_start, updated_at__lt=day_end)
+                ).first()
                 if checklist_prog and (checklist_prog.task_ids or []):
                     task_ids = checklist_prog.task_ids or []
                     responses = checklist_prog.responses or {}
@@ -623,6 +640,7 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
 
                 staff_metrics.append({
                     'staff_id': staff.id,
+                    'shift_id': str(shift.id),
                     'name': f"{staff.first_name} {staff.last_name}",
                     'role': staff.role,
                     'avatar': None,

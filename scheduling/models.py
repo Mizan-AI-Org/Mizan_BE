@@ -745,6 +745,11 @@ class ShiftChecklistProgress(models.Model):
         related_name='approved_shift_checklists'
     )
     approved_at = models.DateTimeField(null=True, blank=True)
+    completion_summary = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Archived snapshot at completion: tasks, responses, photos, compliance",
+    )
 
     class Meta:
         db_table = 'shift_checklist_progress'

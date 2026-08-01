@@ -1073,16 +1073,21 @@ def _sync_checklist_progress_update(shift_id, staff, checklist_dict):
 
 
 def _sync_checklist_progress_complete(shift_id, staff):
-    """Mark ShiftChecklistProgress as completed when checklist is done."""
+    """Mark ShiftChecklistProgress completed and archive full compliance snapshot."""
     if not shift_id or not staff:
         return
     try:
-        shift_obj = AssignedShift.objects.filter(id=shift_id).first()
-        if not shift_obj:
-            return
-        ShiftChecklistProgress.objects.filter(
-            shift=shift_obj, staff=staff, status='IN_PROGRESS'
-        ).update(status='COMPLETED', completed_at=timezone.now())
+        from scheduling.checklist_completion import finalize_shift_checklist_completion
+
+        prog = ShiftChecklistProgress.objects.filter(
+            shift_id=shift_id, staff=staff, status="IN_PROGRESS"
+        ).first()
+        if not prog:
+            prog = ShiftChecklistProgress.objects.filter(
+                shift_id=shift_id, staff=staff
+            ).order_by("-updated_at").first()
+        if prog:
+            finalize_shift_checklist_completion(prog, staff)
     except Exception as e:
         logger.warning("ShiftChecklistProgress complete failed: %s", e)
 
@@ -1133,10 +1138,9 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
         return False
     if str(current_task_id) in responses:
         return True
-    responses[current_task_id] = response_value
-    checklist['responses'] = responses
-    session.context['checklist'] = checklist
-    _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
+
+    branch_outcome = {"action": None, "result": None, "flow": "next"}
+
     try:
         task = ShiftTask.objects.get(id=current_task_id)
         if shift_id and user:
@@ -1148,20 +1152,38 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
                 session.state = 'idle'
                 session.save(update_fields=['state', 'context'])
                 return True
+
+        from scheduling.checklist_photo import (
+            arm_whatsapp_photo_await,
+            photo_prompt_for_task,
+            task_requires_photo,
+        )
+        from scheduling.checklist_branch_actions import (
+            apply_checklist_branch,
+            find_next_checklist_task,
+        )
+
+        # Yes + photo proof → arm image handler; do not advance until photo arrives
+        if response_value == 'yes' and task_requires_photo(task):
+            arm_whatsapp_photo_await(
+                phone=phone_digits,
+                user=user,
+                task=task,
+                shift_id=str(shift_id) if shift_id else None,
+            )
+            checklist['current_task_id'] = current_task_id
+            session.context['checklist'] = checklist
+            notification_service.send_whatsapp_text(
+                phone_digits, photo_prompt_for_task(task, user=user)
+            )
+            return True
+
+        responses[current_task_id] = response_value
+        checklist['responses'] = responses
+        session.context['checklist'] = checklist
+        _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
+
         if response_value == 'yes':
-            if getattr(task, 'verification_required', False) and str(getattr(task, 'verification_type', 'NONE')).upper() == 'PHOTO':
-                session.context['awaiting_verification_for_task_id'] = str(task.id)
-                session.state = 'awaiting_task_photo'
-                checklist['current_task_id'] = current_task_id
-                checklist['responses'] = responses
-                session.context['checklist'] = checklist
-                session.save(update_fields=['state', 'context'])
-                msg = (
-                    f"📸 Please send a photo to complete:\n\n"
-                    f"*{task.title}*\n{task.description or ''}"
-                )
-                notification_service.send_whatsapp_text(phone_digits, msg)
-                return True
             task.status = 'COMPLETED'
             task.completed_at = timezone.now()
             task.save(update_fields=['status', 'completed_at'])
@@ -1191,27 +1213,26 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
             task.notes = (task.notes or '') + f"\nNot complete ({timezone.now().strftime('%H:%M')})"
             task.save(update_fields=['status', 'started_at', 'notes'])
 
-            # Processes & Tasks: "Flag for manager, then continue" (+ assignees)
-            branch_outcome = {"action": None, "result": None, "flow": "next"}
+        branch_outcome = {"action": None, "result": None, "flow": "next"}
+        if response_value in ('yes', 'no'):
             try:
-                from scheduling.checklist_branch_actions import apply_checklist_branch
-
                 branch_outcome = apply_checklist_branch(
                     shift_task=task,
                     staff_user=user,
-                    answer="no",
+                    answer=response_value,
                 )
             except Exception:
                 logger.exception(
-                    "checklist branch action failed (legacy WA) task=%s", task.id
+                    "checklist branch action failed (legacy WA) task=%s answer=%s",
+                    task.id,
+                    response_value,
                 )
-
             try:
                 TaskVerificationRecord.objects.create(
                     task=task,
                     submitted_by=user,
                     checklist_responses={
-                        'response': 'no',
+                        'response': response_value,
                         'checklist_item_id': str(task.id),
                         'shift_id': str(task.shift_id),
                         'branch': branch_outcome.get('action'),
@@ -1219,6 +1240,8 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
                 )
             except Exception:
                 pass
+
+        if response_value == 'no':
             try:
                 AuditTrailService.log_activity(
                     user=user,
@@ -1236,7 +1259,6 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
             except Exception:
                 pass
 
-            # Alert configured → notify assignees and continue (do not stall on Need help)
             if (branch_outcome.get("action") or {}).get("type") == "alert":
                 names = [
                     n.get("name")
@@ -1248,17 +1270,7 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
                     phone_digits,
                     f"Got it — *{task.title}* flagged for follow-up{who}. Continuing…",
                 )
-                if branch_outcome.get("flow") == "end":
-                    # Rare: alert+end not typically combined; still honor end
-                    session.context.pop('checklist', None)
-                    session.state = 'idle'
-                    session.save(update_fields=['state', 'context'])
-                    return True
-                # Fall through to next-task advancement below
-                checklist['responses'] = responses
-                session.context['checklist'] = checklist
-                session.save(update_fields=['context'])
-            else:
+            elif branch_outcome.get("flow") != "end":
                 checklist['pending_task_id'] = current_task_id
                 checklist['responses'] = responses
                 session.context['checklist'] = checklist
@@ -1275,90 +1287,93 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
                 ]
                 notification_service.send_whatsapp_buttons(phone_digits, follow_msg, follow_buttons)
                 return True
+
+        if branch_outcome.get("flow") == "end":
+            notification_service.send_whatsapp_text(
+                phone_digits,
+                f"Got it — checklist stopped after *{task.title}*.",
+            )
+            _sync_checklist_progress_complete(checklist.get('shift_id'), user)
+            session.context.pop('checklist', None)
+            session.state = 'idle'
+            session.save(update_fields=['state', 'context'])
+            return True
+
+        session.save(update_fields=['context'])
+        next_task, next_idx = find_next_checklist_task(
+            tasks, responses, branch_outcome=branch_outcome
+        )
+        if not next_task:
+            completed = sum(1 for r in responses.values() if r == 'yes')
+            total = len(tasks)
+            completion_msg = (
+                f"🎉 *Checklist Complete!*\n\n"
+                f"✅ {completed}/{total} items confirmed\n\n"
+                "Great job! Your checklist is complete — everything is saved for your manager."
+            )
+            notification_service.send_whatsapp_text(phone_digits, completion_msg)
+            _sync_checklist_progress_complete(checklist.get('shift_id'), user)
+            session.context.pop('checklist', None)
+            session.state = 'idle'
+            session.save(update_fields=['state', 'context'])
+            return True
+
+        next_task_id = str(next_task.id)
+        checklist['current_task_id'] = next_task_id
+        session.context['checklist'] = checklist
+        _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
+        session.save(update_fields=['context'])
+        notification_service._send_task_step_to_whatsapp(
+            phone_digits, next_task, next_idx or 1, len(tasks), session
+        )
+        return True
     except ShiftTask.DoesNotExist:
         return True
-    session.save(update_fields=['context'])
-    # Prefer unanswered by response map (No/alert leaves task IN_PROGRESS but already answered)
-    answered_ids = {str(k) for k in (responses or {}).keys()}
-    pending_tasks = [
-        t
-        for t in ShiftTask.objects.filter(id__in=tasks).exclude(status__in=['COMPLETED', 'CANCELLED'])
-        if str(t.id) not in answered_ids
-    ]
-    if not pending_tasks:
-        completed = sum(1 for r in responses.values() if r == 'yes')
-        total = len(tasks)
-        completion_msg = (
-            f"🎉 *Checklist Complete!*\n\n"
-            f"✅ {completed}/{total} items confirmed\n\n"
-            "Great job! Your opening checklist is complete. Have a productive shift!"
-        )
-        notification_service.send_whatsapp_text(phone_digits, completion_msg)
-        _sync_checklist_progress_complete(checklist.get('shift_id'), user)
-        session.context.pop('checklist', None)
-        session.state = 'idle'
-        session.save(update_fields=['state', 'context'])
-        return True
-    pending_ids = {str(t.id) for t in pending_tasks}
-    next_task_id = None
-    for tid in tasks:
-        if str(tid) in pending_ids and str(tid) not in answered_ids:
-            next_task_id = str(tid)
-            break
-    next_task_id = next_task_id or (str(pending_tasks[0].id) if pending_tasks else None)
-    if not next_task_id:
-        notification_service.send_whatsapp_text(phone_digits, "✅ All checklist items completed!")
-        _sync_checklist_progress_complete(checklist.get('shift_id'), user)
-        session.context.pop('checklist', None)
-        session.state = 'idle'
-        session.save(update_fields=['state', 'context'])
-        return True
-    checklist['current_task_id'] = next_task_id
-    session.context['checklist'] = checklist
-    _sync_checklist_progress_update(checklist.get('shift_id'), user, checklist)
-    session.save(update_fields=['context'])
-    next_task = ShiftTask.objects.filter(id=next_task_id).first()
-    if next_task:
-        idx = (tasks.index(next_task_id) + 1) if next_task_id in tasks else 1
-        notification_service._send_task_step_to_whatsapp(phone_digits, next_task, idx, len(tasks), session)
-    return True
 
 
-def _attach_whatsapp_media_to_incident(notification_service, ticket, media_id, mime_type=None, filename=None):
-    """Download WhatsApp media by media_id and save to SafetyConcernReport photo/attachment."""
+def _attach_whatsapp_media_to_incident(notification_service, ticket, media_id, mime_type=None, filename=None, caption=None, user=None):
+    """Download WhatsApp media by media_id and save to SafetyConcernReport (S3 + photo_evidence)."""
     if not media_id or not ticket:
         logger.warning("_attach_whatsapp_media_to_incident: missing media_id=%s or ticket=%s", media_id, ticket)
         return
     try:
         from notifications.media_persist import download_whatsapp_media
+        from staff.incident_evidence import (
+            append_incident_file_attachment,
+            append_incident_photo_evidence,
+        )
 
         file_bytes, resolved_mime, resolved_name = download_whatsapp_media(media_id)
-        mime_type = mime_type or resolved_mime or ''
-        filename = filename or resolved_name or ''
         if not file_bytes:
-            logger.warning("_attach_whatsapp_media_to_incident: download returned empty for media_id=%s", media_id)
+            logger.warning(
+                "_attach_whatsapp_media_to_incident: download returned empty for media_id=%s",
+                media_id,
+            )
             return
-        mime_lower = (mime_type or '').lower()
-        is_image = mime_lower.startswith('image/')
-        ext = '.jpg'
-        if 'png' in mime_lower:
-            ext = '.png'
-        elif 'gif' in mime_lower:
-            ext = '.gif'
-        elif 'webp' in mime_lower:
-            ext = '.webp'
-        elif 'pdf' in mime_lower:
-            ext = '.pdf'
-        elif filename and '.' in filename:
-            ext = '.' + filename.rsplit('.', 1)[-1]
-        name = f"incident_{ticket.id}{ext}"
+
+        mime = (mime_type or resolved_mime or "image/jpeg").split(";")[0].strip()
+        name = (filename or resolved_name or f"incident_{ticket.id}.jpg").strip()
+        is_image = mime.lower().startswith("image/") or not mime.lower()
+
         if is_image:
-            ticket.photo.save(name, ContentFile(file_bytes), save=True)
+            append_incident_photo_evidence(
+                ticket,
+                file_bytes=file_bytes,
+                mime_type=mime,
+                filename=name,
+                media_id=media_id,
+                caption=caption or "",
+                source="whatsapp",
+                submitted_by=user,
+            )
         else:
-            ticket.attachment.save(name, ContentFile(file_bytes), save=True)
-            ticket.attachment_filename = (filename or name)[:255]
-            ticket.attachment_content_type = (mime_type or '')[:100]
-            ticket.save(update_fields=['attachment_filename', 'attachment_content_type', 'updated_at'])
+            append_incident_file_attachment(
+                ticket,
+                file_bytes=file_bytes,
+                mime_type=mime,
+                filename=name,
+                source="whatsapp",
+            )
         logger.info(
             "Attached WhatsApp %s to incident %s (%d bytes)",
             "photo" if is_image else "file",
@@ -1375,47 +1390,13 @@ def _attach_whatsapp_photo_to_incident(notification_service, ticket, media_id, m
 
 
 def _notify_managers_of_whatsapp_incident(ticket):
-    """In-app notify managers so Ops review / Reported Incidents update promptly."""
+    """Notify configured category owners in-app (not every manager)."""
     try:
-        from accounts.models import CustomUser
-        from .models import Notification
+        from staff.incident_assignee_notify import notify_incident_category_owners_in_app
 
-        managers = CustomUser.objects.filter(
-            restaurant=ticket.restaurant,
-            role__in=['MANAGER', 'ADMIN', 'SUPER_ADMIN', 'OWNER'],
-            is_active=True,
-        )
-        title = (ticket.title or "Incident").strip()
-        msg = (ticket.description or title)[:200]
-        sev = (ticket.severity or "MEDIUM").upper()
-        if sev == "CRITICAL":
-            sev = "URGENT"
-        elif sev not in ("LOW", "MEDIUM", "HIGH", "URGENT"):
-            sev = "MEDIUM"
-        for m in managers:
-            notif = Notification.objects.create(
-                recipient=m,
-                title="New incident report",
-                message=msg,
-                notification_type='EMERGENCY',
-                priority=sev,
-                data={
-                    'incident_id': str(ticket.id),
-                    'route': '/dashboard/analytics?tab=incidents',
-                    'status': ticket.status,
-                    'incident_type': ticket.incident_type,
-                },
-            )
-            notification_service.send_custom_notification(
-                recipient=m,
-                notification=notif,
-                message=notif.message,
-                notification_type='EMERGENCY',
-                title=notif.title,
-                channels=['app'],
-            )
+        notify_incident_category_owners_in_app(ticket)
     except Exception as e:
-        logger.warning("WhatsApp incident notify managers failed: %s", e)
+        logger.warning("WhatsApp incident notify owners failed: %s", e)
 
 
 def _finalize_whatsapp_incident(notification_service, ticket, session, raw_body, user, phone_digits, *, incident_type: str):
@@ -1433,12 +1414,15 @@ def _finalize_whatsapp_incident(notification_service, ticket, session, raw_body,
         media_id = (session.context or {}).get('incident_photo_media_id')
         mime = (session.context or {}).get('incident_photo_mime_type')
     if media_id:
-        _attach_whatsapp_photo_to_incident(notification_service, ticket, media_id, mime)
+        _attach_whatsapp_media_to_incident(
+            notification_service, ticket, media_id, mime, user=user
+        )
         if session:
             session.context.pop('incident_photo_media_id', None)
             session.context.pop('incident_photo_mime_type', None)
 
-    _notify_managers_of_whatsapp_incident(ticket)
+    # Category-owner in-app + WhatsApp notifications are handled by
+    # staff.signals.safety_report_notify_assignee_whatsapp on create.
 
 
 def _looks_like_skip_incident_photo(text: str) -> bool:
@@ -1461,10 +1445,9 @@ def _looks_like_skip_incident_photo(text: str) -> bool:
 
 
 def _ticket_has_photo(ticket) -> bool:
-    try:
-        return bool(ticket and ticket.photo and ticket.photo.name)
-    except Exception:
-        return False
+    from staff.incident_evidence import incident_has_photo_evidence
+
+    return incident_has_photo_evidence(ticket)
 
 
 def _finish_whatsapp_incident_turn(
@@ -2905,7 +2888,16 @@ def whatsapp_webhook(request):
                                         'task_id': str(task.id),
                                     })
                                     record.photo_evidence = photos
-                                    record.save(update_fields=['photo_evidence'])
+                                    cr = dict(record.checklist_responses or {})
+                                    cr.update({
+                                        "response": "yes",
+                                        "photo_received": True,
+                                        "checklist_item_id": str(task.id),
+                                        "shift_id": str(task.shift_id),
+                                        "awaiting_photo": False,
+                                    })
+                                    record.checklist_responses = cr
+                                    record.save(update_fields=["photo_evidence", "checklist_responses"])
                                     
                                     task.status = 'COMPLETED'
                                     task.completed_at = timezone.now()
@@ -2913,12 +2905,17 @@ def whatsapp_webhook(request):
     
                                     # Sync ShiftChecklistProgress (Miya + legacy Live Board)
                                     try:
+                                        from scheduling.checklist_completion import (
+                                            finalize_shift_checklist_completion,
+                                        )
+
                                         prog = ShiftChecklistProgress.objects.filter(
                                             shift_id=task.shift_id, staff=user
                                         ).first()
                                         if prog:
                                             responses = dict(prog.responses or {})
                                             responses[str(task.id)] = "yes"
+                                            prog.responses = responses
                                             task_ids = list(prog.task_ids or [])
                                             if not task_ids:
                                                 task_ids = list(
@@ -2934,7 +2931,6 @@ def whatsapp_webhook(request):
                                                 if cand and cand.status not in ("COMPLETED", "CANCELLED"):
                                                     next_id = str(tid)
                                                     break
-                                            prog.responses = responses
                                             if next_id:
                                                 prog.current_task_id = next_id
                                                 prog.status = "IN_PROGRESS"
@@ -2947,18 +2943,7 @@ def whatsapp_webhook(request):
                                                     ]
                                                 )
                                             else:
-                                                prog.status = "COMPLETED"
-                                                prog.completed_at = timezone.now()
-                                                prog.current_task_id = None
-                                                prog.save(
-                                                    update_fields=[
-                                                        "responses",
-                                                        "status",
-                                                        "completed_at",
-                                                        "current_task_id",
-                                                        "updated_at",
-                                                    ]
-                                                )
+                                                finalize_shift_checklist_completion(prog, user)
                                     except Exception:
                                         logger.exception(
                                             "checklist photo: progress sync failed task=%s", task.id
@@ -3038,6 +3023,19 @@ def whatsapp_webhook(request):
                                                 )
                                                 notification_service.send_whatsapp_text(phone_digits, body)
                                         else:
+                                            if user and task.shift_id:
+                                                prog = ShiftChecklistProgress.objects.filter(
+                                                    shift_id=task.shift_id, staff=user
+                                                ).first()
+                                                if prog:
+                                                    responses = dict(prog.responses or {})
+                                                    responses[str(task.id)] = "yes"
+                                                    prog.responses = responses
+                                                    prog.save(update_fields=["responses", "updated_at"])
+                                                    from scheduling.checklist_completion import (
+                                                        finalize_shift_checklist_completion,
+                                                    )
+                                                    finalize_shift_checklist_completion(prog, user)
                                             notification_service.send_whatsapp_text(
                                                 phone_digits,
                                                 "Nice work — checklist complete. Have a great shift!",
@@ -3065,12 +3063,15 @@ def whatsapp_webhook(request):
                                         id=ticket_id, reporter=user
                                     ).first()
                                 if ticket and media_id_img:
+                                    caption_img = (image_obj.get('caption') or '').strip()
                                     _attach_whatsapp_media_to_incident(
                                         notification_service,
                                         ticket,
                                         media_id_img,
                                         mime_type_img,
                                         filename_img,
+                                        caption=caption_img,
+                                        user=user,
                                     )
                                     session.state = 'idle'
                                     session.context.pop('incident_ticket_id', None)
@@ -3567,7 +3568,7 @@ def whatsapp_webhook(request):
                         # ------------------------------------------------------------------
                         if _gps_clock_in_applies_to_whatsapp_message(msg, session):
                             loc, lat_raw, lon_raw = _extract_whatsapp_inbound_location(msg)
-    
+
                             if not user:
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                                 continue
@@ -3577,12 +3578,12 @@ def whatsapp_webhook(request):
                                 if tb_pair:
                                     lat_c, lon_c = tb_pair[0], tb_pair[1]
                                     loc = {}
-                        if lat_c is None or lon_c is None:
-                            notification_service.send_whatsapp_location_request(
-                                phone_digits,
-                                "Share your location to clock in.",
-                            )
-                            continue
+                            if lat_c is None or lon_c is None:
+                                notification_service.send_whatsapp_location_request(
+                                    phone_digits,
+                                    "Share your location to clock in.",
+                                )
+                                continue
                             try:
                                 _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat_c, lon_c, loc, R)
                             except Exception:
@@ -4047,7 +4048,8 @@ def whatsapp_webhook(request):
                             if not active_shift:
                                 notification_service.send_whatsapp_text(
                                     phone_digits,
-                                    "No checklist is ready yet. Clock in first, then say *start checklist*. "
+                                    "No checklist is ready yet. Say *start checklist* when you're ready "
+                                    "(clock-in is optional). Ask your manager to assign a process if needed. "
                                     "If it still fails, ask your manager to assign this process to you in Processes & Tasks."
                                 )
                                 continue

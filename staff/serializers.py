@@ -162,17 +162,40 @@ class SafetyConcernReportSerializer(serializers.ModelSerializer):
 
     def _build_attachments(self, obj) -> list[dict]:
         items: list[dict] = []
+        seen_urls: set[str] = set()
+
+        def _add(url: str, name: str, content_type: str = "") -> None:
+            resolved = self._resolve_stored_url(url)
+            if not resolved or resolved in seen_urls:
+                return
+            seen_urls.add(resolved)
+            items.append(
+                {
+                    "url": resolved,
+                    "name": name,
+                    "content_type": content_type or self._guess_content_type(name, "image/jpeg"),
+                }
+            )
+
         if obj.photo:
             url = self._absolute_file_url(obj.photo)
             if url:
                 name = os.path.basename(obj.photo.name or "") or "Photo evidence"
-                items.append(
-                    {
-                        "url": url,
-                        "name": name,
-                        "content_type": self._guess_content_type(name, "image/jpeg"),
-                    }
-                )
+                _add(url, name, self._guess_content_type(name, "image/jpeg"))
+
+        for idx, entry in enumerate(getattr(obj, "photo_evidence", None) or [], start=1):
+            if not isinstance(entry, dict):
+                continue
+            raw_url = (entry.get("storage_key") or entry.get("url") or "").strip()
+            if not raw_url:
+                continue
+            name = (
+                (entry.get("filename") or "").strip()
+                or f"Photo {idx}"
+            )
+            mime = (entry.get("mime_type") or "").strip()
+            _add(raw_url, name, mime or self._guess_content_type(name, "image/jpeg"))
+
         if getattr(obj, "attachment", None):
             url = self._absolute_file_url(obj.attachment)
             if url:
@@ -217,6 +240,10 @@ class SafetyConcernReportSerializer(serializers.ModelSerializer):
         data["attachment_url"] = attachment_url
         data["attachments"] = self._build_attachments(instance)
         data["has_attachments"] = bool(data["attachments"])
+        data["photo_count"] = sum(
+            1 for a in data["attachments"] if (a.get("content_type") or "").startswith("image/")
+        )
+        data["photo_evidence"] = list(getattr(instance, "photo_evidence", None) or [])
         if photo_url:
             data["photo"] = photo_url
         return data

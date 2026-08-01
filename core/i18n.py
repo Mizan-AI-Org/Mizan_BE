@@ -98,8 +98,12 @@ _CATALOG: dict[str, dict[str, str]] = {
         "checklist.already_complete": "Your checklist is already complete. Great work!",
         "checklist.already_complete_shift": "Your checklist is already complete. Have a productive shift!",
         "checklist.need_clock_in": (
-            "You need to clock in before starting your checklist. "
-            "Please clock in first, then ask me to start your checklist."
+            "You can start your checklist now — clock-in is optional for checklist-only work. "
+            "Say *start checklist* when you're ready."
+        ),
+        "checklist.preview_ready": (
+            "Your shift ({start} – {end}) has {count} task(s):\n{list}\n\n"
+            "Say *Start checklist* when you're ready. Clock-in is optional."
         ),
         "checklist.load_error": "I'm having trouble loading your checklist. Please try again.",
         "checklist.no_active": "You don't have an active checklist. Say *start checklist* to begin.",
@@ -121,7 +125,7 @@ _CATALOG: dict[str, dict[str, str]] = {
         ),
         "checklist.complete": (
             "Nice work — checklist complete! {yes} done, {no} still open, {na} skipped "
-            "out of {total} tasks. Have a great shift!"
+            "out of {total} tasks. Everything is saved for your manager, including photos."
         ),
         "checklist.stopped": "Got it — checklist stopped after *{title}*.{note}",
         "checklist.flagged_named": " I've flagged this for {names}.",
@@ -194,8 +198,12 @@ _CATALOG: dict[str, dict[str, str]] = {
         "checklist.already_complete": "Votre checklist est déjà terminée. Bravo !",
         "checklist.already_complete_shift": "Votre checklist est déjà terminée. Bon service !",
         "checklist.need_clock_in": (
-            "Vous devez pointer avant de démarrer la checklist. "
-            "Pointez d’abord, puis demandez-moi de démarrer la checklist."
+            "Vous pouvez démarrer la checklist maintenant — le pointage est optionnel. "
+            "Dites *démarrer la checklist* quand vous êtes prêt."
+        ),
+        "checklist.preview_ready": (
+            "Votre service ({start} – {end}) compte {count} tâche(s) :\n{list}\n\n"
+            "Dites *Démarrer la checklist* quand vous êtes prêt. Le pointage est optionnel."
         ),
         "checklist.load_error": "Je n’arrive pas à charger votre checklist. Réessayez.",
         "checklist.no_active": "Vous n’avez pas de checklist active. Dites *démarrer la checklist* pour commencer.",
@@ -288,8 +296,12 @@ _CATALOG: dict[str, dict[str, str]] = {
         "checklist.already_complete": "قائمة التحقق مكتملة بالفعل. أحسنت!",
         "checklist.already_complete_shift": "قائمة التحقق مكتملة بالفعل. وردية موفّقة!",
         "checklist.need_clock_in": (
-            "يجب تسجيل الحضور قبل بدء قائمة التحقق. "
-            "سجّل الحضور أولاً، ثم اطلب مني بدء قائمة التحقق."
+            "يمكنك بدء قائمة التحقق الآن — تسجيل الحضور اختياري. "
+            "قل *ابدأ المهام* عندما تكون جاهزاً."
+        ),
+        "checklist.preview_ready": (
+            "ورديتك ({start} – {end}) فيها {count} مهمة/مهام:\n{list}\n\n"
+            "قل *ابدأ المهام* عندما تكون جاهزاً. تسجيل الحضور اختياري."
         ),
         "checklist.load_error": "تعذّر تحميل قائمة التحقق. حاول مرة أخرى.",
         "checklist.no_active": "ليس لديك قائمة تحقق نشطة. قل *ابدأ المهام* للبدء.",

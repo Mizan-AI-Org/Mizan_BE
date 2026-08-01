@@ -177,7 +177,11 @@ def handle_miya_whatsapp_turn(
 
     reply = (result.get("reply") or "").strip()
     if not reply:
-        return False
+        notification_service.send_whatsapp_text(
+            phone_digits,
+            "I couldn't process that message. Please try again in a moment.",
+        )
+        return True
 
     history.append({"role": "user", "content": text})
     history.append({"role": "assistant", "content": reply})

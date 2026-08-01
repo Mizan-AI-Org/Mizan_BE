@@ -29,6 +29,37 @@ _SCHEDULE_QUERY = re.compile(
     re.I,
 )
 
+_MANAGER_ROLES = frozenset({"OWNER", "ADMIN", "SUPER_ADMIN", "MANAGER"})
+
+# Manager → HR/payroll lane (not staff escalating their own wages).
+_STAFF_SELF_PAY = re.compile(
+    r"\b(my|mine|i have(n't| not)|where is my|missing my)\b.{0,40}\b("
+    r"pay|salary|wages|payslip|payroll"
+    r")\b|\b("
+    r"pay|salary|wages|payslip|payroll"
+    r")\b.{0,40}\b(my|mine)\b",
+    re.I,
+)
+
+_PAYROLL_DELEGATION_HINTS = (
+    "tell hr",
+    "tell payroll",
+    "tell human resources",
+    "hr to pay",
+    "payroll to",
+    "ask hr",
+    "ask payroll",
+    "have hr",
+    "pay all staff",
+    "pay staff",
+    "pay everyone",
+    "pay all employees",
+    "run payroll",
+    "process payroll",
+    "pay immediately",
+    "pay now",
+)
+
 
 def _looks_like_schedule_query(message: str) -> bool:
     text = (message or "").strip()
@@ -121,6 +152,80 @@ def _reply_from_tool_trace(tool_trace: list[dict[str, Any]], user_message: str) 
         area_hint = "the bar area" if "bar" in (user_message or "").lower() else ""
         return _format_shifts_reply(shifts, area_hint=area_hint)
     return None
+
+
+def _looks_like_manager_payroll_delegation(message: str, role: str) -> bool:
+    text = (message or "").strip()
+    if not text or (role or "").upper() not in _MANAGER_ROLES:
+        return False
+    if _STAFF_SELF_PAY.search(text):
+        return False
+    lower = text.lower()
+    if not any(hint in lower for hint in _PAYROLL_DELEGATION_HINTS):
+        return False
+    from staff.intent_router import classify_request
+
+    decision = classify_request(subject="", description=text)
+    return (decision.category or "").upper() == "PAYROLL"
+
+
+def _payroll_delegation_task_title(message: str) -> str:
+    text = (message or "").strip()
+    if not text:
+        return "Run payroll"
+    # Keep the card title short and action-oriented.
+    for prefix in ("please ", "can you ", "could you ", "miya ", "hey miya ", "hi miya "):
+        if text.lower().startswith(prefix):
+            text = text[len(prefix) :].strip()
+    return text[:255] or "Run payroll"
+
+
+def _reply_from_create_task_result(result: dict[str, Any]) -> str:
+    if result.get("success"):
+        data = result.get("data") if isinstance(result.get("data"), dict) else result
+        msg = (data or {}).get("message_for_user") or result.get("message_for_user")
+        if msg:
+            return str(msg).strip()
+        task = (data or {}).get("task") or {}
+        title = task.get("title") or "the task"
+        return f"Done — I created “{title}” on the Human Resources widget. You'll see it under open items (not “in progress” until someone starts it)."
+    err = result.get("message_for_user") or result.get("error") or "I couldn't create that HR task."
+    return str(err).strip()
+
+
+def _try_payroll_delegation_fast_path(
+    *,
+    user_message: str,
+    session_context: dict[str, Any],
+    user,
+    access_token: str | None,
+) -> dict[str, Any] | None:
+    role = (session_context.get("role") or getattr(user, "role", "") or "").upper()
+    if not _looks_like_manager_payroll_delegation(user_message, role):
+        return None
+
+    title = _payroll_delegation_task_title(user_message)
+    args = {
+        "title": title,
+        "description": user_message.strip(),
+        "category": "PAYROLL",
+        "assign_to_category": "PAYROLL",
+        "priority": "URGENT",
+        "user_message": user_message.strip(),
+    }
+    result = execute_tool(
+        "create_dashboard_task",
+        args,
+        access_token=access_token,
+        session_context=session_context,
+        user=user,
+    )
+    return {
+        "reply": _finalize_reply(_reply_from_create_task_result(result)),
+        "tool_trace": [{"tool": "create_dashboard_task", "arguments": args, "result": result}],
+        "session_context": session_context,
+        "provider": "django-fast-path",
+    }
 
 
 def _try_schedule_fast_path(
@@ -258,6 +363,15 @@ def run_miya_chat(
         attachment_ids=attachment_ids,
         session_context=session_context,
     )
+
+    fast = _try_payroll_delegation_fast_path(
+        user_message=enriched_message,
+        session_context=session_context,
+        user=user,
+        access_token=access_token,
+    )
+    if fast:
+        return fast
 
     fast = _try_schedule_fast_path(
         user_message=enriched_message,

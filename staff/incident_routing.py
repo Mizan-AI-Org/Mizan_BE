@@ -38,6 +38,7 @@ _INCIDENT_LABEL_TO_OWNER_SLUGS: dict[str, tuple[str, ...]] = {
     "Security": ("incident.security",),
     "Food Quality": ("incident.quality",),
     "Other": ("incident.other",),
+    "Service": ("incident.customer",),
 }
 
 
@@ -158,6 +159,7 @@ def resolve_all_assignees_for_incident_type(
 
     from accounts.models import CustomUser  # local import avoids cycles at import time
 
+    canonical = normalize_incident_category_for_storage(incident_type)
     gs = restaurant.general_settings or {}
     seen: set[str] = set()
     users: list["CustomUser"] = []
@@ -185,15 +187,23 @@ def resolve_all_assignees_for_incident_type(
     # 1) category_owners multi-person fan-out
     owners_map = gs.get("category_owners") or {}
     if isinstance(owners_map, dict) and owners_map:
-        canonical = normalize_incident_category_for_storage(incident_type)
         slugs = list(_INCIDENT_LABEL_TO_OWNER_SLUGS.get(canonical, ()))
         raw_label = (incident_type or "").strip()
         if raw_label and raw_label != canonical:
             slugs.extend(_INCIDENT_LABEL_TO_OWNER_SLUGS.get(raw_label, ()))
+        # De-dupe slug order while preserving priority
+        slug_seen: set[str] = set()
+        ordered_slugs: list[str] = []
+        for slug in slugs:
+            key = slug.lower()
+            if key in slug_seen:
+                continue
+            slug_seen.add(key)
+            ordered_slugs.append(slug)
         lowered = {
             str(k).lower(): v for k, v in owners_map.items() if isinstance(k, str)
         }
-        for slug in slugs:
+        for slug in ordered_slugs:
             raw_val = owners_map.get(slug)
             if raw_val is None:
                 raw_val = lowered.get(slug.lower())
@@ -205,7 +215,7 @@ def resolve_all_assignees_for_incident_type(
     # 2) Legacy incident_category_assignees
     mapping = gs.get("incident_category_assignees") or {}
     if isinstance(mapping, dict) and mapping:
-        for uid in _lookup_user_ids(mapping, incident_type or "General"):
+        for uid in _lookup_user_ids(mapping, canonical or incident_type or "General"):
             _append_uid(uid)
 
     return users

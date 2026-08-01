@@ -116,20 +116,16 @@ def _send_whatsapp(user, body: str) -> bool:
         return False
 
 
-def notify_assignee_whatsapp_for_incident(ticket: "SafetyConcernReport") -> None:
-    """
-    Send WhatsApp to ticket.assigned_to, plus any other category owners as informed.
-    No-op when WhatsApp is not configured.
-    """
+def _incident_owner_users(ticket: "SafetyConcernReport") -> list:
+    """All category owners who should be notified (excludes reporter)."""
     assignee = getattr(ticket, "assigned_to", None)
     restaurant = getattr(ticket, "restaurant", None)
-
     notify_users: list = []
     seen: set[str] = set()
-    if assignee:
-        if not (ticket.reporter_id and assignee.id == ticket.reporter_id):
-            notify_users.append(assignee)
-            seen.add(str(assignee.id))
+
+    if assignee and not (ticket.reporter_id and assignee.id == ticket.reporter_id):
+        notify_users.append(assignee)
+        seen.add(str(assignee.id))
 
     if restaurant is not None:
         try:
@@ -146,12 +142,92 @@ def notify_assignee_whatsapp_for_incident(ticket: "SafetyConcernReport") -> None
                 seen.add(oid)
                 notify_users.append(owner)
         except Exception:
-            logger.exception("incident_assignee_notify: resolve_all failed")
+            logger.exception("incident_owner_notify: resolve_all failed")
+
+    return notify_users
+
+
+def notify_incident_category_owners_in_app(ticket: "SafetyConcernReport") -> None:
+    """In-app alert for every configured category owner (not all managers)."""
+    owners = _incident_owner_users(ticket)
+    if not owners:
+        return
+
+    try:
+        from notifications.models import Notification
+        from notifications.services import notification_service
+    except Exception:
+        logger.exception("incident_owner_notify: imports failed")
+        return
+
+    title = (ticket.title or "Incident").strip()
+    msg = (ticket.description or title)[:200]
+    sev = (ticket.severity or "MEDIUM").upper()
+    if sev == "CRITICAL":
+        sev = "URGENT"
+    elif sev not in ("LOW", "MEDIUM", "HIGH", "URGENT"):
+        sev = "MEDIUM"
+
+    assignee = getattr(ticket, "assigned_to", None)
+    for owner in owners:
+        is_primary = assignee is not None and str(owner.id) == str(assignee.id)
+        notif_title = (
+            "New incident assigned to you"
+            if is_primary
+            else f"New {ticket.incident_type or 'incident'} — you're an owner"
+        )
+        try:
+            notif = Notification.objects.create(
+                recipient=owner,
+                title=notif_title,
+                message=msg,
+                notification_type="EMERGENCY" if is_primary else "INCIDENT",
+                priority=sev,
+                data={
+                    "incident_id": str(ticket.id),
+                    "route": "/dashboard/analytics?tab=incidents",
+                    "status": ticket.status,
+                    "incident_type": ticket.incident_type,
+                    "category_owner": True,
+                    "primary_assignee": is_primary,
+                },
+            )
+            notification_service.send_custom_notification(
+                recipient=owner,
+                notification=notif,
+                message=notif.message,
+                notification_type=notif.notification_type,
+                title=notif.title,
+                channels=["app"],
+            )
+        except Exception:
+            logger.exception(
+                "incident_owner_notify: in-app failed for user %s",
+                getattr(owner, "id", None),
+            )
+
+
+def notify_assignee_whatsapp_for_incident(ticket: "SafetyConcernReport") -> None:
+    """
+    Send WhatsApp to ticket.assigned_to, plus any other category owners as informed.
+    No-op when WhatsApp is not configured.
+    """
+    assignee = getattr(ticket, "assigned_to", None)
+    notify_users = _incident_owner_users(ticket)
+
+    if not notify_users and assignee:
+        notify_users = [assignee]
 
     for user in notify_users:
         is_primary = assignee is not None and str(user.id) == str(assignee.id)
         body = _build_assignee_message(ticket, informed=not is_primary)
         _send_whatsapp(user, body)
+
+
+def notify_incident_category_owners(ticket: "SafetyConcernReport") -> None:
+    """WhatsApp + in-app for every configured category owner."""
+    notify_incident_category_owners_in_app(ticket)
+    notify_assignee_whatsapp_for_incident(ticket)
 
 
 def schedule_notify_assignee_whatsapp_for_incident(ticket_pk) -> None:
@@ -164,7 +240,7 @@ def schedule_notify_assignee_whatsapp_for_incident(ticket_pk) -> None:
             ticket = SafetyConcernReport.objects.select_related(
                 "assigned_to", "reporter", "restaurant"
             ).get(pk=ticket_pk)
-            notify_assignee_whatsapp_for_incident(ticket)
+            notify_incident_category_owners(ticket)
         except Exception:
             logger.exception(
                 "schedule_notify_assignee_whatsapp: failed for ticket %s", ticket_pk

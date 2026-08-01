@@ -126,6 +126,11 @@ class SafetyConcernReport(models.Model):
     )
     attachment_filename = models.CharField(max_length=255, blank=True, default="")
     attachment_content_type = models.CharField(max_length=100, blank=True, default="")
+    photo_evidence = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Durable photo evidence entries (WhatsApp, uploads) with storage URLs",
+    )
     audio_evidence = models.JSONField(default=list, blank=True)  # URLs to uploaded audio files (e.g., WhatsApp media URL)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

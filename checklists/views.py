@@ -708,6 +708,215 @@ class ChecklistExecutionViewSet(viewsets.ModelViewSet):
             'results': page_data,
         })
 
+    @action(detail=False, methods=['get'], url_path='manager-accountability')
+    def manager_accountability(self, request):
+        """Ops-review overview: overdue, in-progress, pending manager sign-off, per-staff stats."""
+        from datetime import timedelta
+        from django.db.models import Count, Q
+
+        user = request.user
+        restaurant = getattr(user, 'restaurant', None)
+        if not restaurant:
+            return Response({'error': 'No restaurant context'}, status=status.HTTP_400_BAD_REQUEST)
+
+        allowed_roles = {'SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER'}
+        if str(getattr(user, 'role', '')).upper() not in allowed_roles:
+            return Response({'error': 'Forbidden'}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            days = int(request.query_params.get('days', 30))
+        except (TypeError, ValueError):
+            days = 30
+        days = max(7, min(days, 90))
+
+        now = timezone.now()
+        period_start = now - timedelta(days=days)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        base = (
+            ChecklistExecution.objects.filter(template__restaurant=restaurant)
+            .select_related('template', 'assigned_to', 'approved_by')
+        )
+
+        open_qs = base.filter(status__in=['NOT_STARTED', 'IN_PROGRESS'])
+        overdue_qs = open_qs.filter(due_date__lt=now)
+        in_progress_qs = base.filter(status='IN_PROGRESS')
+        due_today_qs = open_qs.filter(
+            Q(due_date__gte=today_start, due_date__lte=now)
+            | Q(due_date__isnull=True, created_at__gte=today_start)
+        )
+        pending_review_qs = base.filter(status='COMPLETED', supervisor_approved=False).order_by(
+            '-completed_at'
+        )[:25]
+        completed_period_qs = base.filter(status='COMPLETED', completed_at__gte=period_start)
+
+        def _staff_name(u):
+            if not u:
+                return '-'
+            try:
+                n = u.get_full_name()
+                if n:
+                    return n
+            except Exception:
+                pass
+            return f"{getattr(u, 'first_name', '')} {getattr(u, 'last_name', '')}".strip() or getattr(
+                u, 'email', '-'
+            )
+
+        def _compact_execution(ex):
+            ser = ChecklistSubmissionListSerializer(ex, context={'request': request})
+            row = ser.data
+            row['source_type'] = 'execution'
+            row['is_overdue'] = bool(
+                ex.due_date and ex.due_date < now and ex.status in ('NOT_STARTED', 'IN_PROGRESS')
+            )
+            row['needs_review'] = ex.status == 'COMPLETED' and not ex.supervisor_approved
+            return row
+
+        def _has_issues(summary):
+            if not summary or not isinstance(summary, dict):
+                return False
+            return (
+                (summary.get('failed_steps') or 0) > 0
+                or (summary.get('required_missing') or 0) > 0
+                or (summary.get('out_of_range_measurements') or 0) > 0
+                or (summary.get('actions_open') or 0) > 0
+            )
+
+        pending_review_rows = [_compact_execution(ex) for ex in pending_review_qs]
+        overdue_rows = [_compact_execution(ex) for ex in overdue_qs.order_by('due_date')[:25]]
+        in_progress_rows = [_compact_execution(ex) for ex in in_progress_qs.order_by('-updated_at')[:25]]
+
+        shift_pending = []
+        shift_overdue = []
+        try:
+            shift_base = ShiftChecklistProgress.objects.filter(
+                shift__schedule__restaurant=restaurant,
+            ).select_related('shift', 'staff')
+            for prog in shift_base.filter(status='COMPLETED', supervisor_approved=False).order_by(
+                '-completed_at'
+            )[:15]:
+                staff_name = _staff_name(prog.staff)
+                submitted_at = prog.completed_at or prog.updated_at
+                shift_pending.append({
+                    'id': str(prog.id),
+                    'source_type': 'shift_progress',
+                    'template': {
+                        'name': 'Shift Checklist (WhatsApp)',
+                        'category': prog.channel or 'whatsapp',
+                    },
+                    'submitted_by': {'id': str(prog.staff_id), 'name': staff_name},
+                    'submitted_at': timezone.localtime(submitted_at).isoformat() if submitted_at else None,
+                    'status': 'COMPLETED',
+                    'needs_review': True,
+                    'is_overdue': False,
+                })
+            for prog in shift_base.filter(status__in=['IN_PROGRESS', 'NOT_STARTED']).order_by(
+                '-updated_at'
+            )[:10]:
+                if prog.shift and prog.shift.end_time and prog.shift.end_time < now:
+                    staff_name = _staff_name(prog.staff)
+                    shift_overdue.append({
+                        'id': str(prog.id),
+                        'source_type': 'shift_progress',
+                        'template': {'name': 'Shift Checklist (WhatsApp)'},
+                        'submitted_by': {'id': str(prog.staff_id), 'name': staff_name},
+                        'status': prog.status,
+                        'is_overdue': True,
+                        'needs_review': False,
+                    })
+        except Exception:
+            pass
+
+        all_pending_review = pending_review_rows + shift_pending
+        all_overdue = overdue_rows + shift_overdue
+
+        # Per-staff accountability rollup
+        staff_map = {}
+        for ex in base.filter(assigned_to__isnull=False).values(
+            'assigned_to_id',
+            'assigned_to__first_name',
+            'assigned_to__last_name',
+            'assigned_to__email',
+        ).annotate(
+            open_count=Count('id', filter=Q(status__in=['NOT_STARTED', 'IN_PROGRESS'])),
+            overdue_count=Count(
+                'id',
+                filter=Q(
+                    status__in=['NOT_STARTED', 'IN_PROGRESS'],
+                    due_date__lt=now,
+                ),
+            ),
+            completed_count=Count('id', filter=Q(status='COMPLETED', completed_at__gte=period_start)),
+            pending_review_count=Count(
+                'id',
+                filter=Q(status='COMPLETED', supervisor_approved=False, completed_at__gte=period_start),
+            ),
+        ):
+            sid = str(ex['assigned_to_id'])
+            name = f"{ex.get('assigned_to__first_name') or ''} {ex.get('assigned_to__last_name') or ''}".strip()
+            if not name:
+                name = ex.get('assigned_to__email') or sid
+            staff_map[sid] = {
+                'staff_id': sid,
+                'staff_name': name,
+                'open': ex['open_count'] or 0,
+                'overdue': ex['overdue_count'] or 0,
+                'completed': ex['completed_count'] or 0,
+                'pending_review': ex['pending_review_count'] or 0,
+                'with_issues': 0,
+                'avg_completion_rate': None,
+            }
+
+        completion_rates = {}
+        issue_counts = {}
+        for ex in completed_period_qs.prefetch_related('step_responses', 'actions'):
+            sid = str(ex.assigned_to_id) if ex.assigned_to_id else None
+            if not sid:
+                continue
+            summary = ChecklistExecutionSerializer(context={'request': request}).get_compiled_summary(ex)
+            rate = summary.get('completion_rate')
+            if isinstance(rate, (int, float)):
+                completion_rates.setdefault(sid, []).append(rate)
+            if _has_issues(summary):
+                issue_counts[sid] = issue_counts.get(sid, 0) + 1
+
+        staff_accountability = []
+        for sid, row in staff_map.items():
+            rates = completion_rates.get(sid) or []
+            if rates:
+                row['avg_completion_rate'] = int(round(sum(rates) / len(rates)))
+            row['with_issues'] = issue_counts.get(sid, 0)
+            staff_accountability.append(row)
+
+        staff_accountability.sort(
+            key=lambda r: (r['overdue'], r['pending_review'], r['with_issues'], -r['completed']),
+            reverse=True,
+        )
+
+        with_issues_count = sum(1 for ex in completed_period_qs if _has_issues(
+            ChecklistExecutionSerializer(context={'request': request}).get_compiled_summary(ex)
+        ))
+
+        return Response({
+            'period_days': days,
+            'counts': {
+                'pending_review': len(all_pending_review),
+                'overdue': len(all_overdue),
+                'in_progress': in_progress_qs.count() + len(
+                    [s for s in shift_overdue if s.get('status') == 'IN_PROGRESS']
+                ),
+                'due_today': due_today_qs.count(),
+                'completed_period': completed_period_qs.count(),
+                'with_issues': with_issues_count,
+                'open_assignments': open_qs.count(),
+            },
+            'pending_review': all_pending_review[:20],
+            'overdue': all_overdue[:20],
+            'in_progress': in_progress_rows[:15],
+            'staff_accountability': staff_accountability[:50],
+        })
+
     @action(detail=True, methods=['post'])
     def manager_review(self, request, pk=None):
         """Manager approval or rejection of a completed checklist"""

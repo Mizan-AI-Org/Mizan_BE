@@ -177,7 +177,12 @@ def _create_incident_from_inbox_message(
     """
     from reporting.models import Incident  # local import to avoid cycles
 
-    incident_type = decision.category or "General"
+    from staff.incident_routing import (
+        normalize_incident_category_for_storage,
+        resolve_default_assignee_for_incident_type,
+    )
+
+    incident_type = normalize_incident_category_for_storage(decision.category or "General")
     # Prefer router-derived priority, fall back to the agent's hint, then
     # default to MEDIUM. ``CRITICAL`` is only ever set by the router.
     valid_priorities = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
@@ -222,40 +227,7 @@ def _create_incident_from_inbox_message(
     except Exception as exc:  # noqa: BLE001 — best-effort mirror
         logger.warning("Legacy Incident mirror failed: %s", exc)
 
-    # In-app notification for managers so the incident shows up next
-    # to the existing "Reported Incidents" widget without waiting for
-    # the next poll.
-    try:
-        managers = CustomUser.objects.filter(
-            restaurant=restaurant,
-            role__in=["MANAGER", "ADMIN", "SUPER_ADMIN", "OWNER"],
-            is_active=True,
-        )
-        for m in managers:
-            notif = Notification.objects.create(
-                recipient=m,
-                title=f"New {incident_type} incident",
-                message=title,
-                notification_type="INCIDENT",
-                priority=priority,
-                data={
-                    "incident_id": str(concern.id),
-                    "incident_type": incident_type,
-                    "route": "/dashboard/analytics?tab=incidents",
-                    "auto_routed_from": "staff_request_inbox",
-                    "matched_terms": list(decision.matched_terms),
-                },
-            )
-            notification_service.send_custom_notification(
-                recipient=m,
-                notification=notif,
-                message=notif.message,
-                notification_type="INCIDENT",
-                title=notif.title,
-                channels=["app"],
-            )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Incident notify managers failed: %s", exc)
+    # In-app + WhatsApp to category owners: staff.signals on SafetyConcernReport create.
 
     return concern, assignee, priority
 
