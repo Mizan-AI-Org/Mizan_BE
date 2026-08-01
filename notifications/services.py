@@ -375,8 +375,18 @@ class NotificationService:
         language_code='en_US',
     ):
         """Welcome message after ONE-TAP activation via Django WhatsApp template."""
-        return self.send_staff_activated_welcome(
+        ok, info = self.send_staff_activated_welcome(
             phone, first_name, restaurant_name, language_code=language_code
+        )
+        if ok:
+            return ok, info
+        # Template missing/failed — still confirm activation so staff aren't stuck.
+        name = (first_name or "there").strip() or "there"
+        venue = (restaurant_name or "your workplace").strip() or "your workplace"
+        return self.send_whatsapp_text(
+            phone,
+            f"Welcome {name}! Your staff account for {venue} is activated. "
+            f"You can clock in, get tasks, and chat with Miya anytime — just say Hi Miya.",
         )
 
     def send_clock_in_reminder_whatsapp(

@@ -336,106 +336,243 @@ def get_activation_status_by_phone(phone_digits):
     return {'status': 'not_found', 'user': None, 'record': None}
 
 
+def _prefer_existing_user_for_activation(full_phone, restaurant=None):
+    """
+    If this WhatsApp number already belongs to a staff/manager account, reuse it.
+    When restaurant is set, only return a same-restaurant match (never steal
+    another tenant's user). Without restaurant, use the global phone lookup.
+    """
+    normalized = normalize_activation_phone_inbound(full_phone) or full_phone
+    email = f"wa_{normalized}@mizan.activation"
+    by_email = CustomUser.objects.filter(email=email, is_active=True).first()
+    if by_email:
+        if restaurant is None or (
+            by_email.restaurant_id
+            and str(by_email.restaurant_id) == str(restaurant.id)
+        ):
+            return by_email
+
+    if restaurant is None:
+        return _find_active_user_by_phone(normalized)
+
+    suffix = _phone_suffix(normalized, 9)
+    qs = (
+        CustomUser.objects.filter(is_active=True, restaurant_id=restaurant.id)
+        .exclude(phone__isnull=True)
+        .exclude(phone="")
+    )
+    exact = qs.filter(phone=normalized).first()
+    if exact:
+        return exact
+    for u in qs.filter(phone__endswith=suffix)[:10]:
+        stored = _normalize_phone_digits(u.phone)
+        if stored == normalized or _phone_suffix(stored, 9) == suffix:
+            return u
+    return None
+
+
 def try_activate_staff_on_inbound_message(phone_digits):
     """
     ONE-TAP activation: on first inbound WhatsApp message, match by phone and activate.
-    Phone number is the ONLY identity; no tokens. Creates CustomUser, links session, hands off to Mastra.
-    Returns CustomUser if activated, else None.
+    Phone number is the ONLY identity; no tokens.
+
+    If an account already exists for this phone, link the pending record to that
+    user and continue with them (do not create a duplicate wa_* user).
+
+    Returns CustomUser if activated or linked, else None.
+    Welcome WhatsApp sends happen *after* the DB commit.
     """
     record = _find_staff_activation_record_by_phone(phone_digits)
     if not record:
+        # No pending invite — leave normal webhook user resolution / Miya path.
         return None
+    pending_record_id = record.id
+    pending_restaurant = record.restaurant
     full_phone = _normalize_phone_digits(record.phone) or phone_digits
-    with transaction.atomic():
-        record = StaffActivationRecord.objects.select_for_update().filter(
-            id=record.id, status=StaffActivationRecord.STATUS_NOT_ACTIVATED
-        ).first()
-        if not record:
-            return None  # Already activated by another process
-        email = f"wa_{full_phone}@mizan.activation"
-        existing = CustomUser.objects.filter(email=email).first()
-        if existing:
-            # Already activated (e.g. race or duplicate record)
-            record.status = StaffActivationRecord.STATUS_ACTIVATED
-            record.user = existing
-            record.activated_at = timezone.now()
-            record.save(update_fields=["status", "user", "activated_at", "updated_at"])
-            return existing
-        # Manager/Admin/Owner roles use password (no PIN); staff roles use PIN for one-tap login.
-        admin_roles = ['SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER']
-        use_pin = record.role not in admin_roles
-        if use_pin:
-            pin_code = str(random.randint(1000, 9999))
-            user = CustomUser.objects.create_user(
-                email=email,
-                pin_code=pin_code,
-                first_name=record.first_name or "Staff",
-                last_name=record.last_name or "",
-                role=record.role,
-                custom_role_label=(record.custom_role_label or "").strip()[:128]
-                if record.role == "CUSTOM"
-                else "",
-                restaurant=record.restaurant,
-                phone=full_phone,
-                is_verified=True,
-                is_active=True,
+    pin_code = None
+    user = None
+    restaurant_name = ""
+    first_name = "Staff"
+    linked_existing = False
+    try:
+        with transaction.atomic():
+            record = StaffActivationRecord.objects.select_for_update().filter(
+                id=pending_record_id, status=StaffActivationRecord.STATUS_NOT_ACTIVATED
+            ).first()
+            if not record:
+                # Race: already activated — resume the linked / phone-matched user.
+                done = (
+                    StaffActivationRecord.objects.filter(id=pending_record_id)
+                    .select_related("user", "restaurant")
+                    .first()
+                )
+                if done and done.user_id:
+                    return done.user
+                return (
+                    _prefer_existing_user_for_activation(
+                        full_phone, restaurant=pending_restaurant
+                    )
+                    or _find_active_user_by_phone(full_phone)
+                )
+
+            email = f"wa_{full_phone}@mizan.activation"
+            existing = _prefer_existing_user_for_activation(
+                full_phone, restaurant=record.restaurant
+            )
+            if existing:
+                updates = []
+                if not existing.phone:
+                    existing.phone = full_phone
+                    updates.append("phone")
+                if not existing.is_active:
+                    existing.is_active = True
+                    updates.append("is_active")
+                if not existing.is_verified:
+                    existing.is_verified = True
+                    updates.append("is_verified")
+                if updates:
+                    existing.save(update_fields=updates)
+                record.status = StaffActivationRecord.STATUS_ACTIVATED
+                record.user = existing
+                record.activated_at = timezone.now()
+                record.save(update_fields=["status", "user", "activated_at", "updated_at"])
+                user = existing
+                pin_code = None
+                linked_existing = True
+            else:
+                # Manager/Admin/Owner roles use password (no PIN); staff roles use PIN.
+                admin_roles = ["SUPER_ADMIN", "ADMIN", "OWNER", "MANAGER"]
+                use_pin = record.role not in admin_roles
+                if use_pin:
+                    pin_code = str(random.randint(1000, 9999))
+                    user = CustomUser.objects.create_user(
+                        email=email,
+                        pin_code=pin_code,
+                        first_name=record.first_name or "Staff",
+                        last_name=record.last_name or "",
+                        role=record.role,
+                        custom_role_label=(record.custom_role_label or "").strip()[:128]
+                        if record.role == "CUSTOM"
+                        else "",
+                        restaurant=record.restaurant,
+                        phone=full_phone,
+                        is_verified=True,
+                        is_active=True,
+                    )
+                else:
+                    pin_code = None
+                    temp_password = get_random_string(32)
+                    user = CustomUser.objects.create_user(
+                        email=email,
+                        password=temp_password,
+                        first_name=record.first_name or "Staff",
+                        last_name=record.last_name or "",
+                        role=record.role,
+                        custom_role_label=(record.custom_role_label or "").strip()[:128]
+                        if record.role == "CUSTOM"
+                        else "",
+                        restaurant=record.restaurant,
+                        phone=full_phone,
+                        is_verified=True,
+                        is_active=True,
+                    )
+                record.status = StaffActivationRecord.STATUS_ACTIVATED
+                record.user = user
+                record.activated_at = timezone.now()
+                record.save(update_fields=["status", "user", "activated_at", "updated_at"])
+                if not getattr(user, "profile", None):
+                    StaffProfile.objects.get_or_create(user=user, defaults={})
+                try:
+                    apply_default_primary_location(user)
+                except Exception:
+                    logger.exception(
+                        "[ONE-TAP] apply_default_primary_location failed phone=%s user=%s",
+                        full_phone,
+                        getattr(user, "id", None),
+                    )
+
+            first_name = user.first_name or record.first_name or "Staff"
+            restaurant_name = (
+                record.restaurant.name if getattr(record, "restaurant", None) else ""
+            )
+            try:
+                AuditLog.create_log(
+                    restaurant=record.restaurant,
+                    user=None,
+                    action_type="OTHER",
+                    entity_type="StaffActivationRecord",
+                    entity_id=str(record.id),
+                    description=(
+                        f"Staff activated via ONE-TAP WhatsApp: phone={full_phone}, "
+                        f"batch_id={getattr(record, 'batch_id', '') or ''}"
+                    ),
+                    new_values={
+                        "phone": full_phone,
+                        "batch_id": getattr(record, "batch_id", "") or "",
+                        "user_id": str(user.id),
+                        "activated_at": record.activated_at.isoformat()
+                        if record.activated_at
+                        else None,
+                    },
+                )
+            except Exception:
+                pass
+            logger.info(
+                "[ONE-TAP] %s staff %s for phone %s batch=%s (%s)",
+                "Linked existing" if linked_existing else "Activated",
+                user.id,
+                full_phone,
+                getattr(record, "batch_id", "") or "",
+                restaurant_name,
+            )
+    except Exception:
+        logger.exception(
+            "[ONE-TAP] Activation DB failure for phone=%s", phone_digits
+        )
+        return None
+
+    if not user:
+        return None
+
+    # Outside the atomic block — never roll back activation for send failures.
+    try:
+        from notifications.services import notification_service
+
+        if linked_existing:
+            # Account already existed (email invite / prior staff) — confirm and continue.
+            notification_service.send_whatsapp_text(
+                full_phone,
+                f"Welcome back {first_name}! Your WhatsApp is linked to "
+                f"{restaurant_name or 'your workspace'}. "
+                f"How can I help you today?",
             )
         else:
-            pin_code = None
-            temp_password = get_random_string(32)
-            user = CustomUser.objects.create_user(
-                email=email,
-                password=temp_password,
-                first_name=record.first_name or "Staff",
-                last_name=record.last_name or "",
-                role=record.role,
-                custom_role_label=(record.custom_role_label or "").strip()[:128]
-                if record.role == "CUSTOM"
-                else "",
-                restaurant=record.restaurant,
+            notification_service.notify_staff_activated(
                 phone=full_phone,
-                is_verified=True,
-                is_active=True,
+                first_name=first_name,
+                restaurant_name=restaurant_name,
+                user_id=str(user.id),
+                pin_code=pin_code,
+                batch_id=getattr(record, "batch_id", "") or "",
             )
-        record.status = StaffActivationRecord.STATUS_ACTIVATED
-        record.user = user
-        record.activated_at = timezone.now()
-        record.save(update_fields=["status", "user", "activated_at", "updated_at"])
-        # Ensure StaffProfile exists (used elsewhere)
-        if not getattr(user, "profile", None):
-            StaffProfile.objects.get_or_create(user=user, defaults={})
-        # Default new WhatsApp-activated staff to the restaurant's primary branch.
-        apply_default_primary_location(user)
-        # Log activation (timestamp, phone, batch_id)
-        try:
-            AuditLog.create_log(
-                restaurant=record.restaurant,
-                user=None,
-                action_type='OTHER',
-                entity_type='StaffActivationRecord',
-                entity_id=str(record.id),
-                description=f"Staff activated via ONE-TAP WhatsApp: phone={full_phone}, batch_id={getattr(record, 'batch_id', '') or ''}",
-                new_values={
-                    'phone': full_phone,
-                    'batch_id': getattr(record, 'batch_id', '') or '',
-                    'user_id': str(user.id),
-                    'activated_at': record.activated_at.isoformat() if record.activated_at else None,
-                },
-            )
-        except Exception:
-            pass
-        # Welcome message via Meta template (in-Django Miya path)
-        from notifications.services import notification_service
-        notification_service.notify_staff_activated(
-            phone=full_phone,
-            first_name=user.first_name or record.first_name or "Staff",
-            restaurant_name=record.restaurant.name,
-            user_id=str(user.id),
-            pin_code=pin_code,
-            batch_id=getattr(record, 'batch_id', '') or '',
+    except Exception:
+        logger.exception(
+            "[ONE-TAP] Welcome notify failed after activation phone=%s user=%s",
+            full_phone,
+            getattr(user, "id", None),
         )
-        logger.info(f"[ONE-TAP] Activated staff {user.id} for phone {full_phone} batch={getattr(record, 'batch_id', '')} ({record.restaurant.name})")
-        return user
+
+    try:
+        from django.core.cache import cache
+        from miya.cache_keys import whatsapp_context_key
+
+        cache.delete(whatsapp_context_key(full_phone))
+        if phone_digits and phone_digits != full_phone:
+            cache.delete(whatsapp_context_key(phone_digits))
+    except Exception:
+        pass
+
+    return user
 
 
 class UserManagementService:
