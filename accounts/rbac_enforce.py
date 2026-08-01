@@ -88,7 +88,14 @@ def miya_has_full_tenant_access(user, restaurant=None) -> bool:
 
 
 def user_can_use_miya(user) -> bool:
-    """Any authenticated staff/manager with scheduling or miya-capable role may chat."""
+    """
+    WhatsApp/dashboard Miya companion access.
+
+    Any active user linked to a restaurant may chat with Miya (staff companion).
+    Manager-only tools remain gated separately via TOOL_REQUIRED_ACTIONS.
+    """
+    if not user or not getattr(user, "is_active", False):
+        return False
     role = (getattr(user, "role", "") or "").upper()
     if role in PRIVILEGED_ROLES:
         return True
@@ -98,9 +105,13 @@ def user_can_use_miya(user) -> bool:
     if "miya_full_tools" in actions:
         return True
     # Staff operational apps imply WhatsApp Miya access
-    if apps & {"scheduling", "staff", "supervisor", "take_orders", "staff_requests"}:
+    if apps & {"scheduling", "staff", "supervisor", "take_orders", "staff_requests", "inventory"}:
         return True
     if role in {"MANAGER", "SUPERVISOR", "OWNER", "ADMIN"}:
+        return True
+    # Activated staff with empty RolePermissionSet apps (CLEANER, CUSTOM, etc.)
+    # must still reach Miya on WhatsApp for clock-in, tasks, and escalations.
+    if getattr(user, "restaurant_id", None) and role:
         return True
     return False
 

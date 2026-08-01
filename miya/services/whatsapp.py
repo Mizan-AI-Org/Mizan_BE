@@ -169,11 +169,29 @@ def handle_miya_whatsapp_turn(
         return True
 
     if not user_can_use_miya(user):
-        _send_miya_reply(
-            phone_digits,
-            "Your role doesn't have Miya access for this workspace. Contact your manager.",
-        )
-        return True
+        # Last-chance: pending ONE-TAP record may still need activation this turn
+        # (e.g. phone matched an older user without Miya apps).
+        try:
+            from accounts.services import try_activate_staff_on_inbound_message
+
+            activated = try_activate_staff_on_inbound_message(phone_digits)
+            if activated and user_can_use_miya(activated):
+                user = activated
+            else:
+                _send_miya_reply(
+                    phone_digits,
+                    "I recognize this number, but Miya isn't enabled for this account yet. "
+                    "Ask your manager to share the staff activation link "
+                    "(https://api.heymizan.ai/api/go/wa) and send the prefilled message.",
+                )
+                return True
+        except Exception:
+            _send_miya_reply(
+                phone_digits,
+                "I recognize this number, but Miya isn't enabled for this account yet. "
+                "Ask your manager to share the staff activation link and try again.",
+            )
+            return True
 
     text = (message_text or "").strip()
     if not text:
