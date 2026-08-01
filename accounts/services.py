@@ -341,101 +341,174 @@ def try_activate_staff_on_inbound_message(phone_digits):
     ONE-TAP activation: on first inbound WhatsApp message, match by phone and activate.
     Phone number is the ONLY identity; no tokens. Creates CustomUser, links session, hands off to Mastra.
     Returns CustomUser if activated, else None.
+
+    Welcome WhatsApp sends happen *after* the DB commit so a Meta/template failure
+    cannot roll back a successful activation (which previously surfaced as
+    "Sorry, something went wrong on our side").
     """
     record = _find_staff_activation_record_by_phone(phone_digits)
     if not record:
         return None
     full_phone = _normalize_phone_digits(record.phone) or phone_digits
-    with transaction.atomic():
-        record = StaffActivationRecord.objects.select_for_update().filter(
-            id=record.id, status=StaffActivationRecord.STATUS_NOT_ACTIVATED
-        ).first()
-        if not record:
-            return None  # Already activated by another process
-        email = f"wa_{full_phone}@mizan.activation"
-        existing = CustomUser.objects.filter(email=email).first()
-        if existing:
-            # Already activated (e.g. race or duplicate record)
-            record.status = StaffActivationRecord.STATUS_ACTIVATED
-            record.user = existing
-            record.activated_at = timezone.now()
-            record.save(update_fields=["status", "user", "activated_at", "updated_at"])
-            return existing
-        # Manager/Admin/Owner roles use password (no PIN); staff roles use PIN for one-tap login.
-        admin_roles = ['SUPER_ADMIN', 'ADMIN', 'OWNER', 'MANAGER']
-        use_pin = record.role not in admin_roles
-        if use_pin:
-            pin_code = str(random.randint(1000, 9999))
-            user = CustomUser.objects.create_user(
-                email=email,
-                pin_code=pin_code,
-                first_name=record.first_name or "Staff",
-                last_name=record.last_name or "",
-                role=record.role,
-                custom_role_label=(record.custom_role_label or "").strip()[:128]
-                if record.role == "CUSTOM"
-                else "",
-                restaurant=record.restaurant,
-                phone=full_phone,
-                is_verified=True,
-                is_active=True,
+    pin_code = None
+    user = None
+    restaurant_name = ""
+    first_name = "Staff"
+    try:
+        with transaction.atomic():
+            record = StaffActivationRecord.objects.select_for_update().filter(
+                id=record.id, status=StaffActivationRecord.STATUS_NOT_ACTIVATED
+            ).first()
+            if not record:
+                return None  # Already activated by another process
+
+            email = f"wa_{full_phone}@mizan.activation"
+            # Prefer an existing account on this phone (email invite / prior WA user)
+            # over creating a duplicate wa_* user.
+            existing = CustomUser.objects.filter(email=email).first()
+            if not existing:
+                existing = _find_active_user_by_phone(full_phone)
+                if existing and getattr(record, "restaurant_id", None):
+                    if (
+                        existing.restaurant_id
+                        and str(existing.restaurant_id) != str(record.restaurant_id)
+                    ):
+                        # Same phone on another tenant — do not steal that user.
+                        existing = None
+            if existing:
+                if not existing.phone:
+                    existing.phone = full_phone
+                    existing.save(update_fields=["phone"])
+                record.status = StaffActivationRecord.STATUS_ACTIVATED
+                record.user = existing
+                record.activated_at = timezone.now()
+                record.save(update_fields=["status", "user", "activated_at", "updated_at"])
+                user = existing
+                pin_code = None
+            else:
+                # Manager/Admin/Owner roles use password (no PIN); staff roles use PIN.
+                admin_roles = ["SUPER_ADMIN", "ADMIN", "OWNER", "MANAGER"]
+                use_pin = record.role not in admin_roles
+                if use_pin:
+                    pin_code = str(random.randint(1000, 9999))
+                    user = CustomUser.objects.create_user(
+                        email=email,
+                        pin_code=pin_code,
+                        first_name=record.first_name or "Staff",
+                        last_name=record.last_name or "",
+                        role=record.role,
+                        custom_role_label=(record.custom_role_label or "").strip()[:128]
+                        if record.role == "CUSTOM"
+                        else "",
+                        restaurant=record.restaurant,
+                        phone=full_phone,
+                        is_verified=True,
+                        is_active=True,
+                    )
+                else:
+                    pin_code = None
+                    temp_password = get_random_string(32)
+                    user = CustomUser.objects.create_user(
+                        email=email,
+                        password=temp_password,
+                        first_name=record.first_name or "Staff",
+                        last_name=record.last_name or "",
+                        role=record.role,
+                        custom_role_label=(record.custom_role_label or "").strip()[:128]
+                        if record.role == "CUSTOM"
+                        else "",
+                        restaurant=record.restaurant,
+                        phone=full_phone,
+                        is_verified=True,
+                        is_active=True,
+                    )
+                record.status = StaffActivationRecord.STATUS_ACTIVATED
+                record.user = user
+                record.activated_at = timezone.now()
+                record.save(update_fields=["status", "user", "activated_at", "updated_at"])
+                if not getattr(user, "profile", None):
+                    StaffProfile.objects.get_or_create(user=user, defaults={})
+                try:
+                    apply_default_primary_location(user)
+                except Exception:
+                    logger.exception(
+                        "[ONE-TAP] apply_default_primary_location failed phone=%s user=%s",
+                        full_phone,
+                        getattr(user, "id", None),
+                    )
+
+            first_name = user.first_name or record.first_name or "Staff"
+            restaurant_name = (
+                record.restaurant.name if getattr(record, "restaurant", None) else ""
             )
-        else:
-            pin_code = None
-            temp_password = get_random_string(32)
-            user = CustomUser.objects.create_user(
-                email=email,
-                password=temp_password,
-                first_name=record.first_name or "Staff",
-                last_name=record.last_name or "",
-                role=record.role,
-                custom_role_label=(record.custom_role_label or "").strip()[:128]
-                if record.role == "CUSTOM"
-                else "",
-                restaurant=record.restaurant,
-                phone=full_phone,
-                is_verified=True,
-                is_active=True,
+            try:
+                AuditLog.create_log(
+                    restaurant=record.restaurant,
+                    user=None,
+                    action_type="OTHER",
+                    entity_type="StaffActivationRecord",
+                    entity_id=str(record.id),
+                    description=(
+                        f"Staff activated via ONE-TAP WhatsApp: phone={full_phone}, "
+                        f"batch_id={getattr(record, 'batch_id', '') or ''}"
+                    ),
+                    new_values={
+                        "phone": full_phone,
+                        "batch_id": getattr(record, "batch_id", "") or "",
+                        "user_id": str(user.id),
+                        "activated_at": record.activated_at.isoformat()
+                        if record.activated_at
+                        else None,
+                    },
+                )
+            except Exception:
+                pass
+            logger.info(
+                "[ONE-TAP] Activated staff %s for phone %s batch=%s (%s)",
+                user.id,
+                full_phone,
+                getattr(record, "batch_id", "") or "",
+                restaurant_name,
             )
-        record.status = StaffActivationRecord.STATUS_ACTIVATED
-        record.user = user
-        record.activated_at = timezone.now()
-        record.save(update_fields=["status", "user", "activated_at", "updated_at"])
-        # Ensure StaffProfile exists (used elsewhere)
-        if not getattr(user, "profile", None):
-            StaffProfile.objects.get_or_create(user=user, defaults={})
-        # Default new WhatsApp-activated staff to the restaurant's primary branch.
-        apply_default_primary_location(user)
-        # Log activation (timestamp, phone, batch_id)
-        try:
-            AuditLog.create_log(
-                restaurant=record.restaurant,
-                user=None,
-                action_type='OTHER',
-                entity_type='StaffActivationRecord',
-                entity_id=str(record.id),
-                description=f"Staff activated via ONE-TAP WhatsApp: phone={full_phone}, batch_id={getattr(record, 'batch_id', '') or ''}",
-                new_values={
-                    'phone': full_phone,
-                    'batch_id': getattr(record, 'batch_id', '') or '',
-                    'user_id': str(user.id),
-                    'activated_at': record.activated_at.isoformat() if record.activated_at else None,
-                },
-            )
-        except Exception:
-            pass
-        # Welcome message via Meta template (in-Django Miya path)
+    except Exception:
+        logger.exception(
+            "[ONE-TAP] Activation DB failure for phone=%s", phone_digits
+        )
+        return None
+
+    if not user:
+        return None
+
+    # Outside the atomic block — never roll back activation for send failures.
+    try:
         from notifications.services import notification_service
+
         notification_service.notify_staff_activated(
             phone=full_phone,
-            first_name=user.first_name or record.first_name or "Staff",
-            restaurant_name=record.restaurant.name,
+            first_name=first_name,
+            restaurant_name=restaurant_name,
             user_id=str(user.id),
             pin_code=pin_code,
-            batch_id=getattr(record, 'batch_id', '') or '',
+            batch_id=getattr(record, "batch_id", "") or "",
         )
-        logger.info(f"[ONE-TAP] Activated staff {user.id} for phone {full_phone} batch={getattr(record, 'batch_id', '')} ({record.restaurant.name})")
-        return user
+    except Exception:
+        logger.exception(
+            "[ONE-TAP] Welcome notify failed after activation phone=%s user=%s",
+            full_phone,
+            getattr(user, "id", None),
+        )
+
+    try:
+        from django.core.cache import cache
+        from miya.cache_keys import whatsapp_context_key
+
+        cache.delete(whatsapp_context_key(full_phone))
+        if phone_digits and phone_digits != full_phone:
+            cache.delete(whatsapp_context_key(phone_digits))
+    except Exception:
+        pass
+
+    return user
 
 
 class UserManagementService:

@@ -2288,21 +2288,27 @@ def whatsapp_webhook(request):
                             (text_body or "")[:80],
                         )
                         # ONE-TAP activation: on first inbound message, match NOT_ACTIVATED staff by phone and activate
-                        activated_user = try_activate_staff_on_inbound_message(phone_digits)
+                        activated_user = None
+                        try:
+                            activated_user = try_activate_staff_on_inbound_message(phone_digits)
+                        except Exception:
+                            logger.exception(
+                                "ONE-TAP activation raised unexpectedly phone=%s",
+                                phone_digits,
+                            )
+                            _safe_whatsapp_text_send(
+                                phone_digits,
+                                "I couldn't finish activating your account just now. "
+                                "Please send the same activation message again in a moment.",
+                                log_ctx="activation_exception",
+                            )
+                            continue
                         if activated_user:
                             session, _ = WhatsAppSession.objects.update_or_create(
                                 phone=phone_digits,
                                 defaults={'user': activated_user, 'state': 'idle'}
                             )
-                            # Send welcome immediately so staff get confirmation in the same turn
-                            try:
-                                notification_service.send_staff_activated_welcome(
-                                    phone=phone_digits,
-                                    first_name=activated_user.first_name or "Staff",
-                                    restaurant_name=activated_user.restaurant.name if getattr(activated_user, 'restaurant', None) else "",
-                                )
-                            except Exception as e:
-                                logger.warning("send_staff_activated_welcome after webhook activation: %s", e)
+                            # Welcome template/notify is sent inside try_activate (after DB commit).
                             continue
                         # Resolve user: prefer session's user (restaurant-scoped); else match by phone
                         session = WhatsAppSession.objects.filter(phone=phone_digits).first()
