@@ -214,7 +214,7 @@ def run_ops_search(
             ),
             "has_photo_proof": bool(t.proof_media_url),
             "proof_media_url": t.proof_media_url or None,
-            "href": f"/dashboard/staff-requests?list=dashboard&kind=dashboard&id={t.id}",
+            "href": f"/dashboard?task={t.id}",
         }
 
     return {
@@ -249,7 +249,7 @@ def run_ops_search(
                 "currency": getattr(inv, "currency", "") or "",
                 "status": inv.status,
                 "due_date": inv.due_date.isoformat() if inv.due_date else None,
-                "href": f"/dashboard/staff-requests?kind=invoice&id={inv.id}",
+                "href": f"/dashboard/staff-requests/{inv.id}?kind=invoice",
             }
             for inv in invoices
         ],

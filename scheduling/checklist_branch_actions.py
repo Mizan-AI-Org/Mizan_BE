@@ -287,3 +287,36 @@ def apply_checklist_branch(
         }
 
     return {"action": action, "result": None, "flow": "next"}
+
+
+def find_next_checklist_task(task_ids, responses, *, branch_outcome=None):
+    """
+    Return (ShiftTask, 1-based index) for the next checklist step.
+    Honors goto targets from Processes & Tasks condition flow.
+    """
+    from scheduling.models import ShiftTask
+
+    branch_outcome = branch_outcome or {}
+    goto_id = str(branch_outcome.get("goto_task_id") or "").strip()
+    if goto_id and branch_outcome.get("flow") == "goto":
+        for i, tid in enumerate(task_ids or []):
+            cand = ShiftTask.objects.filter(id=tid).first()
+            if not cand:
+                continue
+            cfg = getattr(cand, "branch_config", None) or {}
+            tmpl_tid = str(cfg.get("template_task_id") or "")
+            if str(cand.id) == goto_id or tmpl_tid == goto_id:
+                if tid not in (responses or {}) and cand.status not in (
+                    "COMPLETED",
+                    "CANCELLED",
+                ):
+                    return cand, i + 1
+
+    answered_ids = {str(k) for k in (responses or {}).keys()}
+    for i, tid in enumerate(task_ids or []):
+        if str(tid) in answered_ids:
+            continue
+        cand = ShiftTask.objects.filter(id=tid).first()
+        if cand and cand.status not in ("COMPLETED", "CANCELLED"):
+            return cand, i + 1
+    return None, None

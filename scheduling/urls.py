@@ -19,6 +19,7 @@ from .views import (
     TimesheetViewSet,
     TimesheetEntryViewSet,
     live_checklist_progress,
+    checklist_completion_detail,
 )
 from .task_views import TaskTemplateViewSet, TaskViewSet
 from .process_views import ProcessViewSet, ProcessTaskViewSet
@@ -121,6 +122,11 @@ urlpatterns = [
 
     # Live checklist progress (WhatsApp/conversational step-by-step) for managers
     path('live-checklist-progress/', live_checklist_progress, name='scheduling-live-checklist-progress'),
+    path(
+        'checklist-completion/<uuid:progress_id>/',
+        checklist_completion_detail,
+        name='scheduling-checklist-completion-detail',
+    ),
 
     # Recurring shifts (batch create/delete for 7Shifts-style, JWT)
     path('recurring-shifts/batch-create/', batch_create_recurring_shifts, name='recurring-shifts-batch-create'),

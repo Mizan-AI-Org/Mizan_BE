@@ -1481,8 +1481,45 @@ def live_checklist_progress(request):
             'tasks_needing_follow_up': tasks_needing_follow_up,
             'incomplete_task_ids': incomplete_task_ids,
             'photo_evidence_task_ids': photo_task_ids,
+            'fully_compliant': bool((prog.completion_summary or {}).get('fully_compliant')),
+            'completion_summary': prog.completion_summary or None,
             'last_clock_out': last_clock_out_meta,
             'updated_at': prog.updated_at.isoformat() if prog.updated_at else None,
             'completed_at': prog.completed_at.isoformat() if prog.completed_at else None,
         })
     return Response({'items': out})
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated, IsManagerOrAdmin])
+def checklist_completion_detail(request, progress_id):
+    """Full archived checklist completion (responses, photos, compliance) for managers."""
+    restaurant = getattr(request.user, 'restaurant', None)
+    if not restaurant:
+        return Response({'detail': 'No restaurant'}, status=status.HTTP_403_FORBIDDEN)
+
+    prog = (
+        ShiftChecklistProgress.objects.filter(
+            id=progress_id,
+            shift__schedule__restaurant=restaurant,
+            status='COMPLETED',
+        )
+        .select_related('shift', 'staff')
+        .first()
+    )
+    if not prog:
+        return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    summary = prog.completion_summary or {}
+    if not summary:
+        from scheduling.checklist_completion import build_checklist_completion_summary
+
+        summary = build_checklist_completion_summary(prog, prog.staff)
+
+    return Response({
+        'id': str(prog.id),
+        'staff_name': _staff_display_name(prog.staff),
+        'shift_date': prog.shift.shift_date.isoformat() if prog.shift and prog.shift.shift_date else None,
+        'completed_at': prog.completed_at.isoformat() if prog.completed_at else None,
+        'completion_summary': summary,
+    })

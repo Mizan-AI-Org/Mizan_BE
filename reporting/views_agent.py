@@ -128,6 +128,12 @@ def agent_create_incident(request):
         # Create both: SafetyConcernReport (shown on dashboard) and Incident (for reporting)
         from staff.models_task import SafetyConcernReport
 
+        from staff.incident_routing import (
+            normalize_incident_category_for_storage,
+            resolve_default_assignee_for_incident_type,
+        )
+
+        category = normalize_incident_category_for_storage(category)
         assignee = resolve_default_assignee_for_incident_type(restaurant, category)
         concern = SafetyConcernReport.objects.create(
             restaurant=restaurant,
@@ -155,12 +161,7 @@ def agent_create_incident(request):
         except Exception:
             logger.warning("[AgentIncident] post-create widget/location finalize failed", exc_info=True)
 
-        try:
-            from notifications.views import _notify_managers_of_whatsapp_incident
-
-            _notify_managers_of_whatsapp_incident(concern)
-        except Exception:
-            logger.warning("[AgentIncident] manager notify failed", exc_info=True)
+        # Category-owner notifications: staff.signals on SafetyConcernReport create.
 
         try:
             Incident.objects.create(

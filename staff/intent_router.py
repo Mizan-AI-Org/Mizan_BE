@@ -194,6 +194,10 @@ _INBOX_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             # what's theirs.
             "salary", "payslip", "pay slip", "pay-slip", "payroll",
             "wage", "wages", "bonus", "overtime pay", "ot pay",
+            "pay all staff", "pay staff", "pay the staff", "pay everyone",
+            "pay all employees", "run payroll", "process payroll",
+            "pay immediately", "pay now", "immediate payment",
+            "tell hr to pay", "hr to pay",
             "tips ", "tip share", "deduction", "missing pay",
             "haven't been paid", "havent been paid", "not been paid",
             "not paid yet", "no pay this month", "missing payslip",

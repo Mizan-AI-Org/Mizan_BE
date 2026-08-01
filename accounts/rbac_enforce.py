@@ -116,6 +116,7 @@ TOOL_REQUIRED_ACTIONS: dict[str, str | None] = {
     "request_time_off": None,
     "report_incident": None,
     "get_business_context": None,
+    "list_dashboard_widgets": None,
     # Manager / elevated
     "staff_lookup": "miya_full_tools",
     "list_shifts": "edit_schedule",

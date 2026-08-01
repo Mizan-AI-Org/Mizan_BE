@@ -1,9 +1,10 @@
 """
 Standing Process & Tasks assignments — checklists without a scheduled shift.
 
-Managers assign a TaskTemplate to staff on the process form. When those staff
-clock in (or start a checklist while clocked in), we materialize a lightweight
-ad-hoc day shift so existing ShiftTask / ShiftChecklistProgress FKs keep working.
+Managers assign a TaskTemplate to staff on the process form. Staff can start the
+checklist via Miya/WhatsApp without clocking in (clock-in remains optional for
+attendance). We materialize a lightweight ad-hoc day shift so ShiftTask /
+ShiftChecklistProgress FKs keep working.
 """
 from __future__ import annotations
 

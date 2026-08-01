@@ -877,6 +877,7 @@ class AgentDashboardWidgetListView(APIView):
         )
         custom_widgets = []
         for w in custom_qs:
+            kw = w.routing_keywords or []
             custom_widgets.append(
                 {
                     "id": str(w.id),
@@ -887,8 +888,41 @@ class AgentDashboardWidgetListView(APIView):
                     "icon": w.icon or "sparkles",
                     "category_id": str(w.category_id) if w.category_id else None,
                     "in_layout": w.slot_id() in current,
+                    "routing_keywords": [str(k) for k in kw if str(k).strip()],
                 }
             )
+
+        routing_catalog = []
+        if getattr(user, "restaurant_id", None):
+            from .custom_widget_routing import normalize_routing_keywords
+
+            catalog_qs = (
+                DashboardCustomWidget.objects.filter(restaurant_id=user.restaurant_id)
+                .select_related("user")
+                .order_by("title", "-created_at")
+            )
+            for w in catalog_qs:
+                keywords = w.routing_keywords or normalize_routing_keywords(
+                    None,
+                    title=w.title,
+                    subtitle=w.subtitle or "",
+                )
+                owner_name = ""
+                try:
+                    owner_name = w.user.get_full_name() or w.user.email or ""
+                except Exception:
+                    owner_name = ""
+                routing_catalog.append(
+                    {
+                        "id": str(w.id),
+                        "slot_id": w.slot_id(),
+                        "title": w.title,
+                        "subtitle": w.subtitle or "",
+                        "routing_keywords": keywords,
+                        "owner_user_id": str(w.user_id),
+                        "owner_name": owner_name,
+                    }
+                )
 
         # Build a description-friendly summary of the ordered layout so the
         # LLM can echo it verbatim without extra round-trips.
@@ -910,6 +944,7 @@ class AgentDashboardWidgetListView(APIView):
                 "order": current,
                 "order_detail": ordered_summary,
                 "custom_widgets": custom_widgets,
+                "routing_catalog": routing_catalog,
                 "allowed_builtin_ids": sorted(DASHBOARD_WIDGET_IDS),
                 "default_builtin_order": list(DEFAULT_DASHBOARD_WIDGET_ORDER),
                 "allowed_custom_icons": sorted(ALLOWED_CUSTOM_WIDGET_ICONS),

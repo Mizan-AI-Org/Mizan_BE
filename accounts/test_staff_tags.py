@@ -185,6 +185,15 @@ class StaffListTagFilterTests(TestCase):
         ids = {r["id"] for r in rows}
         self.assertIn(str(self.buyer.id), ids)
 
+    def test_ids_filter(self):
+        resp = self.client.get(
+            f"/api/staff/?ids={self.chef.id},{self.waiter.id}&page_size=500",
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        rows = resp.data.get("results", resp.data) if isinstance(resp.data, dict) else resp.data
+        ids = {r["id"] for r in rows}
+        self.assertEqual(ids, {str(self.chef.id), str(self.waiter.id)})
+
     def test_tags_endpoint_lists_canonical_set(self):
         resp = self.client.get("/api/staff/tags/")
         self.assertEqual(resp.status_code, status.HTTP_200_OK)

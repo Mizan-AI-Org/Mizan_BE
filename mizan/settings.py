@@ -688,6 +688,10 @@ CELERY_BEAT_SCHEDULE = {
         "task": "dashboard.tasks.task_follow_up_sweep",
         "schedule": crontab(minute='*/15'),
     },
+    "snapshot_staff_daily_progress": {
+        "task": "dashboard.tasks.snapshot_staff_daily_progress",
+        "schedule": crontab(minute=5, hour=0),  # 00:05 — archive yesterday's staff progress
+    },
     "staff_request_follow_up_sweep": {
         "task": "staff.tasks.staff_request_follow_up_sweep",
         "schedule": crontab(minute='*/15'),

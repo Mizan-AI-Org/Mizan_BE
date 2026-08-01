@@ -1478,70 +1478,7 @@ class NotificationService:
             session.user = user
             session.save(update_fields=["user"])
 
-        def _ensure_shift_tasks_from_templates(shift_obj):
-            """
-            Ensure ShiftTasks exist for all Process & Task templates on this shift.
-            Tasks defined under each template (Manage Processes → Edit Process → Tasks)
-            and selected during scheduling are created here and sent as the staff
-            checklist. Runs even when the shift already has ShiftTasks (e.g. custom
-            tasks), so the checklist includes both template tasks and custom tasks.
-            Reads from template.tasks (JSON) or template.sop_steps (JSON).
-            """
-            try:
-                templates = list(shift_obj.task_templates.all())
-            except Exception:
-                templates = []
-            existing_titles = set(
-                ShiftTask.objects.filter(shift=shift_obj)
-                .values_list("title", flat=True)
-                .distinct()
-            )
-            for tpl in templates:
-                steps = []
-                try:
-                    if getattr(tpl, "sop_steps", None):
-                        steps = list(tpl.sop_steps or [])
-                    elif getattr(tpl, "tasks", None):
-                        steps = list(tpl.tasks or [])
-                except Exception:
-                    steps = []
-                if not steps:
-                    steps = [{"title": getattr(tpl, "name", "Task"), "description": getattr(tpl, "description", "") or ""}]
-                for step in steps:
-                    if isinstance(step, str):
-                        title = (step.strip()[:255] or getattr(tpl, "name", "Task")).strip()
-                        desc = ""
-                    elif isinstance(step, dict):
-                        title = (step.get("title") or step.get("name") or step.get("task") or getattr(tpl, "name", "Task"))[:255].strip()
-                        desc = (step.get("description") or step.get("details") or "").strip()
-                    else:
-                        title = (getattr(tpl, "name", "Task") or "Task").strip()
-                        desc = ""
-                    if not title:
-                        title = getattr(tpl, "name", "Task") or "Task"
-                    if title in existing_titles:
-                        continue
-                    existing_titles.add(title)
-                    v_req = bool(step.get("verification_required", False) if isinstance(step, dict) else False) or bool(getattr(tpl, "verification_required", False))
-                    v_type = (step.get("verification_type") or getattr(tpl, "verification_type", "NONE") or "NONE") if isinstance(step, dict) else (getattr(tpl, "verification_type", "NONE") or "NONE")
-                    v_inst = (step.get("verification_instructions") or getattr(tpl, "verification_instructions", None)) if isinstance(step, dict) else getattr(tpl, "verification_instructions", None)
-                    v_cl = (step.get("verification_checklist") or getattr(tpl, "verification_checklist", []) or []) if isinstance(step, dict) else (getattr(tpl, "verification_checklist", []) or [])
-                    try:
-                        ShiftTask.objects.create(
-                            shift=shift_obj,
-                            title=title,
-                            description=desc,
-                            status="TODO",
-                            assigned_to=user,
-                            verification_required=v_req,
-                            verification_type=v_type,
-                            verification_instructions=v_inst,
-                            verification_checklist=v_cl,
-                        )
-                    except Exception as e:
-                        logger.warning("start_conversational_checklist_after_clock_in: create ShiftTask from template: %s", e)
-
-        _ensure_shift_tasks_from_templates(active_shift)
+        self._ensure_shift_tasks_from_templates(user, active_shift)
 
         tasks_qs = ShiftTask.objects.filter(shift=active_shift).exclude(status__in=["COMPLETED", "CANCELLED"])
         priority_order = {"URGENT": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
@@ -1620,23 +1557,12 @@ class NotificationService:
         """
         Send a single checklist task step to the staff member via WhatsApp.
         Tries: approved template → interactive buttons → plain text.
+        Photo proof is requested after Yes (see checklist_photo / branch handlers).
         Returns True if any delivery method succeeded, False if all failed.
         """
-        if getattr(task, "verification_required", False) and str(getattr(task, "verification_type", "NONE")).upper() == "PHOTO":
-            msg = (
-                f"📋 *Task {step_num}/{total_steps}*\n\n"
-                f"*{task.title}*\n"
-                f"{task.description or ''}\n\n"
-                f"📸 Please complete this task and send a photo as evidence."
-            )
-            if session:
-                session.context["awaiting_verification_for_task_id"] = str(task.id)
-                session.state = "awaiting_task_photo"
-                session.save(update_fields=["state", "context"])
-            ok, resp = self.send_whatsapp_text(phone_digits, msg)
-            logger.info("_send_task_step_to_whatsapp: photo task text send ok=%s resp=%s", ok, resp)
-            return ok
+        from scheduling.checklist_photo import task_requires_photo
 
+        requires_photo = task_requires_photo(task)
         question_text = (task.title or "").strip()
         if (getattr(task, "description", None) or "").strip():
             question_text = f"{question_text}. {(task.description or '').strip()}"
@@ -1646,11 +1572,16 @@ class NotificationService:
         if template_ok:
             return True
 
+        photo_hint = (
+            "\n\n📸 After *Yes*, I'll ask for a photo as proof."
+            if requires_photo
+            else ""
+        )
         task_msg = (
             f"📋 *Task {step_num}/{total_steps}*\n\n"
             f"*{task.title}*\n"
             f"{task.description or ''}\n\n"
-            "Is this complete?"
+            f"Is this complete?{photo_hint}"
         )
         buttons = [
             {"id": "yes", "title": "Yes"},

@@ -7,6 +7,7 @@ from .views_ops_ui import (
     DashboardOpsSearchView,
     ManagerChaseRecordView,
     StaffDailyTaskProgressView,
+    StaffDailyProgressHistoryView,
 )
 from .views import (
     DailyKPIListAPIView,
@@ -278,6 +279,11 @@ urlpatterns = [
         'staff-daily-progress/',
         StaffDailyTaskProgressView.as_view(),
         name='dashboard-staff-daily-progress',
+    ),
+    path(
+        'staff-daily-progress/history/',
+        StaffDailyProgressHistoryView.as_view(),
+        name='dashboard-staff-daily-progress-history',
     ),
     path('alerts-old/', AlertListCreateAPIView.as_view(), name='alert-list-create'),
     path('alerts-old/<uuid:pk>/', AlertRetrieveUpdateDestroyAPIView.as_view(), name='alert-detail'),

@@ -5,9 +5,7 @@ Manager-authenticated ops helpers used by the dashboard UI
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 
-from django.db.models import Q
 from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -229,7 +227,7 @@ class ManagerChaseRecordView(APIView):
 class StaffDailyTaskProgressView(APIView):
     """
     GET /api/dashboard/staff-daily-progress/
-    Per-employee progress across today's dashboard tasks.
+    Live progress for today, or archived snapshot for ?date=YYYY-MM-DD (managers).
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -239,60 +237,78 @@ class StaffDailyTaskProgressView(APIView):
         if not restaurant:
             return Response({"detail": "No workspace"}, status=status.HTTP_400_BAD_REQUEST)
 
-        from accounts.models import CustomUser
-        from dashboard.models import Task
+        from datetime import datetime as dt
 
-        today = timezone.localdate()
-        now = timezone.now()
-        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        day_end = day_start + timedelta(days=1)
-
-        staff = list(
-            CustomUser.objects.filter(
-                restaurant=restaurant,
-                is_active=True,
-            ).order_by("first_name", "last_name")[:80]
+        from dashboard.services.staff_daily_progress import (
+            compute_staff_daily_progress,
+            load_staff_daily_progress_snapshot,
         )
 
-        rows = []
-        for u in staff:
-            today_qs = Task.objects.filter(
-                restaurant=restaurant,
-                assigned_to=u,
-            ).filter(
-                Q(created_at__gte=day_start, created_at__lt=day_end)
-                | Q(due_date=today)
-            )
-            open_qs = Task.objects.filter(
-                restaurant=restaurant,
-                assigned_to=u,
-                status__in=["PENDING", "ACCEPTED", "IN_PROGRESS"],
-            )
-            today_total = today_qs.count()
-            open_count = open_qs.count()
-            if today_total == 0 and open_count == 0:
-                continue
+        today = timezone.localdate()
+        date_raw = (request.query_params.get("date") or "").strip()
+        on_date = today
+        archived = False
 
-            if today_total > 0:
-                done = today_qs.filter(status="COMPLETED").count()
-                total = today_total
-            else:
-                done = 0
-                total = open_count
+        if date_raw:
+            try:
+                on_date = dt.strptime(date_raw, "%Y-%m-%d").date()
+            except ValueError:
+                return Response(
+                    {"detail": "Invalid date; use YYYY-MM-DD"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if on_date > today:
+                return Response(
+                    {"detail": "Cannot query future dates"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if on_date < today:
+                if not _is_manager(request.user):
+                    return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+                rows = load_staff_daily_progress_snapshot(restaurant, on_date)
+                return Response(
+                    {
+                        "success": True,
+                        "date": str(on_date),
+                        "archived": True,
+                        "staff": rows,
+                    }
+                )
 
-            pct = int(round((done / total) * 100)) if total else 0
-            rows.append(
-                {
-                    "id": str(u.id),
-                    "name": f"{u.first_name or ''} {u.last_name or ''}".strip() or u.email,
-                    "role": getattr(u, "role", "") or "",
-                    "is_absent": _is_user_absent(u, restaurant),
-                    "total": total,
-                    "done": done,
-                    "open": open_count,
-                    "pct": pct,
-                }
-            )
+        rows = compute_staff_daily_progress(restaurant, on_date=today)
+        return Response(
+            {
+                "success": True,
+                "date": str(today),
+                "archived": archived,
+                "staff": rows,
+            }
+        )
 
-        rows.sort(key=lambda r: (-r["open"], r["name"].lower()))
-        return Response({"success": True, "date": str(today), "staff": rows})
+
+class StaffDailyProgressHistoryView(APIView):
+    """GET /api/dashboard/staff-daily-progress/history/ — manager accountability archive index."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not _is_manager(request.user):
+            return Response({"detail": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        restaurant = _restaurant_for(request.user)
+        if not restaurant:
+            return Response({"detail": "No workspace"}, status=status.HTTP_400_BAD_REQUEST)
+
+        from dashboard.services.staff_daily_progress import progress_history_summaries
+
+        try:
+            days = int(request.query_params.get("days") or 30)
+        except (TypeError, ValueError):
+            days = 30
+        days = max(1, min(days, 90))
+
+        return Response(
+            {
+                "success": True,
+                "days": progress_history_summaries(restaurant, days=days),
+            }
+        )

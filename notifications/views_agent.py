@@ -383,10 +383,7 @@ def _resolve_staff_and_shift(request_data):
             len(standing),
         )
         if standing:
-            msg = (
-                "I couldn't start your checklist yet. Please *clock in* first, "
-                "then say *start checklist*."
-            )
+            msg = _cl_tr(user, "checklist.need_clock_in")
         else:
             msg = (
                 "You don't have a checklist assigned right now. "
@@ -537,7 +534,7 @@ def agent_preview_checklist(request):
                 ),
             })
 
-    # Not clocked in or no tasks: return preview
+    # Not clocked in: return preview (clock-in optional — staff can say start checklist)
     task_list_text = "\n".join(
         f"{i+1}. {item['title']}" for i, item in enumerate(all_items)
     )
@@ -549,9 +546,13 @@ def agent_preview_checklist(request):
         "shift": {"start": shift_start, "end": shift_end},
         "tasks": all_items,
         "total_items": len(all_items),
-        "message_for_user": (
-            f"Your shift ({shift_start} – {shift_end}) has {len(all_items)} task(s):\n{task_list_text}\n\n"
-            + ("Say *Start checklist* when you're ready to begin." if clocked_in else "Clock in first, then I'll start your checklist.")
+        "message_for_user": _cl_tr(
+            user,
+            "checklist.preview_ready",
+            start=shift_start or "—",
+            end=shift_end or "—",
+            count=len(all_items),
+            list=task_list_text,
         ),
     })
 
@@ -657,16 +658,7 @@ def agent_start_whatsapp_checklist(request):
     if err:
         return err
 
-    if not _is_staff_clocked_in(user):
-        return Response(
-            {
-                "success": False,
-                "error": "Not clocked in",
-                "clocked_in": False,
-                "message_for_user": _cl_tr(user, "checklist.need_clock_in"),
-            },
-            status=status.HTTP_400_BAD_REQUEST,
-        )
+    clocked_in = _is_staff_clocked_in(user)
 
     from scheduling.models import ShiftChecklistProgress, ShiftTask
 
@@ -678,7 +670,7 @@ def agent_start_whatsapp_checklist(request):
         return Response({
             "success": True,
             "status": "completed",
-            "clocked_in": True,
+            "clocked_in": clocked_in,
             "message_for_user": _cl_tr(user, "checklist.already_complete_shift"),
         })
 
@@ -724,7 +716,7 @@ def agent_start_whatsapp_checklist(request):
                 return Response({
                     "success": True,
                     "status": "awaiting_photo",
-                    "clocked_in": True,
+                    "clocked_in": clocked_in,
                     "tasks": tasks_out,
                     "total": len(task_ids),
                     "current_task": {
@@ -742,7 +734,7 @@ def agent_start_whatsapp_checklist(request):
         return Response({
             "success": True,
             "status": "in_progress",
-            "clocked_in": True,
+            "clocked_in": clocked_in,
             "tasks": tasks_out,
             "total": len(task_ids),
             "current_task": {
@@ -773,6 +765,7 @@ def agent_start_whatsapp_checklist(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    result["clocked_in"] = clocked_in
     return Response(result, status=status.HTTP_200_OK)
 
 
@@ -959,10 +952,10 @@ def agent_checklist_respond(request):
 
     # End process early when branch says so
     if branch_outcome.get("flow") == "end":
-        prog.status = "COMPLETED"
-        prog.completed_at = timezone.now()
+        from scheduling.checklist_completion import finalize_shift_checklist_completion
+
         prog.responses = responses
-        prog.save(update_fields=["status", "completed_at", "responses", "updated_at"])
+        summary = finalize_shift_checklist_completion(prog, user)
         alert_note = ""
         if (branch_outcome.get("result") or {}).get("executed") and (
             branch_outcome.get("action") or {}
@@ -970,7 +963,6 @@ def agent_checklist_respond(request):
             alert_note = _cl_tr(user, "checklist.flagged_generic")
         elif branch_outcome.get("result") and branch_outcome["result"].get("notified"):
             alert_note = _cl_tr(user, "checklist.flagged_generic")
-        # If end came after alert on same answer — handle via action type end only
         return Response({
             "success": True,
             "status": "completed",
@@ -978,37 +970,18 @@ def agent_checklist_respond(request):
             "total": len(task_ids),
             "branch": branch_outcome.get("action"),
             "branch_result": branch_outcome.get("result"),
+            "completion_summary": summary,
             "message_for_user": _cl_tr(
                 user, "checklist.stopped", title=task.title, note=alert_note
             ),
         })
 
     # Find next unanswered task (respect goto target when present)
-    next_task = None
-    next_idx = None
-    goto_id = str(branch_outcome.get("goto_task_id") or "").strip()
-    if goto_id and branch_outcome.get("flow") == "goto":
-        # Prefer matching template_task_id in branch_config, else ShiftTask id
-        for i, tid in enumerate(task_ids):
-            cand = ShiftTask.objects.filter(id=tid).first()
-            if not cand:
-                continue
-            cfg = getattr(cand, "branch_config", None) or {}
-            tmpl_tid = str(cfg.get("template_task_id") or "")
-            if str(cand.id) == goto_id or tmpl_tid == goto_id:
-                if tid not in responses and cand.status not in ("COMPLETED", "CANCELLED"):
-                    next_task = cand
-                    next_idx = i + 1
-                    break
+    from scheduling.checklist_branch_actions import find_next_checklist_task
 
-    if next_task is None:
-        for i, tid in enumerate(task_ids):
-            if tid not in responses:
-                next_task_obj = ShiftTask.objects.filter(id=tid).first()
-                if next_task_obj and next_task_obj.status not in ("COMPLETED", "CANCELLED"):
-                    next_task = next_task_obj
-                    next_idx = i + 1
-                    break
+    next_task, next_idx = find_next_checklist_task(
+        task_ids, responses, branch_outcome=branch_outcome
+    )
 
     answered = len(responses)
     total = len(task_ids)
@@ -1062,14 +1035,15 @@ def agent_checklist_respond(request):
             },
         })
 
-    # All tasks answered — checklist complete
-    prog.status = "COMPLETED"
-    prog.completed_at = timezone.now()
+    # All tasks answered — checklist complete (archive responses + photos)
+    from scheduling.checklist_completion import finalize_shift_checklist_completion
+
     prog.responses = responses
-    prog.save(update_fields=["status", "completed_at", "responses", "updated_at"])
-    yes_count = sum(1 for v in responses.values() if v == "yes")
-    no_count = sum(1 for v in responses.values() if v == "no")
-    na_count = sum(1 for v in responses.values() if v == "n_a")
+    summary = finalize_shift_checklist_completion(prog, user)
+    yes_count = summary["summary"]["yes"]
+    no_count = summary["summary"]["no"]
+    na_count = summary["summary"]["n_a"]
+    total = summary["summary"]["total"]
 
     try:
         from notifications.models import WhatsAppSession
@@ -1091,7 +1065,10 @@ def agent_checklist_respond(request):
             "yes": yes_count,
             "no": no_count,
             "n_a": na_count,
+            "fully_compliant": summary.get("fully_compliant", True),
+            "photo_count": sum(t.get("photo_count", 0) for t in summary.get("tasks", [])),
         },
+        "completion_summary": summary,
         "message_for_user": _cl_tr(
             user,
             "checklist.complete",

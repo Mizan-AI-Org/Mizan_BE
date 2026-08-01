@@ -894,13 +894,22 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
             stat = 'OPEN'
 
         incident_type = (serializer.validated_data.get('incident_type') or 'General').strip()
+        from staff.incident_routing import normalize_incident_category_for_storage
+
+        incident_type = normalize_incident_category_for_storage(incident_type)
         assign_kwargs = {}
         if not serializer.validated_data.get('assigned_to'):
             assignee = resolve_default_assignee_for_incident_type(restaurant, incident_type)
             if assignee:
                 assign_kwargs['assigned_to'] = assignee
 
-        serializer.save(restaurant=restaurant, severity=sev, status=stat, **assign_kwargs)
+        serializer.save(
+            restaurant=restaurant,
+            severity=sev,
+            status=stat,
+            incident_type=incident_type,
+            **assign_kwargs,
+        )
     
     @action(detail=True, methods=['post'])
     def update_status(self, request, pk=None):

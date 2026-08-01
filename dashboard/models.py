@@ -384,3 +384,47 @@ class StaffCapturedOrder(models.Model):
 
     def __str__(self):
         return f"Capture {self.id} @ {self.restaurant_id}"
+
+
+class StaffDailyProgressReport(models.Model):
+    """
+    End-of-day snapshot of per-staff task progress for manager accountability.
+    Live dashboard widget reads today's tasks only; historical rows come from here.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    restaurant = models.ForeignKey(
+        "accounts.Restaurant",
+        on_delete=models.CASCADE,
+        related_name="staff_daily_progress_reports",
+    )
+    report_date = models.DateField(db_index=True)
+    staff = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="daily_progress_reports",
+    )
+    staff_name = models.CharField(max_length=200)
+    role = models.CharField(max_length=40, blank=True, default="")
+    is_absent = models.BooleanField(default=False)
+    total = models.PositiveSmallIntegerField(default=0)
+    done = models.PositiveSmallIntegerField(default=0)
+    open = models.PositiveSmallIntegerField(default=0)
+    pct = models.PositiveSmallIntegerField(default=0)
+    captured_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "dashboard_staff_daily_progress_reports"
+        ordering = ["-report_date", "staff_name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["restaurant", "report_date", "staff"],
+                name="uniq_staff_daily_progress_report",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["restaurant", "-report_date"]),
+        ]
+
+    def __str__(self):
+        return f"{self.staff_name} {self.report_date} ({self.done}/{self.total})"
