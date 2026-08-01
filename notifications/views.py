@@ -47,7 +47,7 @@ from accounts.services import UserManagementService, try_activate_staff_on_inbou
 from timeclock.models import ClockEvent
 from scheduling.models import ShiftTask, AssignedShift, ShiftChecklistProgress
 from django.conf import settings as dj_settings
-from core.i18n import whatsapp_language_code
+from core.i18n import get_effective_language, tr, whatsapp_language_code
 from dashboard.models import StaffCapturedOrder
 from staff.incident_routing import resolve_default_assignee_for_incident_type
 from .order_parsing import merge_parsed_order_fields
@@ -462,7 +462,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
     if not rest:
         _safe_whatsapp_text_send(
             phone_digits,
-            "Your account isn't linked to a restaurant yet. Please contact your manager.",
+            R(user, "no_restaurant_linked"),
             log_ctx="whatsapp_clock_in_gps",
         )
         return True
@@ -478,7 +478,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
         logger.warning("WhatsApp clock-in: invalid lat/lon lat=%r lon=%r", lat, lon)
         _safe_whatsapp_text_send(
             phone_digits,
-            "We couldn't read your location from this message. Please tap Share Location / Current Location and try again.",
+            R(user, "location_unreadable"),
             log_ctx="whatsapp_clock_in_gps",
         )
         return True
@@ -486,7 +486,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
         logger.exception("WhatsApp clock-in: find_matching_location failed")
         _safe_whatsapp_text_send(
             phone_digits,
-            "Something went wrong checking your location. Please try again in a moment.",
+            R(user, "location_check_error"),
             log_ctx="whatsapp_clock_in_gps",
         )
         return True
@@ -506,7 +506,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
             pass
         _safe_whatsapp_text_send(
             phone_digits,
-            "Location check is not set up for your restaurant. Please contact your manager to clock in.",
+            R(user, "no_geofence_configured"),
             log_ctx="whatsapp_clock_in_gps",
         )
         return True
@@ -531,7 +531,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
             pass
         _safe_whatsapp_text_send(
             phone_digits,
-            "You are not within any approved location zone. Please move closer and try again.",
+            R(user, "outside_geofence"),
             log_ctx="whatsapp_clock_in_gps",
         )
         # Show the approved workplace pin so staff know where to go, then
@@ -548,7 +548,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
         try:
             notification_service.send_whatsapp_location_request(
                 phone_digits,
-                "Share your location to clock in.",
+                R(user, "share_location_prompt"),
             )
         except Exception:
             logger.warning("WhatsApp clock-in: re-prompt location after outside-zone failed", exc_info=True)
@@ -574,7 +574,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
             local_time = timezone.localtime(last_event.timestamp).strftime("%H:%M")
             _safe_whatsapp_text_send(
                 phone_digits,
-                f"You're already clocked in (since {local_time}). Have a great shift {first_name}!",
+                R(user, "already_clocked_in", time=local_time, name=first_name),
                 log_ctx="whatsapp_clock_in_gps",
             )
             session.state = "idle"
@@ -630,7 +630,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
                 local_time = timezone.localtime(last_event.timestamp).strftime("%H:%M")
                 _safe_whatsapp_text_send(
                     phone_digits,
-                    f"You're already clocked in (since {local_time}). Have a great shift {first_name}!",
+                    R(user, "already_clocked_in", time=local_time, name=first_name),
                     log_ctx="whatsapp_clock_in_gps",
                 )
                 session.state = "idle"
@@ -690,7 +690,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
         logger.exception("Clock-in create failed: %s", e)
         _safe_whatsapp_text_send(
             phone_digits,
-            "Something went wrong. Please try again.",
+            R(user, "generic_error"),
             log_ctx="whatsapp_clock_in_gps",
         )
         return True
@@ -698,7 +698,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
     # Match ``timeclock.views.agent_clock_in_by_phone`` / Miya relay of ``message_for_user``
     # so WhatsApp-direct GPS clock-in reads the same as the Mastra tool path.
     first_name = getattr(user, "first_name", None) or "Team Member"
-    success_body = f"Clock-in recorded. Have a great shift {first_name}!"
+    success_body = R(user, "clockin_recorded", name=first_name)
     if not _safe_whatsapp_text_send(phone_digits, success_body, log_ctx="whatsapp_clock_in_gps_success"):
         logger.warning("WhatsApp clock-in success send failed; trying localized copy")
         _safe_whatsapp_text_send(
@@ -841,6 +841,10 @@ def _process_whatsapp_staff_escalation(
     if not raw and not msg:
         return False
 
+    # `user` may still be None here (unlinked number) — get_effective_language
+    # degrades to English in that case, same as everywhere else in this module.
+    lang = get_effective_language(user=user)
+
     if is_cancel_send_reply(raw):
         if session:
             ctx = dict(getattr(session, "context", None) or {})
@@ -849,7 +853,7 @@ def _process_whatsapp_staff_escalation(
             session.save(update_fields=["context"])
         notification_service.send_whatsapp_text(
             phone_digits,
-            "Okay — I cancelled that. Nothing was sent to your manager.",
+            tr("escalation.cancelled", lang),
         )
         return True
 
@@ -890,9 +894,7 @@ def _process_whatsapp_staff_escalation(
         if is_confirm_send_reply(raw):
             notification_service.send_whatsapp_text(
                 phone_digits,
-                "Please say again what you'd like me to tell your manager "
-                '(e.g. "Tell my manager I haven\'t received last week\'s wages") '
-                "and I'll pass it on right away — they'll see it under Human Resources.",
+                tr("escalation.retry_prompt", lang),
             )
             return True
         return False
@@ -945,7 +947,7 @@ def _process_whatsapp_staff_escalation(
         logger.exception("WhatsApp staff escalation ingest failed phone=%s", phone_digits)
         notification_service.send_whatsapp_text(
             phone_digits,
-            "I couldn't pass that to your manager just now. Please try again in a moment.",
+            tr("escalation.ingest_failed", lang),
         )
     return True
 
@@ -2069,6 +2071,31 @@ def whatsapp_webhook(request):
                 'order_cancelled': 'Order entry cancelled. Send *order* when you want to log a guest order.',
                 'order_failed': 'Could not save the order. Please try again or use the app.',
                 'unrecognized': 'Unrecognized command. Reply with "help" to see available options.',
+                'no_restaurant_linked': "Your account isn't linked to a restaurant yet. Please contact your manager.",
+                'location_unreadable': "We couldn't read your location from this message. Please tap Share Location / Current Location and try again.",
+                'location_check_error': 'Something went wrong checking your location. Please try again in a moment.',
+                'no_geofence_configured': 'Location check is not set up for your restaurant. Please contact your manager to clock in.',
+                'outside_geofence': 'You are not within any approved location zone. Please move closer and try again.',
+                'share_location_prompt': 'Share your location to clock in.',
+                'already_clocked_in': "You're already clocked in (since {time}). Have a great shift {name}!",
+                'clockin_recorded': 'Clock-in recorded. Have a great shift {name}!',
+                'generic_error': 'Something went wrong. Please try again in a moment.',
+                'checklist_invalid_reply': "Hmm, I didn't quite catch that — reply *Yes*, *No*, or *N/A* for this step.",
+                'checklist_photo_needed': 'Please send a photo to complete this step. You can complete other tasks later if needed.',
+                'checklist_not_ready': (
+                    "No checklist is ready yet. Say *start checklist* when you're ready "
+                    "(clock-in is optional). Ask your manager to assign a process if needed. "
+                    "If it still fails, ask your manager to assign this process to you in Processes & Tasks."
+                ),
+                'checklist_already_complete': 'Your checklist is already complete. Have a productive shift!',
+                'checklist_closed_shift_ended': 'This checklist was closed because your shift ended. Contact your manager if you need to update it.',
+                'checklist_in_progress_reply_prompt': "You're in a checklist. Please reply Yes, No, or N/A to the last message.",
+                'checklist_start_failed': 'No tasks are assigned for this shift, or something went wrong. Please try again or contact your manager.',
+                'incident_manager_notify': (
+                    "Heads up — {name} just submitted an incident report ({type}, {date}).\n\n"
+                    "First details: {preview}\n\n"
+                    "Please review in the dashboard when you can."
+                ),
             },
             'ar': {
                 'help': 'مرحبًا بكم في ميزان. أجب بـ: "دخول"، "خروج"، "مهام"، أو "بلاغ".',
@@ -2126,6 +2153,31 @@ def whatsapp_webhook(request):
                 'order_cancelled': 'تم إلغاء إدخال الطلب. أرسل *طلب* عندما تريد تسجيل طلب زبون.',
                 'order_failed': 'تعذّر حفظ الطلب. حاول مرة أخرى أو استخدم التطبيق.',
                 'unrecognized': 'أمر غير معروف. أجب بـ "مساعدة" لرؤية الخيارات المتاحة.',
+                'no_restaurant_linked': 'حسابك غير مرتبط بمطعم بعد. يرجى التواصل مع مديرك.',
+                'location_unreadable': 'تعذّر قراءة موقعك من هذه الرسالة. يرجى الضغط على مشاركة الموقع / الموقع الحالي والمحاولة مرة أخرى.',
+                'location_check_error': 'حدث خطأ أثناء التحقق من موقعك. يرجى المحاولة مرة أخرى بعد قليل.',
+                'no_geofence_configured': 'لم يتم إعداد التحقق من الموقع لمطعمك. يرجى التواصل مع مديرك لتسجيل الحضور.',
+                'outside_geofence': 'أنت لست ضمن أي منطقة معتمدة. اقترب أكثر وحاول مرة أخرى.',
+                'share_location_prompt': 'شارك موقعك لتسجيل الحضور.',
+                'already_clocked_in': 'أنت مسجل حضورك بالفعل (منذ {time}). وردية موفّقة {name}!',
+                'clockin_recorded': 'تم تسجيل الحضور. وردية موفّقة {name}!',
+                'generic_error': 'حدث خطأ ما. يرجى المحاولة مرة أخرى بعد قليل.',
+                'checklist_invalid_reply': 'لم أفهم ذلك جيداً — أجب بـ *نعم* أو *لا* أو *غير منطبق* لهذه الخطوة.',
+                'checklist_photo_needed': 'يرجى إرسال صورة لإكمال هذه الخطوة. يمكنك إكمال المهام الأخرى لاحقاً إذا لزم الأمر.',
+                'checklist_not_ready': (
+                    'لا توجد قائمة تحقق جاهزة الآن. قل *ابدأ المهام* عندما تكون جاهزاً '
+                    '(تسجيل الحضور اختياري). اطلب من مديرك تعيين عملية إذا لزم الأمر. '
+                    'إذا استمرت المشكلة، اطلب منه تعيين هذه العملية لك في العمليات والمهام.'
+                ),
+                'checklist_already_complete': 'قائمة التحقق مكتملة بالفعل. وردية موفّقة!',
+                'checklist_closed_shift_ended': 'تم إغلاق قائمة التحقق هذه لأن ورديتك انتهت. تواصل مع مديرك لتحديثها.',
+                'checklist_in_progress_reply_prompt': 'أنت في قائمة تحقق. يرجى الرد بنعم أو لا أو غير منطبق على آخر رسالة.',
+                'checklist_start_failed': 'لا توجد مهام معينة لهذه الوردية، أو حدث خطأ ما. يرجى المحاولة مرة أخرى أو التواصل مع مديرك.',
+                'incident_manager_notify': (
+                    'تنبيه — قام {name} للتو بتقديم بلاغ حادث ({type}، {date}).\n\n'
+                    'التفاصيل الأولية: {preview}\n\n'
+                    'يرجى مراجعة لوحة التحكم عندما يمكنك ذلك.'
+                ),
             },
             'fr': {
                 'help': 'Bienvenue chez Mizan. Répondez par : "clock in", "clock out", "tâches", ou "rapport".',
@@ -2185,6 +2237,31 @@ def whatsapp_webhook(request):
                 'order_cancelled': 'Saisie annulée. Envoyez *commande* pour enregistrer une commande invité.',
                 'order_failed': 'Impossible d’enregistrer la commande. Réessayez ou utilisez l’app.',
                 'unrecognized': 'Commande non reconnue. Répondez "aide".',
+                'no_restaurant_linked': "Votre compte n'est pas encore lié à un restaurant. Contactez votre responsable.",
+                'location_unreadable': "Nous n'avons pas pu lire votre position dans ce message. Appuyez sur Partager la position / Position actuelle et réessayez.",
+                'location_check_error': 'Un problème est survenu lors de la vérification de votre position. Réessayez dans un instant.',
+                'no_geofence_configured': "La vérification de position n'est pas configurée pour votre restaurant. Contactez votre responsable pour pointer.",
+                'outside_geofence': "Vous n'êtes dans aucune zone approuvée. Rapprochez-vous et réessayez.",
+                'share_location_prompt': 'Partagez votre position pour pointer.',
+                'already_clocked_in': 'Vous êtes déjà pointé (depuis {time}). Bon service {name} !',
+                'clockin_recorded': 'Pointage enregistré. Bon service {name} !',
+                'generic_error': 'Un problème est survenu. Réessayez dans un instant.',
+                'checklist_invalid_reply': "Hmm, je n'ai pas compris — répondez *Oui*, *Non* ou *N/A* pour cette étape.",
+                'checklist_photo_needed': 'Veuillez envoyer une photo pour terminer cette étape. Vous pourrez faire les autres tâches plus tard si besoin.',
+                'checklist_not_ready': (
+                    "Aucune checklist n'est prête pour l'instant. Dites *démarrer la checklist* quand vous êtes prêt "
+                    "(le pointage est optionnel). Demandez à votre responsable d'assigner un processus si besoin. "
+                    "Si ça ne fonctionne toujours pas, demandez-lui de vous assigner ce processus dans Processus & Tâches."
+                ),
+                'checklist_already_complete': 'Votre checklist est déjà terminée. Bon service !',
+                'checklist_closed_shift_ended': 'Cette checklist a été clôturée car votre service est terminé. Contactez votre responsable pour la mettre à jour.',
+                'checklist_in_progress_reply_prompt': 'Vous êtes dans une checklist. Répondez Oui, Non ou N/A au dernier message.',
+                'checklist_start_failed': "Aucune tâche n'est assignée pour ce service, ou une erreur est survenue. Réessayez ou contactez votre responsable.",
+                'incident_manager_notify': (
+                    "Attention — {name} vient de soumettre un signalement d'incident ({type}, {date}).\n\n"
+                    "Premiers détails : {preview}\n\n"
+                    "Merci de vérifier le tableau de bord dès que possible."
+                ),
             },
         }
         
@@ -2547,14 +2624,14 @@ def whatsapp_webhook(request):
                                         local_time = timezone.localtime(last_event.timestamp).strftime("%H:%M")
                                         notification_service.send_whatsapp_text(
                                             phone_digits,
-                                            f"You're already clocked in (since {local_time}). Have a great shift {first_name}!",
+                                            R(user, "already_clocked_in", time=local_time, name=first_name),
                                         )
                                         continue
                                     rest = getattr(user, 'restaurant', None)
                                     if not restaurant_has_clockin_geofence(rest):
                                         notification_service.send_whatsapp_text(
                                             phone_digits,
-                                            "Location check is not set up for your restaurant. Please contact your manager to clock in."
+                                            R(user, "no_geofence_configured"),
                                         )
                                         continue
                                     session.state = 'awaiting_clock_in_location'
@@ -2704,7 +2781,7 @@ def whatsapp_webhook(request):
                                 if lat_c is None or lon_c is None:
                                     notification_service.send_whatsapp_location_request(
                                         phone_digits,
-                                        "Share your location to clock in.",
+                                        R(user, "share_location_prompt"),
                                     )
                                     continue
                                 try:
@@ -2715,7 +2792,7 @@ def whatsapp_webhook(request):
                                     logger.exception("WhatsApp location_reply clock-in failed phone=%s", phone_digits)
                                     _safe_whatsapp_text_send(
                                         phone_digits,
-                                        "Something went wrong. Please try again in a moment.",
+                                        R(user, "generic_error"),
                                         log_ctx="whatsapp_location_reply",
                                     )
                                 continue
@@ -3579,11 +3656,13 @@ def whatsapp_webhook(request):
                             try:
                                 manager = CustomUser.objects.filter(restaurant=user.restaurant, role__in=['MANAGER', 'ADMIN']).order_by('id').first()
                                 if manager and getattr(manager, 'phone', None):
-                                    notif_msg = (
-                                        f"Heads up — {user.get_full_name()} just submitted an incident report "
-                                        f"({incident_type}, {occurred_str}).\n\n"
-                                        f"First details: {transcript[:200]}{'…' if len(transcript or '') > 200 else ''}\n\n"
-                                        f"Please review in the dashboard when you can."
+                                    notif_msg = R(
+                                        manager,
+                                        "incident_manager_notify",
+                                        name=user.get_full_name(),
+                                        type=incident_type,
+                                        date=occurred_str,
+                                        preview=f"{transcript[:200]}{'…' if len(transcript or '') > 200 else ''}",
                                     )
                                     notification_service.send_whatsapp_text(manager.phone, notif_msg)
                             except Exception:
@@ -3608,7 +3687,7 @@ def whatsapp_webhook(request):
                             if lat_c is None or lon_c is None:
                                 notification_service.send_whatsapp_location_request(
                                     phone_digits,
-                                    "Share your location to clock in.",
+                                    R(user, "share_location_prompt"),
                                 )
                                 continue
                             try:
@@ -3621,7 +3700,7 @@ def whatsapp_webhook(request):
                                 )
                                 _safe_whatsapp_text_send(
                                     phone_digits,
-                                    "Something went wrong. Please try again in a moment.",
+                                    R(user, "generic_error"),
                                     log_ctx="whatsapp_clock_in_gps_outer_err",
                                 )
                             continue
@@ -3645,7 +3724,7 @@ def whatsapp_webhook(request):
                                     )
                                     notification_service.send_whatsapp_text(
                                         phone_digits,
-                                        "Something went wrong. Please try again in a moment.",
+                                        R(user, "generic_error"),
                                     )
                                 continue
     
@@ -3837,15 +3916,12 @@ def whatsapp_webhook(request):
                                     response_value = None
                                 if response_value and _handle_checklist_response(notification_service, session, user, phone_digits, response_value):
                                     continue
-                                checklist_invalid = (
-                                    "Hmm, I didn't quite catch that — reply *Yes*, *No*, or *N/A* for this step."
-                                )
-                                notification_service.send_whatsapp_text(phone_digits, checklist_invalid)
+                                notification_service.send_whatsapp_text(phone_digits, R(user, "checklist_invalid_reply"))
                                 continue
                         if session.state == 'awaiting_task_photo':
                             notification_service.send_whatsapp_text(
                                 phone_digits,
-                                "Please send a photo to complete this step. You can complete other tasks later if needed."
+                                R(user, "checklist_photo_needed"),
                             )
                             continue
     
@@ -4003,12 +4079,12 @@ def whatsapp_webhook(request):
                                     )
                                     notification_service.send_whatsapp_text(
                                         phone_digits,
-                                        "Something went wrong. Please try again in a moment.",
+                                        R(user, "generic_error"),
                                     )
                                 continue
                             notification_service.send_whatsapp_location_request(
                                 phone_digits,
-                                "Share your location to clock in.",
+                                R(user, "share_location_prompt"),
                             )
                             continue
     
@@ -4023,21 +4099,21 @@ def whatsapp_webhook(request):
                                 local_time = timezone.localtime(last_event.timestamp).strftime("%H:%M")
                                 notification_service.send_whatsapp_text(
                                     phone_digits,
-                                    f"You're already clocked in (since {local_time}). Have a great shift {first_name}!",
+                                    R(user, "already_clocked_in", time=local_time, name=first_name),
                                 )
                                 continue
                             rest = getattr(user, 'restaurant', None)
                             if not restaurant_has_clockin_geofence(rest):
                                 notification_service.send_whatsapp_text(
                                     phone_digits,
-                                    "Location check is not set up for your restaurant. Please contact your manager to clock in."
+                                    R(user, "no_geofence_configured"),
                                 )
                                 continue
                             session.state = 'awaiting_clock_in_location'
                             session.save(update_fields=['state'])
                             notification_service.send_whatsapp_location_request(
                                 phone_digits,
-                                "Share your location to clock in.",
+                                R(user, "share_location_prompt"),
                             )
                             continue
     
@@ -4075,9 +4151,7 @@ def whatsapp_webhook(request):
                             if not active_shift:
                                 notification_service.send_whatsapp_text(
                                     phone_digits,
-                                    "No checklist is ready yet. Say *start checklist* when you're ready "
-                                    "(clock-in is optional). Ask your manager to assign a process if needed. "
-                                    "If it still fails, ask your manager to assign this process to you in Processes & Tasks."
+                                    R(user, "checklist_not_ready"),
                                 )
                                 continue
                             prog = ShiftChecklistProgress.objects.filter(
@@ -4086,13 +4160,13 @@ def whatsapp_webhook(request):
                             if prog and prog.status == 'COMPLETED':
                                 notification_service.send_whatsapp_text(
                                     phone_digits,
-                                    "Your checklist is already complete. Have a productive shift!"
+                                    R(user, "checklist_already_complete"),
                                 )
                                 continue
                             if prog and prog.status in ('INCOMPLETE_SHIFT_END', 'CANCELLED'):
                                 notification_service.send_whatsapp_text(
                                     phone_digits,
-                                    "This checklist was closed because your shift ended. Contact your manager if you need to update it."
+                                    R(user, "checklist_closed_shift_ended"),
                                 )
                                 continue
                             if prog and prog.status == 'IN_PROGRESS':
@@ -4103,7 +4177,7 @@ def whatsapp_webhook(request):
                                 if not current_id or not task_ids:
                                     notification_service.send_whatsapp_text(
                                         phone_digits,
-                                        "You're in a checklist. Please reply Yes, No, or N/A to the last message."
+                                        R(user, "checklist_in_progress_reply_prompt"),
                                     )
                                     continue
                                 session.context['checklist'] = {
@@ -4122,7 +4196,7 @@ def whatsapp_webhook(request):
                                 else:
                                     notification_service.send_whatsapp_text(
                                         phone_digits,
-                                        "You're in a checklist. Please reply Yes, No, or N/A to the last message."
+                                        R(user, "checklist_in_progress_reply_prompt"),
                                     )
                                 continue
                             # Not started: start checklist
@@ -4134,7 +4208,7 @@ def whatsapp_webhook(request):
                             else:
                                 notification_service.send_whatsapp_text(
                                     phone_digits,
-                                    "No tasks are assigned for this shift, or something went wrong. Please try again or contact your manager."
+                                    R(user, "checklist_start_failed"),
                                 )
                             continue
     
@@ -4317,9 +4391,12 @@ def whatsapp_webhook(request):
                         )
                         try:
                             if phone_digits:
+                                # locals().get avoids a NameError if the exception hit before
+                                # `user` was resolved for this turn — R() already falls back
+                                # to English for a None user.
                                 _safe_whatsapp_text_send(
                                     phone_digits,
-                                    "Sorry, something went wrong on our side. Please try again in a moment.",
+                                    R(locals().get('user'), "generic_error"),
                                     log_ctx="whatsapp_turn_error",
                                 )
                         except Exception:

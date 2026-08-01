@@ -2091,7 +2091,7 @@ class NotificationService:
     # TEXT-TO-SPEECH + WHATSAPP AUDIO REPLY
     # ----------------------------------------------------------------------
 
-    def synthesize_speech_bytes(self, text, voice="alloy", fmt="mp3", speed=1.0):
+    def synthesize_speech_bytes(self, text, voice="shimmer", fmt="mp3", speed=1.0):
         """Generate speech audio bytes for WhatsApp voice notes.
 
         Uses Fish Audio (https://fish.audio/app/) when ``FISH_AUDIO_API_KEY`` is
@@ -2152,7 +2152,7 @@ class NotificationService:
                 f"Fish Audio TTS failed: {resp.status_code} - {resp.text[:300]}"
             )
             if resp.status_code in (402, 403, 429):
-                return self._synthesize_openai_tts(text, voice="alloy", fmt=fmt, speed=speed)
+                return self._synthesize_openai_tts(text, voice="shimmer", fmt=fmt, speed=speed)
             return None, None
 
         mime = {
@@ -2164,8 +2164,12 @@ class NotificationService:
         }.get(fmt, "audio/mpeg")
         return resp.content, mime
 
-    def _synthesize_openai_tts(self, text, voice="alloy", fmt="mp3", speed=1.0):
-        """Legacy OpenAI TTS fallback when Fish Audio is not configured."""
+    def _synthesize_openai_tts(self, text, voice="shimmer", fmt="mp3", speed=1.0):
+        """Legacy OpenAI TTS fallback when Fish Audio is not configured.
+
+        Defaults to "shimmer" (warm, female OpenAI voice) so Miya still
+        sounds consistent even when Fish Audio isn't available.
+        """
         api_key = getattr(settings, "OPENAI_API_KEY", "") or ""
         if not api_key:
             logger.warning("Neither FISH_AUDIO_API_KEY nor OPENAI_API_KEY configured; skipping TTS")
@@ -2175,7 +2179,7 @@ class NotificationService:
         payload = {
             "model": "tts-1",
             "input": text,
-            "voice": voice or "alloy",
+            "voice": voice or "shimmer",
             "response_format": fmt,
             "speed": speed,
         }

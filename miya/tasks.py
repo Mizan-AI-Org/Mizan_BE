@@ -36,6 +36,8 @@ def run_miya_dashboard_chat(
 
     from .services.agent import run_miya_chat
 
+    from core.i18n import get_effective_language, tr
+
     user = CustomUser.objects.filter(id=user_id, is_active=True).first()
     if not user:
         return {
@@ -43,6 +45,7 @@ def run_miya_dashboard_chat(
             "reply": "Session expired. Please sign in again.",
         }
 
+    lang = get_effective_language(user=user)
     try:
         result = run_miya_chat(
             user=user,
@@ -57,18 +60,19 @@ def run_miya_dashboard_chat(
         logger.warning("run_miya_dashboard_chat runtime error user=%s: %s", user_id, exc)
         return {
             "error": str(exc)[:200],
-            "reply": "Miya is temporarily unavailable. Try again shortly.",
+            "reply": tr("miya.wa.temporarily_unavailable", lang),
         }
     except Exception as exc:
         logger.exception("run_miya_dashboard_chat failed user=%s", user_id)
         return {
             "error": str(exc)[:200],
-            "reply": "Something went wrong talking to Miya. Try again in a moment.",
+            "reply": tr("miya.wa.unexpected_error", lang),
         }
 
     reply = (result.get("reply") or "").strip()
+    lang = (result.get("session_context") or {}).get("language") or lang
     payload: dict[str, Any] = {
-        "reply": reply or "I'm here. What would you like me to help with?",
+        "reply": reply or tr("miya.wa.idle_prompt", lang),
         "tool_trace": result.get("tool_trace") or [],
     }
 

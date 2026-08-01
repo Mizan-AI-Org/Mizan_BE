@@ -18,7 +18,12 @@ from .tools import execute_tool, serialize_tool_result, tools_for_user
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_STEPS = 12
-_GENERIC_FALLBACK = "I'm here. What would you like me to help with?"
+
+
+def _generic_fallback(lang: str = "en") -> str:
+    from core.i18n import tr
+
+    return tr("miya.wa.idle_prompt", lang)
 
 _SCHEDULE_QUERY = re.compile(
     r"\b("
@@ -220,8 +225,9 @@ def _try_payroll_delegation_fast_path(
         session_context=session_context,
         user=user,
     )
+    lang = session_context.get("language") or "en"
     return {
-        "reply": _finalize_reply(_reply_from_create_task_result(result)),
+        "reply": _finalize_reply(_reply_from_create_task_result(result), language=lang),
         "tool_trace": [{"tool": "create_dashboard_task", "arguments": args, "result": result}],
         "session_context": session_context,
         "provider": "django-fast-path",
@@ -246,11 +252,12 @@ def _try_schedule_fast_path(
         session_context=session_context,
         user=user,
     )
+    lang = session_context.get("language") or "en"
     if not result.get("success", True):
         err = result.get("error") or result.get("message_for_user")
         if err:
             return {
-                "reply": _finalize_reply(str(err)),
+                "reply": _finalize_reply(str(err), language=lang),
                 "tool_trace": [{"tool": "list_shifts", "arguments": {"date": today}, "result": result}],
                 "session_context": session_context,
                 "provider": "django-fast-path",
@@ -307,9 +314,9 @@ def _openai_chat(messages: list[dict[str, Any]], *, tools: list | None = None) -
     return resp.json()
 
 
-def _finalize_reply(reply: str) -> str:
+def _finalize_reply(reply: str, *, language: str = "en") -> str:
     cleaned = format_miya_reply(reply)
-    return cleaned or _GENERIC_FALLBACK
+    return cleaned or _generic_fallback(language)
 
 
 def _enrich_message_with_attachments(
@@ -413,6 +420,8 @@ def run_miya_chat(
 
         tenant_rest = Restaurant.objects.filter(id=rid).first()
     active_tools = tools_for_user(user, restaurant=tenant_rest)
+    lang = session_context.get("language") or "en"
+    idle = _generic_fallback(lang)
 
     for _ in range(MAX_TOOL_STEPS + 1):
         data = _openai_chat(messages, tools=active_tools or None)
@@ -422,12 +431,12 @@ def run_miya_chat(
 
         if not tool_calls:
             reply = (message.get("content") or "").strip()
-            if not reply or reply == _GENERIC_FALLBACK:
+            if not reply or reply == idle:
                 synthesized = _reply_from_tool_trace(tool_trace, user_message)
                 if synthesized:
                     reply = synthesized
             return {
-                "reply": _finalize_reply(reply),
+                "reply": _finalize_reply(reply, language=lang),
                 "tool_trace": tool_trace,
                 "session_context": session_context,
             }
@@ -477,7 +486,7 @@ def run_miya_chat(
             reply = (message.get("content") or "").strip()
             if reply:
                 return {
-                    "reply": _finalize_reply(reply),
+                    "reply": _finalize_reply(reply, language=lang),
                     "tool_trace": tool_trace,
                     "session_context": session_context,
                     "step_limit_fallback": True,
@@ -485,10 +494,12 @@ def run_miya_chat(
         except Exception:
             logger.exception("Miya step-limit synthesis fallback failed")
 
+    from core.i18n import tr
+
     return {
         "reply": _finalize_reply(
-            "I hit my step limit while working on that. "
-            "Try a simpler request or ask me to continue one step at a time."
+            tr("miya.wa.empty_reply", lang),
+            language=lang,
         ),
         "tool_trace": tool_trace,
         "session_context": session_context,

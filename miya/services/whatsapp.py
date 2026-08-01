@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from accounts.rbac_enforce import user_can_use_miya
+from core.i18n import get_effective_language, tr
 from core.whatsapp_config import get_miya_whatsapp_enabled, get_miya_whatsapp_voice_default
 from miya.services.agent import run_miya_chat
 from notifications.services import notification_service
@@ -161,16 +162,15 @@ def handle_miya_whatsapp_turn(
         return False
 
     if not user:
-        _send_miya_reply(
-            phone_digits,
-            "Please ask your manager for a Mizan invite link so I can recognize your number. "
-            "Open the link on this phone and send the prefilled activation message.",
-        )
+        # No account resolved yet — no language signal to key off, so this one
+        # stays on the English fallback the same as the rest of the catalog.
+        _send_miya_reply(phone_digits, tr("miya.wa.no_account", "en"))
         return True
 
     if not user_can_use_miya(user):
         # Last-chance: pending ONE-TAP record may still need activation this turn
         # (e.g. phone matched an older user without Miya apps).
+        lang = get_effective_language(user=user)
         try:
             from accounts.services import try_activate_staff_on_inbound_message
 
@@ -178,19 +178,10 @@ def handle_miya_whatsapp_turn(
             if activated and user_can_use_miya(activated):
                 user = activated
             else:
-                _send_miya_reply(
-                    phone_digits,
-                    "I recognize this number, but Miya isn't enabled for this account yet. "
-                    "Ask your manager to share the staff activation link "
-                    "(https://api.heymizan.ai/api/go/wa) and send the prefilled message.",
-                )
+                _send_miya_reply(phone_digits, tr("miya.wa.not_enabled", lang))
                 return True
         except Exception:
-            _send_miya_reply(
-                phone_digits,
-                "I recognize this number, but Miya isn't enabled for this account yet. "
-                "Ask your manager to share the staff activation link and try again.",
-            )
+            _send_miya_reply(phone_digits, tr("miya.wa.not_enabled_retry", lang))
             return True
 
     text = (message_text or "").strip()
@@ -221,25 +212,16 @@ def handle_miya_whatsapp_turn(
         )
     except RuntimeError as exc:
         logger.exception("Miya WhatsApp chat failed for %s: %s", phone_digits, exc)
-        _send_miya_reply(
-            phone_digits,
-            "Miya is temporarily unavailable. Try again shortly or use the Mizan dashboard.",
-        )
+        _send_miya_reply(phone_digits, tr("miya.wa.temporarily_unavailable", get_effective_language(user=user)))
         return True
     except Exception as exc:
         logger.exception("Miya WhatsApp unexpected error for %s: %s", phone_digits, exc)
-        _send_miya_reply(
-            phone_digits,
-            "Something went wrong on my side. Please try again in a moment.",
-        )
+        _send_miya_reply(phone_digits, tr("miya.wa.unexpected_error", get_effective_language(user=user)))
         return True
 
     reply = (result.get("reply") or "").strip()
     if not reply:
-        _send_miya_reply(
-            phone_digits,
-            "I couldn't process that message. Please try again in a moment.",
-        )
+        _send_miya_reply(phone_digits, tr("miya.wa.empty_reply", get_effective_language(user=user)))
         return True
 
     history.append({"role": "user", "content": text})

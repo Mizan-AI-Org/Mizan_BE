@@ -488,8 +488,13 @@ CELERY_TASK_ALWAYS_EAGER = config('CELERY_TASK_ALWAYS_EAGER', default=False, cas
 CELERY_TASK_EAGER_PROPAGATES = True
 
 # Fish Audio — Miya voice (https://fish.audio/app/)
+# Default reference_id "Sarah": warm, soft, gentle, friendly female voice.
+# Fish Audio's s2.1-pro model is cross-lingual — the same voice speaks
+# English, French, and Arabic/Darija in the caller's own text.
 FISH_AUDIO_API_KEY = config('FISH_AUDIO_API_KEY', default='')
-FISH_AUDIO_REFERENCE_ID = config('FISH_AUDIO_REFERENCE_ID', default='')
+FISH_AUDIO_REFERENCE_ID = config(
+    'FISH_AUDIO_REFERENCE_ID', default='933563129e564b19a115bedd57b7406a'
+)
 FISH_AUDIO_MODEL = config('FISH_AUDIO_MODEL', default='s2.1-pro')
 
 # Miya AI agent (Fish Audio voice + OpenAI reasoning)

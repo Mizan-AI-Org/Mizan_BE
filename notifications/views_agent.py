@@ -1123,7 +1123,7 @@ def agent_voice_reply(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    voice = (data.get("voice") or "alloy").strip() or "alloy"
+    voice = (data.get("voice") or "shimmer").strip() or "shimmer"
     try:
         speed = float(data.get("speed") or 1.0)
     except (TypeError, ValueError):
