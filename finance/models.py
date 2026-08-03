@@ -265,6 +265,36 @@ class Invoice(models.Model):
         blank=True,
         related_name="invoices_paid",
     )
+    # Payment / follow-up owner (Miya assign_invoice, Finance board "To").
+    assigned_to = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invoices_assigned",
+        help_text="Staff responsible for paying / chasing this invoice.",
+    )
+    assigned_at = models.DateTimeField(null=True, blank=True)
+    assigned_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="invoices_assigned_by",
+    )
+    # Vision / OCR extraction confidence from photo or document router (0–1).
+    ocr_confidence = models.DecimalField(
+        max_digits=4,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        help_text="0–1 classification/extraction confidence when created from a photo/scan.",
+    )
+    ocr_fields = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Raw extracted fields + per-field notes from OCR/vision.",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

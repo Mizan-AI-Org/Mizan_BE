@@ -615,6 +615,49 @@ def agent_create_dashboard_task(request):
             except Exception:
                 acting_user = None
 
+        # Requester (From column) = WhatsApp/dashboard sender who asked Miya.
+        # Distinct from assignee (To). Prefer dedicated requester fields so
+        # session user_id is never confused with the person being assigned.
+        requester = acting_user
+        if not requester:
+            req_id = _get_first(
+                data,
+                "requester_id",
+                "created_by_id",
+                "sender_user_id",
+                "senderUserId",
+                "acting_user_id",
+                "actingUserId",
+                "user_id",
+                "userId",
+            )
+            req_phone = _get_first(
+                data,
+                "requester_phone",
+                "sender_phone",
+                "senderPhone",
+                "reporter_phone",
+                "phone",
+            )
+            req_email = _get_first(
+                data,
+                "requester_email",
+                "sender_email",
+                "senderEmail",
+                "acting_user_email",
+            )
+            if req_id or req_phone or req_email:
+                requester, _ = _resolve_assignee(
+                    {
+                        "user_id": req_id,
+                        "phone": req_phone,
+                        "email": req_email,
+                    },
+                    restaurant,
+                )
+        if requester and not acting_user:
+            acting_user = requester
+
         assign_to_self = _coerce_bool(
             _get_first(
                 data,
@@ -626,62 +669,51 @@ def agent_create_dashboard_task(request):
             default=False,
         )
 
-        # Resolve assignee.
+        # Resolve assignee (To).
         assignee = None
         assignee_err = None
         if assign_to_self:
-            if acting_user and getattr(acting_user, "restaurant_id", None) == getattr(
+            if requester and getattr(requester, "restaurant_id", None) == getattr(
                 restaurant, "id", None
             ):
-                assignee = acting_user
+                assignee = requester
             else:
-                # Dashboard chat often sends only the agent key — resolve the
-                # manager from explicit user_id / email in the payload.
-                sender_user_id = _get_first(
-                    data,
-                    "user_id",
-                    "sender_user_id",
-                    "senderUserId",
-                    "acting_user_id",
-                    "actingUserId",
+                assignee_err = (
+                    "I couldn't identify you as a workspace member for this "
+                    "personal reminder. Open Miya from your Mizan dashboard while logged in, "
+                    "or message from your registered WhatsApp number."
                 )
-                sender_email = _get_first(
-                    data,
-                    "email",
-                    "sender_email",
-                    "senderEmail",
-                    "acting_user_email",
-                )
-                if sender_user_id or sender_email:
-                    assignee, assignee_err = _resolve_assignee(
-                        {
-                            "user_id": sender_user_id,
-                            "email": sender_email,
-                        },
-                        restaurant,
-                    )
-                else:
-                    sender_phone = _get_first(
-                        data,
-                        "sender_phone",
-                        "senderPhone",
-                        "reporter_phone",
-                        "reporterPhone",
-                    )
-                    if sender_phone:
-                        assignee, assignee_err = _resolve_assignee(
-                            {"phone": sender_phone}, restaurant
-                        )
-                    elif acting_user:
-                        assignee = acting_user
-                    else:
-                        assignee_err = (
-                            "I couldn't identify you as a workspace member for this "
-                            "personal reminder. Open Miya from your Mizan dashboard while logged in, "
-                            "or message from your registered WhatsApp number."
-                        )
         else:
-            assignee, assignee_err = _resolve_assignee(data, restaurant)
+            # Session user_id is the requester. Strip it when an explicit
+            # assignee is provided so From/To don't collapse to the same person.
+            assignee_data = dict(data)
+            explicit_assignee = _get_first(
+                data,
+                "assignee_id",
+                "assigneeId",
+                "assignee_user_id",
+                "staff_name",
+                "staffName",
+                "assignee_name",
+                "assigneeName",
+                "name",
+                "assignee_phone",
+                "assigneePhone",
+            )
+            assign_to_category_hint = str(
+                _get_first(
+                    data,
+                    "assign_to_category",
+                    "assign_to_category_owner",
+                    "delegate_category",
+                    "category_owner",
+                )
+                or ""
+            ).strip()
+            if explicit_assignee or assign_to_category_hint:
+                for k in ("user_id", "userId"):
+                    assignee_data.pop(k, None)
+            assignee, assignee_err = _resolve_assignee(assignee_data, restaurant)
 
         # Manager delegation: "tell HR / payroll to …" without naming a person.
         assign_to_category = str(
@@ -700,17 +732,17 @@ def agent_create_dashboard_task(request):
             assignee = resolve_default_assignee_for_category(restaurant, assign_to_category)
             if assignee:
                 assignee_err = None
-            elif acting_user and getattr(acting_user, "restaurant_id", None) == getattr(
+            elif requester and getattr(requester, "restaurant_id", None) == getattr(
                 restaurant, "id", None
             ):
                 # Still create a trackable task when HR/payroll owners aren't
-                # configured — assign to the manager who asked so the widget
+                # configured - assign to the person who asked so the widget
                 # isn't empty and they can reassign in the task detail pane.
-                assignee = acting_user
+                assignee = requester
                 assignee_err = None
                 owner_hint = (
                     f"No {assign_to_category} owner is configured in Settings → "
-                    "Who owns what? — assigned to you for now."
+                    "Who owns what? - assigned to you for now."
                 )
                 ai_summary = (ai_summary + " · " + owner_hint).strip(" ·") if ai_summary else owner_hint
             else:
@@ -779,13 +811,16 @@ def agent_create_dashboard_task(request):
                         status=status.HTTP_403_FORBIDDEN,
                     )
 
-        # Acting user display for source_label (assignee block above may have
-        # already resolved acting_user from JWT/session).
-        sender_display = "Your manager"
-        if acting_user:
-            nm = f"{(acting_user.first_name or '').strip()} {(acting_user.last_name or '').strip()}".strip()
-            sender_display = nm or getattr(acting_user, "email", None) or "Your manager"
-        source_label = "Miya AI" + (f" · {sender_display}" if acting_user else "")
+        # From label: WhatsApp/dashboard sender name (never bare "Miya").
+        channel = str(_get_first(data, "channel") or "").strip().lower()
+        channel_prefix = "WhatsApp" if channel == "whatsapp" else "Miya AI"
+        sender_display = ""
+        if requester:
+            nm = f"{(requester.first_name or '').strip()} {(requester.last_name or '').strip()}".strip()
+            sender_display = nm or getattr(requester, "email", None) or ""
+        source_label = (
+            f"{channel_prefix} · {sender_display}" if sender_display else channel_prefix
+        )
 
         # Pick the dashboard widget bucket (HR / FINANCE / MAINTENANCE /
         # MEETING / …) so this task shows up in the right widget without
@@ -871,12 +906,14 @@ def agent_create_dashboard_task(request):
             task = Task.objects.create(
                 restaurant=restaurant,
                 assigned_to=assignee,
+                # Requester (From) ≠ assignee (To). Staff WhatsApp → created_by=staff.
+                created_by=requester if getattr(requester, "pk", None) else None,
                 title=title,
                 description=description or None,
                 priority=priority,
                 status="PENDING",
                 due_date=due_date,
-                source="MIYA",
+                source="WHATSAPP" if channel == "whatsapp" else "MIYA",
                 source_label=source_label[:120],
                 ai_summary=ai_summary,
                 category=task_category,
@@ -1002,6 +1039,45 @@ def agent_create_dashboard_task(request):
         else:
             dashboard_widget = "tasks_demands"
 
+        # URGENT / CRITICAL → ping managers so Operations Live pressing items
+        # don't sit unnoticed. Best-effort; never blocks create.
+        manager_alert: dict[str, Any] | None = None
+        notify_managers = _coerce_bool(
+            _get_first(
+                data,
+                "notify_managers",
+                "notifyManagers",
+                "alert_managers",
+                "alertManagers",
+            ),
+            default=priority == "URGENT",
+        )
+        if notify_managers and priority == "URGENT":
+            try:
+                from dashboard.api.operations_live import notify_managers_urgent
+
+                manager_alert = notify_managers_urgent(
+                    restaurant,
+                    message=(
+                        f"⚠️ *Urgent on Operations Live*\n"
+                        f"*{task.title}* ({task_category or 'OPS'}) — "
+                        f"assigned to {assignee_display}.\n"
+                        f"Open Operations Live to triage."
+                    ),
+                    task_id=str(task.id),
+                )
+                if manager_alert.get("managers_app") or manager_alert.get(
+                    "managers_whatsapp"
+                ):
+                    message_for_user = (
+                        f"{message_for_user} Managers were alerted."
+                    ).strip()
+            except Exception:
+                logger.exception(
+                    "Miya create_task: manager urgent alert failed for task %s",
+                    task.id,
+                )
+
         return Response(
             {
                 "success": True,
@@ -1022,6 +1098,7 @@ def agent_create_dashboard_task(request):
                     "role": getattr(assignee, "role", None),
                 },
                 "whatsapp": wa_result,
+                "manager_alert": manager_alert,
                 "message_for_user": message_for_user,
             },
             status=status.HTTP_201_CREATED,
@@ -1055,30 +1132,79 @@ _VALID_TASK_STATUSES = {
 
 
 def _load_dashboard_task_for_agent(data: dict, restaurant) -> tuple[Task | None, str | None]:
+    """Resolve a dashboard.Task by UUID, short ref, or title/query text."""
     task_id = str(
         _get_first(data, "task_id", "taskId", "id", "record_id", "recordId", "task_ref") or ""
     ).strip().lstrip("#")
-    if not task_id:
-        return None, "Missing required field: task_id"
-    try:
-        task = Task.objects.select_related("assigned_to").get(
-            pk=task_id, restaurant=restaurant
+    title_q = str(
+        _get_first(data, "title", "q", "query", "task_title", "name", "task_name") or ""
+    ).strip()
+
+    if task_id:
+        try:
+            task = Task.objects.select_related("assigned_to").get(
+                pk=task_id, restaurant=restaurant
+            )
+            return task, None
+        except (Task.DoesNotExist, ValueError, TypeError):
+            pass
+
+        needle = task_id.replace("-", "").upper()
+        if len(needle) >= 6:
+            for candidate in Task.objects.filter(restaurant=restaurant).select_related(
+                "assigned_to"
+            )[:300]:
+                ref = _short_record_ref(candidate.id)
+                full = str(candidate.id).replace("-", "").upper()
+                if ref == needle or full.endswith(needle) or needle.endswith(ref):
+                    return candidate, None
+
+        # Managers often pass the task title in task_id ("Payer Dj Zia").
+        if len(task_id) >= 3 and not re.fullmatch(r"[0-9a-fA-F-]{8,}", task_id):
+            title_q = title_q or task_id
+
+    if title_q:
+        qs = (
+            Task.objects.filter(restaurant=restaurant)
+            .select_related("assigned_to")
+            .filter(Q(title__icontains=title_q) | Q(description__icontains=title_q))
+            .exclude(status="CANCELLED")
+            .order_by("-updated_at")
         )
-        return task, None
-    except (Task.DoesNotExist, ValueError, TypeError):
-        pass
+        # Prefer open/recent rows when several match.
+        open_first = list(
+            qs.filter(
+                status__in=(
+                    "PENDING",
+                    "ACCEPTED",
+                    "IN_PROGRESS",
+                    "UNABLE_TO_COMPLETE",
+                    "COMPLETED",
+                )
+            )[:8]
+        )
+        matches = open_first or list(qs[:8])
+        if len(matches) == 1:
+            return matches[0], None
+        if len(matches) > 1:
+            # Prefer exact-ish title match.
+            exact = [
+                t
+                for t in matches
+                if title_q.lower() in (t.title or "").lower()
+            ]
+            if len(exact) == 1:
+                return exact[0], None
+            names = ", ".join(
+                f"#{_short_record_ref(t.id)} {t.title} ({t.status})" for t in matches[:5]
+            )
+            return None, (
+                f"Several tasks match '{title_q}': {names}. "
+                "Tell me which task_ref to use."
+            )
+        return None, f"I couldn't find a task matching '{title_q}'."
 
-    needle = task_id.replace("-", "").upper()
-    if len(needle) >= 6:
-        for candidate in Task.objects.filter(restaurant=restaurant).select_related("assigned_to")[
-            :200
-        ]:
-            ref = _short_record_ref(candidate.id)
-            full = str(candidate.id).replace("-", "").upper()
-            if ref == needle or full.endswith(needle) or needle.endswith(ref):
-                return candidate, None
-
-    return None, "Task not found in this workspace."
+    return None, "Missing required field: task_id (or title)"
 
 
 @api_view(["POST"])
@@ -1304,6 +1430,10 @@ def agent_update_dashboard_task_status(request):
             "CANT": "UNABLE_TO_COMPLETE",
             "CANNOT": "UNABLE_TO_COMPLETE",
             "CANCEL": "CANCELLED",
+            "REMOVE": "CANCELLED",
+            "DELETE": "CANCELLED",
+            "ENLEVER": "CANCELLED",
+            "SUPPRIMER": "CANCELLED",
         }
         new_status = aliases.get(raw_status, raw_status)
         if new_status not in _VALID_TASK_STATUSES:
@@ -1558,6 +1688,8 @@ def agent_list_dashboard_tasks(request):
             "assigned_to", "completed_by", "proof_submitted_by"
         )
 
+        # Default: open board (matches Operations Live "new + in progress").
+        # Pass status=ALL / COMPLETED / CANCELLED when the manager wants history.
         overdue = _coerce_bool(_get_first(data, "overdue", "is_overdue"), default=False)
         if overdue:
             today = timezone.localdate()
@@ -1566,19 +1698,44 @@ def agent_list_dashboard_tasks(request):
             )
 
         raw_status = _get_first(data, "status", "statuses")
+        _OPEN_STATUSES = (
+            "PENDING",
+            "ACCEPTED",
+            "IN_PROGRESS",
+            "UNABLE_TO_COMPLETE",
+        )
         if raw_status:
-            statuses = [
-                s.strip().upper()
-                for s in str(raw_status).replace(";", ",").split(",")
-                if s.strip()
-            ]
-            aliases = {
-                "DONE": "COMPLETED",
-                "OPEN": "PENDING",
-                "STARTED": "IN_PROGRESS",
-            }
-            statuses = [aliases.get(s, s) for s in statuses]
-            qs = qs.filter(status__in=statuses)
+            statuses: list[str] = []
+            for s in str(raw_status).replace(";", ",").split(","):
+                s = s.strip().upper()
+                if not s:
+                    continue
+                if s in ("OPEN", "PENDING_LANE", "EN_ATTENTE", "ACTIVE"):
+                    statuses.extend(_OPEN_STATUSES)
+                elif s in ("ALL", "*"):
+                    statuses = []
+                    break
+                else:
+                    aliases = {
+                        "DONE": "COMPLETED",
+                        "COMPLETE": "COMPLETED",
+                        "STARTED": "IN_PROGRESS",
+                        "START": "IN_PROGRESS",
+                        "CANCEL": "CANCELLED",
+                        "NEW": "PENDING",
+                    }
+                    statuses.append(aliases.get(s, s))
+            if statuses:
+                # Deduplicate while preserving order
+                statuses = list(dict.fromkeys(statuses))
+                qs = qs.filter(status__in=statuses)
+        elif not overdue and not _get_first(data, "task_id", "taskId", "id", "task_ref"):
+            qs = qs.filter(status__in=_OPEN_STATUSES)
+
+        # Optional text search — "photos pour maxime", "Dj Zia", etc.
+        q = str(_get_first(data, "q", "query", "search", "title") or "").strip()
+        if q:
+            qs = qs.filter(Q(title__icontains=q) | Q(description__icontains=q))
 
         assignee_id = _get_first(data, "assignee_id", "assignee", "user_id")
         if assignee_id:
@@ -1602,6 +1759,14 @@ def agent_list_dashboard_tasks(request):
                 ]
                 qs = Task.objects.filter(restaurant=restaurant, id__in=matched_ids)
 
+        # Align with Operations Live: hide custom-widget-only tiles unless asked.
+        include_custom = _coerce_bool(
+            _get_first(data, "include_custom_widgets", "includeCustomWidgets"),
+            default=False,
+        )
+        if not include_custom:
+            qs = qs.filter(custom_widget__isnull=True)
+
         try:
             limit = min(int(_get_first(data, "limit") or 20), 50)
         except (TypeError, ValueError):
@@ -1609,13 +1774,22 @@ def agent_list_dashboard_tasks(request):
 
         tasks = list(qs.order_by("due_date", "-priority", "-created_at")[:limit])
         payload = DashboardTaskCompactSerializer(tasks, many=True).data
-        label = "overdue tasks" if overdue else "tasks"
+        if overdue:
+            label = "overdue tasks"
+        elif raw_status and str(raw_status).upper() in ("ALL", "*"):
+            label = "tasks"
+        else:
+            label = "open tasks"
         return Response(
             {
                 "success": True,
                 "count": len(payload),
                 "tasks": payload,
                 "overdue": overdue,
+                "filter": {
+                    "status": raw_status or "OPEN",
+                    "q": q or None,
+                },
                 "message_for_user": (
                     f"Found {len(payload)} {label}."
                     if payload

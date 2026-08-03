@@ -105,14 +105,33 @@ def _try_create_invoice(
     content_type: str | None = None,
     filename_hint: str | None = None,
     acting_user=None,
+    ocr_confidence: float | None = None,
 ):
     """Build an Invoice from vision fields. Returns (invoice_or_None, message)."""
     from finance.attachment_utils import attach_invoice_from_url, save_invoice_attachment
     from finance.models import Invoice
 
+    from datetime import timedelta
+
+    from django.utils import timezone as dj_tz
+
     vendor = (fields.get("vendor") or "").strip()
     amount = _to_decimal(fields.get("amount"))
+    # Prefer total/amount_due when vision returns them; fall back to amount.
+    if amount is None:
+        amount = _to_decimal(
+            fields.get("total")
+            or fields.get("total_due")
+            or fields.get("amount_due")
+        )
     due_date = coerce_agent_date(fields.get("due_date"))
+    issue_date = coerce_agent_date(fields.get("issue_date"))
+    # Managers often send clear invoices where due_date is missing or OCR-garbled.
+    # Fall back: issue_date + 14 days, else today + 30 — still log the bill.
+    if not due_date and issue_date:
+        due_date = issue_date + timedelta(days=14)
+    if not due_date and vendor and amount:
+        due_date = dj_tz.localdate() + timedelta(days=30)
     if not (vendor and amount and due_date):
         return None, (
             "I can see this looks like an invoice but I'm missing some details. "
@@ -147,7 +166,14 @@ def _try_create_invoice(
         currency = (fields.get("currency") or "").strip().upper() or "USD"
         notes_parts = [note, summary]
         notes = "\n\n".join(p for p in notes_parts if (p or "").strip())
-        issue_date = coerce_agent_date(fields.get("issue_date"))
+        ocr_dec = None
+        if ocr_confidence is not None:
+            try:
+                from decimal import Decimal
+
+                ocr_dec = Decimal(str(round(float(ocr_confidence), 3)))
+            except Exception:
+                ocr_dec = None
         invoice = Invoice.objects.create(
             restaurant=restaurant,
             vendor_name=vendor,
@@ -161,6 +187,8 @@ def _try_create_invoice(
             notes=notes,
             photo_url=(photo_url or "")[:1024],
             created_by=acting_user,
+            ocr_confidence=ocr_dec,
+            ocr_fields=dict(fields or {}) if isinstance(fields, dict) else {},
         )
         if file_bytes:
             save_invoice_attachment(
@@ -409,13 +437,30 @@ def agent_parse_photo(request):
                 file_bytes=image_bytes,
                 content_type=content_type,
                 acting_user=acting_user,
+                ocr_confidence=confidence,
             )
             if invoice:
+                if confidence < 0.75:
+                    msg = (
+                        f"{msg} (OCR confidence {confidence:.0%} — double-check "
+                        "vendor/amount/due date if anything looks off.)"
+                    )
+                try:
+                    from dashboard.task_sync import broadcast_tasks_invalidate
+
+                    broadcast_tasks_invalidate(
+                        restaurant, reason="invoice_created", task_id=str(invoice.id)
+                    )
+                except Exception:
+                    pass
                 action_envelope = _action_envelope(
                     type_="invoice",
                     record_id=str(invoice.id),
                     message=msg,
-                    extra={"invoice_status": invoice.status},
+                    extra={
+                        "invoice_status": invoice.status,
+                        "ocr_confidence": confidence,
+                    },
                 )
             else:
                 action_envelope = _action_envelope(
@@ -423,6 +468,18 @@ def agent_parse_photo(request):
                     record_id=None,
                     message=msg,
                 )
+
+        elif category == "task_or_app_screenshot":
+            action_envelope = _action_envelope(
+                type_="task_screenshot",
+                record_id=None,
+                message=(
+                    "That looks like a screenshot of your tasks / Operations Live board — "
+                    "not an incident. Tell me what you want done with those items "
+                    "(list pending, complete one, reassign, cancel) and I'll do it."
+                ),
+                extra={"suggested_action": "review_tasks"},
+            )
 
         elif category == "equipment_issue" and confidence >= 0.5:
             sr, msg = _try_create_maintenance_request(

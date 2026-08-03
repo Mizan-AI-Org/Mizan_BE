@@ -34,6 +34,11 @@ from .api.tasks_demands import (
     TaskBucketUpdateView,
     TaskAssigneeUpdateView,
 )
+from .api.operations_live import (
+    OperationsLiveView,
+    agent_list_operations_live,
+    agent_notify_manager_urgent,
+)
 from .api.custom_widget_tasks import CustomWidgetTasksView
 from .api.staff_messages import (
     StaffMessagesRecentView,
@@ -120,6 +125,16 @@ urlpatterns = [
     path('agent/tasks/status/', agent_update_dashboard_task_status, name='dashboard-agent-tasks-status'),
     path('agent/tasks/update/', agent_update_dashboard_task, name='dashboard-agent-tasks-update'),
     path('agent/tasks/list/', agent_list_dashboard_tasks, name='dashboard-agent-tasks-list'),
+    path(
+        'agent/operations-live/',
+        agent_list_operations_live,
+        name='dashboard-agent-operations-live',
+    ),
+    path(
+        'agent/operations-live/notify/',
+        agent_notify_manager_urgent,
+        name='dashboard-agent-operations-live-notify',
+    ),
     path('agent/tasks/validate/', agent_validate_task, name='dashboard-agent-tasks-validate'),
     path('agent/tasks/proof/', agent_submit_task_proof, name='dashboard-agent-tasks-proof'),
     path('agent/department-owners/', agent_department_owners, name='dashboard-agent-department-owners'),
@@ -170,6 +185,11 @@ urlpatterns = [
         'tasks-demands/',
         TasksDemandsView.as_view(),
         name='dashboard-tasks-demands',
+    ),
+    path(
+        'operations-live/',
+        OperationsLiveView.as_view(),
+        name='dashboard-operations-live',
     ),
     path(
         'tasks-demands/<uuid:pk>/',

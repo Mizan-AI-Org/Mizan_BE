@@ -207,6 +207,44 @@ def extract_incident_location(text: str) -> str:
     return ""
 
 
+def looks_like_all_clear_ops_check(text: str) -> bool:
+    """
+    Manager status checks like "rien à signaler ?" / "nothing to report" —
+    NOT an incident report. Must win over incident heuristics.
+    """
+    import re
+
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    # Explicit all-clear / status-check phrasing.
+    if re.search(
+        r"\b("
+        r"rien\s+a?\s*(signaler|signaller|declarer)|"
+        r"rien\s+a?\s*signaler|"
+        r"aucun\s+incident|pas\s+d['’]?\s*incident|"
+        r"nothing\s+to\s+report|all\s+clear|no\s+incidents?|"
+        r"no\s+maintenance|aucune?\s+maintenance|"
+        r"\bras\b|tout\s+est\s+(ok|bon|clair)|"
+        r"incidents?\s+(et|ou)\s+maintenance|"
+        r"maintenance\s+(et|ou)\s+incidents?"
+        r")\b",
+        t,
+        re.I,
+    ):
+        # "report an incident" / "je signale un incident" still win as reports.
+        if re.search(
+            r"\b(report(\s+an?)?\s+incident|je\s+(signale|declare)\s|"
+            r"il\s+y\s+a\s+(eu\s+)?(un\s+)?incident|"
+            r"someone\s+(got\s+)?hurt|bless[eé]|incendie|vol\b)\b",
+            t,
+            re.I,
+        ):
+            return False
+        return True
+    return False
+
+
 def looks_like_whatsapp_incident_report(text: str) -> bool:
     """
     True when inbound WhatsApp text should be owned by Django as an incident
@@ -218,6 +256,9 @@ def looks_like_whatsapp_incident_report(text: str) -> bool:
     if not t or len(t) < 6:
         return False
     if looks_like_guest_order_intent(t):
+        return False
+    # Manager asking "any incidents?" / "nothing to report" is a status check.
+    if looks_like_all_clear_ops_check(t):
         return False
     if mentions_glass_hazard(t) or infer_incident_type(t):
         return True

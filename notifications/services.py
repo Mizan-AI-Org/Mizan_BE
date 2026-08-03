@@ -540,6 +540,42 @@ class NotificationService:
             if title:
                 body = f"*{title}*\n\n{body}".strip()
 
+            notif = data.get("notification")
+            source = ""
+            try:
+                source = str((getattr(notif, "data", None) or {}).get("source") or "")
+            except Exception:
+                source = ""
+            # Manager → staff pings (Staff Messages widget + Miya inform /
+            # announce) are business-initiated. Meta only reliably delivers
+            # those via the approved manager_message template — free-form
+            # can return 200 while the phone never shows a bubble when the
+            # 24h session is closed. Template-first matches how Miya is
+            # supposed to handle cold contacts.
+            manager_initiated = source in (
+                "staff_messages_widget",
+                "miya_announcement",
+                "inform_staff",
+            )
+            if manager_initiated:
+                # Plain body for the template variable (no markdown title wrap).
+                tpl_body = (message or "").strip() or body
+                tpl_ok, _tpl_data = self._send_manager_message_template(
+                    phone_digits,
+                    tpl_body,
+                    notification=notif,
+                    audit=True,
+                    allow_text_fallback=False,
+                )
+                if tpl_ok:
+                    return True
+                # Template missing/rejected — fall through to free-form in case
+                # the staff member still has an open session window.
+                logger.info(
+                    "manager_message template failed for %s; trying free-form",
+                    phone_digits,
+                )
+
             payload = {
                 "messaging_product": "whatsapp",
                 "to": phone_digits,
@@ -562,33 +598,27 @@ class NotificationService:
             except Exception:
                 response_data = {"raw": resp.text}
 
-            # Outside Meta's 24h window (#131047) free-form text fails.
-            # Staff Messages widget often hits cold contacts — always try the
-            # approved manager_message utility template as fallback.
-            notif = data.get("notification")
-            source = ""
-            try:
-                source = str((getattr(notif, "data", None) or {}).get("source") or "")
-            except Exception:
-                source = ""
-            force_tpl = source in (
-                "staff_messages_widget",
-                "miya_announcement",
-                "inform_staff",
-            )
-            template_attempted = False
-            if not ok and _should_retry_manager_template(response_data, force=force_tpl):
-                template_attempted = True
+            # Non-manager paths: outside Meta's 24h window (#131047) free-form
+            # fails — try the approved manager_message utility template.
+            if not ok and not manager_initiated and _should_retry_manager_template(
+                response_data, force=False
+            ):
                 tpl_ok, tpl_data = self._send_manager_message_template(
                     phone_digits,
                     body,
                     notification=notif,
                     audit=True,
+                    allow_text_fallback=False,
                 )
                 if tpl_ok:
                     return True
                 # Template helper already wrote the FAILED audit row.
                 return False
+
+            if not ok and manager_initiated:
+                # Both template-first and free-form failed — free-form audit
+                # below; template already wrote its own FAILED row.
+                pass
 
             # Audit log (free-form success, or failure with no template fallback)
             try:
@@ -627,15 +657,18 @@ class NotificationService:
             return False
 
     def _send_manager_message_template(
-        self, phone_digits, body, notification=None, *, audit: bool = True
+        self, phone_digits, body, notification=None, *, audit: bool = True,
+        allow_text_fallback: bool | None = None,
     ):
         """
-        Fallback when free-form WhatsApp fails outside the 24h window.
-        Requires approved UTILITY template WHATSAPP_TEMPLATE_MANAGER_MESSAGE
-        with a single body variable {{1}} = full message text.
+        Send (or fall back with) the approved manager_message UTILITY template.
 
-        Tries the configured language first, then common approved locales
-        (fr / en / en_US / ar) so a language mismatch doesn't block delivery.
+        Meta's approved template uses a *named* body variable ``{{message}}``
+        (not positional ``{{1}}``). Positional params produce
+        ``(#100) Parameter name is missing or empty`` and silently break
+        Staff Messages / Miya inform_staff delivery outside the 24h window.
+
+        Tries the configured language first, then en_US / fr / ar.
         """
         template_name = (getattr(settings, "WHATSAPP_TEMPLATE_MANAGER_MESSAGE", None) or "").strip()
         if not template_name:
@@ -650,11 +683,18 @@ class NotificationService:
         ).strip() or "fr"
 
         # Meta rejects some control chars in template params — keep one line.
+        # Named params also reject tabs/newlines in some accounts.
         text = " ".join((body or "").split())[:1024] or "You have a new message from your manager."
         components = [
             {
                 "type": "body",
-                "parameters": [{"type": "text", "text": text}],
+                "parameters": [
+                    {
+                        "type": "text",
+                        "parameter_name": "message",
+                        "text": text,
+                    }
+                ],
             }
         ]
         return self.send_whatsapp_template(
@@ -666,6 +706,7 @@ class NotificationService:
             audit=audit,
             fallback_body=text,
             fallback_context={"message": text, "body": text},
+            allow_text_fallback=allow_text_fallback,
         )
 
     # ----------------------------------------------------------------------

@@ -448,7 +448,7 @@ def _serialize_invoice(inv, *, now=None) -> dict[str, Any]:
     elif inv.status == "VOIDED":
         summary = f"{inv.amount} {inv.currency} · voided"
 
-    assignee = _assignee_payload(inv.created_by)
+    assignee = _assignee_payload(getattr(inv, "assigned_to", None) or inv.created_by)
 
     return {
         "id": str(inv.id),
@@ -480,6 +480,9 @@ def _serialize_invoice(inv, *, now=None) -> dict[str, Any]:
         "invoice_status": inv.status,
         "is_overdue": is_overdue,
         "has_attachment": bool(inv.attachment or inv.photo or (inv.photo_url or "").strip()),
+        "ocr_confidence": float(inv.ocr_confidence)
+        if getattr(inv, "ocr_confidence", None) is not None
+        else None,
     }
 
 
@@ -594,7 +597,7 @@ class CategoryTasksView(APIView):
         if is_urgent:
             db_open_qs = db_qs.filter(
                 priority="URGENT",
-                status__in=("PENDING", "IN_PROGRESS"),
+                status__in=("PENDING", "ACCEPTED", "IN_PROGRESS"),
             )
             db_completed_qs = db_qs.filter(
                 priority="URGENT",
@@ -608,7 +611,7 @@ class CategoryTasksView(APIView):
                 cat_filter = Q(category__in=wanted_cats)
             db_open_qs = db_qs.filter(
                 cat_filter,
-                status__in=("PENDING", "IN_PROGRESS"),
+                status__in=("PENDING", "ACCEPTED", "IN_PROGRESS"),
             ).filter(Q(due_date__isnull=True) | Q(due_date__lte=future_cutoff))
             db_completed_qs = db_qs.filter(
                 cat_filter,
@@ -654,7 +657,7 @@ class CategoryTasksView(APIView):
             # widget only needs the top handful per bucket anyway.
             legacy_scan_cap = 200
             legacy_open_scan = list(
-                legacy_qs.filter(status__in=("PENDING", "IN_PROGRESS"))
+                legacy_qs.filter(status__in=("PENDING", "ACCEPTED", "IN_PROGRESS"))
                 .filter(Q(due_date__isnull=True) | Q(due_date__lte=future_cutoff))
                 .order_by("priority_rank", "due_date", "-created_at")[
                     :legacy_scan_cap

@@ -354,12 +354,13 @@ def agent_classify_checkin_message(request):
             t = Task.objects.create(
                 restaurant=restaurant,
                 assigned_to=None,
+                created_by=owner,
                 title=titles[label],
                 description=text,
                 priority="HIGH" if label == "absence" else "MEDIUM",
                 category="SCHEDULING",
                 source="WHATSAPP",
-                source_label="Check-in message",
+                source_label=f"WhatsApp · {who}"[:120],
                 ai_summary=f"Classified as {label}",
                 follow_up_enabled=False,
             )

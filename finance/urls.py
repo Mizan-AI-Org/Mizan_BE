@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import InvoiceViewSet
 from .views_agent import (
+    agent_assign_invoice,
     agent_attach_invoice_proof,
     agent_confirm_invoice_po_match,
     agent_list_invoices,
@@ -69,6 +70,11 @@ urlpatterns = [
         "agent/invoices/list/",
         agent_list_invoices,
         name="finance-agent-invoice-list",
+    ),
+    path(
+        "agent/invoices/assign/",
+        agent_assign_invoice,
+        name="finance-agent-invoice-assign",
     ),
     path(
         "agent/invoices/payment-status/",
