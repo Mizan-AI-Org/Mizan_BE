@@ -518,13 +518,41 @@ def _resolve_restaurant_for_agent(request):
                 pref = pref[0]
             restaurant = resolve_active_tenant(jwt_user, preferred_restaurant_id=pref) or jwt_rest
 
-    # 3) Fallback to agent key + payload resolution
+    # 3) Agent key + payload resolution for restaurant and/or acting user.
+    # When X-Restaurant-Id already set restaurant, we still need the WhatsApp
+    # sender from payload user_id/phone — otherwise created_by/From stays empty.
+    is_valid, error = validate_agent_key(request)
     if not restaurant:
-        is_valid, error = validate_agent_key(request)
         if not is_valid:
             return None, None, {'error': error, 'status': 401}
         payload = _agent_payload_from_request(request)
-        restaurant, acting_user = resolve_agent_restaurant_and_user(request=request, payload=payload)
+        restaurant, acting_user = resolve_agent_restaurant_and_user(
+            request=request, payload=payload
+        )
+    elif not acting_user and is_valid:
+        payload = _agent_payload_from_request(request)
+        _, resolved_user = resolve_agent_restaurant_and_user(
+            request=request, payload=payload
+        )
+        if resolved_user:
+            acting_user = resolved_user
+        else:
+            # Last resort: explicit user_id on the tool payload (Mastra session).
+            from accounts.models import CustomUser
+
+            uid = None
+            if isinstance(payload, dict):
+                uid = (
+                    payload.get("user_id")
+                    or payload.get("userId")
+                    or payload.get("sender_user_id")
+                    or payload.get("requester_id")
+                    or payload.get("created_by_id")
+                )
+            if uid:
+                acting_user = CustomUser.objects.filter(
+                    id=uid, restaurant=restaurant, is_active=True
+                ).first()
 
     if not restaurant:
         return None, None, {

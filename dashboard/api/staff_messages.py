@@ -316,7 +316,7 @@ def _validate_direct_recipients(
 # expectation. We don't translate the prefix; the body is already
 # in whatever language the manager typed.
 _PRIORITY_PREFIX = {
-    "URGENT": "🚨 URGENT — ",
+    "URGENT": "🚨 URGENT - ",
     "HIGH": "⚠️ ",
     "NORMAL": "",
     "LOW": "",
@@ -343,7 +343,7 @@ TEMPLATE_CATALOG: list[dict[str, str]] = [
     {
         "id": "THANK_YOU",
         "label": "Thank-you note",
-        "body": "Great work today — thank you for your effort. 🙏",
+        "body": "Great work today - thank you for your effort. 🙏",
         "priority": "NORMAL",
     },
     {
@@ -355,7 +355,7 @@ TEMPLATE_CATALOG: list[dict[str, str]] = [
     {
         "id": "WAITING_ON_REPLY",
         "label": "Waiting on reply",
-        "body": "Hi, just following up — could you let me know about ",
+        "body": "Hi, just following up - could you let me know about ",
         "priority": "NORMAL",
     },
 ]
@@ -768,6 +768,17 @@ class StaffMessagesSendView(APIView):
             recipients_without_phone
         )
 
+        recipient_phone = ""
+        recipient_name = ""
+        if single_recipient:
+            recipient_phone = "".join(
+                filter(str.isdigit, str(single_recipient.phone or ""))
+            ) or (log.recipient_address if log else "")
+            recipient_name = (
+                f"{(single_recipient.first_name or '').strip()} "
+                f"{(single_recipient.last_name or '').strip()}"
+            ).strip() or (single_recipient.email or "")
+
         return Response(
             {
                 "success": True,
@@ -776,6 +787,8 @@ class StaffMessagesSendView(APIView):
                 "failure_reason": failure_reason,
                 "whatsapp_platform_issue": whatsapp_platform_issue,
                 "notified_count": count,
+                "recipient_name": recipient_name or None,
+                "recipient_phone": recipient_phone or None,
                 "log": _serialize_log(log) if log else None,
                 "template_id": template_id,
                 "audience": audience_meta,

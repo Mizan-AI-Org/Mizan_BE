@@ -44,12 +44,18 @@ scene it shows, then extract the fields a manager would care about.
 Pick exactly one category from this list:
   - "invoice_or_receipt"  — supplier bill, utility bill, restaurant receipt
                               that the manager owes (NOT a guest receipt
-                              the customer paid)
+                              the customer paid). Prefer this when you see
+                              Invoice #, Total Due, Vendor, Bill To.
   - "schedule"            — staff rota / weekly schedule
   - "equipment_issue"     — a broken / damaged piece of equipment, leak,
                               spillage, faulty appliance, broken tile
   - "incident"            — health/safety/security event (injury, fire,
-                              violence, food-safety hazard, theft)
+                              violence, food-safety hazard, theft). NEVER
+                              use for app screenshots or task lists.
+  - "task_or_app_screenshot" — phone/computer screenshot of Mizan / a
+                              task board / Operations Live / dashboard UI
+                              (columns like From/To/Status, "En attente",
+                              "NEW DEMANDS"). NEVER treat as an incident.
   - "id_or_certification" — staff ID, food handler card, license,
                               certification, training certificate
   - "inventory"           — stockroom shelves, fridge contents, ingredient
@@ -60,14 +66,14 @@ Respond with a STRICT JSON object (no markdown, no commentary) of
 exactly this shape:
 
 {
-  "category": "invoice_or_receipt" | "schedule" | "equipment_issue" | "incident" | "id_or_certification" | "inventory" | "other",
+  "category": "invoice_or_receipt" | "schedule" | "equipment_issue" | "incident" | "task_or_app_screenshot" | "id_or_certification" | "inventory" | "other",
   "confidence": 0.0 - 1.0,
   "summary": "one-sentence human description of the photo",
   "fields": {
     // Only the keys that match the chosen category. Use null for
     // anything you cannot read off the image. Do NOT guess values.
     "vendor": string | null,                     // invoice_or_receipt
-    "amount": number | null,                     // invoice_or_receipt
+    "amount": number | null,                     // invoice_or_receipt (TOTAL DUE preferred)
     "currency": string | null,                   // invoice_or_receipt (ISO 4217)
     "invoice_number": string | null,             // invoice_or_receipt
     "due_date": "YYYY-MM-DD" | null,             // invoice_or_receipt
@@ -88,7 +94,7 @@ exactly this shape:
       { "name": string, "quantity": number | null, "unit": string | null }
     ] | null
   },
-  "suggested_action": "log_invoice" | "import_schedule" | "open_maintenance_request" | "report_incident" | "upload_document" | "stock_count" | "ask_manager"
+  "suggested_action": "log_invoice" | "import_schedule" | "open_maintenance_request" | "report_incident" | "review_tasks" | "upload_document" | "stock_count" | "ask_manager"
 }
 
 If you genuinely cannot tell, set category="other", confidence < 0.4,
@@ -101,6 +107,7 @@ _VALID_CATEGORIES = {
     "schedule",
     "equipment_issue",
     "incident",
+    "task_or_app_screenshot",
     "id_or_certification",
     "inventory",
     "other",
@@ -111,6 +118,7 @@ _VALID_ACTIONS = {
     "import_schedule",
     "open_maintenance_request",
     "report_incident",
+    "review_tasks",
     "upload_document",
     "stock_count",
     "ask_manager",

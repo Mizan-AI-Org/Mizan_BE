@@ -211,9 +211,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "report_incident",
             "description": (
-                "Report a SAFETY incident (slip, fire, injury, harassment, broken glass "
-                "with harm risk). NOT for routine equipment repairs — use staff_request "
-                "MAINTENANCE for those."
+                "Report a REAL SAFETY incident that just happened (slip, fire, injury, "
+                "harassment, broken glass with harm). NEVER call for status checks like "
+                "'rien à signaler?', 'any incidents?', 'nothing to report', or when the "
+                "manager sends a task-board screenshot. For those: list_operations_live / "
+                "list_dashboard_tasks. Equipment repairs → staff_request MAINTENANCE."
             ),
             "parameters": {
                 "type": "object",
@@ -323,17 +325,82 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "list_dashboard_tasks",
             "description": (
-                "List dashboard tasks (pending, in progress, overdue). "
-                "Use before status questions when task_id is unknown."
+                "List Operations Live / dashboard tasks. Default = OPEN "
+                "(PENDING+ACCEPTED+IN_PROGRESS). Use q for title search "
+                "('photos pour maxime', 'Dj Zia'). status=ALL for history including completed. "
+                "Prefer this or list_operations_live for 'tâches en attente'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "restaurant_id": {"type": "string"},
-                    "status": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "description": "OPEN (default) | PENDING | ACCEPTED | IN_PROGRESS | COMPLETED | CANCELLED | ALL",
+                    },
+                    "q": {
+                        "type": "string",
+                        "description": "Search title/description (e.g. 'Maxime', 'Dj Zia').",
+                    },
                     "assignee_id": {"type": "string"},
                     "overdue": {"type": "boolean"},
                     "limit": {"type": "integer"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_operations_live",
+            "description": (
+                "Read the Operations Live board (New demands / In progress / Completed). "
+                "Use for 'what's on Operations Live?', 'any urgent demands?', or before "
+                "updating/cancelling a lane item. Set urgent_only=true for pressing items."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "search_by": {
+                        "type": "string",
+                        "enum": ["staff", "task", "category"],
+                    },
+                    "urgent_only": {"type": "boolean"},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "notify_manager_urgent",
+            "description": (
+                "Alert managers (in-app + WhatsApp) about pressing Operations Live items. "
+                "Use when something is critical/urgent and the manager must be updated now, "
+                "or when the user asks to 'ping the manager' / 'escalate this'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "message": {
+                        "type": "string",
+                        "description": "Optional custom alert text. If omitted, a summary of urgent lanes is sent.",
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "Optional task/request id to highlight.",
+                    },
+                    "channels": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Default ['app','whatsapp'].",
+                    },
                 },
                 "required": ["restaurant_id"],
             },
@@ -364,7 +431,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "name": "update_dashboard_task_status",
             "description": (
                 "Change task status: PENDING, ACCEPTED, IN_PROGRESS, COMPLETED, "
-                "UNABLE_TO_COMPLETE, CANCELLED. Use task_id or short ref (#7FFC0D68)."
+                "UNABLE_TO_COMPLETE, CANCELLED (remove from board). "
+                "Resolve by task_id/short ref OR title/q ('Payer Dj Zia', 'photos pour Maxime'). "
+                "For 'remove/cancel/enlever' use CANCELLED. For 'it's paid/done' use COMPLETED."
             ),
             "parameters": {
                 "type": "object",
@@ -372,6 +441,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "restaurant_id": {"type": "string"},
                     "task_id": {"type": "string"},
                     "task_ref": {"type": "string"},
+                    "title": {
+                        "type": "string",
+                        "description": "Task title fragment when id unknown.",
+                    },
+                    "q": {"type": "string"},
                     "status": {"type": "string"},
                 },
                 "required": ["restaurant_id", "status"],
@@ -475,8 +549,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "list_invoices",
             "description": (
-                "List invoices for the tenant — open, overdue, by vendor. "
-                "Use for 'what happened with Ahmed's invoice?' history questions."
+                "List invoices (default OPEN). Returns invoice id — KEEP those ids for "
+                "follow-ups (assign_invoice, mark_invoice_paid). Use for 'finance? rien à payer?'."
             ),
             "parameters": {
                 "type": "object",
@@ -957,9 +1031,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "parse_photo",
             "description": (
-                "Classify a photo (invoice, schedule, incident, cert) and optionally "
-                "auto-create records. Use document_id from a recent upload, media_url, "
-                "or when the user just sent an image on WhatsApp."
+                "Classify a photo and optionally auto-create records. Categories include "
+                "invoice_or_receipt, task_or_app_screenshot (NOT an incident), equipment, "
+                "incident. Always pass document_id from [ATTACHED DOCUMENTS] when present. "
+                "For invoice photos with 'pay / garde en finance', call this then record_invoice "
+                "if needed — extract Total Due / vendor / invoice # from the image."
             ),
             "parameters": {
                 "type": "object",
@@ -1018,6 +1094,36 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "method": {"type": "string"},
                     "reference": {"type": "string"},
                     "paid_on": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "assign_invoice",
+            "description": (
+                "Transfer/hand open invoice(s) to a staff member for payment follow-up "
+                "(e.g. 'transfère-les à Driss Wahabi'). Pass invoice_ids from the last "
+                "list_invoices result, or all_open=true, plus staff_name/assignee_id. "
+                "Creates FINANCE tasks on Operations Live and WhatsApps the assignee."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "staff_name": {"type": "string"},
+                    "assignee_id": {"type": "string"},
+                    "invoice_id": {"type": "string"},
+                    "invoice_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "all_open": {"type": "boolean"},
+                    "vendor": {"type": "string"},
+                    "invoice_number": {"type": "string"},
+                    "notify_whatsapp": {"type": "boolean"},
                 },
                 "required": ["restaurant_id"],
             },
@@ -1105,12 +1211,15 @@ _ROUTE_MAP: dict[str, tuple[str, str]] = {
     "list_dashboard_widgets": ("POST", "/api/dashboard/agent/widgets/list/"),
     "list_dashboard_tasks": ("POST", "/api/dashboard/agent/tasks/list/"),
     "get_dashboard_task": ("POST", "/api/dashboard/agent/tasks/list/"),
+    "list_operations_live": ("POST", "/api/dashboard/agent/operations-live/"),
+    "notify_manager_urgent": ("POST", "/api/dashboard/agent/operations-live/notify/"),
     "update_dashboard_task_status": ("POST", "/api/dashboard/agent/tasks/status/"),
     "reassign_dashboard_task": ("POST", "/api/dashboard/agent/tasks/reassign/"),
     "update_dashboard_task": ("POST", "/api/dashboard/agent/tasks/update/"),
     "create_calendar_event": ("POST", "/api/dashboard/agent/calendar-events/create/"),
     "create_personal_reminder": ("POST", "/api/scheduling/agent/personal-reminders/"),
     "list_invoices": ("POST", "/api/finance/agent/invoices/list/"),
+    "assign_invoice": ("POST", "/api/finance/agent/invoices/assign/"),
     "ops_search": ("GET", "/api/dashboard/agent/search/"),
     "chase_operational_record": ("POST", "/api/staff/agent/records/chase/"),
     "record_invoice": ("POST", "/api/finance/agent/invoices/record/"),
@@ -1248,6 +1357,19 @@ def _enrich_agent_payload(
         payload.setdefault("action", "seed")
 
     if name == "create_dashboard_task":
+        # WhatsApp / dashboard sender is the requester (From), not necessarily
+        # the assignee (To). Keep dedicated requester fields so assignee
+        # resolution does not steal the session user_id.
+        if uid:
+            payload.setdefault("requester_id", uid)
+            payload.setdefault("sender_user_id", uid)
+            payload.setdefault("created_by_id", uid)
+        if phone:
+            payload.setdefault("sender_phone", phone)
+            payload.setdefault("requester_phone", phone)
+        channel = str(session_context.get("channel") or payload.get("channel") or "").strip()
+        if channel:
+            payload.setdefault("channel", channel)
         source_bits = [
             payload.get("source_text"),
             payload.get("sourceText"),
@@ -1428,6 +1550,20 @@ def execute_tool(
 
     payload = _enrich_agent_payload(name, payload, session_context)
 
+    # Resolve pronouns / missing ids from the turn-local working set
+    # (list_invoices → "transfère-les", list tasks → "cancel it").
+    try:
+        from miya.services.working_set import apply_working_set_to_args
+
+        payload = apply_working_set_to_args(
+            name,
+            payload,
+            restaurant_id=str(rid or payload.get("restaurant_id") or "") or None,
+            user_id=str(uid or "") or None,
+        )
+    except Exception:
+        logger.exception("working_set apply failed for %s", name)
+
     if name == "platform_knowledge":
         payload.setdefault("q", payload.pop("query", ""))
         role = (session_context.get("role") or "MANAGER").upper()
@@ -1491,7 +1627,25 @@ def execute_tool(
 
         body = {**body, "message_for_user": sanitize_user_error(body["message_for_user"])}
 
-    return {"success": True, "data": body}
+    result = {"success": True, "data": body}
+
+    # Remember listed entities for the next short reply / pronoun turn.
+    if isinstance(body, dict):
+        try:
+            from miya.services.working_set import extract_list_entities, remember_entities
+
+            kind, entities = extract_list_entities(name, body)
+            if kind and entities:
+                remember_entities(
+                    restaurant_id=str(rid or payload.get("restaurant_id") or "") or None,
+                    user_id=str(uid or "") or None,
+                    kind=kind,
+                    entities=entities,
+                )
+        except Exception:
+            logger.exception("working_set remember failed for %s", name)
+
+    return result
 
 
 def serialize_tool_result(result: dict[str, Any]) -> str:

@@ -714,7 +714,7 @@ def agent_list_invoices(request):
                 bits.append(f"{overdue_count} overdue")
             message = ", ".join(bits) + ":\n" + "\n".join(
                 (
-                    f"• {r.vendor_name}"
+                    f"• id={r.id} · {r.vendor_name}"
                     + (f" #{r.invoice_number}" if r.invoice_number else "")
                     + f" — {r.currency} {r.amount}, due {r.due_date.isoformat() if r.due_date else 'unscheduled'}"
                     + (
@@ -739,6 +739,253 @@ def agent_list_invoices(request):
     payload = get_or_set(cache_key, _INVOICES_CACHE_TTL, _compute_invoices_payload)
     _remember_invoices_cache_key(restaurant.id, cache_key)
     return Response(payload, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_assign_invoice(request):
+    """
+    POST /api/finance/agent/invoices/assign/
+
+    Hand open invoice(s) to a staff member for payment follow-up.
+    Creates a FINANCE dashboard task (Operations Live) per invoice and
+    notes the assignee on the invoice.
+
+    Body:
+        assignee_id | staff_name | name
+        invoice_id | invoice_ids[] | vendor + invoice_number | all_open=true
+        notify_whatsapp (default true)
+    """
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+    from dashboard.models import Task
+    from dashboard.views_agent import _resolve_assignee, _coerce_bool
+    from notifications.services import notification_service
+
+    restaurant, _acting_user, err = _resolve_restaurant_for_agent(request)
+    if err:
+        return Response(
+            {"success": False, "error": err["error"], "message_for_user": err["error"]},
+            status=err["status"],
+        )
+
+    data = request.data if isinstance(getattr(request, "data", None), dict) else {}
+    assignee, assignee_err = _resolve_assignee(data, restaurant)
+    if assignee_err or not assignee:
+        return Response(
+            {
+                "success": False,
+                "error": assignee_err or "Assignee not found",
+                "message_for_user": assignee_err
+                or "Who should I transfer these invoices to? Give me a name.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    invoices: list[Invoice] = []
+    ids_raw = data.get("invoice_ids") or data.get("invoiceIds") or []
+    if isinstance(ids_raw, str):
+        ids_raw = [x.strip() for x in ids_raw.replace(";", ",").split(",") if x.strip()]
+    if isinstance(ids_raw, list) and ids_raw:
+        invoices = list(
+            Invoice.objects.filter(restaurant=restaurant, id__in=ids_raw).exclude(
+                status__in=(Invoice.STATUS_PAID, Invoice.STATUS_VOIDED)
+            )
+        )
+    else:
+        invoice_id = _get_first(data, "invoice_id", "invoiceId", "id")
+        if invoice_id:
+            inv = Invoice.objects.filter(restaurant=restaurant, id=invoice_id).first()
+            if inv:
+                invoices = [inv]
+        elif _coerce_bool(_get_first(data, "all_open", "allOpen"), default=False):
+            invoices = list(
+                Invoice.objects.filter(
+                    restaurant=restaurant,
+                    status__in=Invoice.UNPAID_ACTIVE_STATUSES,
+                ).order_by("due_date")[:20]
+            )
+        else:
+            vendor = str(_get_first(data, "vendor", "vendor_name") or "").strip()
+            invoice_number = str(
+                _get_first(data, "invoice_number", "invoiceNumber") or ""
+            ).strip()
+            qs = Invoice.objects.filter(restaurant=restaurant).exclude(
+                status__in=(Invoice.STATUS_PAID, Invoice.STATUS_VOIDED)
+            )
+            if vendor:
+                qs = qs.filter(vendor_name__icontains=vendor)
+            if invoice_number:
+                qs = qs.filter(invoice_number__iexact=invoice_number)
+            invoices = list(qs.order_by("due_date")[:10])
+
+    if not invoices:
+        return Response(
+            {
+                "success": False,
+                "error": "No invoices found",
+                "message_for_user": (
+                    "I couldn't find those invoices. Call list_invoices first and "
+                    "pass the invoice id(s) — e.g. invoice_ids from the last list."
+                ),
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    assignee_display = (
+        f"{(assignee.first_name or '').strip()} {(assignee.last_name or '').strip()}".strip()
+        or assignee.email
+    )
+    created_tasks = []
+    notify = _coerce_bool(
+        _get_first(data, "notify_whatsapp", "notifyWhatsapp"), default=True
+    )
+    acting_user = _acting_user
+    now = timezone.now()
+
+    for inv in invoices:
+        # First-class invoice ownership (Ops Live "To" column).
+        inv.assigned_to = assignee
+        inv.assigned_at = now
+        inv.assigned_by = acting_user if getattr(acting_user, "pk", None) else None
+        note_line = f"[Assigned to {assignee_display} for payment follow-up]"
+        notes = (inv.notes or "").strip()
+        if note_line not in notes:
+            notes = (notes + "\n" + note_line).strip() if notes else note_line
+        inv.notes = notes
+        inv.save(
+            update_fields=[
+                "assigned_to",
+                "assigned_at",
+                "assigned_by",
+                "notes",
+                "updated_at",
+            ]
+        )
+
+        title = f"Payer facture {inv.vendor_name}"
+        if inv.invoice_number:
+            title += f" #{inv.invoice_number}"
+        title = title[:255]
+        desc = (
+            f"Invoice id={inv.id}\n"
+            f"Amount: {inv.currency} {inv.amount}\n"
+            f"Due: {inv.due_date}\n"
+            f"Assigned via Miya to {assignee_display}."
+        )
+        # Idempotent: reuse an open Miya finance task for this invoice if present.
+        existing = (
+            Task.objects.filter(
+                restaurant=restaurant,
+                category="FINANCE",
+                source="MIYA",
+                status__in=("PENDING", "ACCEPTED", "IN_PROGRESS"),
+                description__icontains=f"Invoice id={inv.id}",
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if existing:
+            existing.assigned_to = assignee
+            existing.title = title
+            existing.description = desc
+            existing.priority = "HIGH"
+            existing.due_date = inv.due_date
+            existing.ai_summary = f"Pay {inv.vendor_name} — {inv.currency} {inv.amount}"
+            update_fields = [
+                "assigned_to",
+                "title",
+                "description",
+                "priority",
+                "due_date",
+                "ai_summary",
+                "updated_at",
+            ]
+            if notify and (assignee.phone or "").strip() and not existing.whatsapp_notified_at:
+                existing.whatsapp_notified_at = now
+                update_fields.append("whatsapp_notified_at")
+            existing.save(update_fields=update_fields)
+            task = existing
+        else:
+            task = Task.objects.create(
+                restaurant=restaurant,
+                assigned_to=assignee,
+                created_by=acting_user if getattr(acting_user, "pk", None) else None,
+                title=title,
+                description=desc,
+                priority="HIGH",
+                status="PENDING",
+                due_date=inv.due_date,
+                source="MIYA",
+                source_label=(
+                    "Miya AI · "
+                    + (
+                        f"{(acting_user.first_name or '').strip()} {(acting_user.last_name or '').strip()}".strip()
+                        if acting_user
+                        else "Manager"
+                    )
+                )[:120],
+                category="FINANCE",
+                ai_summary=f"Pay {inv.vendor_name} — {inv.currency} {inv.amount}",
+                follow_up_enabled=True,
+                whatsapp_notified_at=now
+                if notify and (assignee.phone or "").strip()
+                else None,
+            )
+        created_tasks.append(task)
+
+        if notify and (assignee.phone or "").strip():
+            try:
+                notification_service.send_whatsapp_text(
+                    assignee.phone,
+                    (
+                        f"📄 {assignee_display.split()[0] if assignee_display else 'Hi'}, "
+                        f"please handle invoice *{inv.vendor_name}*"
+                        + (f" #{inv.invoice_number}" if inv.invoice_number else "")
+                        + f" — {inv.currency} {inv.amount}, due {inv.due_date}."
+                    ),
+                )
+            except Exception:
+                logger.exception("assign_invoice WhatsApp failed for %s", inv.id)
+
+    try:
+        invalidate_invoices_cache(restaurant.id)
+    except Exception:
+        pass
+
+    try:
+        from dashboard.task_sync import broadcast_tasks_invalidate
+
+        broadcast_tasks_invalidate(
+            restaurant,
+            reason="invoice_assigned",
+            task_id=str(created_tasks[0].id) if created_tasks else None,
+        )
+    except Exception:
+        logger.exception("assign_invoice broadcast failed")
+
+    bits = [
+        f"Transferred {len(invoices)} invoice(s) to {assignee_display}."
+    ]
+    for inv, task in zip(invoices, created_tasks):
+        bits.append(
+            f"• {inv.vendor_name}"
+            + (f" #{inv.invoice_number}" if inv.invoice_number else "")
+            + f" → {assignee_display} (task #{str(task.id)[:8].upper()})"
+        )
+    return Response(
+        {
+            "success": True,
+            "count": len(invoices),
+            "assignee": {
+                "id": str(assignee.id),
+                "name": assignee_display,
+            },
+            "invoice_ids": [str(i.id) for i in invoices],
+            "task_ids": [str(t.id) for t in created_tasks],
+            "message_for_user": "\n".join(bits),
+        }
+    )
 
 
 @api_view(["POST"])

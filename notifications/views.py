@@ -2312,10 +2312,34 @@ def whatsapp_webhook(request):
                         log = NotificationLog.objects.filter(external_id=wamid).first()
                         if log:
                             log.status = mapped_status
+                            update_fields = ['status', 'delivered_at']
                             if mapped_status == 'DELIVERED' or mapped_status == 'READ':
                                 if not log.delivered_at:
                                     log.delivered_at = timezone.now()
-                            log.save(update_fields=['status', 'delivered_at'])
+                            if mapped_status == 'FAILED':
+                                # Meta puts the real delivery failure here
+                                # (blocked, invalid, undeliverable, etc.).
+                                # Without this the Staff Messages feed stays
+                                # on SENT forever even when the phone never
+                                # got the bubble.
+                                errors = status_obj.get('errors') or []
+                                if errors:
+                                    err0 = errors[0] if isinstance(errors, list) else errors
+                                    msg = (
+                                        (err0.get('title') or err0.get('message') or '')
+                                        if isinstance(err0, dict)
+                                        else str(err0)
+                                    )
+                                    code = (
+                                        err0.get('code')
+                                        if isinstance(err0, dict)
+                                        else None
+                                    )
+                                    detail = f"{code}: {msg}".strip(": ") if code else msg
+                                    if detail:
+                                        log.error_message = detail[:500]
+                                        update_fields.append('error_message')
+                            log.save(update_fields=update_fields)
 
                             # Also update the parent notification if needed
                             notif = log.notification
@@ -3976,16 +4000,23 @@ def whatsapp_webhook(request):
                             if not user:
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                                 continue
-                            if _looks_like_skip_incident_photo(raw_body):
+                            from notifications.utils import looks_like_all_clear_ops_check
+
+                            # Skip photo, or manager clarifying "no incident / all clear".
+                            if _looks_like_skip_incident_photo(raw_body) or looks_like_all_clear_ops_check(raw_body):
                                 session.state = 'idle'
                                 session.context.pop('incident_ticket_id', None)
+                                session.context.pop('pending_incident', None)
                                 session.save(update_fields=['state', 'context'])
-                                notification_service.send_whatsapp_text(
-                                    phone_digits, R(user, 'incident_photo_skipped')
-                                )
+                                if _looks_like_skip_incident_photo(raw_body) and not looks_like_all_clear_ops_check(raw_body):
+                                    notification_service.send_whatsapp_text(
+                                        phone_digits, R(user, 'incident_photo_skipped')
+                                    )
+                                    continue
+                                # All-clear / correction → fall through to Miya for the real ask.
+                            else:
+                                notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_ask_photo'))
                                 continue
-                            notification_service.send_whatsapp_text(phone_digits, R(user, 'incident_ask_photo'))
-                            continue
     
                         # Handle clarification flow for incidents (voice or incomplete report)
                         if session.state == 'awaiting_incident_clarification':

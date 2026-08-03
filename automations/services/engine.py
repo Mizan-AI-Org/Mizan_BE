@@ -345,6 +345,7 @@ def _execute_step(
             priority=str(cfg.get("priority") or "MEDIUM").upper(),
             status="PENDING",
             source="SYSTEM",
+            created_by=user if getattr(user, "pk", None) else None,
             assigned_to_id=cfg.get("assignee_id") or (user.id if user else None),
         )
         if cfg.get("notify_whatsapp", True) and task.assigned_to and task.assigned_to.phone:
