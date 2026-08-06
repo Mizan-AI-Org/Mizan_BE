@@ -195,6 +195,50 @@ def extract_list_entities(tool_name: str, body: dict[str, Any]) -> tuple[str, li
                 entities.append({"id": r.get("id"), "label": r.get("subject") or r.get("title") or ""})
         return "tasks", entities
 
+    if tool_name == "list_incidents":
+        rows = data.get("incidents") or []
+        entities = []
+        for r in rows if isinstance(rows, list) else []:
+            if isinstance(r, dict):
+                entities.append(
+                    {
+                        "id": r.get("id"),
+                        "label": r.get("title") or r.get("description") or "",
+                        "status": r.get("status") or "",
+                    }
+                )
+        return "incidents", entities
+
+    if tool_name == "search_operational_records":
+        rows = data.get("matches") or []
+        entities = []
+        for r in rows if isinstance(rows, list) else []:
+            if isinstance(r, dict):
+                entities.append(
+                    {
+                        "id": r.get("id"),
+                        "label": r.get("title") or r.get("subject") or "",
+                        "status": r.get("status") or "",
+                        "type": r.get("type") or "",
+                    }
+                )
+        return "records", entities
+
+    if tool_name == "list_calendar_events":
+        rows = data.get("events") or []
+        entities = []
+        for r in rows if isinstance(rows, list) else []:
+            if isinstance(r, dict):
+                entities.append(
+                    {
+                        "id": r.get("id"),
+                        "label": r.get("title") or "",
+                        "start": r.get("start") or "",
+                        "location": r.get("location") or "",
+                    }
+                )
+        return "calendar_events", entities
+
     return "", []
 
 
@@ -253,6 +297,51 @@ def apply_working_set_to_args(
             if resolved:
                 args["task_id"] = resolved[0]
                 args.pop("taskId", None)
+                args.pop("id", None)
+
+    if tool_name == "close_incident":
+        iid = str(args.get("incident_id") or args.get("incidentId") or args.get("id") or "").strip()
+        if looks_like_pronoun_ref(iid) or not iid:
+            resolved = resolve_ids(
+                restaurant_id=restaurant_id,
+                user_id=user_id,
+                kind="incidents",
+                explicit_ids=[iid] if iid and not looks_like_pronoun_ref(iid) else [],
+                pronoun_hint=iid or str(args.get("q") or args.get("title") or ""),
+            )
+            if resolved:
+                args["incident_id"] = resolved[0]
+                args.pop("incidentId", None)
+                args.pop("id", None)
+
+    if tool_name == "update_calendar_event":
+        eid = str(args.get("event_id") or args.get("eventId") or args.get("id") or "").strip()
+        if looks_like_pronoun_ref(eid) or not eid:
+            resolved = resolve_ids(
+                restaurant_id=restaurant_id,
+                user_id=user_id,
+                kind="calendar_events",
+                explicit_ids=[eid] if eid and not looks_like_pronoun_ref(eid) else [],
+                pronoun_hint=eid or str(args.get("q") or args.get("title") or ""),
+            )
+            if resolved:
+                args["event_id"] = resolved[0]
+                args.pop("eventId", None)
+                args.pop("id", None)
+
+    if tool_name == "delete_calendar_event":
+        eid = str(args.get("event_id") or args.get("eventId") or args.get("id") or "").strip()
+        if looks_like_pronoun_ref(eid) or not eid:
+            resolved = resolve_ids(
+                restaurant_id=restaurant_id,
+                user_id=user_id,
+                kind="calendar_events",
+                explicit_ids=[eid] if eid and not looks_like_pronoun_ref(eid) else [],
+                pronoun_hint=eid or str(args.get("q") or args.get("title") or ""),
+            )
+            if resolved:
+                args["event_id"] = resolved[0]
+                args.pop("eventId", None)
                 args.pop("id", None)
 
     return args

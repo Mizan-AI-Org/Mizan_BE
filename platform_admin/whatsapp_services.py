@@ -27,6 +27,21 @@ from .models import PlatformWhatsAppConfig, WhatsAppMessageTemplate
 logger = logging.getLogger(__name__)
 
 
+def _voice_fields_from_row(row) -> dict:
+    from miya.voice_config import serialize_miya_voice_for_api
+
+    voice = serialize_miya_voice_for_api()
+    return {
+        "miya_voice_label": voice["label"],
+        "miya_fish_reference_id": voice["reference_id"],
+        "miya_fish_reference_id_masked": voice["reference_id_masked"],
+        "miya_fish_model": voice["model"],
+        "miya_voice_speed": voice["speed"],
+        "miya_openai_fallback_voice": voice["openai_fallback_voice"],
+        "miya_voice_provider": voice["provider"],
+    }
+
+
 def get_singleton_config() -> PlatformWhatsAppConfig | None:
     try:
         return PlatformWhatsAppConfig.objects.filter(pk=PlatformWhatsAppConfig.SINGLETON_ID).first()
@@ -158,6 +173,7 @@ def serialize_config_for_api(request=None) -> dict[str, Any]:
             "api_version": row.api_version or "v22.0",
             "miya_whatsapp_enabled": False,
             "miya_voice_default": False,
+            **_voice_fields_from_row(row),
             "access_token_set": False,
             "access_token_masked": "",
             "webhook_callback_url": webhook_url,
@@ -181,6 +197,7 @@ def serialize_config_for_api(request=None) -> dict[str, Any]:
         "api_version": row.api_version or effective.get("api_version") or "v22.0",
         "miya_whatsapp_enabled": row.miya_whatsapp_enabled,
         "miya_voice_default": row.miya_voice_default,
+        **_voice_fields_from_row(row),
         "access_token_set": token_set,
         "access_token_masked": mask_token(effective.get("access_token") or ""),
         "webhook_callback_url": webhook_url,
@@ -235,6 +252,21 @@ def save_config(payload: dict[str, Any], user) -> PlatformWhatsAppConfig:
         row.miya_whatsapp_enabled = bool(payload["miya_whatsapp_enabled"])
     if "miya_voice_default" in payload:
         row.miya_voice_default = bool(payload["miya_voice_default"])
+
+    for field in (
+        "miya_fish_reference_id",
+        "miya_fish_model",
+        "miya_voice_label",
+        "miya_openai_fallback_voice",
+    ):
+        if field in payload:
+            setattr(row, field, str(payload.get(field) or "").strip()[:64])
+
+    if "miya_voice_speed" in payload:
+        try:
+            row.miya_voice_speed = max(0.85, min(1.25, float(payload["miya_voice_speed"])))
+        except (TypeError, ValueError):
+            pass
 
     raw_token = payload.get("access_token")
     if raw_token is not None:

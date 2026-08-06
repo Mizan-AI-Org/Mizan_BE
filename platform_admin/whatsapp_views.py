@@ -95,6 +95,39 @@ def platform_whatsapp_templates_sync(request):
     return Response({**result, "results": list_templates()})
 
 
+@api_view(["POST"])
+@permission_classes([IsAuthenticated, IsPlatformOperator])
+def platform_miya_voice_preview(request):
+    """Synthesize a short sample with Miya's configured voice."""
+    import base64
+
+    from notifications.services import notification_service
+
+    payload = request.data if isinstance(request.data, dict) else {}
+    text = (
+        str(payload.get("text") or "").strip()
+        or "Hello, I'm Miya — your AI operations companion. How can I help you today?"
+    )[:500]
+
+    audio_bytes, mime = notification_service.synthesize_speech_bytes(text)
+    if not audio_bytes:
+        return Response(
+            {"success": False, "error": "TTS failed — check Fish Audio / OpenAI keys"},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    from miya.voice_config import serialize_miya_voice_for_api
+
+    return Response(
+        {
+            "success": True,
+            "mime_type": mime or "audio/mpeg",
+            "base64": base64.b64encode(audio_bytes).decode("ascii"),
+            "voice": serialize_miya_voice_for_api(),
+        }
+    )
+
+
 @api_view(["DELETE"])
 @permission_classes([IsAuthenticated, IsPlatformOperator])
 def platform_whatsapp_template_detail(request, template_id: int):

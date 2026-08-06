@@ -50,6 +50,11 @@ urlpatterns = [
         name="platform_whatsapp_templates_sync",
     ),
     path(
+        "whatsapp/config/voice-preview/",
+        whatsapp_views.platform_miya_voice_preview,
+        name="platform_miya_voice_preview",
+    ),
+    path(
         "whatsapp/templates/<int:template_id>/",
         whatsapp_views.platform_whatsapp_template_detail,
         name="platform_whatsapp_template_detail",

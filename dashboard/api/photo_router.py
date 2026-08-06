@@ -200,6 +200,31 @@ def _try_create_invoice(
         elif photo_url:
             attach_invoice_from_url(invoice, photo_url)
         try:
+            from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+            log_invoice_event(
+                invoice,
+                InvoiceAuditEvent.EVENT_CREATED,
+                actor=acting_user,
+                channel=InvoiceAuditEvent.CHANNEL_SYSTEM,
+                summary=f"Invoice auto-created from OCR — {vendor}, {currency} {amount}.",
+                metadata={"source": "parse_photo", "invoice_number": invoice_number},
+            )
+            if ocr_dec is not None or fields:
+                log_invoice_event(
+                    invoice,
+                    InvoiceAuditEvent.EVENT_OCR_COMPLETED,
+                    actor=acting_user,
+                    channel=InvoiceAuditEvent.CHANNEL_SYSTEM,
+                    summary=f"OCR extracted invoice data (confidence {ocr_dec or 'n/a'}).",
+                    metadata={
+                        "ocr_confidence": str(ocr_dec) if ocr_dec is not None else None,
+                        "ocr_fields": dict(fields or {}) if isinstance(fields, dict) else {},
+                    },
+                )
+        except Exception:
+            logger.exception("parse_photo: audit log failed")
+        try:
             from finance.payment_approval import get_policy, start_payment_approval
 
             if get_policy(restaurant).get("enabled"):

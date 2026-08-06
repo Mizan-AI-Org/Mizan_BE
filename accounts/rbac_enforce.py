@@ -126,6 +126,9 @@ TOOL_REQUIRED_ACTIONS: dict[str, str | None] = {
     "staff_request": None,
     "request_time_off": None,
     "report_incident": None,
+    "list_incidents": None,
+    "search_operational_records": None,
+    "close_incident": "manage_widgets",
     "get_business_context": None,
     "list_dashboard_widgets": None,
     # Manager / elevated
@@ -141,6 +144,9 @@ TOOL_REQUIRED_ACTIONS: dict[str, str | None] = {
     "reassign_dashboard_task": "manage_widgets",
     "update_dashboard_task": "manage_widgets",
     "create_calendar_event": "manage_widgets",
+    "list_calendar_events": "manage_widgets",
+    "update_calendar_event": "manage_widgets",
+    "delete_calendar_event": "manage_widgets",
     "create_personal_reminder": None,
     "list_invoices": "run_reports",
     "record_invoice": "run_reports",
@@ -169,6 +175,10 @@ TOOL_REQUIRED_ACTIONS: dict[str, str | None] = {
     "parse_photo": "run_reports",
     "parse_document": "run_reports",
     "mark_invoice_paid": "run_reports",
+    "get_invoice_timeline": "run_reports",
+    "attach_invoice_proof": "run_reports",
+    "return_invoice": "run_reports",
+    "assign_invoice": "run_reports",
 }
 
 

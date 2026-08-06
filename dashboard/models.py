@@ -205,6 +205,14 @@ class Task(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='tasks')
     assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='dashboard_assigned_tasks')
+    # All staff responsible for executing this task (M2M). ``assigned_to`` remains
+    # the primary assignee (first entry) for legacy queries and WhatsApp #id refs.
+    assignees = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        related_name="dashboard_task_assignments",
+        blank=True,
+        help_text="All staff assigned to this task; primary FK mirrors assignees[0].",
+    )
     # Who requested / sent the demand (staff or manager). Distinct from
     # assigned_to (who must execute). Miya is the channel, not the sender.
     created_by = models.ForeignKey(
@@ -310,6 +318,9 @@ class Task(models.Model):
         blank=True,
     )
     attachment_url = models.URLField(max_length=1000, blank=True, default="")
+
+    # Category routing audit: informed owners, strategy, acknowledgements.
+    routing_metadata = models.JSONField(default=dict, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

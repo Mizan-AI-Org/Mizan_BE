@@ -233,6 +233,55 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "list_incidents",
+            "description": (
+                "List or look up safety / maintenance incidents from Checklist & Incidences. "
+                "Use for status questions ('has the fridge been repaired?', 'any open incidents?'). "
+                "Use q with keywords from the user's question (e.g. 'computer screen', 'fridge'). "
+                "When q is set, all statuses are searched (OPEN and RESOLVED). "
+                "Call BEFORE close_incident when the user asks to close/resolve an incident."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "status": {
+                        "type": "string",
+                        "description": "OPEN (default) | UNDER_REVIEW | RESOLVED | ALL",
+                    },
+                    "q": {
+                        "type": "string",
+                        "description": "Search title/description (e.g. 'fridge', 'maintenance').",
+                    },
+                    "limit": {"type": "integer"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "close_incident",
+            "description": (
+                "Close/resolve an incident from Checklist & Incidences. "
+                "Always list_incidents with q first when incident_id is unknown. "
+                "Do NOT use update_dashboard_task_status for incidents."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "incident_id": {"type": "string"},
+                    "resolution_notes": {"type": "string"},
+                },
+                "required": ["restaurant_id", "incident_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "request_time_off",
             "description": "Submit a time-off / leave request when dates are known.",
             "parameters": {
@@ -501,8 +550,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "create_calendar_event",
             "description": (
-                "Create Google Calendar meeting(s) or reminders for the tenant. "
-                "Supports batch via events[] for multiple meetings. "
+                "Create NEW Google Calendar meeting(s) or reminders only — never for updates/reschedules. "
+                "For 'change/move/update meeting' use list_calendar_events then update_calendar_event. "
+                "Supports batch via events[] for multiple NEW meetings. "
                 "Requires Google Calendar connected in Settings."
             ),
             "parameters": {
@@ -517,6 +567,80 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "attendees": {"type": "array", "items": {"type": "string"}},
                     "is_reminder": {"type": "boolean"},
                     "events": {"type": "array", "items": {"type": "object"}},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_calendar_events",
+            "description": (
+                "Search Google Calendar meetings by keyword (person name, title fragment, location). "
+                "Call BEFORE update_calendar_event or delete_calendar_event when the user asks to change, move, reschedule, "
+                "or cancel/remove a meeting ('update rendez-vous avec Loubna', 'remove meeting with Loubna'). "
+                "Returns event_id for each match."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {
+                        "type": "string",
+                        "description": "Keywords: person name, meeting title, or location fragment.",
+                    },
+                },
+                "required": ["restaurant_id", "q"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_calendar_event",
+            "description": (
+                "Update/reschedule an EXISTING Google Calendar meeting — patch location, time, title, "
+                "or notes. Requires event_id from list_calendar_events OR q when exactly one match. "
+                "NEVER use create_calendar_event for updates (that duplicates meetings)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "event_id": {"type": "string", "description": "Google Calendar event id from list_calendar_events."},
+                    "q": {
+                        "type": "string",
+                        "description": "Search keywords if event_id unknown (only when one match).",
+                    },
+                    "title": {"type": "string"},
+                    "location": {"type": "string"},
+                    "start": {"type": "string"},
+                    "end": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_calendar_event",
+            "description": (
+                "Remove/cancel an EXISTING Google Calendar meeting. Requires event_id from "
+                "list_calendar_events OR q when exactly one match. NEVER use create_calendar_event "
+                "to remove meetings."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "event_id": {"type": "string", "description": "Google Calendar event id from list_calendar_events."},
+                    "q": {
+                        "type": "string",
+                        "description": "Search keywords if event_id unknown (only when one match).",
+                    },
                 },
                 "required": ["restaurant_id"],
             },
@@ -804,6 +928,30 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "search_operational_records",
+            "description": (
+                "Look up status of incidents, staff requests, tasks, or invoices by keywords or ref. "
+                "Use when the user asks about status, progress, or whether something was fixed/repaired/approved "
+                "('Has the computer screen been repaired?', 'status of my maintenance request'). "
+                "Pass q with the main subject keywords. Reply with message_for_user from the tool — never tell "
+                "the user to ask their manager."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {
+                        "type": "string",
+                        "description": "Keywords or ref (e.g. 'computer screen', 'fridge', '7FFC0D68').",
+                    },
+                },
+                "required": ["restaurant_id", "q"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "chase_operational_record",
             "description": (
                 "Send an immediate WhatsApp follow-up ping for a pending task or staff request. "
@@ -859,7 +1007,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "restaurant_id": {"type": "string"},
                     "action": {
                         "type": "string",
-                        "enum": ["list", "approve", "reject", "policy"],
+                        "enum": ["list", "approve", "reject", "request_info", "policy"],
                     },
                     "approval_id": {"type": "string"},
                     "invoice_id": {"type": "string"},
@@ -1102,6 +1250,71 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "get_invoice_timeline",
+            "description": (
+                "Full chronological history for one invoice — OCR, approvals, rejections, "
+                "payments, proof uploads, who did what and when. Use for 'what happened with "
+                "invoice #INV-204?', 'who approved?', 'why not paid?', 'show payment proof'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "invoice_id": {"type": "string"},
+                    "vendor": {"type": "string"},
+                    "vendor_name": {"type": "string"},
+                    "invoice_number": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "attach_invoice_proof",
+            "description": (
+                "Attach proof of payment (bank receipt, transfer confirmation) to an invoice. "
+                "Optionally mark_paid=true when uploading proof after payment."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "invoice_id": {"type": "string"},
+                    "vendor": {"type": "string"},
+                    "invoice_number": {"type": "string"},
+                    "proof_url": {"type": "string"},
+                    "mark_paid": {"type": "boolean"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "return_invoice",
+            "description": (
+                "Return an invoice for correction or request missing information before approval."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "invoice_id": {"type": "string"},
+                    "vendor": {"type": "string"},
+                    "invoice_number": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "returned_reason": {"type": "string"},
+                },
+                "required": ["restaurant_id", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "assign_invoice",
             "description": (
                 "Transfer/hand open invoice(s) to a staff member for payment follow-up "
@@ -1206,6 +1419,9 @@ _ROUTE_MAP: dict[str, tuple[str, str]] = {
     "approve_staff_request": ("POST", "/api/staff/agent/requests/approve/"),
     "reject_staff_request": ("POST", "/api/staff/agent/requests/reject/"),
     "report_incident": ("POST", "/api/reporting/agent/create-incident/"),
+    "list_incidents": ("GET", "/api/staff/agent/incidents/"),
+    "search_operational_records": ("GET", "/api/staff/agent/records/search/"),
+    "close_incident": ("POST", "/api/staff/agent/incidents/close/"),
     "request_time_off": ("POST", "/api/scheduling/agent/time-off/request/"),
     "create_dashboard_task": ("POST", "/api/dashboard/agent/tasks/create/"),
     "list_dashboard_widgets": ("POST", "/api/dashboard/agent/widgets/list/"),
@@ -1217,6 +1433,9 @@ _ROUTE_MAP: dict[str, tuple[str, str]] = {
     "reassign_dashboard_task": ("POST", "/api/dashboard/agent/tasks/reassign/"),
     "update_dashboard_task": ("POST", "/api/dashboard/agent/tasks/update/"),
     "create_calendar_event": ("POST", "/api/dashboard/agent/calendar-events/create/"),
+    "list_calendar_events": ("GET", "/api/dashboard/agent/calendar-events/list/"),
+    "update_calendar_event": ("POST", "/api/dashboard/agent/calendar-events/update/"),
+    "delete_calendar_event": ("POST", "/api/dashboard/agent/calendar-events/delete/"),
     "create_personal_reminder": ("POST", "/api/scheduling/agent/personal-reminders/"),
     "list_invoices": ("POST", "/api/finance/agent/invoices/list/"),
     "assign_invoice": ("POST", "/api/finance/agent/invoices/assign/"),
@@ -1245,6 +1464,9 @@ _ROUTE_MAP: dict[str, tuple[str, str]] = {
     "parse_photo": ("POST", "/api/dashboard/agent/parse-photo/"),
     "parse_document": ("POST", "/api/dashboard/agent/parse-document/"),
     "mark_invoice_paid": ("POST", "/api/finance/agent/invoices/mark-paid/"),
+    "get_invoice_timeline": ("POST", "/api/finance/agent/invoices/timeline/"),
+    "attach_invoice_proof": ("POST", "/api/finance/agent/invoices/proof-of-payment/"),
+    "return_invoice": ("POST", "/api/finance/agent/invoices/return/"),
     "list_tenant_documents": ("GET", "/api/dashboard/tenant-documents/"),
     "get_tenant_document": ("GET", "/api/dashboard/tenant-documents/"),
 }
@@ -1258,6 +1480,9 @@ _GET_METHOD_TOOLS = frozenset(
         "get_business_context",
         "ops_search",
         "list_staff_requests",
+        "list_incidents",
+        "search_operational_records",
+        "list_calendar_events",
         "list_inventory",
         "sales_summary",
         "list_compliance_documents",
@@ -1548,6 +1773,12 @@ def execute_tool(
     if name == "record_invoice" and payload.get("vendor") and not payload.get("vendor_name"):
         payload["vendor_name"] = payload["vendor"]
 
+    if name == "return_invoice" and payload.get("returned_reason") and not payload.get("reason"):
+        payload["reason"] = payload["returned_reason"]
+
+    if name == "get_invoice_timeline" and payload.get("vendor") and not payload.get("vendor_name"):
+        payload["vendor_name"] = payload["vendor"]
+
     payload = _enrich_agent_payload(name, payload, session_context)
 
     # Resolve pronouns / missing ids from the turn-local working set
@@ -1626,6 +1857,11 @@ def execute_tool(
         from miya.services.user_errors import sanitize_user_error
 
         body = {**body, "message_for_user": sanitize_user_error(body["message_for_user"])}
+
+    if isinstance(body, dict):
+        from miya.services.reply_format import sanitize_tool_payload_for_llm
+
+        body = sanitize_tool_payload_for_llm(body)
 
     result = {"success": True, "data": body}
 

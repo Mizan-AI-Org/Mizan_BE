@@ -143,6 +143,9 @@ class ComplianceDocumentViewSet(viewsets.ModelViewSet):
         uploaded = request.FILES.get("file") or request.FILES.get("attachment")
         if uploaded:
             doc.file.save(uploaded.name, uploaded, save=True)
+        from payroll.services.compliance_reminder_sync import sync_compliance_document_reminder
+
+        sync_compliance_document_reminder(doc, owner=request.user, reset_nudges=True)
         return Response(
             {"success": True, "document": serialize_document(doc)},
             status=status.HTTP_201_CREATED,
@@ -185,6 +188,9 @@ class ComplianceDocumentViewSet(viewsets.ModelViewSet):
         if uploaded:
             doc.file.save(uploaded.name, uploaded, save=False)
         doc.save()
+        from payroll.services.compliance_reminder_sync import sync_compliance_document_reminder
+
+        sync_compliance_document_reminder(doc, owner=request.user, reset_nudges=bool(data.get("expires_at")))
         return Response({"success": True, "document": serialize_document(doc)})
 
     def destroy(self, request, *args, **kwargs):

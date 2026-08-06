@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+from django.core.cache import cache
+
 from accounts.rbac_enforce import user_can_use_miya
 from core.i18n import get_effective_language, tr
 from core.whatsapp_config import get_miya_whatsapp_enabled, get_miya_whatsapp_voice_default
@@ -14,10 +16,30 @@ logger = logging.getLogger(__name__)
 
 HISTORY_KEY = "miya_chat_history"
 MAX_HISTORY = 12
+_WAMID_DEDUP_TTL = 600
 
 
 def _miya_whatsapp_enabled() -> bool:
     return get_miya_whatsapp_enabled()
+
+
+def _claim_inbound_wamid(wamid: str | None) -> bool:
+    """One Miya turn per inbound WhatsApp message id (prevents duplicate voice replies)."""
+    token = (wamid or "").strip()
+    if not token:
+        return True
+    return cache.add(f"miya:wa:wamid:{token}", "processing", _WAMID_DEDUP_TTL)
+
+
+def _finish_inbound_wamid(wamid: str | None, *, failed: bool = False) -> None:
+    token = (wamid or "").strip()
+    if not token:
+        return
+    key = f"miya:wa:wamid:{token}"
+    if failed:
+        cache.delete(key)
+    else:
+        cache.set(key, "done", _WAMID_DEDUP_TTL)
 
 
 def _load_history(session) -> list[dict[str, str]]:
@@ -48,12 +70,12 @@ def _send_miya_reply(phone_digits: str, reply: str, *, voice: bool = False) -> b
         return False
 
     if voice:
-        audio_bytes, mime = notification_service.synthesize_speech_bytes(text)
+        audio_bytes, mime = notification_service.synthesize_whatsapp_voice_bytes(text)
         if audio_bytes:
             sent_ok, _info = notification_service.send_whatsapp_audio(
                 phone=phone_digits,
                 audio_bytes=audio_bytes,
-                mime_type=mime or "audio/mpeg",
+                mime_type=mime or "audio/ogg; codecs=opus",
                 voice_note=True,
             )
             if sent_ok:
@@ -91,12 +113,21 @@ def enqueue_miya_whatsapp_turn(
     message_text: str,
     session,
     voice_reply: bool = False,
+    inbound_wamid: str | None = None,
 ) -> bool:
     """
     Queue Miya WhatsApp processing off the webhook hot path when MIYA_ASYNC_CHAT is enabled
     and a Celery worker is alive. Otherwise run sync so the user always gets a reply.
     Returns True when the message was accepted for handling (sync or async).
     """
+    if not _claim_inbound_wamid(inbound_wamid):
+        logger.info(
+            "Skipping duplicate Miya WhatsApp turn wamid=%s phone=%s",
+            inbound_wamid,
+            phone_digits,
+        )
+        return True
+
     from django.conf import settings
 
     use_async = bool(getattr(settings, "MIYA_ASYNC_CHAT", True))
@@ -111,13 +142,18 @@ def enqueue_miya_whatsapp_turn(
         use_async = False
 
     if not use_async:
-        return handle_miya_whatsapp_turn(
-            user=user,
-            phone_digits=phone_digits,
-            message_text=message_text,
-            session=session,
-            voice_reply=voice_reply,
-        )
+        try:
+            return handle_miya_whatsapp_turn(
+                user=user,
+                phone_digits=phone_digits,
+                message_text=message_text,
+                session=session,
+                voice_reply=voice_reply,
+                inbound_wamid=inbound_wamid,
+            )
+        except Exception:
+            _finish_inbound_wamid(inbound_wamid, failed=True)
+            raise
 
     from miya.tasks import run_miya_whatsapp_turn_async
 
@@ -128,6 +164,7 @@ def enqueue_miya_whatsapp_turn(
             message_text=message_text,
             session_id=str(session.id),
             voice_reply=voice_reply,
+            inbound_wamid=inbound_wamid or "",
         )
         return True
     except Exception as exc:
@@ -136,13 +173,18 @@ def enqueue_miya_whatsapp_turn(
             exc,
             phone_digits,
         )
-        return handle_miya_whatsapp_turn(
-            user=user,
-            phone_digits=phone_digits,
-            message_text=message_text,
-            session=session,
-            voice_reply=voice_reply,
-        )
+        try:
+            return handle_miya_whatsapp_turn(
+                user=user,
+                phone_digits=phone_digits,
+                message_text=message_text,
+                session=session,
+                voice_reply=voice_reply,
+                inbound_wamid=inbound_wamid,
+            )
+        except Exception:
+            _finish_inbound_wamid(inbound_wamid, failed=True)
+            raise
 
 
 def handle_miya_whatsapp_turn(
@@ -152,6 +194,7 @@ def handle_miya_whatsapp_turn(
     message_text: str,
     session,
     voice_reply: bool = False,
+    inbound_wamid: str | None = None,
 ) -> bool:
     """
     Run Miya for one WhatsApp message. Returns True if handled (caller should continue).
@@ -159,82 +202,86 @@ def handle_miya_whatsapp_turn(
     Uses the shared Mizan WhatsApp number; tenant + RBAC come from the resolved user.
     """
     if not _miya_whatsapp_enabled():
+        _finish_inbound_wamid(inbound_wamid, failed=True)
         return False
-
-    if not user:
-        # No account resolved yet — no language signal to key off, so this one
-        # stays on the English fallback the same as the rest of the catalog.
-        _send_miya_reply(phone_digits, tr("miya.wa.no_account", "en"))
-        return True
-
-    if not user_can_use_miya(user):
-        # Last-chance: pending ONE-TAP record may still need activation this turn
-        # (e.g. phone matched an older user without Miya apps).
-        lang = get_effective_language(user=user)
-        try:
-            from accounts.services import try_activate_staff_on_inbound_message
-
-            activated = try_activate_staff_on_inbound_message(phone_digits)
-            if activated and user_can_use_miya(activated):
-                user = activated
-            else:
-                _send_miya_reply(phone_digits, tr("miya.wa.not_enabled", lang))
-                return True
-        except Exception:
-            _send_miya_reply(phone_digits, tr("miya.wa.not_enabled_retry", lang))
-            return True
-
-    text = (message_text or "").strip()
-    if not text:
-        return False
-
-    history = _load_history(session)
-    session_hint = dict(getattr(session, "context", None) or {})
-    if getattr(user, "restaurant_id", None):
-        session_hint.setdefault("restaurant_id", str(user.restaurant_id))
-    attachment_ids = session_hint.pop("attachment_ids", None)
-    session_hint["thread_id"] = f"wa-{getattr(session, 'id', phone_digits)}"
-    session_hint["whatsapp_session_id"] = session_hint["thread_id"]
-    if attachment_ids:
-        session.context = session_hint
-        session.save(update_fields=["context"])
 
     try:
-        result = run_miya_chat(
-            user=user,
-            access_token=None,
-            user_message=text,
-            history=history,
-            channel="whatsapp",
-            preferred_restaurant_id=session_hint.get("restaurant_id"),
-            session_hint=session_hint,
-            attachment_ids=attachment_ids,
-        )
-    except RuntimeError as exc:
-        logger.exception("Miya WhatsApp chat failed for %s: %s", phone_digits, exc)
-        _send_miya_reply(phone_digits, tr("miya.wa.temporarily_unavailable", get_effective_language(user=user)))
-        return True
-    except Exception as exc:
-        logger.exception("Miya WhatsApp unexpected error for %s: %s", phone_digits, exc)
-        _send_miya_reply(phone_digits, tr("miya.wa.unexpected_error", get_effective_language(user=user)))
-        return True
+        if not user:
+            # No account resolved yet — no language signal to key off, so this one
+            # stays on the English fallback the same as the rest of the catalog.
+            _send_miya_reply(phone_digits, tr("miya.wa.no_account", "en"))
+            return True
 
-    reply = (result.get("reply") or "").strip()
-    if not reply:
-        _send_miya_reply(phone_digits, tr("miya.wa.empty_reply", get_effective_language(user=user)))
+        if not user_can_use_miya(user):
+            # Last-chance: pending ONE-TAP record may still need activation this turn
+            # (e.g. phone matched an older user without Miya apps).
+            lang = get_effective_language(user=user)
+            try:
+                from accounts.services import try_activate_staff_on_inbound_message
+
+                activated = try_activate_staff_on_inbound_message(phone_digits)
+                if activated and user_can_use_miya(activated):
+                    user = activated
+                else:
+                    _send_miya_reply(phone_digits, tr("miya.wa.not_enabled", lang))
+                    return True
+            except Exception:
+                _send_miya_reply(phone_digits, tr("miya.wa.not_enabled_retry", lang))
+                return True
+
+        text = (message_text or "").strip()
+        if not text:
+            return False
+
+        history = _load_history(session)
+        session_hint = dict(getattr(session, "context", None) or {})
+        if getattr(user, "restaurant_id", None):
+            session_hint.setdefault("restaurant_id", str(user.restaurant_id))
+        attachment_ids = session_hint.pop("attachment_ids", None)
+        session_hint["thread_id"] = f"wa-{getattr(session, 'id', phone_digits)}"
+        session_hint["whatsapp_session_id"] = session_hint["thread_id"]
+        if attachment_ids:
+            session.context = session_hint
+            session.save(update_fields=["context"])
+
+        try:
+            result = run_miya_chat(
+                user=user,
+                access_token=None,
+                user_message=text,
+                history=history,
+                channel="whatsapp",
+                preferred_restaurant_id=session_hint.get("restaurant_id"),
+                session_hint=session_hint,
+                attachment_ids=attachment_ids,
+            )
+        except RuntimeError as exc:
+            logger.exception("Miya WhatsApp chat failed for %s: %s", phone_digits, exc)
+            _send_miya_reply(phone_digits, tr("miya.wa.temporarily_unavailable", get_effective_language(user=user)))
+            return True
+        except Exception as exc:
+            logger.exception("Miya WhatsApp unexpected error for %s: %s", phone_digits, exc)
+            _send_miya_reply(phone_digits, tr("miya.wa.unexpected_error", get_effective_language(user=user)))
+            return True
+
+        reply = (result.get("reply") or "").strip()
+        if not reply:
+            _send_miya_reply(phone_digits, tr("miya.wa.empty_reply", get_effective_language(user=user)))
+            return True
+
+        history.append({"role": "user", "content": text})
+        history.append({"role": "assistant", "content": reply})
+        ctx = dict(getattr(session, "context", None) or {})
+        ctx[HISTORY_KEY] = history[-MAX_HISTORY:]
+        tenant_id = (result.get("session_context") or {}).get("restaurant_id")
+        if tenant_id:
+            ctx["tenant_id"] = tenant_id
+            ctx["restaurant_id"] = tenant_id
+        session.context = ctx
+        session.save(update_fields=["context"])
+
+        use_voice = voice_reply or get_miya_whatsapp_voice_default()
+        _send_miya_reply(phone_digits, reply, voice=use_voice)
         return True
-
-    history.append({"role": "user", "content": text})
-    history.append({"role": "assistant", "content": reply})
-    ctx = dict(getattr(session, "context", None) or {})
-    ctx[HISTORY_KEY] = history[-MAX_HISTORY:]
-    tenant_id = (result.get("session_context") or {}).get("restaurant_id")
-    if tenant_id:
-        ctx["tenant_id"] = tenant_id
-        ctx["restaurant_id"] = tenant_id
-    session.context = ctx
-    session.save(update_fields=["context"])
-
-    use_voice = voice_reply or get_miya_whatsapp_voice_default()
-    _send_miya_reply(phone_digits, reply, voice=use_voice)
-    return True
+    finally:
+        _finish_inbound_wamid(inbound_wamid, failed=False)

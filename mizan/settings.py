@@ -488,14 +488,20 @@ CELERY_TASK_ALWAYS_EAGER = config('CELERY_TASK_ALWAYS_EAGER', default=False, cas
 CELERY_TASK_EAGER_PROPAGATES = True
 
 # Fish Audio — Miya voice (https://fish.audio/app/)
-# Default reference_id "Sarah": warm, soft, gentle, friendly female voice.
+# Default reference_id "Sarah": warm, young, friendly female voice.
 # Fish Audio's s2.1-pro model is cross-lingual — the same voice speaks
-# English, French, and Arabic/Darija in the caller's own text.
+# English, French, Arabic, and Darija from the caller's reply text.
+# Platform Admin → WhatsApp → Miya voice identity can override without redeploy.
 FISH_AUDIO_API_KEY = config('FISH_AUDIO_API_KEY', default='')
 FISH_AUDIO_REFERENCE_ID = config(
     'FISH_AUDIO_REFERENCE_ID', default='933563129e564b19a115bedd57b7406a'
 )
 FISH_AUDIO_MODEL = config('FISH_AUDIO_MODEL', default='s2.1-pro')
+# Prosody: 1.05 = slightly energetic but calm; range 0.85–1.25 in voice_config.
+FISH_AUDIO_VOICE_SPEED = config('FISH_AUDIO_VOICE_SPEED', default=1.05, cast=float)
+FISH_AUDIO_VOICE_LABEL = config('FISH_AUDIO_VOICE_LABEL', default='Sarah')
+# OpenAI TTS fallback — female voice only (shimmer, nova, coral, sage).
+OPENAI_TTS_VOICE = config('OPENAI_TTS_VOICE', default='shimmer')
 
 # Miya AI agent (Fish Audio voice + OpenAI reasoning)
 MIYA_CHAT_MODEL = config('MIYA_CHAT_MODEL', default='gpt-4o-mini')
@@ -726,6 +732,10 @@ CELERY_BEAT_SCHEDULE = {
     "personal_reminder_sweep": {
         "task": "scheduling.memory_tasks.personal_reminder_sweep",
         "schedule": crontab(minute='*'),  # every minute — fire due reminders
+    },
+    "personal_reminder_approach_sweep": {
+        "task": "scheduling.memory_tasks.personal_reminder_approach_sweep",
+        "schedule": crontab(minute='*/15'),  # nudge as due dates approach
     },
     "daily_briefing_sweep": {
         "task": "scheduling.memory_tasks.daily_briefing_sweep",

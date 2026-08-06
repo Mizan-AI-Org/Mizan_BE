@@ -50,7 +50,7 @@ Managers configure permissions at **Settings → RBAC**. Privileged roles (`OWNE
 
 ```bash
 # Fish Audio — Miya voice
-# reference_id default = "Sarah": warm, gentle, friendly female voice.
+# reference_id default = "Sarah": warm, young, friendly female voice.
 # s2.1-pro is cross-lingual — the same voice speaks EN/FR/AR/Darija from
 # whatever language the reply text is in. Browse alternatives at
 # https://fish.audio/discover and swap the reference_id if you want a
@@ -58,6 +58,11 @@ Managers configure permissions at **Settings → RBAC**. Privileged roles (`OWNE
 FISH_AUDIO_API_KEY=
 FISH_AUDIO_REFERENCE_ID=933563129e564b19a115bedd57b7406a
 FISH_AUDIO_MODEL=s2.1-pro
+FISH_AUDIO_VOICE_SPEED=1.05
+FISH_AUDIO_VOICE_LABEL=Sarah
+OPENAI_TTS_VOICE=shimmer
+
+# Platform Admin → WhatsApp → "Miya voice identity" overrides these without redeploy.
 
 # Miya agent
 OPENAI_API_KEY=

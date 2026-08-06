@@ -314,7 +314,22 @@ def _enrich_row(
         if kind == "staff_request":
             assignee_user = getattr(obj, "assignee", None)
         elif kind == "dashboard":
-            assignee_user = getattr(obj, "assigned_to", None)
+            try:
+                assignees = list(obj.assignees.all())
+            except Exception:
+                assignees = []
+            if not assignees and getattr(obj, "assigned_to", None):
+                assignees = [obj.assigned_to]
+            if len(assignees) > 1:
+                first = assignees[0]
+                first_name = (
+                    f"{(first.first_name or '').strip()} {(first.last_name or '').strip()}".strip()
+                    or (first.email or "")
+                )
+                assignee_user = first
+                item["_assignee_count"] = len(assignees)
+            else:
+                assignee_user = assignees[0] if assignees else getattr(obj, "assigned_to", None)
         elif kind == "scheduling" and getattr(obj, "pk", None):
             assignee_user = obj.assigned_to.all().first()
         elif kind == "invoice":
@@ -323,6 +338,11 @@ def _enrich_row(
     to_payload = _to_payload(assignee_user, current_user)
     if not assignee_user:
         to_payload = {"name": "-", "is_me": False, "role": None, "id": None}
+    elif item.get("_assignee_count", 0) > 1:
+        to_payload = {
+            **to_payload,
+            "name": f"{to_payload.get('name', '-')} +{item['_assignee_count'] - 1}",
+        }
     item["to"] = to_payload
 
     attach_label, attach_url = None, None

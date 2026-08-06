@@ -248,6 +248,19 @@ class PersonalReminder(models.Model):
         blank=True,
         related_name="reminders",
     )
+    linked_compliance_document = models.ForeignKey(
+        "payroll.ComplianceDocument",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="personal_reminders",
+        help_text="When set, due_at tracks document expiry and Miya sends approach nudges.",
+    )
+    approach_nudges_sent = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Milestone days-before-due already pinged on WhatsApp (e.g. 30, 7, 1, 0).",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

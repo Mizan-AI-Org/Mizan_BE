@@ -243,7 +243,16 @@ class SafetyConcernReportSerializer(serializers.ModelSerializer):
         data["photo_count"] = sum(
             1 for a in data["attachments"] if (a.get("content_type") or "").startswith("image/")
         )
-        data["photo_evidence"] = list(getattr(instance, "photo_evidence", None) or [])
+        evidence_out = []
+        for entry in getattr(instance, "photo_evidence", None) or []:
+            if not isinstance(entry, dict):
+                continue
+            copy = dict(entry)
+            raw = (entry.get("storage_key") or entry.get("url") or "").strip()
+            if raw:
+                copy["resolved_url"] = self._resolve_stored_url(raw)
+            evidence_out.append(copy)
+        data["photo_evidence"] = evidence_out
         if photo_url:
             data["photo"] = photo_url
         return data

@@ -18,8 +18,19 @@ _OPEN = ("PENDING", "ACCEPTED", "IN_PROGRESS")
 
 
 def looks_like_dashboard_task_status_reply(text: str | None) -> bool:
-    t = (text or "").strip().lower()
+    t = (text or "").strip()
     if not t:
+        return False
+    tl = t.lower()
+    # Checklist owns these — not dashboard.Task status updates.
+    if re.match(
+        r"^(start|begin|run|do)\s+(my\s+)?(the\s+)?(task\s+)?checklist\b",
+        tl,
+    ):
+        return False
+    if re.match(r"^(stick to|stay on|continue|resume|back to)\s+(the\s+)?checklist\b", tl):
+        return False
+    if tl in ("yes", "y", "no", "n/a", "na", "n a"):
         return False
     if re.match(
         r"^(done|complete|completed|finish|finished|accept|accepted|"
@@ -27,10 +38,10 @@ def looks_like_dashboard_task_status_reply(text: str | None) -> bool:
         r"cancel|cancelled|my tasks|tasks|list tasks|"
         r"terminer|accepté|commencer|incapable|"
         r"إتمام|قبول|بدء|تعذر)\b",
-        t,
+        tl,
     ):
         return True
-    if re.match(r"^(done|complete|accept|start|unable)\s+#?\d", t):
+    if re.match(r"^(done|complete|accept|start|unable)\s+#?\d", tl):
         return True
     return False
 
@@ -54,9 +65,12 @@ def _normalize_status_intent(text: str) -> str | None:
 
 def _pick_task(user, text: str):
     from dashboard.models import Task
+    from django.db.models import Q
 
     qs = (
-        Task.objects.filter(assigned_to=user, status__in=_OPEN)
+        Task.objects.filter(status__in=_OPEN)
+        .filter(Q(assigned_to=user) | Q(assignees=user))
+        .distinct()
         .order_by("-updated_at")
     )
     m = re.search(r"#?([0-9a-f]{8})", text.lower())
@@ -124,10 +138,14 @@ def handle_dashboard_task_whatsapp_reply(
         return False
 
     from dashboard.models import Task
+    from django.db.models import Q
 
     if intent == "LIST":
         tasks = list(
-            Task.objects.filter(assigned_to=user, status__in=_OPEN).order_by("due_date", "-created_at")[:15]
+            Task.objects.filter(status__in=_OPEN)
+            .filter(Q(assigned_to=user) | Q(assignees=user))
+            .distinct()
+            .order_by("due_date", "-created_at")[:15]
         )
         if not tasks:
             notification_service.send_whatsapp_text(
@@ -179,6 +197,12 @@ def handle_dashboard_task_whatsapp_reply(
     old = task.status
     task.status = intent
     update_fields = ["status", "updated_at"]
+    if intent == "ACCEPTED":
+        meta = dict(getattr(task, "routing_metadata", None) or {})
+        meta["acknowledged_by"] = str(user.id)
+        meta["acknowledged_at"] = timezone.now().isoformat()
+        task.routing_metadata = meta
+        update_fields.append("routing_metadata")
     if intent == "COMPLETED":
         if hasattr(task, "completed_at"):
             task.completed_at = timezone.now()

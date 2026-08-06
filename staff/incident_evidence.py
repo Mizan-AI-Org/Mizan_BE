@@ -127,3 +127,23 @@ def append_incident_file_attachment(
     except Exception:
         logger.exception("append_incident_file_attachment failed ticket=%s", getattr(ticket, "id", None))
         return False
+
+
+def arm_whatsapp_incident_photo_await(*, phone: str, user, ticket_id: str) -> bool:
+    """Set WhatsApp session so the next inbound image attaches to this incident."""
+    from notifications.models import WhatsAppSession
+
+    phone_digits = "".join(filter(str.isdigit, str(phone or "")))
+    if len(phone_digits) < 6 or not ticket_id:
+        return False
+    session = WhatsAppSession.objects.filter(phone=phone_digits).first()
+    if not session:
+        session = WhatsAppSession.objects.create(phone=phone_digits, user=user)
+    ctx = dict(session.context or {}) if isinstance(session.context, dict) else {}
+    ctx["incident_ticket_id"] = str(ticket_id)
+    ctx.pop("pending_incident", None)
+    session.context = ctx
+    session.state = "awaiting_incident_photo"
+    session.user = user or session.user
+    session.save(update_fields=["context", "state", "user"])
+    return True

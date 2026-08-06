@@ -25,6 +25,7 @@ Design notes:
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import timedelta
 from typing import Any
@@ -39,6 +40,8 @@ from core.http_caching import json_response_with_cache
 
 from ..models import Task
 from ..serializers import DashboardTaskCompactSerializer
+
+logger = logging.getLogger(__name__)
 
 
 # Alphabetical ordering on priority would put HIGH before URGENT (wrong).
@@ -76,6 +79,92 @@ ALLOWED_STATUS = {
 }
 DEFAULT_LIMIT = 5
 MAX_LIMIT = 25
+
+
+def _user_in_restaurant(user, restaurant) -> bool:
+    from accounts.models import StaffRestaurantLink
+
+    if not user or not restaurant:
+        return False
+    if user.restaurant_id == restaurant.id:
+        return True
+    return StaffRestaurantLink.objects.filter(
+        user=user,
+        restaurant=restaurant,
+        is_active=True,
+    ).exists()
+
+
+def _resolve_assignee_id_list(restaurant, raw_ids: list) -> tuple[list, Response | None]:
+    """Validate UUID list; return (users, error_response)."""
+    from accounts.models import CustomUser
+
+    if not isinstance(raw_ids, list):
+        return [], Response(
+            {"error": "assignee_ids must be a list of user UUIDs."},
+            status=http_status.HTTP_400_BAD_REQUEST,
+        )
+    seen: set[str] = set()
+    users: list = []
+    for raw in raw_ids:
+        uid = str(raw or "").strip()
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        try:
+            user = CustomUser.objects.get(pk=uid, is_active=True)
+        except CustomUser.DoesNotExist:
+            return [], Response(
+                {"error": f"Assignee not found or inactive: {uid}"},
+                status=http_status.HTTP_404_NOT_FOUND,
+            )
+        if not _user_in_restaurant(user, restaurant):
+            return [], Response(
+                {"error": "That person isn't part of your team."},
+                status=http_status.HTTP_400_BAD_REQUEST,
+            )
+        users.append(user)
+    return users, None
+
+
+def _apply_dashboard_task_assignees(
+    task,
+    users: list,
+    *,
+    sender,
+    note: str = "",
+) -> None:
+    """Set M2M assignees, sync primary FK, notify newly added staff."""
+    previous_ids = {str(u.id) for u in task.assignees.all()}
+    if task.assigned_to_id:
+        previous_ids.add(str(task.assigned_to_id))
+
+    task.assignees.set(users)
+    task.assigned_to = users[0] if users else None
+    meta = dict(task.routing_metadata or {})
+    meta["assignee_ids"] = [str(u.id) for u in users]
+    task.routing_metadata = meta
+    task.save(update_fields=["assigned_to", "routing_metadata", "updated_at"])
+
+    sender_display = ""
+    if sender:
+        sender_display = (
+            f"{(sender.first_name or '').strip()} {(sender.last_name or '').strip()}".strip()
+            or (sender.email or "")
+        )
+    if note and sender_display:
+        sender_display = f"{sender_display} ({note})"
+
+    from dashboard.task_assign_notify import notify_new_task_assignees
+
+    notify_new_task_assignees(
+        task,
+        users,
+        sender=sender,
+        sender_display=sender_display or "Dashboard",
+        previous_ids=previous_ids,
+        notify_whatsapp=True,
+    )
 
 
 def _assignee_payload(user) -> dict | None:
@@ -1034,6 +1123,7 @@ class TaskAssigneeUpdateView(APIView):
             )
 
         raw_assignee = (request.data or {}).get("assignee_id")
+        raw_assignee_ids = (request.data or {}).get("assignee_ids")
         # ``null`` / empty string is a deliberate "unassign" — supported
         # for StaffRequest and dashboard.Task. Scheduling.Task with
         # empty list is also valid (= no owner).
@@ -1059,14 +1149,7 @@ class TaskAssigneeUpdateView(APIView):
             from django.db.models import Q
             from accounts.models import StaffRestaurantLink
 
-            same_tenant = (
-                new_user.restaurant_id == restaurant.id
-                or StaffRestaurantLink.objects.filter(
-                    user=new_user,
-                    restaurant=restaurant,
-                    is_active=True,
-                ).exists()
-            )
+            same_tenant = _user_in_restaurant(new_user, restaurant)
             if not same_tenant:
                 return Response(
                     {"error": "That person isn't part of your team."},
@@ -1126,15 +1209,44 @@ class TaskAssigneeUpdateView(APIView):
 
         # 2) dashboard.Task
         try:
-            task = Task.objects.select_related(
+            task = Task.objects.prefetch_related("assignees").select_related(
                 "assigned_to", "assigned_to__profile"
             ).get(pk=pk, restaurant=restaurant)
         except Task.DoesNotExist:
             task = None
 
         if task is not None:
+            if raw_assignee_ids is not None:
+                users, err_resp = _resolve_assignee_id_list(restaurant, raw_assignee_ids)
+                if err_resp is not None:
+                    return err_resp
+                _apply_dashboard_task_assignees(
+                    task, users, sender=request.user, note=note
+                )
+                return Response(_serialize_dashboard_task(task))
+
+            old_assignee = task.assigned_to
             task.assigned_to = new_user
+            if new_user:
+                task.assignees.set([new_user])
+            else:
+                task.assignees.clear()
             task.save(update_fields=["assigned_to", "updated_at"])
+            if new_user:
+                try:
+                    from dashboard.task_assign_notify import notify_task_reassignment
+
+                    notify_task_reassignment(
+                        task,
+                        new_user,
+                        sender=request.user,
+                        old_assignee=old_assignee,
+                        note=note,
+                    )
+                except Exception:
+                    logger.exception(
+                        "TaskAssigneeUpdateView: notify failed task=%s", task.id
+                    )
             return Response(_serialize_dashboard_task(task))
 
         # 3) scheduling.Task — M2M; widget reassign means "make this

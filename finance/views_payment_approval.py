@@ -113,7 +113,7 @@ def payment_approval_act(request, invoice_id=None):
     if not invoice:
         return Response({"success": False, "error": "Invoice not found"}, status=404)
     action = str(request.data.get("action") or "").lower()
-    note = str(request.data.get("note") or "")
+    note = str(request.data.get("note") or request.data.get("reason") or "")
     result = act_on_approval(invoice=invoice, actor=request.user, action=action, note=note)
     code = status.HTTP_200_OK if result.get("success") else status.HTTP_400_BAD_REQUEST
     return Response(result, status=code)

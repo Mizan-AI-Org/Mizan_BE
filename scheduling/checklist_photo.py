@@ -86,3 +86,64 @@ def verification_fields_from_item(item: dict[str, Any]) -> dict[str, Any]:
         } else ("PHOTO" if requires else "NONE"),
         "requires_photo": requires,
     }
+
+
+def _storage_key_from_url(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith(("http://", "https://")):
+        return raw
+    return raw.lstrip("/")
+
+
+def persist_checklist_photo_from_whatsapp(
+    *,
+    media_id: str,
+    task,
+    user,
+    mime_type: str | None = None,
+) -> tuple[str | None, str, str]:
+    """
+    Download WhatsApp image and persist checklist proof.
+    Returns (durable_url, storage_key, mime_type).
+    """
+    from notifications.media_persist import (
+        FOLDER_CHECKLIST_EVIDENCE,
+        MEDIA_CATEGORY_CHECKLIST_EVIDENCE,
+        download_whatsapp_media,
+        persist_bytes_to_storage,
+        persist_whatsapp_media,
+    )
+
+    restaurant_id = getattr(user, "restaurant_id", None)
+    if not restaurant_id and getattr(task, "shift_id", None):
+        restaurant_id = getattr(getattr(task, "shift", None), "restaurant_id", None)
+
+    durable_url: str | None = None
+    resolved_mime = mime_type
+    if media_id:
+        durable_url, persisted_mime, _filename = persist_whatsapp_media(
+            media_id,
+            folder=FOLDER_CHECKLIST_EVIDENCE,
+            filename_hint=f"checklist_{task.id}.jpg",
+            restaurant_id=restaurant_id,
+            media_category=MEDIA_CATEGORY_CHECKLIST_EVIDENCE,
+        )
+        resolved_mime = resolved_mime or persisted_mime
+
+        if not durable_url:
+            file_bytes, dl_mime, dl_name = download_whatsapp_media(media_id)
+            if file_bytes:
+                durable_url = persist_bytes_to_storage(
+                    file_bytes,
+                    filename=dl_name or f"checklist_{task.id}.jpg",
+                    folder=FOLDER_CHECKLIST_EVIDENCE,
+                    content_type=(resolved_mime or dl_mime or "image/jpeg"),
+                    restaurant_id=restaurant_id,
+                    media_category=MEDIA_CATEGORY_CHECKLIST_EVIDENCE,
+                )
+                resolved_mime = resolved_mime or dl_mime
+
+    storage_key = _storage_key_from_url(durable_url or "")
+    return durable_url, storage_key, (resolved_mime or "image/jpeg").split(";")[0].strip()

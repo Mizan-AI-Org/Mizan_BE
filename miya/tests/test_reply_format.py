@@ -19,3 +19,13 @@ class FormatMiyaReplyTests(SimpleTestCase):
         out = format_miya_reply(raw)
         self.assertNotIn("- First", out)
         self.assertIn("First item", out)
+
+    def test_strips_markdown_links_and_presigned_urls(self):
+        raw = (
+            "View the invoice [here](https://bucket.s3.amazonaws.com/doc.pdf?"
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=foo)"
+        )
+        out = format_miya_reply(raw)
+        self.assertIn("here", out)
+        self.assertNotIn("X-Amz-", out)
+        self.assertNotIn("amazonaws.com", out)

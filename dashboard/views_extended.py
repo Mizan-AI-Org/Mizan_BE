@@ -93,8 +93,20 @@ class TaskManagementViewSet(viewsets.ModelViewSet):
             from accounts.models import CustomUser
             try:
                 new_user = CustomUser.objects.get(id=new_assigned_to_id)
+                old_user = task.assigned_to
                 task.assigned_to = new_user
                 task.save()
+                try:
+                    from dashboard.task_assign_notify import notify_task_reassignment
+
+                    notify_task_reassignment(
+                        task,
+                        new_user,
+                        sender=request.user,
+                        old_assignee=old_user,
+                    )
+                except Exception:
+                    pass
                 serializer = self.get_serializer(task)
                 return Response(serializer.data)
             except CustomUser.DoesNotExist:

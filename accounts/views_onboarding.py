@@ -546,7 +546,8 @@ class OnboardingCategoryOwnersView(APIView):
             )
         gs = dict(restaurant.general_settings or {})
         owners = gs.get('category_owners') or {}
-        return Response({'success': True, 'owners': owners})
+        routing = gs.get('category_routing') or {}
+        return Response({'success': True, 'owners': owners, 'routing': routing})
 
     def put(self, request):
         if not _is_owner_like(request.user):
@@ -593,6 +594,32 @@ class OnboardingCategoryOwnersView(APIView):
         gs = dict(restaurant.general_settings or {})
         gs['category_owners'] = clean
 
+        routing_payload = request.data.get('routing')
+        if isinstance(routing_payload, dict):
+            from staff.category_routing_engine import VALID_STRATEGIES
+
+            clean_routing: dict[str, dict] = {}
+            for slug, policy in routing_payload.items():
+                if not isinstance(slug, str) or not slug.strip() or not isinstance(policy, dict):
+                    continue
+                strategy = str(policy.get('strategy') or '').strip().lower()
+                if strategy and strategy not in VALID_STRATEGIES:
+                    continue
+                entry: dict = {}
+                if strategy:
+                    entry['strategy'] = strategy
+                backup = policy.get('backup')
+                if backup:
+                    backup_uids = backup if isinstance(backup, list) else [backup]
+                    validated_backup = [
+                        str(u) for u in backup_uids if str(u) in tenant_user_ids
+                    ]
+                    if validated_backup:
+                        entry['backup'] = validated_backup
+                if entry:
+                    clean_routing[slug.strip()] = entry
+            gs['category_routing'] = clean_routing
+
         legacy_incident: dict[str, str] = dict(
             gs.get('incident_category_assignees') or {}
         )
@@ -610,6 +637,7 @@ class OnboardingCategoryOwnersView(APIView):
         return Response({
             'saved': True,
             'owners': clean,
+            'routing': gs.get('category_routing') or {},
         })
 
 

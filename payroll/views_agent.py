@@ -360,6 +360,9 @@ def agent_compliance_documents(request):
         if str(data.get("status") or "").upper() == "ARCHIVED":
             doc.status = ComplianceDocument.STATUS_ARCHIVED
         doc.save()
+        from payroll.services.compliance_reminder_sync import sync_compliance_document_reminder
+
+        sync_compliance_document_reminder(doc, owner=acting_user, reset_nudges=True)
         return Response(
             {
                 "success": True,
@@ -417,6 +420,9 @@ def agent_compliance_documents(request):
         remind_days_before=remind_days,
         created_by=acting_user,
     )
+    from payroll.services.compliance_reminder_sync import sync_compliance_document_reminder
+
+    sync_compliance_document_reminder(doc, owner=acting_user, reset_nudges=True)
     return Response(
         {
             "success": True,
