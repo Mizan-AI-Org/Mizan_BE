@@ -137,11 +137,12 @@ def resolve_default_assignee_for_incident_type(
 ) -> Optional["CustomUser"]:
     """
     Return the primary CustomUser to assign when creating an incident, or None.
-    Equivalent to the first entry of
-    :func:`resolve_all_assignees_for_incident_type`.
+    Uses :mod:`staff.category_routing_engine` for strategy-aware primary pick.
     """
-    owners = resolve_all_assignees_for_incident_type(restaurant, incident_type)
-    return owners[0] if owners else None
+    from staff.category_routing_engine import resolve_routing_for_incident_type
+
+    result = resolve_routing_for_incident_type(restaurant, incident_type)
+    return result.primary
 
 
 def resolve_all_assignees_for_incident_type(

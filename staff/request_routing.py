@@ -142,11 +142,13 @@ def resolve_default_assignee_for_category(
     Return the primary CustomUser that should own a new StaffRequest in this
     category, or ``None`` if no owner is configured.
 
-    Equivalent to the first entry of
-    :func:`resolve_all_assignees_for_category` (backward-compatible).
+    Uses :mod:`staff.category_routing_engine` for round-robin / strategy-aware
+    primary selection.
     """
-    owners = resolve_all_assignees_for_category(restaurant, category)
-    return owners[0] if owners else None
+    from staff.category_routing_engine import resolve_routing_for_staff_category
+
+    result = resolve_routing_for_staff_category(restaurant, category)
+    return result.primary
 
 
 def resolve_all_assignees_for_category(

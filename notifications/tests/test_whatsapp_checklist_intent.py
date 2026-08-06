@@ -12,5 +12,10 @@ class WhatsAppChecklistIntentTests(SimpleTestCase):
     def test_start_checklist_lowercase(self):
         self.assertTrue(_normalize_start_checklist_intent("start checklist"))
 
+    def test_continue_checklist(self):
+        from notifications.views import _normalize_checklist_continue_intent
+
+        self.assertTrue(_normalize_checklist_continue_intent("Stick to the checklist"))
+
     def test_unrelated_not_checklist(self):
         self.assertFalse(_normalize_start_checklist_intent("what are my tasks today"))

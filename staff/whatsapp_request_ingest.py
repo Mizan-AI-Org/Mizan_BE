@@ -19,7 +19,7 @@ from notifications.services import notification_service
 
 from .intent_router import classify_request, staff_request_category
 from .models import StaffRequest, StaffRequestComment
-from .request_routing import resolve_all_assignees_for_category
+from .category_routing_engine import resolve_routing_for_staff_category
 from .views_agent import (
     _invalidate_staff_requests_cache,
     _notify_managers_of_staff_request,
@@ -99,10 +99,13 @@ def ingest_staff_escalation_from_whatsapp(
     if not staff_name and staff_phone:
         staff_name = staff_phone if str(staff_phone).startswith("+") else f"+{staff_phone}"
 
-    category_owners = resolve_all_assignees_for_category(restaurant, category)
-    # Primary FK = first owner; remaining owners are still notified below.
-    assignee = category_owners[0] if category_owners else None
+    routing = resolve_routing_for_staff_category(restaurant, category)
+    category_owners = routing.owners
+    assignee = routing.primary
     auto_assigned = assignee is not None
+    notify_owners = list(routing.notify_targets or [])
+    if assignee and all(str(o.id) != str(assignee.id) for o in notify_owners):
+        notify_owners.insert(0, assignee)
 
     ext = (external_id or "").strip()
     if ext:
@@ -165,10 +168,11 @@ def ingest_staff_escalation_from_whatsapp(
         f"\"{subject[:80]}\". It's waiting under {lane} (Pending) in the inbox."
     )
 
-    if category_owners:
+    if notify_owners:
         informed_names = [
             (o.get_full_name() or o.email)
-            for o in category_owners[1:]
+            for o in notify_owners
+            if assignee is None or str(o.id) != str(assignee.id)
         ]
         StaffRequestComment.objects.create(
             request=req,
@@ -184,22 +188,29 @@ def ingest_staff_escalation_from_whatsapp(
                 )
             ),
             metadata={
-                "assignee_id": str(assignee.id),
-                "informed_ids": [str(o.id) for o in category_owners[1:]],
+                "assignee_id": str(assignee.id) if assignee else None,
+                "informed_ids": [
+                    str(o.id)
+                    for o in notify_owners
+                    if assignee is None or str(o.id) != str(assignee.id)
+                ],
+                "routing_strategy": routing.strategy,
+                "owner_ids": [str(o.id) for o in category_owners],
                 "auto_assigned": auto_assigned,
                 "category": category,
             },
         )
         notified = False
-        for idx, owner in enumerate(category_owners):
+        for owner in notify_owners:
             owner_phone = getattr(owner, "phone", "") or ""
             if not owner_phone:
                 continue
-            ping = manager_ping if idx == 0 else (
+            is_primary = assignee is not None and str(owner.id) == str(assignee.id)
+            ping = manager_ping if is_primary else (
                 f"ℹ️ FYI — new {category.lower()} request from "
                 f"{staff_name or 'a staff member'}: "
                 f"\"{subject[:80]}\". Assigned to "
-                f"{assignee.get_full_name() or assignee.email}; "
+                f"{(assignee.get_full_name() or assignee.email) if assignee else 'a teammate'}; "
                 f"you're listed as a category owner."
             )
             try:

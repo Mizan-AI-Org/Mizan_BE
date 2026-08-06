@@ -268,6 +268,20 @@ def agent_record_invoice(request):
         created_by=acting_user,
     )
 
+    try:
+        from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+        log_invoice_event(
+            invoice,
+            InvoiceAuditEvent.EVENT_CREATED,
+            actor=acting_user,
+            channel=InvoiceAuditEvent.CHANNEL_MIYA,
+            summary=f"Invoice recorded from {vendor} — {currency} {amount}, due {due_date}.",
+            metadata={"invoice_number": invoice_number, "source": "agent_record"},
+        )
+    except Exception:
+        logger.exception("audit log failed for agent_record_invoice")
+
     if photo_url:
         from finance.attachment_utils import attach_invoice_from_url
 
@@ -424,6 +438,28 @@ def agent_mark_invoice_paid(request):
     )
     invoice.bank_payment_status = Invoice.BANK_PAYMENT_CLEARED
     invoice.save(update_fields=["bank_payment_status", "updated_at"])
+    try:
+        from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+        log_invoice_event(
+            invoice,
+            InvoiceAuditEvent.EVENT_PAYMENT_RECORDED,
+            actor=acting_user,
+            channel=InvoiceAuditEvent.CHANNEL_MIYA,
+            summary=(
+                f"Payment recorded — {invoice.amount} {invoice.currency}"
+                + (f" via {method}" if method else "")
+                + (f" (ref {reference})" if reference else "")
+                + "."
+            ),
+            metadata={
+                "payment_method": method,
+                "payment_reference": reference,
+                "paid_amount": str(invoice.paid_amount or invoice.amount),
+            },
+        )
+    except Exception:
+        logger.exception("audit log failed for agent_mark_invoice_paid")
     msg = (
         f"Marked {invoice.vendor_name} invoice "
         f"({invoice.amount} {invoice.currency}) as paid"
@@ -532,6 +568,28 @@ def agent_attach_invoice_proof(request):
         invoice.bank_payment_status = Invoice.BANK_PAYMENT_CLEARED
         invoice.save(update_fields=["bank_payment_status", "updated_at"])
 
+    try:
+        from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+        log_invoice_event(
+            invoice,
+            InvoiceAuditEvent.EVENT_PROOF_UPLOADED,
+            actor=acting_user,
+            channel=InvoiceAuditEvent.CHANNEL_MIYA,
+            summary=f"Proof of payment attached for {invoice.vendor_name}.",
+            metadata={"marked_paid": mark_paid_flag and invoice.status == Invoice.STATUS_PAID},
+        )
+        if mark_paid_flag and invoice.status == Invoice.STATUS_PAID:
+            log_invoice_event(
+                invoice,
+                InvoiceAuditEvent.EVENT_PAYMENT_RECORDED,
+                actor=acting_user,
+                channel=InvoiceAuditEvent.CHANNEL_MIYA,
+                summary=f"Marked paid with proof — {invoice.amount} {invoice.currency}.",
+            )
+    except Exception:
+        logger.exception("audit log failed for agent_attach_invoice_proof")
+
     invoice.refresh_from_db()
     return Response(
         {
@@ -600,6 +658,20 @@ def agent_return_invoice(request):
     invoice.returned_reason = reason[:4000]
     update_fields = ["status", "returned_reason", "updated_at"]
     invoice.save(update_fields=update_fields)
+
+    try:
+        from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+        log_invoice_event(
+            invoice,
+            InvoiceAuditEvent.EVENT_RETURNED,
+            actor=acting_user,
+            channel=InvoiceAuditEvent.CHANNEL_MIYA,
+            summary=f"Returned for correction: {reason[:500]}",
+            metadata={"returned_reason": reason[:2000]},
+        )
+    except Exception:
+        logger.exception("audit log failed for agent_return_invoice")
 
     return Response(
         {
@@ -862,6 +934,19 @@ def agent_assign_invoice(request):
                 "updated_at",
             ]
         )
+        try:
+            from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+            log_invoice_event(
+                inv,
+                InvoiceAuditEvent.EVENT_ASSIGNED,
+                actor=acting_user,
+                channel=InvoiceAuditEvent.CHANNEL_MIYA,
+                summary=f"Assigned to {assignee_display} for payment follow-up.",
+                metadata={"assignee_id": str(assignee.id), "assignee_name": assignee_display},
+            )
+        except Exception:
+            logger.exception("audit log failed for assign_invoice")
 
         title = f"Payer facture {inv.vendor_name}"
         if inv.invoice_number:
@@ -1351,7 +1436,7 @@ def agent_payment_approval(request):
         result = start_payment_approval(invoice=invoice, requested_by=acting_user)
         return Response(result, status=200 if result.get("success") else 400)
 
-    if action in ("approve", "reject"):
+    if action in ("approve", "reject", "request_info"):
         if invoice is None:
             # Try first pending the actor can clear
             pending = (
@@ -1375,14 +1460,78 @@ def agent_payment_approval(request):
             invoice=invoice,
             actor=acting_user,
             action=action,
-            note=str(_get_first(data, "note", "notes") or ""),
+            note=str(_get_first(data, "note", "notes", "reason") or ""),
         )
         return Response(result, status=200 if result.get("success") else 400)
 
     return Response(
         {
             "success": False,
-            "message_for_user": "Use action start, approve, reject, list, or get_policy.",
+            "message_for_user": "Use action start, approve, reject, request_info, list, or get_policy.",
         },
         status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+# ---------------------------------------------------------------------------
+# invoice timeline (Miya + audit)
+# ---------------------------------------------------------------------------
+
+@api_view(["GET", "POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_get_invoice_timeline(request):
+    """
+    GET/POST /api/finance/agent/invoices/timeline/
+
+    Returns chronological audit + PayGuard events for one invoice.
+    """
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+    from finance.timeline import build_invoice_timeline, summarize_timeline_for_miya
+
+    restaurant, _, err = _resolve_restaurant_for_agent(request)
+    if err:
+        return Response({"success": False, "error": err["error"]}, status=err["status"])
+
+    data = request.data if isinstance(getattr(request, "data", None), dict) else {}
+    params = getattr(request, "query_params", {}) or {}
+    invoice_id = _get_first(data, "invoice_id", "invoiceId", "id") or params.get("invoice_id")
+    vendor = str(_get_first(data, "vendor", "vendor_name") or params.get("vendor") or "").strip()
+    invoice_number = str(
+        _get_first(data, "invoice_number", "invoiceNumber", "number")
+        or params.get("invoice_number")
+        or ""
+    ).strip()
+
+    invoice = None
+    if invoice_id:
+        invoice = Invoice.objects.filter(restaurant=restaurant, id=invoice_id).first()
+    if invoice is None and (vendor or invoice_number):
+        qs = Invoice.objects.filter(restaurant=restaurant)
+        if vendor:
+            qs = qs.filter(vendor_name__icontains=vendor)
+        if invoice_number:
+            qs = qs.filter(invoice_number__iexact=invoice_number)
+        invoice = qs.order_by("-created_at").first()
+
+    if invoice is None:
+        return Response(
+            {
+                "success": False,
+                "error": "Invoice not found",
+                "message_for_user": "I couldn't find that invoice. Give me the invoice id or number.",
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    events = build_invoice_timeline(invoice)
+    summary = summarize_timeline_for_miya(invoice, events)
+    return Response(
+        {
+            "success": True,
+            "invoice": InvoiceSerializer(invoice).data,
+            "events": events,
+            "summary": summary,
+            "message_for_user": summary,
+        }
     )

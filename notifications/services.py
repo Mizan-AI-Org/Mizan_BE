@@ -2132,35 +2132,66 @@ class NotificationService:
     # TEXT-TO-SPEECH + WHATSAPP AUDIO REPLY
     # ----------------------------------------------------------------------
 
-    def synthesize_speech_bytes(self, text, voice="shimmer", fmt="mp3", speed=1.0):
+    def synthesize_speech_bytes(self, text, voice=None, fmt="mp3", speed=None):
         """Generate speech audio bytes for WhatsApp voice notes.
 
-        Uses Fish Audio (https://fish.audio/app/) when ``FISH_AUDIO_API_KEY`` is
-        configured — this is Miya's voice. Falls back to OpenAI TTS if Fish Audio
-        is not set (legacy).
+        Uses Fish Audio (Miya's configured female voice) when ``FISH_AUDIO_API_KEY``
+        is set. Falls back to OpenAI TTS with a female voice if Fish Audio fails.
 
         Returns ``(bytes, mime_type)`` on success or ``(None, None)`` on failure.
         """
+        from miya.voice_config import get_miya_voice_settings
+
         if not text or not str(text).strip():
             return None, None
 
+        cfg = get_miya_voice_settings()
         text = str(text).strip()[:1500]
         fmt = (fmt or "mp3").lower()
         if fmt not in ("mp3", "opus", "aac", "flac", "wav"):
             fmt = "mp3"
-        speed = max(0.25, min(4.0, float(speed or 1.0)))
+        if speed is None:
+            speed = cfg.speed
+        speed = max(0.25, min(4.0, float(speed or cfg.speed)))
 
-        fish_key = getattr(settings, "FISH_AUDIO_API_KEY", "") or ""
-        if fish_key:
-            return self._synthesize_fish_audio(text, fmt=fmt, speed=speed)
+        if cfg.fish_configured:
+            audio, mime = self._synthesize_fish_audio(text, fmt=fmt, speed=speed)
+            if audio:
+                return audio, mime
 
-        return self._synthesize_openai_tts(text, voice=voice, fmt=fmt, speed=speed)
+        fallback_voice = voice if voice in {"shimmer", "nova", "coral", "sage"} else cfg.openai_fallback_voice
+        return self._synthesize_openai_tts(text, voice=fallback_voice, fmt=fmt, speed=speed)
+
+    def synthesize_whatsapp_voice_bytes(self, text, voice=None, speed=None):
+        """OGG/Opus TTS — WhatsApp native voice-note format (mobile download compatible)."""
+        audio_bytes, mime = self.synthesize_speech_bytes(text, voice=voice, fmt="opus", speed=speed)
+        if audio_bytes:
+            return audio_bytes, mime or "audio/ogg; codecs=opus"
+        # Last-resort fallback when Opus synthesis is unavailable.
+        return self.synthesize_speech_bytes(text, voice=voice, fmt="mp3", speed=speed)
+
+    @staticmethod
+    def _whatsapp_audio_upload(mime_type: str) -> tuple[str, str]:
+        """Return (filename, upload_mime) for WhatsApp media upload."""
+        mime = (mime_type or "audio/ogg").split(";")[0].strip().lower()
+        if mime in ("audio/ogg", "audio/opus"):
+            return "reply.ogg", "audio/ogg"
+        if mime in ("audio/mpeg", "audio/mp3"):
+            return "reply.mp3", "audio/mpeg"
+        if mime == "audio/aac":
+            return "reply.aac", "audio/aac"
+        if mime == "audio/mp4":
+            return "reply.m4a", "audio/mp4"
+        return "reply.bin", mime or "application/octet-stream"
 
     def _synthesize_fish_audio(self, text, fmt="mp3", speed=1.0):
         """Fish Audio TTS — Miya's voice via https://fish.audio/app/"""
+        from miya.voice_config import get_miya_voice_settings
+
         api_key = getattr(settings, "FISH_AUDIO_API_KEY", "") or ""
-        reference_id = getattr(settings, "FISH_AUDIO_REFERENCE_ID", "") or ""
-        model = getattr(settings, "FISH_AUDIO_MODEL", "s2.1-pro") or "s2.1-pro"
+        cfg = get_miya_voice_settings()
+        reference_id = cfg.reference_id
+        model = cfg.model or "s2.1-pro"
 
         if not api_key:
             return None, None
@@ -2168,10 +2199,13 @@ class NotificationService:
         payload = {
             "text": text,
             "format": fmt,
+            "normalize": True,
+            "temperature": 0.7,
+            "top_p": 0.7,
+            "reference_id": reference_id,
             "prosody": {"speed": speed, "volume": 0, "normalize_loudness": True},
+            "latency": "balanced",
         }
-        if reference_id:
-            payload["reference_id"] = reference_id
 
         try:
             resp = requests.post(
@@ -2193,34 +2227,38 @@ class NotificationService:
                 f"Fish Audio TTS failed: {resp.status_code} - {resp.text[:300]}"
             )
             if resp.status_code in (402, 403, 429):
-                return self._synthesize_openai_tts(text, voice="shimmer", fmt=fmt, speed=speed)
+                return self._synthesize_openai_tts(
+                    text, voice=cfg.openai_fallback_voice, fmt=fmt, speed=speed
+                )
             return None, None
 
         mime = {
             "mp3": "audio/mpeg",
-            "opus": "audio/ogg",
+            "opus": "audio/ogg; codecs=opus",
             "aac": "audio/aac",
             "flac": "audio/flac",
             "wav": "audio/wav",
         }.get(fmt, "audio/mpeg")
         return resp.content, mime
 
-    def _synthesize_openai_tts(self, text, voice="shimmer", fmt="mp3", speed=1.0):
-        """Legacy OpenAI TTS fallback when Fish Audio is not configured.
+    def _synthesize_openai_tts(self, text, voice=None, fmt="mp3", speed=1.0):
+        """OpenAI TTS fallback — always a female Miya voice (shimmer/nova/coral/sage)."""
+        from miya.voice_config import ALLOWED_OPENAI_VOICES, get_miya_openai_fallback_voice
 
-        Defaults to "shimmer" (warm, female OpenAI voice) so Miya still
-        sounds consistent even when Fish Audio isn't available.
-        """
         api_key = getattr(settings, "OPENAI_API_KEY", "") or ""
         if not api_key:
             logger.warning("Neither FISH_AUDIO_API_KEY nor OPENAI_API_KEY configured; skipping TTS")
             return None, None
 
+        resolved = (voice or get_miya_openai_fallback_voice() or "shimmer").strip().lower()
+        if resolved not in ALLOWED_OPENAI_VOICES:
+            resolved = "shimmer"
+
         url = "https://api.openai.com/v1/audio/speech"
         payload = {
             "model": "tts-1",
             "input": text,
-            "voice": voice or "shimmer",
+            "voice": resolved,
             "response_format": fmt,
             "speed": speed,
         }
@@ -2243,7 +2281,7 @@ class NotificationService:
 
         mime = {
             "mp3": "audio/mpeg",
-            "opus": "audio/ogg",
+            "opus": "audio/ogg; codecs=opus",
             "aac": "audio/aac",
             "flac": "audio/flac",
             "wav": "audio/wav",
@@ -2314,10 +2352,11 @@ class NotificationService:
         if not media_id:
             if not audio_bytes:
                 return False, {"error": "Provide audio_bytes or media_id"}
+            upload_name, upload_mime = self._whatsapp_audio_upload(mime_type)
             media_id, up_err = self.upload_whatsapp_media(
                 audio_bytes,
-                mime_type=mime_type,
-                filename="reply.mp3" if mime_type == "audio/mpeg" else "reply.ogg",
+                mime_type=upload_mime,
+                filename=upload_name,
             )
             if not media_id:
                 return False, {"error": up_err}
@@ -2327,8 +2366,7 @@ class NotificationService:
             f"{getattr(settings, 'WHATSAPP_API_VERSION', 'v22.0')}/{phone_id}/messages"
         )
         audio_obj = {"id": media_id}
-        # WhatsApp's "voice" bubble uses type=audio with voice=true; the
-        # field is undocumented for some carriers so we set it best-effort.
+        # Native WhatsApp voice notes use OGG/Opus. voice=true renders push-to-talk UI.
         if voice_note:
             audio_obj["voice"] = True
         payload = {

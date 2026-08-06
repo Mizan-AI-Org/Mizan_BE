@@ -510,6 +510,17 @@ def agent_personal_reminders(request):
                     return Response({"error": "Invalid due_at"}, status=status.HTTP_400_BAD_REQUEST)
                 if timezone.is_naive(due_at):
                     due_at = timezone.make_aware(due_at)
+                if due_at < timezone.now():
+                    return Response(
+                        {
+                            "error": "due_at_in_past",
+                            "message_for_user": (
+                                "That reminder time is already in the past. "
+                                "Give me a future date and time."
+                            ),
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
                 rem.due_at = due_at
             if data.get("recurrence"):
                 recurrence = str(data.get("recurrence") or "none").lower()
@@ -534,6 +545,18 @@ def agent_personal_reminders(request):
             return Response({"error": "Invalid due_at"}, status=status.HTTP_400_BAD_REQUEST)
         if timezone.is_naive(due_at):
             due_at = timezone.make_aware(due_at)
+        if due_at < timezone.now():
+            return Response(
+                {
+                    "error": "due_at_in_past",
+                    "message_for_user": (
+                        "That reminder time is already in the past. "
+                        "Give me a future date and time (today is "
+                        f"{timezone.localdate().isoformat()})."
+                    ),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         recurrence = (data.get("recurrence") or "none").lower()
         if recurrence not in ("none", "daily", "weekly", "monthly", "weekdays"):

@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_manager(user: CustomUser) -> bool:
-    return bool(getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'OWNER'])
+    return bool(getattr(user, 'role', None) in ['SUPER_ADMIN', 'ADMIN', 'MANAGER', 'OWNER', 'SUPERVISOR'])
 
 
 class StaffRequestViewSet(viewsets.ModelViewSet):
@@ -847,7 +847,7 @@ class SafetyConcernReportViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(restaurant=user.restaurant)
         
         # Regular staff can only see their own reports unless anonymous
-        if user.role not in ['SUPER_ADMIN', 'ADMIN']:
+        if not _is_manager(user):
             queryset = queryset.filter(Q(reporter=user) | Q(is_anonymous=True))
             
         # Filter by status — supports a single value or comma-separated list

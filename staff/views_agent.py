@@ -9,6 +9,7 @@ from rest_framework import status, permissions
 from django.conf import settings
 from django.utils import timezone
 import logging
+import re
 
 from accounts.models import CustomUser, Restaurant
 from core.read_through_cache import get_or_set, safe_cache_delete
@@ -72,7 +73,7 @@ from notifications.models import Notification
 
 from .models import StaffRequest, StaffRequestComment
 from .models_task import SafetyConcernReport
-from .request_routing import resolve_all_assignees_for_category
+from .request_routing import slugs_for_category
 from .intent_router import (
     DEST_INCIDENT,
     IntentDecision,
@@ -468,10 +469,12 @@ def agent_ingest_staff_request(request):
             is_active=True,
         ).first()
     auto_assigned = False
-    category_owners = resolve_all_assignees_for_category(restaurant, category)
+    from staff.category_routing_engine import resolve_routing_for_staff_category
+
+    routing = resolve_routing_for_staff_category(restaurant, category)
+    category_owners = routing.owners
     if not assignee and str(data.get('auto_assign', True)).lower() not in ('false', '0', 'no'):
-        # Primary FK = first owner; remaining owners are still notified below.
-        assignee = category_owners[0] if category_owners else None
+        assignee = routing.primary
         auto_assigned = assignee is not None
 
     # Stash the router's reasoning on the row so managers can see "this
@@ -553,17 +556,12 @@ def agent_ingest_staff_request(request):
     # no phone or the send failed.
     whatsapp_sent_to_assignee = False
     lane_label_early = widget_lane_label(primary_widget_for_category(category))
-    # Fan-out: primary assignee + every other category owner (informed).
-    notify_owners: list = []
-    seen_owner_ids: set = set()
-    if assignee:
-        notify_owners.append(assignee)
+    # Fan-out per routing strategy: primary + informed/category owners.
+    notify_owners: list = list(routing.notify_targets or [])
+    seen_owner_ids: set = set(str(o.id) for o in notify_owners)
+    if assignee and str(assignee.id) not in seen_owner_ids:
+        notify_owners.insert(0, assignee)
         seen_owner_ids.add(str(assignee.id))
-    for owner in category_owners:
-        oid = str(owner.id)
-        if oid not in seen_owner_ids:
-            seen_owner_ids.add(oid)
-            notify_owners.append(owner)
 
     if notify_owners:
         informed_names = [
@@ -600,6 +598,8 @@ def agent_ingest_staff_request(request):
                     for o in notify_owners
                     if assignee is None or str(o.id) != str(assignee.id)
                 ],
+                'routing_strategy': routing.strategy,
+                'owner_ids': [str(o.id) for o in category_owners],
                 'auto_assigned': auto_assigned,
                 'category': category,
             },
@@ -1036,22 +1036,66 @@ def agent_list_incidents(request):
     restaurant, err = _resolve_restaurant_for_staff_agent(request)
     if err:
         return Response({'success': False, 'error': err['error']}, status=err['status'])
-    raw_status = (request.query_params.get('status') or 'OPEN').strip().upper()
+    acting_user = _acting_user_for_staff_agent(request)
+    full_access = _staff_agent_has_full_access(acting_user, restaurant)
+    q = (
+        request.query_params.get('q')
+        or request.query_params.get('query')
+        or request.query_params.get('search')
+        or ''
+    ).strip()
+    if not q and isinstance(getattr(request, 'data', None), dict):
+        q = str(
+            request.data.get('q')
+            or request.data.get('query')
+            or request.data.get('search')
+            or request.data.get('title')
+            or ''
+        ).strip()
+    if q and not (request.query_params.get('status') or '').strip():
+        raw_status = 'ALL'
+    else:
+        raw_status = (request.query_params.get('status') or 'OPEN').strip().upper()
     status_tokens = [s.strip() for s in raw_status.split(',') if s.strip()]
-    # Cache key uses the raw (sorted) status string so 'OPEN,UNDER_REVIEW'
-    # and 'UNDER_REVIEW,OPEN' share a slot. The invalidator below clears
-    # every common single-status slice — multi-status slices cost one
-    # extra DB hit once per TTL, which is fine.
-    cache_key = _staff_incidents_cache_key(restaurant.id, ",".join(sorted(status_tokens)))
+    if status_tokens == ['ALL'] or 'ALL' in status_tokens:
+        status_tokens = ['OPEN', 'UNDER_REVIEW', 'RESOLVED', 'DISMISSED', 'ESCALATED']
+    scope_key = ''
+    if acting_user and not full_access:
+        scope_key = f':user:{acting_user.id}'
+    cache_key = _staff_incidents_cache_key(
+        restaurant.id,
+        f"{','.join(sorted(status_tokens))}:{q.lower()}{scope_key}" if q else f"{','.join(sorted(status_tokens))}{scope_key}",
+    )
 
     def _compute_incidents_payload():
-        qs = SafetyConcernReport.objects.filter(
-            restaurant=restaurant,
-            status__in=status_tokens,
-        ).order_by('-created_at').select_related('reporter')[:30]
+        qs = SafetyConcernReport.objects.filter(restaurant=restaurant)
+        if acting_user and not full_access:
+            qs = qs.filter(reporter=acting_user)
+        if status_tokens:
+            qs = qs.filter(status__in=status_tokens)
+        if q:
+            from django.db.models import Q
+
+            tokens = _search_tokens(q)
+            q_filter = (
+                Q(title__icontains=q)
+                | Q(description__icontains=q)
+                | Q(incident_type__icontains=q)
+                | Q(location__icontains=q)
+            )
+            for token in tokens:
+                q_filter |= (
+                    Q(title__icontains=token)
+                    | Q(description__icontains=token)
+                    | Q(incident_type__icontains=token)
+                    | Q(location__icontains=token)
+                )
+            qs = qs.filter(q_filter)
+        qs = qs.order_by('-created_at').select_related('reporter')[:30]
         items = [
             {
                 'id': str(i.id),
+                'type': 'incident',
                 'title': i.title or '',
                 'description': (i.description or '')[:200],
                 'severity': i.severity,
@@ -1060,9 +1104,21 @@ def agent_list_incidents(request):
             }
             for i in qs
         ]
-        return {'success': True, 'incidents': items, 'restaurant_id': str(restaurant.id)}
+        return {
+            'success': True,
+            'incidents': items,
+            'restaurant_id': str(restaurant.id),
+            'message_for_user': _format_record_status_reply(items, q=q),
+        }
 
-    return Response(get_or_set(cache_key, _INCIDENTS_CACHE_TTL, _compute_incidents_payload))
+    payload = get_or_set(cache_key, _INCIDENTS_CACHE_TTL, _compute_incidents_payload)
+    if isinstance(payload, dict) and 'message_for_user' not in payload:
+        incidents = payload.get('incidents') or []
+        payload = {
+            **payload,
+            'message_for_user': _format_record_status_reply(incidents, q=q),
+        }
+    return Response(payload)
 
 
 @api_view(['POST'])
@@ -1124,6 +1180,101 @@ def _short_ref(record_id) -> str:
     return (digits[-8:] if len(digits) >= 8 else digits).upper()
 
 
+_SEARCH_STOPWORDS = frozenset(
+    {
+        'has', 'have', 'been', 'the', 'this', 'that', 'what', 'when', 'where', 'does', 'did',
+        'is', 'are', 'was', 'were', 'any', 'about', 'with', 'from', 'for', 'and', 'not', 'yet',
+        'still', 'repair', 'repaired', 'fixed', 'status', 'update', 'check', 'please', 'tell',
+        'me', 'know', 'need', 'want', 'how', 'can', 'you', 'my', 'our', 'their', 'its', 'ask',
+    }
+)
+
+
+def _acting_user_for_staff_agent(request):
+    payload = dict(request.query_params)
+    if request.method == 'POST' and isinstance(getattr(request, 'data', None), dict):
+        for key, val in (request.data or {}).items():
+            if key == 'metadata' and isinstance(val, dict):
+                for mk, mv in val.items():
+                    payload.setdefault(mk, mv)
+            else:
+                payload.setdefault(key, val)
+    _, acting_user = resolve_agent_restaurant_and_user(request=request, payload=payload)
+    return acting_user
+
+
+def _staff_agent_has_full_access(acting_user, restaurant) -> bool:
+    if not acting_user:
+        return True
+    from accounts.rbac_enforce import miya_has_full_tenant_access
+
+    return miya_has_full_tenant_access(acting_user, restaurant)
+
+
+def _search_tokens(raw_q: str) -> list[str]:
+    q_lower = (raw_q or '').lower()
+    tokens = [t for t in re.split(r'\W+', q_lower) if len(t) >= 3 and t not in _SEARCH_STOPWORDS]
+    if tokens:
+        return tokens
+    return [t for t in re.split(r'\W+', q_lower) if len(t) >= 2 and t not in _SEARCH_STOPWORDS]
+
+
+def _haystack_matches(hay: str, *, q_lower: str, q_hex: str, tokens: list[str]) -> bool:
+    if q_lower and q_lower in hay:
+        return True
+    if len(q_hex) >= 6 and q_hex in hay.replace('-', ''):
+        return True
+    if not tokens:
+        return False
+    hits = sum(1 for token in tokens if token in hay)
+    if len(tokens) == 1:
+        return hits >= 1
+    return hits >= min(2, len(tokens))
+
+
+def _status_phrase(status: str) -> str:
+    normalized = (status or '').upper()
+    return {
+        'OPEN': 'still open — management is reviewing',
+        'PENDING': 'pending approval',
+        'APPROVED': 'approved',
+        'REJECTED': 'rejected',
+        'RESOLVED': 'resolved / closed',
+        'DISMISSED': 'dismissed',
+        'COMPLETED': 'completed',
+        'IN_PROGRESS': 'in progress',
+        'CANCELLED': 'cancelled',
+        'UNDER_REVIEW': 'under review',
+        'ESCALATED': 'escalated',
+    }.get(normalized, normalized.replace('_', ' ').lower() or 'unknown')
+
+
+def _record_label(match: dict) -> str:
+    return (
+        match.get('title')
+        or match.get('subject')
+        or match.get('description')
+        or 'Record'
+    )[:80]
+
+
+def _format_record_status_reply(matches: list[dict], *, q: str = '') -> str:
+    if not matches:
+        if q:
+            return f'I could not find anything matching "{q}" in your records.'
+        return 'Nothing open right now.'
+    if len(matches) == 1:
+        record = matches[0]
+        label = _record_label(record)
+        kind = (record.get('type') or 'record').replace('_', ' ')
+        return f'"{label}" ({kind}) is {_status_phrase(record.get("status", ""))}.'
+    lines = []
+    for record in matches[:5]:
+        lines.append(f'• {_record_label(record)}: {_status_phrase(record.get("status", ""))}')
+    suffix = f' (+{len(matches) - 5} more)' if len(matches) > 5 else ''
+    return 'Here is what I found:\n' + '\n'.join(lines) + suffix
+
+
 _CATEGORY_LANE_HINT = {
     cat: category_lane_hint(cat)
     for cat in STAFF_REQUEST_CATEGORIES
@@ -1135,7 +1286,7 @@ _CATEGORY_LANE_HINT = {
 @permission_classes([permissions.AllowAny])
 def agent_search_operational_records(request):
     """
-    Search staff requests, dashboard tasks, and invoices by ref tail, id fragment,
+    Search incidents, staff requests, dashboard tasks, and invoices by ref tail, id fragment,
     external_id, invoice number, or subject keywords.
 
     GET /api/staff/agent/records/search/?restaurant_id=...&q=33931578
@@ -1146,6 +1297,8 @@ def agent_search_operational_records(request):
     restaurant, err = _resolve_restaurant_for_staff_agent(request)
     if err:
         return Response({'success': False, 'error': err['error']}, status=err['status'])
+    acting_user = _acting_user_for_staff_agent(request)
+    full_access = _staff_agent_has_full_access(acting_user, restaurant)
 
     raw_q = (request.query_params.get('q') or request.query_params.get('query') or '').strip()
     if len(raw_q) < 2:
@@ -1156,10 +1309,49 @@ def agent_search_operational_records(request):
 
     q_lower = raw_q.lower()
     q_hex = ''.join(ch for ch in raw_q.lower() if ch in '0123456789abcdef')
+    tokens = _search_tokens(raw_q)
     matches = []
+
+    # Incidents (Checklist & Incidences / safety reports)
+    inc_qs = SafetyConcernReport.objects.filter(restaurant=restaurant).order_by('-created_at')[:200]
+    if acting_user and not full_access:
+        inc_qs = inc_qs.filter(reporter=acting_user)
+    for inc in inc_qs:
+        iid = str(inc.id)
+        ref = _short_ref(inc.id)
+        hay = ' '.join(
+            filter(
+                None,
+                [
+                    iid,
+                    ref,
+                    inc.title or '',
+                    inc.description or '',
+                    inc.incident_type or '',
+                    inc.location or '',
+                ],
+            )
+        ).lower()
+        if _haystack_matches(hay, q_lower=q_lower, q_hex=q_hex, tokens=tokens):
+            matches.append(
+                {
+                    'type': 'incident',
+                    'id': iid,
+                    'ref': ref,
+                    'title': inc.title or '',
+                    'subject': inc.title or '',
+                    'category': inc.incident_type or 'INCIDENT',
+                    'status': inc.status,
+                    'created_at': inc.created_at.isoformat() if inc.created_at else None,
+                    'dashboard_hint': 'Checklist & Incidences widget',
+                    'lane': 'INCIDENT',
+                }
+            )
 
     # Staff requests
     req_qs = StaffRequest.objects.filter(restaurant=restaurant).order_by('-created_at')[:200]
+    if acting_user and not full_access:
+        req_qs = req_qs.filter(staff=acting_user)
     for req in req_qs:
         rid = str(req.id)
         ref = _short_ref(req.id)
@@ -1176,11 +1368,7 @@ def agent_search_operational_records(request):
                 ],
             )
         ).lower()
-        if (
-            q_lower in hay
-            or (len(q_hex) >= 6 and q_hex in rid.replace('-', ''))
-            or (q_lower and ref.lower() == q_lower)
-        ):
+        if _haystack_matches(hay, q_lower=q_lower, q_hex=q_hex, tokens=tokens):
             matches.append(
                 {
                     'type': 'staff_request',
@@ -1201,17 +1389,15 @@ def agent_search_operational_records(request):
         from dashboard.models import Task
 
         task_qs = Task.objects.filter(restaurant=restaurant).order_by('-created_at')[:200]
+        if acting_user and not full_access:
+            task_qs = task_qs.filter(assigned_to=acting_user)
         for task in task_qs:
             tid = str(task.id)
             ref = _short_ref(task.id)
             hay = ' '.join(
                 filter(None, [tid, ref, task.title or '', task.description or '', task.category or ''])
             ).lower()
-            if (
-                q_lower in hay
-                or (len(q_hex) >= 6 and q_hex in tid.replace('-', ''))
-                or (q_lower and ref.lower() == q_lower)
-            ):
+            if _haystack_matches(hay, q_lower=q_lower, q_hex=q_hex, tokens=tokens):
                 cat = (task.category or 'OTHER').upper()
                 hint = _CATEGORY_LANE_HINT.get(cat, 'Tasks & Demands widget')
                 if cat == 'OPERATIONS':
@@ -1234,31 +1420,35 @@ def agent_search_operational_records(request):
     except Exception as exc:
         logger.warning('agent_search_operational_records task search failed: %s', exc)
 
-    # Finance invoices (by invoice number)
-    try:
-        from finance.models import Invoice
+    # Finance invoices (by invoice number) — managers only
+    if full_access:
+        try:
+            from finance.models import Invoice
 
-        inv_qs = Invoice.objects.filter(restaurant=restaurant).order_by('-created_at')[:100]
-        for inv in inv_qs:
-            if q_lower in (inv.invoice_number or '').lower() or q_lower in (inv.vendor_name or '').lower():
-                matches.append(
-                    {
-                        'type': 'invoice',
-                        'id': str(inv.id),
-                        'ref': (inv.invoice_number or _short_ref(inv.id)),
-                        'title': f'{inv.vendor_name} invoice #{inv.invoice_number or "?"}',
-                        'subject': inv.vendor_name or '',
-                        'category': 'FINANCE',
-                        'status': inv.status,
-                        'amount': str(inv.amount),
-                        'currency': inv.currency,
-                        'due_date': inv.due_date.isoformat() if inv.due_date else None,
-                        'dashboard_hint': 'Finance widget (?lane=finance)',
-                        'lane': 'FINANCE',
-                    }
-                )
-    except Exception as exc:
-        logger.warning('agent_search_operational_records invoice search failed: %s', exc)
+            inv_qs = Invoice.objects.filter(restaurant=restaurant).order_by('-created_at')[:100]
+            for inv in inv_qs:
+                hay = ' '.join(
+                    filter(None, [str(inv.id), inv.invoice_number or '', inv.vendor_name or ''])
+                ).lower()
+                if _haystack_matches(hay, q_lower=q_lower, q_hex=q_hex, tokens=tokens):
+                    matches.append(
+                        {
+                            'type': 'invoice',
+                            'id': str(inv.id),
+                            'ref': (inv.invoice_number or _short_ref(inv.id)),
+                            'title': f'{inv.vendor_name} invoice #{inv.invoice_number or "?"}',
+                            'subject': inv.vendor_name or '',
+                            'category': 'FINANCE',
+                            'status': inv.status,
+                            'amount': str(inv.amount),
+                            'currency': inv.currency,
+                            'due_date': inv.due_date.isoformat() if inv.due_date else None,
+                            'dashboard_hint': 'Finance widget (?lane=finance)',
+                            'lane': 'FINANCE',
+                        }
+                    )
+        except Exception as exc:
+            logger.warning('agent_search_operational_records invoice search failed: %s', exc)
 
     # De-dupe and cap
     seen = set()
@@ -1278,11 +1468,7 @@ def agent_search_operational_records(request):
             'query': raw_q,
             'count': len(deduped),
             'matches': deduped,
-            'message_for_user': (
-                f'Found {len(deduped)} match(es) for "{raw_q}".'
-                if deduped
-                else f'Nothing found for "{raw_q}".'
-            ),
+            'message_for_user': _format_record_status_reply(deduped, q=raw_q),
         }
     )
 
@@ -1330,6 +1516,21 @@ def _find_operational_record(restaurant, *, record_id=None, record_type=None, qu
             return 'dashboard_task', task
 
     return None, None
+
+
+def _resolve_task_assignee_for_chase(task):
+    """Primary assignee, or first M2M assignee when primary FK is unset."""
+    assignee = getattr(task, "assigned_to", None)
+    if assignee:
+        return assignee
+    try:
+        return task.assignees.filter(is_active=True).order_by("id").first()
+    except Exception:
+        return None
+
+
+_CHASEABLE_TASK_STATUSES = frozenset({"PENDING", "ACCEPTED", "IN_PROGRESS"})
+_TERMINAL_TASK_STATUSES = frozenset({"COMPLETED", "CANCELLED", "UNABLE_TO_COMPLETE"})
 
 
 @api_view(['POST'])
@@ -1441,15 +1642,23 @@ def agent_chase_operational_record(request):
         assignee_name = assignee.get_full_name() or assignee.email or 'Assignee'
         title = record.subject or 'Request'
     else:
-        if record.status != 'PENDING':
+        if record.status in _TERMINAL_TASK_STATUSES:
             return Response(
                 {
                     'success': False,
-                    'message_for_user': f"Task #{ref} is already {record.status.lower()} — no follow-up needed.",
+                    'message_for_user': f"Task #{ref} is already {record.status.lower().replace('_', ' ')} — no follow-up needed.",
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        assignee = record.assigned_to
+        if record.status not in _CHASEABLE_TASK_STATUSES:
+            return Response(
+                {
+                    'success': False,
+                    'message_for_user': f"Task #{ref} can't receive a follow-up in its current state.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        assignee = _resolve_task_assignee_for_chase(record)
         if not assignee:
             return Response(
                 {

@@ -351,6 +351,38 @@ def notify_current_step(approval, *, is_reminder: bool = False) -> int:
         if is_reminder:
             approval.reminder_count = (approval.reminder_count or 0) + 1
         approval.save(update_fields=["last_reminded_at", "reminder_count", "updated_at"])
+        try:
+            from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+            approver_names = [
+                f"{a.first_name or ''} {a.last_name or ''}".strip() or a.email
+                for a in approvers
+            ]
+            log_invoice_event(
+                invoice,
+                InvoiceAuditEvent.EVENT_APPROVAL_NOTIFIED,
+                channel=InvoiceAuditEvent.CHANNEL_WHATSAPP,
+                summary=(
+                    f"PayGuard reminder sent to {', '.join(approver_names)}"
+                    if is_reminder
+                    else f"PayGuard approval requested from {', '.join(approver_names)}"
+                ),
+                metadata={
+                    "approval_id": str(approval.id),
+                    "step_order": step.step_order,
+                    "is_reminder": is_reminder,
+                    "approver_ids": [str(a.id) for a in approvers],
+                },
+            )
+            log_invoice_event(
+                invoice,
+                InvoiceAuditEvent.EVENT_NOTIFICATION_SENT,
+                channel=InvoiceAuditEvent.CHANNEL_SYSTEM,
+                summary=f"Notified {notified} approver(s) via WhatsApp and dashboard.",
+                metadata={"approval_id": str(approval.id), "count": notified},
+            )
+        except Exception:
+            logger.exception("PayGuard audit notify failed")
     return notified
 
 
@@ -449,6 +481,23 @@ def start_payment_approval(*, invoice, requested_by=None) -> dict[str, Any]:
 
     notified = notify_current_step(approval, is_reminder=False)
     money = format_money(invoice.amount, invoice.currency)
+    try:
+        from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+        log_invoice_event(
+            invoice,
+            InvoiceAuditEvent.EVENT_APPROVAL_REQUESTED,
+            actor=requested_by,
+            channel=InvoiceAuditEvent.CHANNEL_DASHBOARD,
+            summary=f"PayGuard started — {approval.tier_name} ({money}).",
+            metadata={
+                "approval_id": str(approval.id),
+                "tier_id": approval.tier_id,
+                "tier_name": approval.tier_name,
+            },
+        )
+    except Exception:
+        logger.exception("PayGuard audit start failed")
     return {
         "success": True,
         "status": "pending_approval",
@@ -476,8 +525,8 @@ def act_on_approval(
     from finance.models import Invoice, InvoicePaymentApproval, InvoicePaymentApprovalStep
 
     action = (action or "").strip().lower()
-    if action not in {"approve", "reject"}:
-        return {"success": False, "error": "action must be approve or reject"}
+    if action not in {"approve", "reject", "request_info"}:
+        return {"success": False, "error": "action must be approve, reject, or request_info"}
 
     lang = get_effective_language(
         user=actor, restaurant=getattr(invoice, "restaurant", None)
@@ -510,6 +559,41 @@ def act_on_approval(
         }
 
     now = timezone.now()
+    if action == "request_info":
+        step.status = InvoicePaymentApprovalStep.STATUS_REJECTED
+        step.acted_by = actor
+        step.acted_at = now
+        step.note = (note or "")[:2000]
+        step.save()
+        approval.status = InvoicePaymentApproval.STATUS_CANCELLED
+        approval.completed_at = now
+        approval.save(update_fields=["status", "completed_at", "updated_at"])
+        invoice.approval_status = Invoice.APPROVAL_NONE
+        invoice.status = Invoice.STATUS_RETURNED
+        invoice.returned_reason = (note or "More information is needed before approval.")[:4000]
+        invoice.save(update_fields=["approval_status", "status", "returned_reason", "updated_at"])
+        try:
+            from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+            log_invoice_event(
+                invoice,
+                InvoiceAuditEvent.EVENT_INFO_REQUESTED,
+                actor=actor,
+                channel=InvoiceAuditEvent.CHANNEL_DASHBOARD,
+                summary=invoice.returned_reason,
+                metadata={"approval_id": str(approval.id), "step_order": step.step_order},
+            )
+        except Exception:
+            logger.exception("PayGuard audit request_info failed")
+        return {
+            "success": True,
+            "status": "info_requested",
+            "message_for_user": (
+                f"Asked for more details on {invoice.vendor_name}'s invoice"
+                + (f": {note[:120]}" if note else ".")
+            ),
+        }
+
     if action == "reject":
         step.status = InvoicePaymentApprovalStep.STATUS_REJECTED
         step.acted_by = actor
@@ -522,6 +606,19 @@ def act_on_approval(
         invoice.approval_status = Invoice.APPROVAL_REJECTED
         invoice.status = Invoice.STATUS_REJECTED
         invoice.save(update_fields=["approval_status", "status", "updated_at"])
+        try:
+            from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+            log_invoice_event(
+                invoice,
+                InvoiceAuditEvent.EVENT_REJECTED,
+                actor=actor,
+                channel=InvoiceAuditEvent.CHANNEL_DASHBOARD,
+                summary=note or f"PayGuard rejected for {format_money(invoice.amount, invoice.currency)}.",
+                metadata={"approval_id": str(approval.id), "step_order": step.step_order},
+            )
+        except Exception:
+            logger.exception("PayGuard audit reject failed")
         return {
             "success": True,
             "status": "rejected",
@@ -551,6 +648,19 @@ def act_on_approval(
         invoice.approval_status = Invoice.APPROVAL_APPROVED
         invoice.status = Invoice.STATUS_APPROVED
         invoice.save(update_fields=["approval_status", "status", "updated_at"])
+        try:
+            from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+            log_invoice_event(
+                invoice,
+                InvoiceAuditEvent.EVENT_APPROVED,
+                actor=actor,
+                channel=InvoiceAuditEvent.CHANNEL_DASHBOARD,
+                summary=note or "PayGuard approval complete — ready for payment.",
+                metadata={"approval_id": str(approval.id)},
+            )
+        except Exception:
+            logger.exception("PayGuard audit approve complete failed")
         return {
             "success": True,
             "status": "approved",
@@ -575,6 +685,19 @@ def act_on_approval(
     )
     notified = notify_current_step(approval, is_reminder=False)
     nxt = steps[next_idx]
+    try:
+        from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+        log_invoice_event(
+            invoice,
+            InvoiceAuditEvent.EVENT_APPROVED,
+            actor=actor,
+            channel=InvoiceAuditEvent.CHANNEL_DASHBOARD,
+            summary=note or f"Approved PayGuard step {approval.current_step_index}.",
+            metadata={"approval_id": str(approval.id), "step_order": step.step_order},
+        )
+    except Exception:
+        logger.exception("PayGuard audit step approve failed")
     return {
         "success": True,
         "status": "pending_approval",

@@ -85,7 +85,12 @@ from .views_ops_memory import (
     agent_detect_order_station,
 )
 from .api.cross_location_report import agent_cross_location_report
-from .api.calendar_write import agent_create_calendar_event
+from .api.calendar_write import (
+    agent_create_calendar_event,
+    agent_list_calendar_events,
+    agent_update_calendar_event,
+    agent_delete_calendar_event,
+)
 from .api.photo_router import agent_parse_photo
 from .api.document_router import agent_parse_document
 
@@ -150,6 +155,21 @@ urlpatterns = [
         'agent/calendar-events/create/',
         agent_create_calendar_event,
         name='dashboard-agent-calendar-events-create',
+    ),
+    path(
+        'agent/calendar-events/list/',
+        agent_list_calendar_events,
+        name='dashboard-agent-calendar-events-list',
+    ),
+    path(
+        'agent/calendar-events/update/',
+        agent_update_calendar_event,
+        name='dashboard-agent-calendar-events-update',
+    ),
+    path(
+        'agent/calendar-events/delete/',
+        agent_delete_calendar_event,
+        name='dashboard-agent-calendar-events-delete',
     ),
     path(
         'agent/parse-photo/',

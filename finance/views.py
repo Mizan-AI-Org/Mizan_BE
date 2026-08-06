@@ -142,20 +142,64 @@ class InvoiceViewSet(ModelViewSet):
             )
         ser = self.get_serializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        ser.save(restaurant=restaurant, created_by=user)
+        invoice = ser.save(restaurant=restaurant, created_by=user)
+        try:
+            from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+            log_invoice_event(
+                invoice,
+                InvoiceAuditEvent.EVENT_CREATED,
+                actor=user,
+                channel=InvoiceAuditEvent.CHANNEL_DASHBOARD,
+                summary=f"Invoice created — {invoice.vendor_name}, {invoice.amount} {invoice.currency}.",
+            )
+        except Exception:
+            logger.exception("audit log failed for invoice create")
         return Response(ser.data, status=status.HTTP_201_CREATED)
 
     def update(self, request, *args, **kwargs):
         denied = self._check_role()
         if denied:
             return denied
-        return super().update(request, *args, **kwargs)
+        invoice = self.get_object()
+        response = super().update(request, *args, **kwargs)
+        if response.status_code < 400:
+            try:
+                from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+                log_invoice_event(
+                    invoice,
+                    InvoiceAuditEvent.EVENT_DATA_EDITED,
+                    actor=request.user,
+                    channel=InvoiceAuditEvent.CHANNEL_DASHBOARD,
+                    summary=f"Invoice data updated by dashboard.",
+                    metadata={"fields": list(request.data.keys()) if isinstance(request.data, dict) else []},
+                )
+            except Exception:
+                logger.exception("audit log failed for invoice update")
+        return response
 
     def partial_update(self, request, *args, **kwargs):
         denied = self._check_role()
         if denied:
             return denied
-        return super().partial_update(request, *args, **kwargs)
+        invoice = self.get_object()
+        response = super().partial_update(request, *args, **kwargs)
+        if response.status_code < 400:
+            try:
+                from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+                log_invoice_event(
+                    invoice,
+                    InvoiceAuditEvent.EVENT_DATA_EDITED,
+                    actor=request.user,
+                    channel=InvoiceAuditEvent.CHANNEL_DASHBOARD,
+                    summary="Invoice data updated by dashboard.",
+                    metadata={"fields": list(request.data.keys()) if isinstance(request.data, dict) else []},
+                )
+            except Exception:
+                logger.exception("audit log failed for invoice partial_update")
+        return response
 
     def destroy(self, request, *args, **kwargs):
         """Soft-delete by setting status=VOIDED (preserves audit trail)."""
@@ -165,6 +209,18 @@ class InvoiceViewSet(ModelViewSet):
         invoice = self.get_object()
         invoice.status = Invoice.STATUS_VOIDED
         invoice.save(update_fields=["status", "updated_at"])
+        try:
+            from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+            log_invoice_event(
+                invoice,
+                InvoiceAuditEvent.EVENT_VOIDED,
+                actor=request.user,
+                channel=InvoiceAuditEvent.CHANNEL_DASHBOARD,
+                summary="Invoice voided.",
+            )
+        except Exception:
+            logger.exception("audit log failed for invoice void")
         return Response({"success": True, "id": str(invoice.id), "status": invoice.status})
 
     @action(detail=True, methods=["post"], url_path="mark-paid")
@@ -208,4 +264,77 @@ class InvoiceViewSet(ModelViewSet):
             amount=amount,
             user=request.user,
         )
+        try:
+            from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+            log_invoice_event(
+                invoice,
+                InvoiceAuditEvent.EVENT_PAYMENT_RECORDED,
+                actor=request.user,
+                channel=InvoiceAuditEvent.CHANNEL_DASHBOARD,
+                summary=(
+                    f"Payment recorded — {invoice.amount} {invoice.currency}"
+                    + (f" via {method}" if method else "")
+                    + "."
+                ),
+                metadata={
+                    "payment_method": method,
+                    "payment_reference": reference,
+                },
+            )
+        except Exception:
+            logger.exception("audit log failed for mark_paid")
+        return Response({"success": True, "invoice": InvoiceSerializer(invoice).data})
+
+    @action(detail=True, methods=["get"], url_path="timeline")
+    def timeline(self, request, pk=None):
+        denied = self._check_role()
+        if denied:
+            return denied
+        invoice = self.get_object()
+        from finance.timeline import build_invoice_timeline, summarize_timeline_for_miya
+
+        events = build_invoice_timeline(invoice)
+        return Response(
+            {
+                "success": True,
+                "invoice_id": str(invoice.id),
+                "events": events,
+                "summary": summarize_timeline_for_miya(invoice, events),
+            }
+        )
+
+    @action(detail=True, methods=["post"], url_path="proof-of-payment")
+    def proof_of_payment(self, request, pk=None):
+        """Upload proof-of-payment file for a paid or approved invoice."""
+        denied = self._check_role()
+        if denied:
+            return denied
+        invoice = self.get_object()
+        uploaded = request.FILES.get("proof_of_payment") or request.FILES.get("file")
+        if not uploaded:
+            return Response(
+                {"success": False, "error": "proof_of_payment file required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            invoice.proof_of_payment.save(uploaded.name, uploaded, save=True)
+        except Exception:
+            logger.exception("proof_of_payment upload failed")
+            return Response(
+                {"success": False, "error": "upload_failed"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            from finance.audit import InvoiceAuditEvent, log_invoice_event
+
+            log_invoice_event(
+                invoice,
+                InvoiceAuditEvent.EVENT_PROOF_UPLOADED,
+                actor=request.user,
+                channel=InvoiceAuditEvent.CHANNEL_DASHBOARD,
+                summary=f"Proof of payment uploaded for {invoice.vendor_name}.",
+            )
+        except Exception:
+            logger.exception("audit log failed for proof upload")
         return Response({"success": True, "invoice": InvoiceSerializer(invoice).data})

@@ -1123,17 +1123,17 @@ def agent_voice_reply(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    voice = (data.get("voice") or "shimmer").strip() or "shimmer"
+    voice = (data.get("voice") or "").strip() or None
     try:
-        speed = float(data.get("speed") or 1.0)
+        speed = float(data.get("speed") or 0) or None
     except (TypeError, ValueError):
-        speed = 1.0
+        speed = None
     voice_note = data.get("voice_note")
     voice_note = True if voice_note is None else bool(voice_note)
     caption = (data.get("caption") or "").strip() or None
 
-    audio_bytes, mime = notification_service.synthesize_speech_bytes(
-        text, voice=voice, fmt="mp3", speed=speed,
+    audio_bytes, mime = notification_service.synthesize_whatsapp_voice_bytes(
+        text, voice=voice, speed=speed,
     )
     if not audio_bytes:
         return Response(
@@ -1151,7 +1151,7 @@ def agent_voice_reply(request):
     sent_ok, info = notification_service.send_whatsapp_audio(
         phone=phone,
         audio_bytes=audio_bytes,
-        mime_type=mime or "audio/mpeg",
+        mime_type=mime or "audio/ogg; codecs=opus",
         caption=caption,
         voice_note=voice_note,
     )

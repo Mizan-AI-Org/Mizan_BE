@@ -348,12 +348,16 @@ def _execute_step(
             created_by=user if getattr(user, "pk", None) else None,
             assigned_to_id=cfg.get("assignee_id") or (user.id if user else None),
         )
-        if cfg.get("notify_whatsapp", True) and task.assigned_to and task.assigned_to.phone:
-            from notifications.services import notification_service
+        if task.assigned_to:
+            from dashboard.task_assign_notify import notify_task_assignment
 
-            notification_service.send_whatsapp_text(
-                task.assigned_to.phone,
-                f"New task from automation: {task.title}",
+            notify_task_assignment(
+                task,
+                assignee=task.assigned_to,
+                sender=user,
+                sender_display="Automation",
+                informed_owners=[],
+                notify_whatsapp=bool(cfg.get("notify_whatsapp", True)),
             )
         return {"action": stype, "task_id": str(task.id)}
 

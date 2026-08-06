@@ -177,6 +177,28 @@ def agent_create_incident(request):
         except Exception:
             pass
         
+        photo_armed = False
+        reporter_phone = reporter_phone or getattr(reporter, "phone", None)
+        if reporter and reporter_phone:
+            try:
+                from staff.incident_evidence import arm_whatsapp_incident_photo_await
+
+                photo_armed = arm_whatsapp_incident_photo_await(
+                    phone=str(reporter_phone),
+                    user=reporter,
+                    ticket_id=str(concern.id),
+                )
+            except Exception:
+                logger.warning("[AgentIncident] could not arm WhatsApp photo await", exc_info=True)
+
+        base_msg = "Thanks — your report has been logged. Management is looking into it."
+        if photo_armed:
+            user_msg = (
+                f"{base_msg} Send a photo here on WhatsApp as evidence, or reply *skip* to continue."
+            )
+        else:
+            user_msg = base_msg
+
         return Response({
             'success': True,
             'id': str(concern.id),
@@ -186,7 +208,10 @@ def agent_create_incident(request):
             'incident_type': concern.incident_type,
             'assigned_to': str(assignee.id) if assignee else None,
             'dashboard_widget': 'incidents',
-            'created_at': concern.created_at.isoformat()
+            'created_at': concern.created_at.isoformat(),
+            'awaiting_photo': photo_armed,
+            'message_for_user': user_msg,
+            'userMessage': user_msg,
         }, status=status.HTTP_201_CREATED)
         
     except Exception as e:

@@ -104,8 +104,11 @@ def miya_config(request):
     if user.role not in ALLOWED_ROLES and not _miya_access_ok(user):
         return Response({"enabled": False, "reason": "role_not_allowed"})
 
+    from miya.voice_config import serialize_miya_voice_for_api
+
     ctx = build_session_context(user, preferred_restaurant_id=getattr(user, "restaurant_id", None))
-    fish_configured = bool(getattr(settings, "FISH_AUDIO_API_KEY", ""))
+    voice_meta = serialize_miya_voice_for_api()
+    fish_configured = voice_meta["fish_audio_configured"]
     stt_configured = fish_configured or bool(getattr(settings, "OPENAI_API_KEY", ""))
 
     from .services.mastra_client import mastra_deployment_mode, mastra_enabled, mastra_health
@@ -121,9 +124,10 @@ def miya_config(request):
             "mastra_mode": mastra_deployment_mode(),
             "mastra_healthy": bool(mastra_status and mastra_status.get("ok")),
             "mastra_status": mastra_status,
-            "voice_provider": "fish-audio" if fish_configured else "openai-fallback",
+            "voice_provider": voice_meta["provider"],
             "asr_provider": "fish-audio" if fish_configured else "openai-whisper",
             "fish_audio_configured": fish_configured,
+            "voice": voice_meta,
             "voice_input_enabled": stt_configured,
             "attachments_enabled": True,
             "session_context": ctx,
@@ -365,9 +369,12 @@ def miya_voice(request):
     if not text:
         return Response({"error": "text is required"}, status=status.HTTP_400_BAD_REQUEST)
 
-    speed = float(request.data.get("speed") or 1.0)
+    speed = float(request.data.get("speed") or 0) or None
+    from miya.voice_config import get_miya_voice_settings
+
+    cfg = get_miya_voice_settings()
     audio_bytes, mime = notification_service.synthesize_speech_bytes(
-        text, speed=speed, fmt="mp3"
+        text, speed=speed or cfg.speed, fmt="mp3"
     )
     if not audio_bytes:
         return Response(

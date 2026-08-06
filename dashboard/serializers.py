@@ -34,6 +34,7 @@ class DashboardTaskCompactSerializer(serializers.ModelSerializer):
     """
 
     assignee = serializers.SerializerMethodField()
+    assignees = serializers.SerializerMethodField()
     proof_submitted_by_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -50,6 +51,7 @@ class DashboardTaskCompactSerializer(serializers.ModelSerializer):
             'ai_summary',
             'category',
             'assignee',
+            'assignees',
             'created_at',
             'updated_at',
             'follow_up_enabled',
@@ -63,6 +65,7 @@ class DashboardTaskCompactSerializer(serializers.ModelSerializer):
             'proof_caption',
             'proof_submitted_at',
             'proof_submitted_by_name',
+            'routing_metadata',
         )
         read_only_fields = fields
 
@@ -79,6 +82,12 @@ class DashboardTaskCompactSerializer(serializers.ModelSerializer):
     def get_assignee(self, obj):
         u = obj.assigned_to
         if not u:
+            # Fall back to first M2M assignee when FK unset.
+            try:
+                u = obj.assignees.first()
+            except Exception:
+                u = None
+        if not u:
             return None
         first = (getattr(u, 'first_name', None) or '').strip()
         last = (getattr(u, 'last_name', None) or '').strip()
@@ -93,6 +102,32 @@ class DashboardTaskCompactSerializer(serializers.ModelSerializer):
             'initials': initials or '?',
             'role': getattr(u, 'role', None),
         }
+
+    def get_assignees(self, obj):
+        try:
+            users = list(obj.assignees.all())
+        except Exception:
+            users = []
+        if not users and obj.assigned_to:
+            users = [obj.assigned_to]
+        out = []
+        for u in users:
+            first = (getattr(u, 'first_name', None) or '').strip()
+            last = (getattr(u, 'last_name', None) or '').strip()
+            full = (f"{first} {last}").strip() or (getattr(u, 'email', None) or '')
+            initials = (
+                (first[:1] + last[:1]).upper()
+                or (full[:2] if full else '').upper()
+            )
+            out.append(
+                {
+                    'id': str(u.pk),
+                    'name': full,
+                    'initials': initials or '?',
+                    'role': getattr(u, 'role', None),
+                }
+            )
+        return out
 
 
 class StaffCapturedOrderSerializer(serializers.ModelSerializer):

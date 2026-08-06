@@ -520,3 +520,7 @@ class InvoicePaymentApprovalStep(models.Model):
 
     def __str__(self) -> str:
         return f"Step {self.step_order} {self.label or self.required_role} ({self.status})"
+
+
+# Immutable invoice audit trail (defined in audit.py, re-exported for Django).
+from finance.audit import InvoiceAuditEvent  # noqa: E402, F401

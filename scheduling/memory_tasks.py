@@ -67,7 +67,7 @@ def personal_reminder_sweep():
             failed += 1
             continue
 
-        body_parts = [f"⏰ Reminder: {rem.title}"]
+        body_parts = [f"Hi — it's Miya. ⏰ Reminder: {rem.title}"]
         if rem.body:
             body_parts.append(rem.body)
         if rem.linked_note_id and rem.linked_note:
@@ -148,6 +148,70 @@ def personal_reminder_sweep():
         sent += 1
 
     return {"sent": sent, "failed": failed, "checked": len(due)}
+
+
+@shared_task(name="scheduling.memory_tasks.personal_reminder_approach_sweep")
+def personal_reminder_approach_sweep():
+    """
+    Ping owners on WhatsApp as pending reminder due dates approach (7d, 3d, 1d, day-of, etc.).
+    Complements personal_reminder_sweep which fires at exact due_at.
+    """
+    from scheduling.memory_models import PersonalReminder
+    from scheduling.reminder_messaging import build_approach_message, next_approach_milestone
+    from notifications.services import notification_service
+
+    now = timezone.now()
+    horizon = now + timedelta(days=45)
+    pending = list(
+        PersonalReminder.objects.filter(
+            status="pending",
+            due_at__lte=horizon,
+        )
+        .select_related("owner", "restaurant", "linked_compliance_document")
+        .order_by("due_at")[:300]
+    )
+
+    sent = 0
+    skipped = 0
+    for rem in pending:
+        milestone = next_approach_milestone(rem)
+        if milestone is None:
+            skipped += 1
+            continue
+
+        phone = rem.phone or re.sub(r"\D", "", str(getattr(rem.owner, "phone", "") or ""))
+        if not phone:
+            skipped += 1
+            continue
+
+        text = build_approach_message(rem, milestone)
+        try:
+            result = notification_service.send_whatsapp_text(phone, text)
+            ok = result[0] if isinstance(result, tuple) else bool(result)
+            if not ok:
+                logger.warning(
+                    "personal_reminder_approach_sweep: WA send failed rem=%s milestone=%s",
+                    rem.id,
+                    milestone,
+                )
+                skipped += 1
+                continue
+        except Exception:
+            logger.exception(
+                "personal_reminder_approach_sweep send error rem=%s milestone=%s",
+                rem.id,
+                milestone,
+            )
+            skipped += 1
+            continue
+
+        sent_list = list(rem.approach_nudges_sent or [])
+        sent_list.append(milestone)
+        rem.approach_nudges_sent = sent_list
+        rem.save(update_fields=["approach_nudges_sent", "updated_at"])
+        sent += 1
+
+    return {"sent": sent, "skipped": skipped, "checked": len(pending)}
 
 
 @shared_task(name="scheduling.memory_tasks.daily_briefing_sweep")

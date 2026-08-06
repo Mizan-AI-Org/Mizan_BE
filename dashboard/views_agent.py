@@ -173,8 +173,16 @@ def _resolve_assignee(data: dict, restaurant) -> tuple[CustomUser | None, str | 
     Returns (user, error_message). Exactly one will be non-None.
     """
 
-    # ---- 1) user_id
-    uid = _get_first(data, "user_id", "assignee_user_id", "assigned_to", "userId")
+    # ---- 1) user_id / assignee_id
+    uid = _get_first(
+        data,
+        "user_id",
+        "assignee_id",
+        "assigneeId",
+        "assignee_user_id",
+        "assigned_to",
+        "userId",
+    )
     if uid:
         if isinstance(uid, dict):
             uid = uid.get("id") or uid.get("user_id")
@@ -726,10 +734,13 @@ def agent_create_dashboard_task(request):
             )
             or ""
         ).strip().upper()
+        category_routing_result = None
         if (assignee_err or not assignee) and assign_to_category:
-            from staff.request_routing import resolve_default_assignee_for_category
+            from staff.category_routing_engine import resolve_routing_for_staff_category
 
-            assignee = resolve_default_assignee_for_category(restaurant, assign_to_category)
+            routing = resolve_routing_for_staff_category(restaurant, assign_to_category)
+            assignee = routing.primary
+            category_routing_result = routing
             if assignee:
                 assignee_err = None
             elif requester and getattr(requester, "restaurant_id", None) == getattr(
@@ -902,6 +913,18 @@ def agent_create_dashboard_task(request):
         )
 
         # Create the task atomically.
+        routing_meta: dict[str, Any] = {}
+        if category_routing_result and category_routing_result.primary:
+            routing_meta = {
+                "category": assign_to_category,
+                "strategy": category_routing_result.strategy,
+                "slug": category_routing_result.slug,
+                "informed_assignee_ids": [
+                    str(u.id) for u in (category_routing_result.informed or [])
+                ],
+                "owner_ids": [str(u.id) for u in (category_routing_result.owners or [])],
+            }
+
         with transaction.atomic():
             task = Task.objects.create(
                 restaurant=restaurant,
@@ -923,7 +946,16 @@ def agent_create_dashboard_task(request):
                 follow_up_first_hours=follow_up_first_hours,
                 requires_manager_validation=requires_manager_validation,
                 require_photo_proof=require_photo_proof,
+                routing_metadata=routing_meta,
             )
+            if assignee:
+                task.assignees.add(assignee)
+                if not routing_meta.get("assignee_ids"):
+                    task.routing_metadata = {
+                        **routing_meta,
+                        "assignee_ids": [str(assignee.id)],
+                    }
+                    task.save(update_fields=["routing_metadata"])
 
         logger.info(
             "Miya created Task %s (%r) for user %s in restaurant %s",
@@ -937,71 +969,33 @@ def agent_create_dashboard_task(request):
         except Exception:
             pass
 
-        # In-app notification — create unconditionally so the staff member
-        # sees it in their bell even if WhatsApp fails. Best-effort: if
-        # this fails we still consider the task created.
-        try:
-            notification_service.send_custom_notification(
-                recipient=assignee,
-                message=(
-                    f"New task: {task.title}"
-                    + (f" (due {_format_due(task.due_date)})" if task.due_date else "")
-                ),
-                title="New task assigned",
-                notification_type="TASK_ASSIGNED",
-                channels=["app", "push"],
-                sender=acting_user,
-            )
-        except Exception:
-            logger.exception("Miya create_task: in-app notification failed for task %s", task.id)
+        # In-app + WhatsApp notifications (primary + informed category owners).
+        from dashboard.task_assign_notify import notify_task_assignment
 
-        # WhatsApp notification.
         notify_whatsapp = _coerce_bool(
             _get_first(data, "notify_whatsapp", "notifyWhatsapp", "send_whatsapp"),
             default=False if assign_to_self else True,
         )
         wa_override = _get_first(data, "whatsapp_message", "whatsappMessage", "message")
-        wa_result: dict[str, Any] = {
-            "sent": False,
-            "skipped_reason": None,
-            "error": None,
-            "provider_status": None,
-        }
-
-        if not notify_whatsapp:
-            wa_result["skipped_reason"] = "disabled"
-        elif not (assignee.phone or "").strip():
-            wa_result["skipped_reason"] = "no_phone"
-            wa_result["error"] = (
-                f"{assignee.first_name or 'Staff member'} has no phone number on file."
-            )
-        else:
-            body = _build_whatsapp_body(
-                task=task,
-                sender_name=sender_display,
-                assignee_first_name=(assignee.first_name or "").strip(),
-                override=wa_override if isinstance(wa_override, str) else None,
-            )
-            try:
-                ok, resp = notification_service.send_whatsapp_text(assignee.phone, body)
-                wa_result["sent"] = bool(ok)
-                if isinstance(resp, dict):
-                    wa_result["provider_status"] = resp.get("status_code")
-                    if not ok:
-                        err_msg = resp.get("error")
-                        if not err_msg and isinstance(resp.get("data"), dict):
-                            err_msg = (
-                                resp["data"].get("error", {}).get("message")
-                                if isinstance(resp["data"].get("error"), dict)
-                                else None
-                            )
-                        wa_result["error"] = err_msg or "WhatsApp send failed"
-                if ok:
-                    task.whatsapp_notified_at = timezone.now()
-                    task.save(update_fields=["whatsapp_notified_at"])
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.exception("Miya create_task: WhatsApp send crashed for task %s", task.id)
-                wa_result["error"] = str(exc)[:200]
+        informed_owners = (
+            list(category_routing_result.informed)
+            if category_routing_result and category_routing_result.informed
+            else []
+        )
+        notify_result = notify_task_assignment(
+            task,
+            assignee=assignee,
+            sender=acting_user or requester,
+            sender_display=sender_display,
+            informed_owners=informed_owners,
+            notify_whatsapp=notify_whatsapp,
+            whatsapp_override=wa_override if isinstance(wa_override, str) else None,
+        )
+        wa_result: dict[str, Any] = dict(notify_result.get("primary_whatsapp") or {})
+        wa_result.setdefault("sent", False)
+        wa_result.setdefault("skipped_reason", None)
+        wa_result.setdefault("error", None)
+        wa_result["informed_notified"] = notify_result.get("informed_notified") or []
 
         if wa_result.get("error"):
             _, is_platform_issue = _sanitize_whatsapp_error_for_user(wa_result["error"])
@@ -1284,65 +1278,40 @@ def agent_reassign_dashboard_task(request):
                 or old.email
             )
 
-        # In-app notify new assignee (best-effort).
-        try:
-            notification_service.send_custom_notification(
-                recipient=assignee,
-                message=f"Task reassigned to you: {task.title}",
-                title="Task reassigned",
-                notification_type="TASK_ASSIGNED",
-                channels=["app", "push"],
-                sender=acting_user,
-            )
-        except Exception:
-            logger.exception(
-                "Miya reassign_task: in-app notification failed for task %s", task.id
-            )
+        # In-app + WhatsApp notify new assignee (best-effort).
+        from dashboard.task_assign_notify import notify_task_assignment
 
         notify_whatsapp = _coerce_bool(
             _get_first(data, "notify_whatsapp", "notifyWhatsapp", "send_whatsapp"),
             default=True,
         )
-        wa_override = _get_first(data, "whatsapp_message", "whatsappMessage", "message")
-        wa_result: dict[str, Any] = {
-            "sent": False,
-            "skipped_reason": None,
-            "error": None,
-            "provider_status": None,
-        }
-        if not notify_whatsapp:
-            wa_result["skipped_reason"] = "disabled"
-        elif not (assignee.phone or "").strip():
-            wa_result["skipped_reason"] = "no_phone"
-        else:
-            sender_display = "Your manager"
-            if acting_user:
-                nm = f"{(acting_user.first_name or '').strip()} {(acting_user.last_name or '').strip()}".strip()
-                sender_display = nm or getattr(acting_user, "email", None) or sender_display
-            body = (
-                str(wa_override).strip()
-                if isinstance(wa_override, str) and wa_override.strip()
-                else (
-                    f"Hi {(assignee.first_name or '').strip() or 'there'},\n"
-                    f"{sender_display} reassigned a task to you:\n"
-                    f"*{task.title}*\n"
-                    + (f"Note: {note}\n" if note else "")
-                    + "Reply *accept*, *start*, *done*, or *unable*."
-                )
+        wa_override = _get_first(data, "whatsappMessage", "whatsapp_message", "message")
+        sender_display = "Your manager"
+        if acting_user:
+            nm = f"{(acting_user.first_name or '').strip()} {(acting_user.last_name or '').strip()}".strip()
+            sender_display = nm or getattr(acting_user, "email", None) or sender_display
+        if note and not (isinstance(wa_override, str) and wa_override.strip()):
+            wa_override = (
+                f"Hi {(assignee.first_name or '').strip() or 'there'},\n"
+                f"{sender_display} reassigned a task to you:\n"
+                f"*{task.title}*\n"
+                + (f"Note: {note}\n" if note else "")
+                + "Reply *accept*, *start*, *done*, or *unable*."
             )
-            try:
-                ok, resp = notification_service.send_whatsapp_text(assignee.phone, body)
-                wa_result["sent"] = bool(ok)
-                if isinstance(resp, dict):
-                    wa_result["provider_status"] = resp.get("status_code")
-                    if not ok:
-                        wa_result["error"] = resp.get("error") or "WhatsApp send failed"
-                if ok:
-                    task.whatsapp_notified_at = timezone.now()
-                    task.save(update_fields=["whatsapp_notified_at"])
-            except Exception as exc:
-                logger.exception("Miya reassign_task: WhatsApp send failed for %s", task.id)
-                wa_result["error"] = str(exc)[:200]
+        notify_result = notify_task_assignment(
+            task,
+            assignee=assignee,
+            sender=acting_user,
+            sender_display=sender_display,
+            informed_owners=[],
+            notify_whatsapp=notify_whatsapp,
+            whatsapp_override=wa_override if isinstance(wa_override, str) else None,
+            is_reassignment=True,
+        )
+        wa_result = dict(notify_result.get("primary_whatsapp") or {})
+        wa_result.setdefault("sent", False)
+        wa_result.setdefault("skipped_reason", None)
+        wa_result.setdefault("error", None)
 
         task_ref = _short_record_ref(task.id)
         if old_display and old and str(old.id) != str(assignee.id):

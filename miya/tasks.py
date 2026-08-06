@@ -87,7 +87,7 @@ def run_miya_dashboard_chat(
     return payload
 
 
-@shared_task(name="miya.tasks.run_miya_whatsapp_turn_async", bind=True, max_retries=1)
+@shared_task(name="miya.tasks.run_miya_whatsapp_turn_async", bind=True, max_retries=0)
 def run_miya_whatsapp_turn_async(
     self,
     *,
@@ -96,6 +96,7 @@ def run_miya_whatsapp_turn_async(
     message_text: str,
     session_id: str,
     voice_reply: bool = False,
+    inbound_wamid: str = "",
 ) -> dict:
     """
     Process one WhatsApp → Miya turn off the webhook hot path.
@@ -124,10 +125,12 @@ def run_miya_whatsapp_turn_async(
             message_text=message_text,
             session=session,
             voice_reply=voice_reply,
+            inbound_wamid=inbound_wamid or None,
         )
         return {"ok": True, "handled": handled}
     except Exception as exc:
         logger.exception("run_miya_whatsapp_turn_async failed phone=%s: %s", phone_digits, exc)
-        if self.request.retries < self.max_retries:
-            raise self.retry(exc=exc, countdown=5) from exc
+        from miya.services.whatsapp import _finish_inbound_wamid
+
+        _finish_inbound_wamid(inbound_wamid or None, failed=True)
         return {"ok": False, "reason": str(exc)[:200]}

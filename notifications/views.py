@@ -17,6 +17,17 @@ import requests as http_requests
 import re
 
 logger = logging.getLogger(__name__)
+
+_CHECKLIST_SESSION_STATES = frozenset({
+    "in_checklist",
+    "checklist_followup",
+    "checklist_help_text",
+    "checklist_delay_eta",
+    "awaiting_task_photo",
+})
+
+_CHECKLIST_BUTTON_IDS = frozenset({"yes", "no", "n_a", "Yes", "No", "N/A"})
+
 from .models import Notification, NotificationPreference, DeviceToken, NotificationAttachment, NotificationIssue, WhatsAppMessageProcessed
 from .serializers import (
     NotificationSerializer, 
@@ -128,6 +139,7 @@ def _django_owns_whatsapp_inbound_message(msg: dict, django_owned_types: set) ->
                 "awaiting_incident_photo",
                 "awaiting_task_photo",
                 "awaiting_feedback",
+                * _CHECKLIST_SESSION_STATES,
             ) or ctx.get("incident_photo_media_id"):
                 return True
 
@@ -148,6 +160,8 @@ def _django_owns_whatsapp_inbound_message(msg: dict, django_owned_types: set) ->
                 return True
             title_l = title.strip().lower().replace("-", " ")
             if title_l in ("clock out", "clockout", "clock out.", "pointer sortie", "pointage sortie"):
+                return True
+            if btn_id in _CHECKLIST_BUTTON_IDS:
                 return True
             try:
                 from staff.whatsapp_escalation import (
@@ -187,6 +201,11 @@ def _django_owns_whatsapp_inbound_message(msg: dict, django_owned_types: set) ->
                 return True
         except Exception:
             pass
+        if phone_digits:
+            _text_sess = WhatsAppSession.objects.filter(phone=phone_digits).first()
+            if _session_in_active_checklist(_text_sess):
+                if _is_checklist_step_reply(body) or _wants_checklist_flow(body):
+                    return True
         # Staff → manager escalations (wages, payslip, absence) must land as
         # StaffRequest on the dashboard — never Mastra leave-form / confirm invents.
         try:
@@ -201,8 +220,7 @@ def _django_owns_whatsapp_inbound_message(msg: dict, django_owned_types: set) ->
             if looks_like_staff_manager_escalation(body):
                 return True
             # Own confirm/cancel only when explicit ("Yes, send it") or this
-            # session already has a pending escalate-to-manager ask. Bare
-            # "Yes"/"Ok" stay with Mastra for checklists.
+            # session already has a pending escalate-to-manager ask.
             if is_explicit_confirm_send_reply(body) or (
                 (is_cancel_send_reply(body) or is_confirm_send_reply(body))
                 and session_has_staff_escalation_context(
@@ -812,6 +830,41 @@ def _normalize_start_checklist_intent(body):
     return any(p in normalized for p in phrases)
 
 
+def _session_in_active_checklist(session) -> bool:
+    if not session:
+        return False
+    return (getattr(session, "state", None) or "") in _CHECKLIST_SESSION_STATES
+
+
+def _is_checklist_step_reply(raw: str | None) -> bool:
+    t = (raw or "").strip().lower()
+    return t in ("yes", "y", "no", "n/a", "na", "n a")
+
+
+def _normalize_checklist_continue_intent(body) -> bool:
+    """Resume / stay on the in-progress WhatsApp checklist."""
+    if not body or not isinstance(body, str):
+        return False
+    raw = body.strip().lower()
+    normalized = " ".join("".join(c for c in raw if c.isalnum() or c.isspace()).split())
+    phrases = (
+        "stick to the checklist",
+        "stay on the checklist",
+        "continue checklist",
+        "continue the checklist",
+        "resume checklist",
+        "back to checklist",
+        "back to the checklist",
+        "next checklist task",
+        "next task",
+    )
+    return any(p in normalized for p in phrases)
+
+
+def _wants_checklist_flow(body) -> bool:
+    return _normalize_start_checklist_intent(body) or _normalize_checklist_continue_intent(body)
+
+
 def _process_whatsapp_staff_escalation(
     notification_service,
     user,
@@ -834,12 +887,20 @@ def _process_whatsapp_staff_escalation(
         extract_escalation_text_from_whatsapp_message,
         is_cancel_send_reply,
         is_confirm_send_reply,
+        is_explicit_confirm_send_reply,
     )
     from staff.whatsapp_request_ingest import ingest_staff_escalation_from_whatsapp
 
     raw = (raw_body or "").strip()
     if not raw and not msg:
         return False
+
+    # Bare Yes/No/N/A during an active checklist are task steps — not manager escalations.
+    if _session_in_active_checklist(session):
+        if _is_checklist_step_reply(raw):
+            return False
+        if is_confirm_send_reply(raw) and not is_explicit_confirm_send_reply(raw):
+            return False
 
     # `user` may still be None here (unlinked number) — get_effective_language
     # degrades to English in that case, same as everywhere else in this module.
@@ -2030,11 +2091,7 @@ def whatsapp_webhook(request):
                 'incident_clarify_audio': 'Thanks — I couldn’t clearly understand that voice note. Please resend it, or reply with: incident type, a brief description, and the time it occurred.',
                 'incident_clarify_missing': 'Thanks — before I log this, please clarify: {missing}.',
                 'incident_recorded': (
-                    'Thank you for taking the time to tell us what happened — we’ve recorded what you shared.\n\n'
-                    'Your safety and dignity matter here. The right people on your team will see this and can follow up '
-                    'as needed. If you remember anything else, or the situation changes, you can reach out again anytime.\n\n'
-                    'If you ever feel unsafe in the moment, use your local emergency number or ask a manager on the floor '
-                    'for immediate help.'
+                    'Thanks — your report has been logged. Management is looking into it.'
                 ),
                 'incident_ask_photo': (
                     '📷 If you can, please send a photo of the incident so we can attach it to the report. '
@@ -2082,6 +2139,7 @@ def whatsapp_webhook(request):
                 'generic_error': 'Something went wrong. Please try again in a moment.',
                 'checklist_invalid_reply': "Hmm, I didn't quite catch that — reply *Yes*, *No*, or *N/A* for this step.",
                 'checklist_photo_needed': 'Please send a photo to complete this step. You can complete other tasks later if needed.',
+                'checklist_photo_failed': "I couldn't save that photo — please try sending it again.",
                 'checklist_not_ready': (
                     "No checklist is ready yet. Say *start checklist* when you're ready "
                     "(clock-in is optional). Ask your manager to assign a process if needed. "
@@ -2115,10 +2173,7 @@ def whatsapp_webhook(request):
                 'incident_clarify_audio': 'شكراً — لم أفهم الملاحظة الصوتية بوضوح. يرجى إعادة إرسالها أو الرد بالنص: نوع الحادث، وصف موجز، ووقت الحدوث.',
                 'incident_clarify_missing': 'شكراً — قبل التسجيل، يرجى توضيح: {missing}.',
                 'incident_recorded': (
-                    'شكراً لثقتك ولمشاركة ما حدث — تم حفظ ما أبلغت به.\n\n'
-                    'سلامتك واحترامك يهمّنا. سيطلع الفريق المعني على هذا وسيمكن المتابعة عند الحاجة. '
-                    'إذا تذكرت تفاصيل إضافية أو تغيّر الوضع، يمكنك التواصل مرة أخرى في أي وقت.\n\n'
-                    'إذا شعرت بخطر مباشر، اتصل بخدمات الطوارئ في منطقتك أو أبلغ مديراً في المكان فوراً.'
+                    'شكراً — تم تسجيل بلاغك. الإدارة تتابع الأمر.'
                 ),
                 'incident_ask_photo': (
                     '📷 إن أمكن، أرسل صورة للحادث لنرفقها بالبلاغ. '
@@ -2164,6 +2219,7 @@ def whatsapp_webhook(request):
                 'generic_error': 'حدث خطأ ما. يرجى المحاولة مرة أخرى بعد قليل.',
                 'checklist_invalid_reply': 'لم أفهم ذلك جيداً — أجب بـ *نعم* أو *لا* أو *غير منطبق* لهذه الخطوة.',
                 'checklist_photo_needed': 'يرجى إرسال صورة لإكمال هذه الخطوة. يمكنك إكمال المهام الأخرى لاحقاً إذا لزم الأمر.',
+                'checklist_photo_failed': 'تعذّر حفظ الصورة — يرجى إرسالها مرة أخرى.',
                 'checklist_not_ready': (
                     'لا توجد قائمة تحقق جاهزة الآن. قل *ابدأ المهام* عندما تكون جاهزاً '
                     '(تسجيل الحضور اختياري). اطلب من مديرك تعيين عملية إذا لزم الأمر. '
@@ -2197,11 +2253,7 @@ def whatsapp_webhook(request):
                 'incident_clarify_audio': 'Merci — je n\'ai pas bien compris le message vocal. Veuillez le renvoyer ou répondre par texte : type d\'incident, description brève, et heure.',
                 'incident_clarify_missing': 'Merci — avant d\'enregistrer, veuillez préciser : {missing}.',
                 'incident_recorded': (
-                    'Merci d’avoir pris le temps de nous dire ce qui s’est passé — nous avons bien enregistré ce que vous avez partagé.\n\n'
-                    'Votre sécurité et votre dignité comptent. Les bonnes personnes dans votre équipe verront cela et pourront '
-                    'faire le suivi si nécessaire. Si vous vous souvenez d’autres détails ou si la situation évolue, vous pouvez '
-                    'nous écrire à tout moment.\n\n'
-                    'En cas de danger immédiat, contactez les secours locaux ou parlez immédiatement à un responsable sur place.'
+                    'Merci — votre signalement est enregistré. La direction s’en occupe.'
                 ),
                 'incident_ask_photo': (
                     '📷 Si possible, envoyez une photo de l\'incident pour l\'ajouter au rapport. '
@@ -2248,6 +2300,7 @@ def whatsapp_webhook(request):
                 'generic_error': 'Un problème est survenu. Réessayez dans un instant.',
                 'checklist_invalid_reply': "Hmm, je n'ai pas compris — répondez *Oui*, *Non* ou *N/A* pour cette étape.",
                 'checklist_photo_needed': 'Veuillez envoyer une photo pour terminer cette étape. Vous pourrez faire les autres tâches plus tard si besoin.',
+                'checklist_photo_failed': "Je n'ai pas pu enregistrer cette photo — renvoyez-la s'il vous plaît.",
                 'checklist_not_ready': (
                     "Aucune checklist n'est prête pour l'instant. Dites *démarrer la checklist* quand vous êtes prêt "
                     "(le pointage est optionnel). Demandez à votre responsable d'assigner un processus si besoin. "
@@ -2488,6 +2541,7 @@ def whatsapp_webhook(request):
                             'awaiting_incident_photo',
                             'awaiting_order_voice',
                             'awaiting_order_clarification',
+                            *_CHECKLIST_SESSION_STATES,
                         }
                         # Image and location messages are always handled by Django (Mastra
                         # cannot download WhatsApp media). Django processes incident photos,
@@ -2555,11 +2609,12 @@ def whatsapp_webhook(request):
                                     if ctx.get("incident_photo_media_id"):
                                         _text_is_incident_report = True
                                 _text_is_my_shifts = looks_like_my_shifts_query(text_body)
-                                _text_is_dashboard_task_reply = looks_like_dashboard_task_status_reply(
-                                    text_body
+                                _text_is_dashboard_task_reply = (
+                                    looks_like_dashboard_task_status_reply(text_body)
+                                    and not _wants_checklist_flow(text_body)
                                 )
                                 _text_is_clock_float_recovery = looks_like_cash_clock_in_followup(text_body)
-                                _text_is_checklist_start = _normalize_start_checklist_intent(text_body)
+                                _text_is_checklist_start = _wants_checklist_flow(text_body)
                             if msg_type == 'interactive':
                                 inter = msg.get('interactive') or {}
                                 if inter.get('type') == 'button_reply':
@@ -2612,6 +2667,7 @@ def whatsapp_webhook(request):
                                     phone_digits=phone_digits,
                                     message_text=text_body,
                                     session=session,
+                                    inbound_wamid=wamid,
                                 ):
                                     continue
                         
@@ -2626,7 +2682,25 @@ def whatsapp_webhook(request):
                                 btn_reply = interactive.get('button_reply', {})
                                 btn_id = btn_reply.get('id')
                                 btn_title = (btn_reply.get('title') or '').strip()
-    
+
+                                # Checklist Yes/No/N/A must win over escalation / Miya (bare "Yes" ≠ HR confirm).
+                                if (
+                                    btn_id in _CHECKLIST_BUTTON_IDS
+                                    and _session_in_active_checklist(session)
+                                ):
+                                    response_value = (btn_id or btn_title or "").lower().replace("/", "_")
+                                    if response_value in ("yes", "no", "n_a", "n/a", "na"):
+                                        if response_value in ("n/a", "na"):
+                                            response_value = "n_a"
+                                        if _handle_checklist_response(
+                                            notification_service,
+                                            session,
+                                            user,
+                                            phone_digits,
+                                            response_value,
+                                        ):
+                                            continue
+
                                 if _process_whatsapp_staff_escalation(
                                     notification_service,
                                     user,
@@ -2964,38 +3038,22 @@ def whatsapp_webhook(request):
                                     media_id = image_obj.get('id')
                                     mime_type = image_obj.get('mime_type')
                                     caption = image_obj.get('caption')
-    
-                                    durable_url = None
-                                    if media_id:
-                                        try:
-                                            from notifications.media_persist import (
-                                                FOLDER_CHECKLIST_EVIDENCE,
-                                                MEDIA_CATEGORY_CHECKLIST_EVIDENCE,
-                                                persist_whatsapp_media,
-                                            )
-                                            restaurant_id = getattr(user, "restaurant_id", None)
-                                            if not restaurant_id and getattr(task, "shift_id", None):
-                                                restaurant_id = getattr(
-                                                    getattr(task, "shift", None),
-                                                    "restaurant_id",
-                                                    None,
-                                                )
-                                            durable_url, persisted_mime, _ = persist_whatsapp_media(
-                                                media_id,
-                                                folder=FOLDER_CHECKLIST_EVIDENCE,
-                                                filename_hint=f"checklist_{task.id}.jpg",
-                                                restaurant_id=restaurant_id,
-                                                media_category=MEDIA_CATEGORY_CHECKLIST_EVIDENCE,
-                                            )
-                                            mime_type = mime_type or persisted_mime
-                                        except Exception:
-                                            logger.warning(
-                                                "Failed to persist checklist photo evidence for task=%s media_id=%s",
-                                                task.id,
-                                                media_id,
-                                                exc_info=True,
-                                            )
-    
+
+                                    from scheduling.checklist_photo import persist_checklist_photo_from_whatsapp
+
+                                    durable_url, storage_key, mime_type = persist_checklist_photo_from_whatsapp(
+                                        media_id=media_id,
+                                        task=task,
+                                        user=user,
+                                        mime_type=mime_type,
+                                    )
+                                    if not durable_url and not storage_key:
+                                        notification_service.send_whatsapp_text(
+                                            phone_digits,
+                                            R(user, "checklist_photo_failed"),
+                                        )
+                                        continue
+
                                     record, created = TaskVerificationRecord.objects.get_or_create(
                                         task=task,
                                         submitted_by=user,
@@ -3005,6 +3063,7 @@ def whatsapp_webhook(request):
                                     submitted_at = timezone.now().isoformat()
                                     photos.append({
                                         'url': durable_url,
+                                        'storage_key': storage_key,
                                         'media_id': media_id,
                                         'mime_type': mime_type,
                                         'caption': caption,
@@ -3452,6 +3511,7 @@ def whatsapp_webhook(request):
                                         message_text=tstrip_miya,
                                         session=session,
                                         voice_reply=True,
+                                        inbound_wamid=wamid,
                                     ):
                                         continue
     
@@ -3925,8 +3985,24 @@ def whatsapp_webhook(request):
     
                         # Checklist: accept typed yes/no/n/a as well as button replies
                         if session.state == 'in_checklist':
-                            # Let "start checklist" / "clock out" intents pass through
-                            if _normalize_start_checklist_intent(raw_body or body) or body in ['clock out', 'clock-out', 'clockout']:
+                            if _normalize_checklist_continue_intent(raw_body or body):
+                                checklist = session.context.get("checklist", {})
+                                current_id = checklist.get("current_task_id")
+                                task_ids = checklist.get("tasks", [])
+                                if current_id and task_ids:
+                                    nxt = ShiftTask.objects.filter(id=current_id).first()
+                                    if nxt:
+                                        idx = (
+                                            (task_ids.index(current_id) + 1)
+                                            if current_id in task_ids
+                                            else 1
+                                        )
+                                        notification_service._send_task_step_to_whatsapp(
+                                            phone_digits, nxt, idx, len(task_ids), session
+                                        )
+                                        continue
+                            # Let checklist restart / clock-out intents pass through
+                            if _wants_checklist_flow(raw_body or body) or body in ['clock out', 'clock-out', 'clockout']:
                                 pass  # Fall through to the handlers below
                             else:
                                 body_clean = body.strip()
@@ -4173,8 +4249,8 @@ def whatsapp_webhook(request):
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                             continue
     
-                        # Manual "start checklist" trigger (backup for Miya): validate then start or resume
-                        if _normalize_start_checklist_intent(raw_body or body):
+                        # Manual "start checklist" / resume checklist trigger
+                        if _wants_checklist_flow(raw_body or body):
                             if not user:
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                                 continue
@@ -4411,6 +4487,7 @@ def whatsapp_webhook(request):
                                 phone_digits=phone_digits,
                                 message_text=raw_body,
                                 session=session,
+                                inbound_wamid=wamid,
                             ):
                                 continue
 

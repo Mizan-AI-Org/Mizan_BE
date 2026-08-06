@@ -12,6 +12,7 @@ from .views_agent import (
     agent_payment_approval,
     agent_record_invoice,
     agent_return_invoice,
+    agent_get_invoice_timeline,
     agent_update_invoice_bank_payment_status,
 )
 from .views_payment_approval import (
@@ -90,6 +91,11 @@ urlpatterns = [
         "agent/invoices/confirm-po-match/",
         agent_confirm_invoice_po_match,
         name="finance-agent-invoice-confirm-po-match",
+    ),
+    path(
+        "agent/invoices/timeline/",
+        agent_get_invoice_timeline,
+        name="finance-agent-invoice-timeline",
     ),
     path(
         "agent/payment-approval/",
