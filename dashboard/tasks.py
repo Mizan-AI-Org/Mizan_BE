@@ -233,3 +233,138 @@ def ops_live_stale_sweep() -> dict:
     if summary["nudged"] or summary["errors"]:
         logger.info("ops_live_stale_sweep: %s", summary)
     return summary
+
+
+_MANAGER_BRIEFING_ROLES = (
+    "MANAGER",
+    "ADMIN",
+    "OWNER",
+    "SUPER_ADMIN",
+    "RESTAURANT_OWNER",
+    "GENERAL_MANAGER",
+)
+
+
+def _manager_briefing_phone(user) -> str:
+    from notifications.models import NotificationPreference
+
+    prefs = getattr(user, "notification_preferences", None)
+    if prefs is None:
+        try:
+            prefs = NotificationPreference.objects.filter(user=user).first()
+        except Exception:
+            prefs = None
+    raw = (getattr(prefs, "whatsapp_number", None) or getattr(user, "phone", None) or "")
+    return normalize_phone(str(raw))
+
+
+def _manager_wants_ops_briefing(user) -> bool:
+    from notifications.models import NotificationPreference
+
+    prefs = NotificationPreference.objects.filter(user=user).first()
+    if prefs is not None and prefs.whatsapp_enabled is False:
+        return False
+    return bool(_manager_briefing_phone(user))
+
+
+@shared_task(name="dashboard.tasks.operations_live_manager_briefing_sweep")
+def operations_live_manager_briefing_sweep(period: str = "morning") -> dict:
+    """
+    Proactive Operations Live briefings for managers on WhatsApp.
+
+    - morning (07:00): new demands + in progress, critical first
+    - evening (21:00): same snapshot + items completed today
+    """
+    from accounts.models import CustomUser, Restaurant
+    from django.core.cache import cache
+    from django.db.models import Q
+    from notifications.services import notification_service
+
+    from dashboard.api.operations_live import (
+        build_operations_live_payload,
+        format_operations_live_briefing,
+    )
+
+    period = (period or "morning").strip().lower()
+    if period not in {"morning", "evening"}:
+        period = "morning"
+
+    today = timezone.localdate().isoformat()
+    summary = {
+        "period": period,
+        "sent": 0,
+        "skipped": 0,
+        "failed": 0,
+        "restaurants": 0,
+    }
+
+    for restaurant in Restaurant.objects.all().iterator(chunk_size=40):
+        summary["restaurants"] += 1
+        try:
+            payload = build_operations_live_payload(restaurant, limit=40)
+            body = format_operations_live_briefing(payload, period=period)
+        except Exception:
+            summary["failed"] += 1
+            logger.exception(
+                "operations_live_manager_briefing compose failed restaurant=%s",
+                restaurant.id,
+            )
+            continue
+
+        managers = CustomUser.objects.filter(
+            restaurant_id=restaurant.id,
+            is_active=True,
+        ).filter(
+            Q(role__in=_MANAGER_BRIEFING_ROLES)
+            | Q(role__icontains="MANAGER")
+            | Q(role__icontains="OWNER")
+            | Q(role__icontains="ADMIN")
+        )
+
+        for manager in managers:
+            if not _manager_wants_ops_briefing(manager):
+                summary["skipped"] += 1
+                continue
+
+            dedupe_key = f"ops_live_brief:{period}:{restaurant.id}:{manager.id}:{today}"
+            if cache.get(dedupe_key):
+                summary["skipped"] += 1
+                continue
+
+            phone = _manager_briefing_phone(manager)
+            if not phone or len(phone) < 8:
+                summary["skipped"] += 1
+                continue
+
+            try:
+                result = notification_service.send_whatsapp_text(phone, body)
+                ok = result[0] if isinstance(result, tuple) else bool(result)
+                if ok:
+                    cache.set(dedupe_key, "1", 86400)
+                    summary["sent"] += 1
+                else:
+                    summary["failed"] += 1
+            except Exception:
+                summary["failed"] += 1
+                logger.exception(
+                    "operations_live_manager_briefing send failed user=%s period=%s",
+                    manager.pk,
+                    period,
+                )
+
+    if summary["sent"] or summary["failed"]:
+        logger.info("operations_live_manager_briefing_sweep: %s", summary)
+    return summary
+
+
+@shared_task(name="dashboard.tasks.operations_live_morning_brief")
+def operations_live_morning_brief() -> dict:
+    """Phase 6 Daily Operations Intelligence (prefs + severity + dedupe)."""
+    from miya.services.intelligence.proactive.tasks import daily_ops_intelligence_sweep
+
+    return daily_ops_intelligence_sweep(period="morning")
+
+
+@shared_task(name="dashboard.tasks.operations_live_evening_debrief")
+def operations_live_evening_debrief() -> dict:
+    return operations_live_manager_briefing_sweep(period="evening")

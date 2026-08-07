@@ -214,6 +214,30 @@ def personal_reminder_approach_sweep():
     return {"sent": sent, "skipped": skipped, "checked": len(pending)}
 
 
+@shared_task(name="scheduling.memory_tasks.calendar_event_approach_sweep")
+def calendar_event_approach_sweep():
+    """
+    WhatsApp ping managers before Google Calendar meetings (1 day, 1 h, 30 min).
+    Complements personal_reminder sync for Miya-created events.
+    """
+    from accounts.models import Restaurant
+    from scheduling.calendar_reminder_sync import calendar_event_approach_sweep_for_restaurant
+
+    totals = {"sent": 0, "skipped": 0, "checked": 0, "restaurants": 0}
+    for restaurant in Restaurant.objects.filter(is_active=True).iterator():
+        try:
+            row = calendar_event_approach_sweep_for_restaurant(restaurant)
+            for k in ("sent", "skipped", "checked"):
+                totals[k] += row.get(k, 0)
+            if row.get("sent") or row.get("checked"):
+                totals["restaurants"] += 1
+        except Exception:
+            logger.exception("calendar_event_approach_sweep restaurant=%s", restaurant.id)
+    if totals["sent"]:
+        logger.info("calendar_event_approach_sweep: %s", totals)
+    return totals
+
+
 @shared_task(name="scheduling.memory_tasks.daily_briefing_sweep")
 def daily_briefing_sweep():
     """
@@ -306,6 +330,27 @@ def daily_briefing_sweep():
             lines.append("Reminders:")
             for r in reminders:
                 lines.append(f"• {r.title} ({r.due_at.strftime('%a %H:%M')})")
+        if is_manager:
+            try:
+                from dashboard.api.meetings_reminders import _get_valid_access_token
+                from dashboard.api.calendar_write import _fetch_calendar_events_for_agent
+
+                access_token, _gcal = _get_valid_access_token(restaurant)
+                if access_token:
+                    events = _fetch_calendar_events_for_agent(
+                        access_token,
+                        user,
+                        past_hours=0,
+                        future_hours=36,
+                        max_results=6,
+                    ) or []
+                    if events:
+                        lines.append("Calendar:")
+                        for ev in events[:5]:
+                            when = (ev.get("start") or "").replace("T", " ")[:16]
+                            lines.append(f"• {ev.get('title')} ({when})")
+            except Exception:
+                pass
         if open_tasks:
             lines.append("Open tasks:")
             for t in open_tasks:

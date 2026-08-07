@@ -9,7 +9,7 @@ from django.core.cache import cache
 from accounts.rbac_enforce import user_can_use_miya
 from core.i18n import get_effective_language, tr
 from core.whatsapp_config import get_miya_whatsapp_enabled, get_miya_whatsapp_voice_default
-from miya.services.agent import run_miya_chat
+from miya.services.intelligence.unified import run_unified_miya
 from notifications.services import notification_service
 
 logger = logging.getLogger(__name__)
@@ -43,25 +43,22 @@ def _finish_inbound_wamid(wamid: str | None, *, failed: bool = False) -> None:
 
 
 def _load_history(session) -> list[dict[str, str]]:
+    from miya.services.message_pipeline import sanitize_history
+
     ctx = getattr(session, "context", None) or {}
     raw = ctx.get(HISTORY_KEY) or []
     if not isinstance(raw, list):
         return []
-    out = []
-    for turn in raw[-MAX_HISTORY:]:
-        if isinstance(turn, dict) and turn.get("role") in ("user", "assistant"):
-            content = (turn.get("content") or "").strip()
-            if content:
-                out.append({"role": turn["role"], "content": content})
-    return out
+    return sanitize_history(raw)[-MAX_HISTORY:]
 
 
 def _save_history(session, history: list[dict[str, str]]) -> None:
+    from miya.services.message_pipeline import sanitize_history
+
     ctx = dict(getattr(session, "context", None) or {})
-    ctx[HISTORY_KEY] = history[-MAX_HISTORY:]
+    ctx[HISTORY_KEY] = sanitize_history(history)[-MAX_HISTORY:]
     session.context = ctx
     session.save(update_fields=["context"])
-
 
 def _send_miya_reply(phone_digits: str, reply: str, *, voice: bool = False) -> bool:
     """Deliver Miya reply on WhatsApp — text and optional Fish Audio voice note."""
@@ -240,12 +237,14 @@ def handle_miya_whatsapp_turn(
         attachment_ids = session_hint.pop("attachment_ids", None)
         session_hint["thread_id"] = f"wa-{getattr(session, 'id', phone_digits)}"
         session_hint["whatsapp_session_id"] = session_hint["thread_id"]
+        if inbound_wamid:
+            session_hint["inbound_wamid"] = inbound_wamid
         if attachment_ids:
             session.context = session_hint
             session.save(update_fields=["context"])
 
         try:
-            result = run_miya_chat(
+            result = run_unified_miya(
                 user=user,
                 access_token=None,
                 user_message=text,
@@ -254,6 +253,7 @@ def handle_miya_whatsapp_turn(
                 preferred_restaurant_id=session_hint.get("restaurant_id"),
                 session_hint=session_hint,
                 attachment_ids=attachment_ids,
+                inbound_message_id=inbound_wamid,
             )
         except RuntimeError as exc:
             logger.exception("Miya WhatsApp chat failed for %s: %s", phone_digits, exc)

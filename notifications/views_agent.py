@@ -68,6 +68,7 @@ def agent_send_announcement(request):
     roles = None
     departments = None
     tags = None
+    broadcast_all = data.get("broadcast_all") is True or audience == "all"
     if isinstance(audience, dict):
         staff_ids = audience.get("staff_ids") or None
         roles = audience.get("roles") or None
@@ -76,8 +77,10 @@ def agent_send_announcement(request):
         # accounts.staff_tags. Enables "send to the kitchen", "message
         # all housekeeping staff", etc.
         tags = audience.get("tags") or None
-    # "all" or missing audience => no filters (staff_ids, roles,
-    # departments, tags stay None)
+        if audience.get("all") is True:
+            broadcast_all = True
+    # Missing audience or bare "all" => explicit team broadcast only.
+    # Targeting one person must use staff_ids or create_dashboard_task.
 
     try:
         success, count, err, details = notification_service.send_announcement_to_audience(
@@ -90,6 +93,7 @@ def agent_send_announcement(request):
             departments=departments,
             tags=tags,
             channels=["app", "whatsapp"],
+            broadcast_all=broadcast_all,
         )
         if not success:
             return Response(
@@ -613,6 +617,8 @@ def _collect_shift_task_items(active_shift):
     custom_tasks = ShiftTask.objects.filter(shift=active_shift).exclude(
         status__in=["COMPLETED", "CANCELLED"]
     )
+    from scheduling.checklist_photo import task_requires_photo
+
     custom_items = []
     for t in custom_tasks:
         custom_items.append({
@@ -620,10 +626,7 @@ def _collect_shift_task_items(active_shift):
             "description": t.description or "",
             "source": "custom_task",
             "priority": t.priority or "MEDIUM",
-            "requires_photo": (
-                getattr(t, "verification_type", "NONE") == "PHOTO"
-                or bool(getattr(t, "verification_required", False))
-            ),
+            "requires_photo": task_requires_photo(t),
             "status": t.status,
         })
 
@@ -845,6 +848,11 @@ def agent_checklist_respond(request):
             and str(awaiting_id) == str(task.id)
             and response_value == "yes"
         ):
+            photo_msg = photo_prompt_for_task(task, user=user)
+            try:
+                notification_service.send_whatsapp_text(clean_phone, photo_msg)
+            except Exception:
+                logger.exception("agent_checklist_respond: photo remind WA send failed")
             return Response({
                 "success": True,
                 "status": "awaiting_photo",
@@ -856,7 +864,7 @@ def agent_checklist_respond(request):
                     "description": task.description or "",
                     "requires_photo": True,
                 },
-                "message_for_user": photo_prompt_for_task(task, user=user),
+                "message_for_user": photo_msg,
             })
     except Exception:
         logger.exception("checklist awaiting_photo remind failed")
@@ -892,6 +900,11 @@ def agent_checklist_respond(request):
             )
         except Exception:
             pass
+        photo_msg = photo_prompt_for_task(task, user=user)
+        try:
+            notification_service.send_whatsapp_text(clean_phone, photo_msg)
+        except Exception:
+            logger.exception("agent_checklist_respond: photo prompt WA send failed")
         return Response({
             "success": True,
             "status": "awaiting_photo",
@@ -903,7 +916,7 @@ def agent_checklist_respond(request):
                 "description": task.description or "",
                 "requires_photo": True,
             },
-            "message_for_user": photo_prompt_for_task(task, user=user),
+            "message_for_user": photo_msg,
         })
 
     # Record the response

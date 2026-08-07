@@ -15,7 +15,7 @@ from rest_framework.response import Response
 from notifications.services import notification_service
 
 from accounts.rbac_enforce import user_can_use_miya
-from .services.agent import run_miya_chat
+from miya.models import TenantDocument
 from .services.context import build_session_context, build_system_prompt
 from .services.mastra_client import mastra_enabled
 
@@ -47,6 +47,14 @@ def _chat_response_payload(result: dict, *, want_voice: bool = False) -> dict:
         "reply": reply,
         "tool_trace": result.get("tool_trace") or [],
     }
+    ctx = result.get("session_context")
+    if isinstance(ctx, dict):
+        payload["session_context"] = {
+            "location_id": ctx.get("location_id"),
+            "location_name": ctx.get("location_name"),
+            "restaurant_id": ctx.get("restaurant_id"),
+            "available_locations": ctx.get("available_locations") or [],
+        }
     if want_voice and reply:
         audio_bytes, mime = notification_service.synthesize_speech_bytes(reply)
         if audio_bytes:
@@ -170,6 +178,9 @@ def miya_chat(request):
 
     history = data.get("history") or []
     want_voice = bool(data.get("voice"))
+    from miya.services.intelligence.unified import normalize_channel, run_unified_miya
+
+    channel = normalize_channel(data.get("channel") or "dashboard")
     preferred_restaurant_id = (
         data.get("restaurant_id")
         or getattr(user, "restaurant_id", None)
@@ -177,6 +188,14 @@ def miya_chat(request):
     )
     if preferred_restaurant_id:
         preferred_restaurant_id = str(preferred_restaurant_id)
+
+    session_hint = {}
+    location_id = (data.get("location_id") or "").strip()
+    location_name = (data.get("location_name") or "").strip()
+    if location_id:
+        session_hint["location_id"] = location_id
+    if location_name:
+        session_hint["location_name"] = location_name
 
     auth_header = request.headers.get("Authorization", "")
     access_token = auth_header.replace("Bearer ", "").strip() if auth_header else None
@@ -188,11 +207,12 @@ def miya_chat(request):
             user_id=str(user.id),
             user_message=message,
             history=history,
-            channel="dashboard",
+            channel=channel,
             preferred_restaurant_id=preferred_restaurant_id,
             access_token=access_token,
             want_voice=want_voice,
             attachment_ids=attachment_ids,
+            session_hint=session_hint or None,
         )
         return Response(
             {"status": "processing", "task_id": task.id},
@@ -200,14 +220,15 @@ def miya_chat(request):
         )
 
     try:
-        result = run_miya_chat(
+        result = run_unified_miya(
             user=user,
             access_token=access_token,
             user_message=message,
             history=history,
-            channel="dashboard",
+            channel=channel,
             preferred_restaurant_id=preferred_restaurant_id,
             attachment_ids=attachment_ids,
+            session_hint=session_hint or None,
         )
     except RuntimeError as exc:
         logger.exception("Miya chat failed")
@@ -234,6 +255,7 @@ def miya_voice_chat(request):
       voice (optional): synthesize reply via Fish Audio TTS (default true)
       restaurant_id (optional): tenant scope
       language (optional): BCP-47 hint for ASR (e.g. en, fr, ar)
+      attachment_ids (optional): JSON array of TenantDocument ids (same engine as text/image)
     """
     user = request.user
     if not _miya_access_ok(user):
@@ -285,6 +307,20 @@ def miya_voice_chat(request):
     else:
         history = history_raw or []
 
+    attachment_ids: list[str] = []
+    att_raw = request.data.get("attachment_ids") or request.POST.get("attachment_ids") or ""
+    if isinstance(att_raw, list):
+        attachment_ids = [str(x).strip() for x in att_raw if str(x).strip()]
+    elif isinstance(att_raw, str) and att_raw.strip():
+        try:
+            parsed = json.loads(att_raw)
+            if isinstance(parsed, list):
+                attachment_ids = [str(x).strip() for x in parsed if str(x).strip()]
+            else:
+                attachment_ids = [p.strip() for p in att_raw.split(",") if p.strip()]
+        except json.JSONDecodeError:
+            attachment_ids = [p.strip() for p in att_raw.split(",") if p.strip()]
+
     want_voice_raw = request.data.get("voice", request.POST.get("voice", "true"))
     want_voice = str(want_voice_raw).lower() not in ("0", "false", "no")
 
@@ -297,6 +333,20 @@ def miya_voice_chat(request):
     if preferred_restaurant_id:
         preferred_restaurant_id = str(preferred_restaurant_id)
 
+    session_hint = {"voice": True, "modalities": ["voice", "text"]}
+    if attachment_ids:
+        session_hint["attachment_ids"] = attachment_ids
+    location_id = (
+        request.data.get("location_id") or request.POST.get("location_id") or ""
+    ).strip()
+    location_name = (
+        request.data.get("location_name") or request.POST.get("location_name") or ""
+    ).strip()
+    if location_id:
+        session_hint["location_id"] = location_id
+    if location_name:
+        session_hint["location_name"] = location_name
+
     auth_header = request.headers.get("Authorization", "")
     access_token = auth_header.replace("Bearer ", "").strip() if auth_header else None
 
@@ -307,10 +357,12 @@ def miya_voice_chat(request):
             user_id=str(user.id),
             user_message=transcript,
             history=history,
-            channel="dashboard",
+            channel="voice",
             preferred_restaurant_id=preferred_restaurant_id,
             access_token=access_token,
             want_voice=want_voice,
+            session_hint=session_hint or None,
+            attachment_ids=attachment_ids or None,
         )
         return Response(
             {
@@ -322,13 +374,17 @@ def miya_voice_chat(request):
         )
 
     try:
-        result = run_miya_chat(
+        from miya.services.intelligence.unified import run_unified_miya
+
+        result = run_unified_miya(
             user=user,
             access_token=access_token,
             user_message=transcript,
             history=history,
-            channel="dashboard",
+            channel="voice",
             preferred_restaurant_id=preferred_restaurant_id,
+            session_hint=session_hint or None,
+            attachment_ids=attachment_ids or None,
         )
     except RuntimeError as exc:
         logger.exception("Miya voice chat failed")
@@ -415,8 +471,8 @@ def miya_upload_attachment(request):
     if not upload:
         return Response({"error": "file is required"}, status=status.HTTP_400_BAD_REQUEST)
 
+    from miya.services.document_input import ingest_acknowledgement_message, ingest_document
     from miya.services.tenant import resolve_active_tenant
-    from miya.services.tenant_documents import serialize_tenant_document, store_tenant_document
 
     preferred_restaurant_id = (
         request.data.get("restaurant_id")
@@ -429,9 +485,10 @@ def miya_upload_attachment(request):
 
     file_bytes = upload.read()
     caption = (request.data.get("caption") or request.data.get("message") or "").strip()
+    location_id = (request.data.get("location_id") or "").strip() or None
 
     try:
-        doc = store_tenant_document(
+        doc_input = ingest_document(
             restaurant=restaurant,
             uploaded_by=user,
             source="WIDGET",
@@ -439,6 +496,8 @@ def miya_upload_attachment(request):
             filename=getattr(upload, "name", "") or "upload.bin",
             mime_type=getattr(upload, "content_type", "") or "",
             caption=caption,
+            location_id=location_id,
+            channel="dashboard",
         )
     except ValueError as exc:
         code = str(exc)
@@ -446,18 +505,24 @@ def miya_upload_attachment(request):
             return Response({"error": "File too large (max 12 MB)."}, status=status.HTTP_400_BAD_REQUEST)
         if code == "unsupported_type":
             return Response({"error": "Unsupported file type."}, status=status.HTTP_400_BAD_REQUEST)
+        if code in ("tenant_mismatch", "establishment_forbidden", "no_tenant"):
+            return Response({"error": "Access denied for this workspace."}, status=status.HTTP_403_FORBIDDEN)
         return Response({"error": "Could not save file."}, status=status.HTTP_400_BAD_REQUEST)
     except Exception:
         logger.exception("Miya attachment upload failed user=%s", user.id)
         return Response({"error": "Upload failed."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    from miya.services.tenant_documents import serialize_tenant_document
+
+    doc = TenantDocument.objects.get(id=doc_input.document_id)
     row = serialize_tenant_document(doc)
     return Response(
         {
             "success": True,
             "document": row,
             "document_id": row["id"],
-            "message_for_user": f"Saved {row['title']}. I will remember the details from this file.",
+            "document_input": doc_input.to_dict(),
+            "message_for_user": ingest_acknowledgement_message(doc_input),
         }
     )
 

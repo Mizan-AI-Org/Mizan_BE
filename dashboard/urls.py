@@ -26,7 +26,7 @@ from .views_extended import (
 )
 from .api.summary import DashboardSummaryView
 from .api.action_center import ActionCenterView
-from .api.portfolio import PortfolioSummaryView, LocationDetailView
+from .api.portfolio import PortfolioSummaryView, LocationDetailView, agent_location_detail
 from .api.tasks_demands import (
     TasksDemandsView,
     TaskDemandDetailView,
@@ -150,6 +150,11 @@ urlpatterns = [
         'agent/cross-location-report/',
         agent_cross_location_report,
         name='dashboard-agent-cross-location-report',
+    ),
+    path(
+        'agent/location-detail/',
+        agent_location_detail,
+        name='dashboard-agent-location-detail',
     ),
     path(
         'agent/calendar-events/create/',

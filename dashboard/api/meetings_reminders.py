@@ -281,6 +281,141 @@ def _serialize_event(
     }
 
 
+def _fetch_compliance_reminder_items(user, restaurant, now: datetime) -> list[dict[str, Any]]:
+    """Surface compliance doc expiry reminders in Meetings & Reminders."""
+    from scheduling.memory_models import PersonalReminder
+    from scheduling.reminder_messaging import days_until_due
+
+    if not restaurant or not user:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    qs = (
+        PersonalReminder.objects.filter(
+            restaurant=restaurant,
+            owner=user,
+            status="pending",
+            linked_compliance_document__isnull=False,
+        )
+        .select_related("linked_compliance_document")
+        .order_by("due_at")[:20]
+    )
+    for rem in qs:
+        doc = rem.linked_compliance_document
+        days_left = days_until_due(rem)
+        if days_left is None:
+            continue
+        threshold = max(1, int(getattr(doc, "remind_days_before", None) or 30))
+        if days_left > threshold:
+            continue
+
+        doc_title = (getattr(doc, "title", None) or rem.title or "Compliance document").strip()
+        if days_left < 0:
+            title = f"{doc_title} — expired"
+        elif days_left == 0:
+            title = f"{doc_title} — expires today"
+        else:
+            title = f"{doc_title} — expires in {days_left} days"
+
+        rows.append(
+            {
+                "id": f"compliance-reminder-{rem.id}",
+                "title": title,
+                "start": rem.due_at.isoformat() if rem.due_at else now.isoformat(),
+                "end": None,
+                "all_day": True,
+                "owner_label": "Me",
+                "owner_is_me": True,
+                "status": "URGENT",
+                "html_link": None,
+                "hangout_link": None,
+                "location": None,
+                "attendee_count": 0,
+                "calendar_id": "compliance",
+                "source": "compliance",
+            }
+        )
+    return rows
+
+
+def _fetch_personal_reminder_items(user, restaurant, now: datetime) -> list[dict[str, Any]]:
+    """
+    Non-compliance personal / daily / task reminders for Meetings & Reminders.
+    Skip calendar-synced rows (gcal_event_id) — those already appear as GCal events.
+    """
+    from scheduling.calendar_reminder_sync import GCAL_EVENT_MARKER, meeting_kind_from_text
+    from scheduling.memory_models import PersonalReminder
+
+    if not restaurant or not user:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    horizon = now + timedelta(hours=_HORIZON_HOURS)
+    past = now - timedelta(hours=_PAST_LOOKBACK_HOURS)
+    qs = (
+        PersonalReminder.objects.filter(
+            restaurant=restaurant,
+            owner=user,
+            status="pending",
+            linked_compliance_document__isnull=True,
+            due_at__gte=past,
+            due_at__lte=horizon,
+        )
+        .order_by("due_at")[:30]
+    )
+    for rem in qs:
+        body = rem.body or ""
+        if GCAL_EVENT_MARKER in body:
+            continue
+        due = rem.due_at
+        if due is None:
+            continue
+        if due <= now:
+            status = "DONE" if (now - due) <= timedelta(hours=_PAST_LOOKBACK_HOURS) else "URGENT"
+        elif due <= now + timedelta(minutes=30):
+            status = "URGENT"
+        else:
+            status = "PENDING"
+        kind = meeting_kind_from_text(rem.title or "", body)
+        rows.append(
+            {
+                "id": f"personal-reminder-{rem.id}",
+                "title": rem.title,
+                "start": due.isoformat(),
+                "end": None,
+                "all_day": False,
+                "owner_label": "Me",
+                "owner_is_me": True,
+                "status": status,
+                "html_link": None,
+                "hangout_link": None,
+                "location": None,
+                "attendee_count": 0,
+                "calendar_id": "personal",
+                "source": "personal",
+                "recurrence": rem.recurrence,
+                "meeting_kind": kind,
+            }
+        )
+    return rows
+
+
+def _rank_meeting_items(row: dict[str, Any]) -> tuple:
+    status_rank = {"URGENT": 0, "PENDING": 1, "DONE": 2}.get(row["status"], 3)
+    return (status_rank, row.get("start") or "")
+
+
+def _finalize_meeting_items(items: list[dict[str, Any]], limit: int) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    items.sort(key=_rank_meeting_items)
+    items = items[:limit]
+    counts = {"urgent": 0, "pending": 0, "done": 0}
+    for it in items:
+        k = it["status"].lower()
+        if k in counts:
+            counts[k] += 1
+    return items, counts
+
+
 class MeetingsRemindersView(APIView):
     """
     GET /api/dashboard/meetings-reminders/?limit=6
@@ -332,21 +467,29 @@ class MeetingsRemindersView(APIView):
                 max_age=30, private=True, stale_while_revalidate=60,
             )
 
-        access_token, gcal = _get_valid_access_token(restaurant)
-        if not access_token:
-            not_connected_payload["email"] = gcal.get("email")
-            return json_response_with_cache(
-                request, not_connected_payload,
-                max_age=30, private=True, stale_while_revalidate=60,
-            )
-
         try:
             limit = int(request.query_params.get("limit") or 6)
         except (TypeError, ValueError):
             limit = 6
         limit = max(1, min(limit, 20))
 
-        items = self._fetch_events(access_token, request.user, now)
+        compliance_items = _fetch_compliance_reminder_items(request.user, restaurant, now)
+        personal_items = _fetch_personal_reminder_items(request.user, restaurant, now)
+        local_items = compliance_items + personal_items
+
+        access_token, gcal = _get_valid_access_token(restaurant)
+        if not access_token:
+            not_connected_payload["email"] = gcal.get("email")
+            if local_items:
+                items, counts = _finalize_meeting_items(local_items, limit)
+                not_connected_payload["items"] = items
+                not_connected_payload["counts"] = counts
+            return json_response_with_cache(
+                request, not_connected_payload,
+                max_age=30, private=True, stale_while_revalidate=60,
+            )
+
+        items = self._fetch_events(access_token, request.user, now) or []
         if items is None:
             # Token likely invalid — force a refresh next call by
             # clearing the expiry. Return the not-connected shape so
@@ -355,25 +498,17 @@ class MeetingsRemindersView(APIView):
             cleared["token_expires_at"] = "1970-01-01T00:00:00+00:00"
             _save_gcal_settings(restaurant, cleared)
             not_connected_payload["email"] = gcal.get("email")
+            if local_items:
+                merged, counts = _finalize_meeting_items(local_items, limit)
+                not_connected_payload["items"] = merged
+                not_connected_payload["counts"] = counts
             return json_response_with_cache(
                 request, not_connected_payload,
                 max_age=10, private=True, stale_while_revalidate=30,
             )
 
-        # Order: URGENT first, then upcoming PENDING by start asc,
-        # then DONE (recent first) at the bottom.
-        def _rank(row: dict[str, Any]) -> tuple:
-            status_rank = {"URGENT": 0, "PENDING": 1, "DONE": 2}.get(row["status"], 3)
-            return (status_rank, row.get("start") or "")
-
-        items.sort(key=_rank)
-        items = items[:limit]
-
-        counts = {"urgent": 0, "pending": 0, "done": 0}
-        for it in items:
-            k = it["status"].lower()
-            if k in counts:
-                counts[k] += 1
+        items = items + local_items
+        items, counts = _finalize_meeting_items(items, limit)
 
         data = {
             "connected": True,

@@ -672,10 +672,32 @@ def agent_create_dashboard_task(request):
                 "assign_to_self",
                 "assignToSelf",
                 "assign_to_sender",
-                "personal_reminder",
             ),
             default=False,
         )
+
+        wants_personal_reminder = _coerce_bool(
+            _get_first(data, "personal_reminder", "personalReminder", "is_reminder"),
+            default=False,
+        )
+        if wants_personal_reminder:
+            return Response(
+                {
+                    "success": False,
+                    "code": "USE_PERSONAL_REMINDER",
+                    "error": "personal_reminder_not_dashboard_task",
+                    "miya_directive": (
+                        "Do NOT use create_dashboard_task for personal reminders. "
+                        "Call create_personal_reminder (or update_compliance_document for "
+                        "insurance/permits). Managers never get dashboard tasks assigned to themselves."
+                    ),
+                    "message_for_user": (
+                        "That's a reminder for you — I'll track it in Meetings & Reminders "
+                        "and ping you on WhatsApp, not as a task on your board."
+                    ),
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
 
         # Resolve assignee (To).
         assignee = None
@@ -743,52 +765,27 @@ def agent_create_dashboard_task(request):
             category_routing_result = routing
             if assignee:
                 assignee_err = None
-            elif requester and getattr(requester, "restaurant_id", None) == getattr(
-                restaurant, "id", None
-            ):
-                # Still create a trackable task when HR/payroll owners aren't
-                # configured - assign to the person who asked so the widget
-                # isn't empty and they can reassign in the task detail pane.
-                assignee = requester
-                assignee_err = None
+            else:
                 owner_hint = (
                     f"No {assign_to_category} owner is configured in Settings → "
-                    "Who owns what? - assigned to you for now."
+                    "Who owns what? Ask your admin to add an owner, or name the person "
+                    "you want this assigned to."
                 )
-                ai_summary = (ai_summary + " · " + owner_hint).strip(" ·") if ai_summary else owner_hint
-            else:
-                from accounts.models import CustomUser as AssigneeUser
-
-                assignee = (
-                    AssigneeUser.objects.filter(
-                        restaurant=restaurant,
-                        is_active=True,
-                        role__in=("OWNER", "ADMIN", "MANAGER"),
-                    )
-                    .exclude(role="SUPER_ADMIN")
-                    .order_by(
-                        Case(
-                            When(role="OWNER", then=Value(0)),
-                            When(role="ADMIN", then=Value(1)),
-                            When(role="MANAGER", then=Value(2)),
-                            default=Value(3),
-                            output_field=IntegerField(),
-                        )
-                    )
-                    .first()
+                return Response(
+                    {
+                        "success": False,
+                        "code": "CATEGORY_OWNER_MISSING",
+                        "error": "category_owner_not_configured",
+                        "message_for_user": owner_hint,
+                        "miya_directive": (
+                            f"No {assign_to_category} category owner configured. "
+                            "Do NOT assign the task to the manager who asked. "
+                            "Tell them to configure Settings → Who owns what, "
+                            "or ask which staff member should receive it."
+                        ),
+                    },
+                    status=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 )
-                if assignee:
-                    assignee_err = None
-                    owner_hint = (
-                        f"No {assign_to_category} owner is configured — assigned to "
-                        f"{assignee.get_full_name() or assignee.email} for now."
-                    )
-                    ai_summary = (ai_summary + " · " + owner_hint).strip(" ·") if ai_summary else owner_hint
-                else:
-                    assignee_err = (
-                        f"No one is configured as the owner for {assign_to_category}. "
-                        "Add category owners in Settings → General → Who owns what?"
-                    )
 
         if assignee_err or not assignee:
             return Response(
@@ -799,6 +796,53 @@ def agent_create_dashboard_task(request):
                     or "I couldn't find that staff member in this workspace.",
                 },
                 status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Managers delegate work to staff — never self-assign dashboard tasks via Miya.
+        requester_role = (getattr(requester, "role", None) or "").upper()
+        if (
+            requester
+            and assignee
+            and requester.id == assignee.id
+            and requester_role in ("OWNER", "MANAGER", "ADMIN")
+        ):
+            from core.i18n import get_effective_language, tr
+            from miya.services.manager_reminder_intent import looks_like_manager_reminder_intent
+
+            source_bits = [
+                title,
+                description,
+                str(
+                    _get_first(
+                        data,
+                        "source_text",
+                        "sourceText",
+                        "user_message",
+                        "context",
+                    )
+                    or ""
+                ),
+            ]
+            combined = " ".join(b for b in source_bits if b).strip()
+            lang = get_effective_language(user=requester, restaurant=restaurant)
+            if looks_like_manager_reminder_intent(combined) or assign_to_self:
+                msg = tr("miya.use_reminder_not_task", lang)
+            else:
+                msg = tr("miya.manager_self_task_blocked", lang)
+            return Response(
+                {
+                    "success": False,
+                    "code": "MANAGER_SELF_TASK_BLOCKED",
+                    "error": "manager_cannot_self_assign_task",
+                    "miya_directive": (
+                        "Managers must NOT receive dashboard tasks assigned to themselves. "
+                        "Use create_personal_reminder, create_calendar_event, or "
+                        "update_compliance_document / parse_document for their own deadlines. "
+                        "Use create_dashboard_task only when delegating to a staff member by name."
+                    ),
+                    "message_for_user": msg,
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
         if acting_user:
@@ -1259,6 +1303,12 @@ def agent_reassign_dashboard_task(request):
         note = str(_get_first(data, "note", "reason") or "").strip()
         task.assigned_to = assignee
         task.save(update_fields=["assigned_to", "updated_at"])
+        # Keep M2M assignees in sync with primary assigned_to
+        try:
+            task.assignees.clear()
+            task.assignees.add(assignee)
+        except Exception:
+            logger.exception("Failed to sync task.assignees on reassign")
 
         try:
             from dashboard.task_sync import broadcast_tasks_invalidate
@@ -1419,62 +1469,31 @@ def agent_update_dashboard_task_status(request):
             )
 
         old_status = task.status
-        task.status = new_status
-        update_fields = ["status", "updated_at"]
-        if new_status == "COMPLETED":
-            task.completed_at = timezone.now()
-            update_fields.append("completed_at")
-            if acting_user:
-                task.completed_by = acting_user
-                update_fields.append("completed_by")
-        task.save(update_fields=update_fields)
+        # Phase 5: same canonical mutation as WhatsApp / Miya / voice — no inline business logic
+        from miya.services.intelligence.unified import apply_task_status
 
-        try:
-            from dashboard.task_sync import broadcast_tasks_invalidate
+        result = apply_task_status(
+            user=acting_user or request.user,
+            channel="dashboard",
+            status=new_status,
+            task_id=str(task.id),
+            restaurant=restaurant,
+            assignee_scope=False,
+            notify_managers=new_status in ("COMPLETED", "UNABLE_TO_COMPLETE"),
+            message_id=f"agent:task_status:{task.id}:{new_status}",
+        )
+        if not result.success:
+            return Response(
+                {
+                    "success": False,
+                    "error": result.message_for_user or "update_failed",
+                    "message_for_user": result.message_for_user
+                    or "I couldn't update that task.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-            broadcast_tasks_invalidate(restaurant, reason="task_status", task_id=str(task.id))
-        except Exception:
-            pass
-
-        # Notify managers when a task is completed or blocked (best-effort).
-        if new_status in ("COMPLETED", "UNABLE_TO_COMPLETE") and old_status != new_status:
-            try:
-                from notifications.services import notification_service
-                from accounts.models import CustomUser as CU
-
-                managers = CU.objects.filter(
-                    restaurant=restaurant,
-                    is_active=True,
-                    role__in=("SUPER_ADMIN", "OWNER", "ADMIN", "MANAGER"),
-                ).exclude(pk=getattr(acting_user, "id", None))[:8]
-                actor = ""
-                if acting_user:
-                    actor = (
-                        f"{(acting_user.first_name or '').strip()} "
-                        f"{(acting_user.last_name or '').strip()}"
-                    ).strip() or acting_user.email
-                if new_status == "UNABLE_TO_COMPLETE":
-                    title = "Task unable to complete"
-                    msg = f"{actor or 'Staff'} cannot complete: {task.title}"
-                    ntype = "TASK_ASSIGNED"
-                else:
-                    title = "Task completed"
-                    msg = f"{actor or 'Staff'} completed: {task.title}"
-                    ntype = "TASK_COMPLETED"
-                for mgr in managers:
-                    notification_service.send_custom_notification(
-                        recipient=mgr,
-                        message=msg,
-                        title=title,
-                        notification_type=ntype,
-                        channels=["app", "push"],
-                        sender=acting_user,
-                    )
-            except Exception:
-                logger.exception(
-                    "Miya task status: manager notify failed for task %s", task.id
-                )
-
+        task.refresh_from_db()
         task_ref = _short_record_ref(task.id)
         return Response(
             {
@@ -1483,10 +1502,15 @@ def agent_update_dashboard_task_status(request):
                 "record_id": str(task.id),
                 "task_ref": task_ref,
                 "old_status": old_status,
-                "status": new_status,
+                "status": task.status,
+                "verified": bool(result.verified),
+                "unified": True,
                 "message_for_user": (
-                    f"Task #{task_ref} — Status updated to "
-                    f"{new_status.replace('_', ' ').title()}."
+                    result.message_for_user
+                    or (
+                        f"Task #{task_ref} — Status updated to "
+                        f"{task.status.replace('_', ' ').title()}."
+                    )
                 ),
             }
         )

@@ -55,6 +55,22 @@ def build_tenant_snapshot_block(restaurant) -> str:
         lines.append("Compliance documents: unavailable this turn.")
 
     try:
+        from accounts.models import BusinessLocation
+
+        branches = list(
+            BusinessLocation.objects.filter(restaurant=restaurant, is_active=True)
+            .order_by("-is_primary", "name")
+            .values("id", "name", "is_primary")[:20]
+        )
+        if branches:
+            lines.append("Branches (use location_name or location_id with location_detail / cross_location_report):")
+            for b in branches:
+                tag = "primary" if b.get("is_primary") else "branch"
+                lines.append(f"  • {b['name']} (id={b['id']}, {tag})")
+    except Exception:
+        pass
+
+    try:
         from accounts.models import CustomUser
 
         staff_count = CustomUser.objects.filter(

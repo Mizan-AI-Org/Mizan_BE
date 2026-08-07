@@ -428,11 +428,39 @@ def _matches_search(
     return q in hay
 
 
+def _recency_timestamp(item: dict[str, Any]) -> float:
+    """Unix timestamp for newest-first sorting (fallback 0 = oldest)."""
+    raw = item.get("updated_at") or item.get("created_at") or ""
+    if not raw:
+        return 0.0
+    try:
+        from django.utils.dateparse import parse_datetime
+
+        dt = parse_datetime(str(raw).replace("Z", "+00:00"))
+        if dt is not None:
+            if timezone.is_naive(dt):
+                dt = timezone.make_aware(dt)
+            return dt.timestamp()
+    except Exception:
+        pass
+    return 0.0
+
+
+def _is_critical_row(item: dict[str, Any]) -> bool:
+    if (item.get("display_status") or "").lower() == "critical":
+        return True
+    if (item.get("priority") or "").upper() == "URGENT":
+        return True
+    pill = (item.get("pill_status") or "").upper()
+    return pill in {"ESCALATED", "OVERDUE"}
+
+
 def _sort_open(item: dict[str, Any]) -> tuple:
-    prio = _PRIORITY_RANK_MAP.get(item.get("priority") or "", 4)
-    due = item.get("due_date") or "9999-99-99"
-    created = item.get("created_at") or ""
-    return (prio, due, created)
+    """
+    Operations Live open lanes: critical first, then newest at the top.
+    """
+    critical_rank = 0 if _is_critical_row(item) else 1
+    return (critical_rank, -_recency_timestamp(item))
 
 
 def build_operations_live_payload(
@@ -632,6 +660,151 @@ def build_operations_live_payload(
     }
 
 
+def format_operations_live_summary(
+    payload: dict[str, Any],
+    *,
+    include_in_progress: bool = True,
+    max_critical: int = 5,
+    max_pending: int = 4,
+    max_in_progress: int = 4,
+) -> str:
+    """
+    One concise manager briefing for Miya — new demands + in progress,
+    critical items first, not a wall of text.
+    """
+    pending = list(payload.get("pending") or [])
+    in_progress = list(payload.get("in_progress") or []) if include_in_progress else []
+    restaurant = payload.get("restaurant_name") or "your workspace"
+
+    if not pending and not in_progress:
+        return f"All clear — no open items on Operations Live for {restaurant} today."
+
+    critical_pending = [r for r in pending if _is_critical_row(r)]
+    other_pending = [r for r in pending if not _is_critical_row(r)]
+    critical_ip = [r for r in in_progress if _is_critical_row(r)]
+    other_ip = [r for r in in_progress if not _is_critical_row(r)]
+    n_critical = len(critical_pending) + len(critical_ip)
+
+    def _compact_row(row: dict[str, Any], *, lane: str = "") -> str:
+        title = (row.get("operation") or row.get("title") or "Item").strip()
+        to_name = ((row.get("to") or {}).get("name") or "unassigned").strip()
+        cat = (row.get("category") or "OPS").strip()
+        age = (row.get("age_label") or "").strip()
+        bits = [title, f"→ {to_name}", cat]
+        if age:
+            bits.append(age)
+        if lane == "in progress":
+            bits.append("in progress")
+        return " · ".join(bits)
+
+    headline_bits: list[str] = []
+    if pending:
+        headline_bits.append(
+            f"{len(pending)} new demand{'s' if len(pending) != 1 else ''}"
+        )
+    if in_progress:
+        headline_bits.append(
+            f"{len(in_progress)} in progress"
+        )
+    headline = (
+        f"Here's where things stand at {restaurant}: "
+        + ", ".join(headline_bits)
+        + "."
+    )
+    if n_critical:
+        headline += (
+            f" {n_critical} critical — prioritise these first."
+        )
+    lines: list[str] = [headline, ""]
+
+    shown_critical = 0
+    if n_critical:
+        lines.append("🔴 Critical:")
+        for row in critical_pending:
+            if shown_critical >= max_critical:
+                break
+            lines.append(f"• {_compact_row(row)}")
+            shown_critical += 1
+        for row in critical_ip:
+            if shown_critical >= max_critical:
+                break
+            lines.append(f"• {_compact_row(row, lane='in progress')}")
+            shown_critical += 1
+        if n_critical > shown_critical:
+            lines.append(f"  + {n_critical - shown_critical} more critical on the board.")
+        lines.append("")
+
+    if other_pending:
+        lines.append(f"Other new demands ({len(other_pending)}):")
+        for row in other_pending[:max_pending]:
+            lines.append(f"• {_compact_row(row)}")
+        if len(other_pending) > max_pending:
+            lines.append(f"  + {len(other_pending) - max_pending} more.")
+        lines.append("")
+
+    if other_ip:
+        lines.append(f"In progress ({len(other_ip)}):")
+        for row in other_ip[:max_in_progress]:
+            lines.append(f"• {_compact_row(row, lane='in progress')}")
+        if len(other_ip) > max_in_progress:
+            lines.append(f"  + {len(other_ip) - max_in_progress} more.")
+
+    return "\n".join(lines).strip()
+
+
+def _row_completed_today(row: dict[str, Any], on_date) -> bool:
+    raw = row.get("updated_at") or row.get("created_at") or ""
+    if not raw:
+        return False
+    try:
+        from django.utils.dateparse import parse_datetime
+
+        dt = parse_datetime(str(raw).replace("Z", "+00:00"))
+        if dt is None:
+            return False
+        if timezone.is_naive(dt):
+            dt = timezone.make_aware(dt)
+        return timezone.localtime(dt).date() == on_date
+    except Exception:
+        return False
+
+
+def format_operations_live_briefing(
+    payload: dict[str, Any],
+    *,
+    period: str = "morning",
+) -> str:
+    """
+    Proactive manager WhatsApp brief — morning snapshot or evening debrief.
+    """
+    period = (period or "morning").strip().lower()
+    restaurant = payload.get("restaurant_name") or "your workspace"
+    summary = format_operations_live_summary(payload, include_in_progress=True)
+
+    if period == "evening":
+        header = f"🌙 *Evening debrief — Miya* ({restaurant})\n\n"
+        completed = list(payload.get("completed") or [])
+        today = timezone.localdate()
+        done_today = [r for r in completed if _row_completed_today(r, today)]
+        body = header + summary
+        if done_today:
+            titles = [
+                (r.get("operation") or r.get("title") or "Item").strip()
+                for r in done_today[:3]
+            ]
+            titles = [t for t in titles if t]
+            if titles:
+                extra = f"\n\n✅ Wrapped up today ({len(done_today)}): " + ", ".join(titles)
+                if len(done_today) > 3:
+                    extra += f" (+{len(done_today) - 3} more)"
+                body += extra
+        body += "\n\nReply *where are we at?* anytime for a fresh snapshot."
+        return body
+
+    header = f"☀️ *Good morning — Miya ops brief* ({restaurant})\n\n"
+    return header + summary + "\n\nReply *where are we at?* anytime for a fresh snapshot."
+
+
 def notify_managers_urgent(
     restaurant,
     *,
@@ -825,15 +998,12 @@ def agent_list_operations_live(request):
         urgent_only=urgent_only,
     )
     counts = payload.get("counts") or {}
-    payload["message_for_user"] = (
-        f"Operations Live - {counts.get('pending', 0)} new, "
-        f"{counts.get('in_progress', 0)} in progress, "
-        f"{counts.get('completed', 0)} completed."
-        + (
-            f" {counts.get('pending', 0) + counts.get('in_progress', 0)} urgent."
-            if urgent_only
-            else ""
-        )
+    summary = format_operations_live_summary(payload, include_in_progress=True)
+    payload["pending_summary"] = summary
+    payload["message_for_user"] = summary if not urgent_only else (
+        f"{summary}\n(Urgent-only filter applied.)"
+        if (counts.get("pending") or counts.get("in_progress"))
+        else "No urgent items on Operations Live right now."
     )
     return Response(payload)
 

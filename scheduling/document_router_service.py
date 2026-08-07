@@ -71,7 +71,9 @@ Pick exactly one category from this list:
   - "process_checklist"   — SOP / opening-closing checklist / numbered or bulleted
                               task steps for staff (Processes & Tasks)
   - "id_or_certification" — staff ID, food handler card, license,
-                              certification, training certificate
+                              certification, training certificate, OR restaurant-level
+                              insurance / hygiene permit / business registration (no
+                              individual staff name on the document)
   - "policy_or_handbook"  — HR policy, employee handbook, SOP
   - "contract"            — supplier contract, lease, employment contract
   - "report"              — sales report, P&L, audit report
@@ -447,8 +449,8 @@ def _classify_text(extracted: str) -> dict[str, Any]:
     }
 
 
-def parse_document(blob: bytes, content_type: str = "", name: str = "") -> dict[str, Any]:
-    """Public entry point: extract + classify a non-image document."""
+def _openai_parse_document_impl(blob: bytes, content_type: str = "", name: str = "") -> dict[str, Any]:
+    """Legacy GPT-4o document extraction — used by OpenAIExtractionProvider."""
     kind, extracted = extract_document_text(blob, content_type=content_type, name=name)
     if kind == "unknown":
         return {
@@ -478,3 +480,10 @@ def parse_document(blob: bytes, content_type: str = "", name: str = "") -> dict[
     classification["extracted_kind"] = kind
     classification["extracted_chars"] = len(extracted)
     return classification
+
+
+def parse_document(blob: bytes, content_type: str = "", name: str = "") -> dict[str, Any]:
+    """Public entry point: extract + classify a non-image document."""
+    from miya.services.multimodal_extraction_provider import run_document_extraction
+
+    return run_document_extraction(blob, content_type=content_type, filename=name)

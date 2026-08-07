@@ -71,7 +71,7 @@ class Restaurant(models.Model):
     currency = models.CharField(max_length=10, default='USD')
     language = models.CharField(max_length=10, default='en')
     operating_hours = models.JSONField(default=dict)
-    automatic_clock_out = models.BooleanField(default=False)
+    automatic_clock_out = models.BooleanField(default=True)
     break_duration = models.IntegerField(default=30) # Default to 30 minutes
     email_notifications = models.JSONField(default=dict)
     push_notifications = models.JSONField(default=dict)

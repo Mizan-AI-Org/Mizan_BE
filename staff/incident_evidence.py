@@ -147,3 +147,173 @@ def arm_whatsapp_incident_photo_await(*, phone: str, user, ticket_id: str) -> bo
     session.user = user or session.user
     session.save(update_fields=["context", "state", "user"])
     return True
+
+
+def _resolve_public_url(raw: str) -> str:
+    """Presign S3 keys; pass through absolute URLs."""
+    from core.s3_storage import generate_presigned_url, s3_media_enabled
+
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return text
+    key = text.lstrip("/")
+    if s3_media_enabled():
+        return generate_presigned_url(key) or ""
+    try:
+        from django.core.files.storage import default_storage
+
+        return default_storage.url(key)
+    except Exception:
+        return f"/{key}"
+
+
+def list_incident_photos(ticket) -> list[dict[str, Any]]:
+    """Return photo attachments with secure (presigned) URLs for Miya/dashboard."""
+    from core.s3_storage import file_field_download_url
+
+    items: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _add(*, url: str, storage_key: str = "", filename: str = "", mime: str = "", caption: str = "") -> None:
+        resolved = _resolve_public_url(url or storage_key)
+        if not resolved or resolved in seen:
+            return
+        seen.add(resolved)
+        items.append(
+            {
+                "url": resolved,
+                "storage_key": (storage_key or url or "").lstrip("/"),
+                "filename": filename or "photo.jpg",
+                "mime_type": mime or "image/jpeg",
+                "caption": caption or "",
+            }
+        )
+
+    if ticket is None:
+        return items
+
+    try:
+        if ticket.photo and ticket.photo.name:
+            url = file_field_download_url(ticket.photo) or ""
+            _add(
+                url=url or ticket.photo.name,
+                storage_key=ticket.photo.name,
+                filename=ticket.photo.name.rsplit("/", 1)[-1],
+                mime="image/jpeg",
+            )
+    except Exception:
+        pass
+
+    for idx, entry in enumerate(getattr(ticket, "photo_evidence", None) or [], start=1):
+        if not isinstance(entry, dict):
+            continue
+        raw = (entry.get("storage_key") or entry.get("url") or "").strip()
+        if not raw:
+            continue
+        _add(
+            url=raw,
+            storage_key=entry.get("storage_key") or raw,
+            filename=(entry.get("filename") or f"Photo {idx}"),
+            mime=(entry.get("mime_type") or "image/jpeg"),
+            caption=(entry.get("caption") or ""),
+        )
+    return items
+
+
+def load_incident_photo_bytes(ticket, *, index: int = 0) -> tuple[bytes, str, str] | None:
+    """Load raw image bytes for WhatsApp outbound send. Returns (bytes, mime, filename)."""
+    from django.core.files.storage import default_storage
+
+    photos = list_incident_photos(ticket)
+    if not photos:
+        return None
+    idx = max(0, min(index, len(photos) - 1))
+    entry = photos[idx]
+    mime = entry.get("mime_type") or "image/jpeg"
+    filename = entry.get("filename") or "incident.jpg"
+    key = (entry.get("storage_key") or "").lstrip("/")
+
+    # Prefer ImageField open
+    try:
+        if index == 0 and ticket.photo and ticket.photo.name:
+            ticket.photo.open("rb")
+            try:
+                data = ticket.photo.read()
+            finally:
+                ticket.photo.close()
+            if data:
+                return data, mime, filename
+    except Exception:
+        logger.exception("load_incident_photo_bytes: photo field read failed")
+
+    if key:
+        try:
+            if default_storage.exists(key):
+                with default_storage.open(key, "rb") as fh:
+                    data = fh.read()
+                if data:
+                    return data, mime, filename
+        except Exception:
+            logger.exception("load_incident_photo_bytes: storage open failed key=%s", key)
+
+    # Last resort: HTTP GET of resolved/presigned URL
+    url = entry.get("url") or ""
+    if url.startswith(("http://", "https://")):
+        try:
+            import requests
+
+            resp = requests.get(url, timeout=45)
+            if resp.status_code == 200 and resp.content:
+                return resp.content, mime, filename
+        except Exception:
+            logger.exception("load_incident_photo_bytes: http fetch failed")
+    return None
+
+
+def notify_owners_photo_attached(ticket) -> None:
+    """Ping assigned / category owners that photo evidence was added."""
+    if not ticket:
+        return
+    try:
+        from notifications.services import notification_service
+
+        title = getattr(ticket, "title", None) or "Incident"
+        msg = f"Photo evidence added to incident: {title}"
+        targets = []
+        if getattr(ticket, "assigned_to", None):
+            targets.append(ticket.assigned_to)
+        try:
+            from staff.incident_routing import resolve_all_assignees_for_incident_type
+
+            for u in resolve_all_assignees_for_incident_type(
+                ticket.restaurant, getattr(ticket, "incident_type", None)
+            ):
+                if u and all(str(u.id) != str(t.id) for t in targets):
+                    targets.append(u)
+        except Exception:
+            pass
+        for u in targets[:8]:
+            try:
+                notification_service.send_custom_notification(
+                    recipient=u,
+                    message=msg,
+                    title="Incident photo",
+                    notification_type="INCIDENT",
+                    channels=["app", "push"],
+                    sender=None,
+                )
+            except Exception:
+                pass
+            phone = (getattr(u, "phone", None) or "").strip()
+            if phone:
+                try:
+                    notification_service.send_whatsapp_text(
+                        phone,
+                        f"📷 {msg}\nOpen Incidents on the dashboard to review.",
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        logger.exception("notify_owners_photo_attached failed")

@@ -60,6 +60,8 @@ _PRIORITY_RANK_MAP = {"URGENT": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
 
 # `scheduling.Task.status` uses TODO, `dashboard.Task.status` uses PENDING.
 # The widget/API vocabulary is PENDING/IN_PROGRESS/COMPLETED/CANCELLED.
+from core.canonical.status import normalize_scheduling_task_status as _normalize_scheduling_task_status
+
 _SCHED_STATUS_TO_WIDGET = {
     "TODO": "PENDING",
     "IN_PROGRESS": "IN_PROGRESS",
@@ -208,7 +210,7 @@ def _serialize_scheduling_task(task) -> dict[str, Any]:
         "title": task.title,
         "description": task.description or "",
         "priority": task.priority,
-        "status": _SCHED_STATUS_TO_WIDGET.get(task.status, task.status),
+        "status": _normalize_scheduling_task_status(task.status),
         "due_date": task.due_date.isoformat() if task.due_date else None,
         "source": "SYSTEM",
         "source_label": source_label,
@@ -555,23 +557,31 @@ class TaskStatusUpdateView(APIView):
             task = None
 
         if task is not None:
-            task.status = new_status
-            update_fields = ["status", "updated_at"]
-            if new_status == "COMPLETED":
-                from django.utils import timezone as _tz
+            # Phase 5: canonical path — no channel-local Task.status writes
+            from miya.services.intelligence.unified import apply_task_status
 
-                task.completed_at = _tz.now()
-                update_fields.append("completed_at")
-                if getattr(request.user, "id", None):
-                    task.completed_by = request.user
-                    update_fields.append("completed_by")
-            task.save(update_fields=update_fields)
-            try:
-                from dashboard.task_sync import broadcast_tasks_invalidate
-
-                broadcast_tasks_invalidate(restaurant, reason="widget_status", task_id=str(task.id))
-            except Exception:
-                pass
+            result = apply_task_status(
+                user=request.user,
+                channel="dashboard",
+                status=new_status,
+                task_id=str(task.id),
+                restaurant=restaurant,
+                assignee_scope=False,
+                notify_managers=new_status in ("COMPLETED", "UNABLE_TO_COMPLETE"),
+                message_id=f"dashboard:widget:{task.id}:{new_status}",
+            )
+            if not result.success:
+                return Response(
+                    {
+                        "error": result.message_for_user or "Could not update task status",
+                        "code": getattr(result, "code", None) or "update_failed",
+                    },
+                    status=http_status.HTTP_400_BAD_REQUEST
+                    if result.needs_clarification
+                    else http_status.HTTP_400_BAD_REQUEST,
+                )
+            # Re-load for widget serializer shape
+            task.refresh_from_db()
             return Response(_serialize_dashboard_task(task))
 
         # 2) scheduling.Task (TODO vocabulary)

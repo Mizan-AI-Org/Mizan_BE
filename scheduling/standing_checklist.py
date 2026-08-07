@@ -35,6 +35,25 @@ def get_standing_templates_for_staff(user):
     return list(qs.distinct())
 
 
+def user_can_run_template(user, template) -> bool:
+    """
+    Whether ``user`` may run this process template on a shift.
+
+    When standing assignees are set, only those people can run it (each gets
+    their own ShiftTask rows and ShiftChecklistProgress). When empty, any staff
+    on the shift may run it.
+    """
+    if not user or not template:
+        return False
+    try:
+        assignees = template.standing_assignees.all()
+        if assignees.exists():
+            return assignees.filter(pk=user.pk).exists()
+    except Exception:
+        return False
+    return True
+
+
 def attach_standing_templates_to_shift(shift, user) -> int:
     """Add standing templates onto a shift's M2M (idempotent). Returns count added."""
     templates = get_standing_templates_for_staff(user)

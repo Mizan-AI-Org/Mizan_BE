@@ -88,6 +88,23 @@ def verification_fields_from_item(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def apply_verification_fields_to_shift_task(task, item: dict[str, Any]) -> bool:
+    """Sync photo-proof flags from a template step onto an existing ShiftTask."""
+    vfields = verification_fields_from_item(item if isinstance(item, dict) else {})
+    if not vfields.get("requires_photo"):
+        return False
+    if task_requires_photo(task):
+        return False
+    cfg = dict(getattr(task, "branch_config", None) or {})
+    cfg["requires_photo"] = True
+    cfg["verification_type"] = "PHOTO"
+    task.branch_config = cfg
+    task.verification_required = True
+    task.verification_type = "PHOTO"
+    task.save(update_fields=["branch_config", "verification_required", "verification_type"])
+    return True
+
+
 def _storage_key_from_url(url: str) -> str:
     raw = (url or "").strip()
     if not raw:

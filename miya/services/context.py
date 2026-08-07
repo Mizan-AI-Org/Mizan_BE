@@ -14,6 +14,7 @@ from accounts.vertical_playbooks import vertical_playbook_for_api
 from core.i18n import get_effective_language, normalize_language
 from miya.persona import MIYA_SUPER_AGENT_PERSONA, channel_runtime_note
 from miya.services.tenant_snapshot import build_tenant_snapshot_block
+from miya.services.manager_schedule_context import build_manager_schedule_block
 from miya.services.tenant import (
     resolve_active_tenant,
     tenant_context_note,
@@ -52,6 +53,40 @@ def reply_language_block(lang: str) -> str:
     )
 
 
+def _establishment_context_block(ctx: dict[str, Any]) -> str:
+    """Active establishment + available branches for multi-site managers."""
+    locs = ctx.get("available_locations") or []
+    active_id = ctx.get("location_id")
+    active_name = ctx.get("location_name")
+    lines = ["\n[ESTABLISHMENT CONTEXT]"]
+    if active_id and active_name:
+        lines.append(
+            f"Active establishment: {active_name} (location_id={active_id}). "
+            "Scope all tasks/incidents/invoices/documents to this branch unless the user switches."
+        )
+    elif len(locs) > 1:
+        lines.append(
+            "No active establishment selected. Before listing ops data across branches, "
+            "ask which establishment — or call set_establishment_context when the user names one."
+        )
+    elif len(locs) == 1:
+        lines.append(
+            f"Single establishment: {locs[0].get('name')} (location_id={locs[0].get('id')})."
+        )
+    else:
+        lines.append("No separate establishments configured — workspace-level scope.")
+    if locs:
+        names = ", ".join(
+            f"{r.get('name')} ({r.get('id')})" for r in locs[:12] if isinstance(r, dict)
+        )
+        lines.append(f"Accessible establishments: {names}.")
+        lines.append(
+            "Never mix or reveal data from establishments the user cannot access. "
+            "'What about Casablanca?' → set_establishment_context(q='Casablanca')."
+        )
+    return "\n".join(lines) + "\n"
+
+
 def build_session_context(
     user,
     *,
@@ -79,6 +114,44 @@ def build_session_context(
     phone = "".join(filter(str.isdigit, str(getattr(user, "phone", None) or "")))
     language = get_effective_language(user=user, restaurant=restaurant)
 
+    # Multi-establishment context (BusinessLocation branches)
+    available_locations: list[dict] = []
+    location_id = str(hint.get("location_id") or "").strip() or None
+    location_name = str(hint.get("location_name") or "").strip() or None
+    try:
+        from miya.services.ops.scoping import (
+            serialize_location,
+            user_can_access_location,
+            visible_locations_for_user,
+        )
+
+        visible = visible_locations_for_user(user, restaurant) if restaurant else []
+        available_locations = [serialize_location(L) for L in visible]
+        if location_id and restaurant and not user_can_access_location(user, restaurant, location_id):
+            location_id = None
+            location_name = None
+        if not location_id and location_name and restaurant:
+            from miya.services.ops.scoping import resolve_location_by_name
+
+            loc, _ = resolve_location_by_name(
+                restaurant,
+                location_name,
+                visible=visible,
+            )
+            if loc:
+                location_id = str(loc.id)
+                location_name = loc.name
+        if not location_id and len(visible) == 1:
+            location_id = str(visible[0].id)
+            location_name = visible[0].name
+        if location_id and not location_name:
+            for row in available_locations:
+                if row["id"] == location_id:
+                    location_name = row["name"]
+                    break
+    except Exception:
+        pass
+
     return {
         "user_id": str(user.id),
         "user_name": full_name,
@@ -98,6 +171,9 @@ def build_session_context(
         "restaurant_id": restaurant_id,
         "restaurant_name": restaurant_name,
         "tenant_memberships": memberships,
+        "location_id": location_id,
+        "location_name": location_name,
+        "available_locations": available_locations,
         "business_vertical": business_vertical,
         "vertical_playbook": vertical_playbook_for_api(business_vertical),
         "local_time": now.strftime("%Y-%m-%d %H:%M %Z"),
@@ -137,14 +213,36 @@ def build_system_prompt(
         f"Voice: Fish Audio TTS when voice mode is on. Keep speakable replies concise.\n"
         f"Shared WhatsApp number: +212784476751 (identity from phone → tenant + RBAC).\n"
         + tenant_context_note(ctx.get("tenant_memberships") or [], ctx.get("restaurant_id"))
+        + _establishment_context_block(ctx)
     )
 
     snapshot = ""
+    restaurant = None
     if ctx.get("restaurant_id"):
         from accounts.models import Restaurant
 
         restaurant = Restaurant.objects.filter(id=ctx["restaurant_id"]).first()
         snapshot = build_tenant_snapshot_block(restaurant)
+        schedule_block = build_manager_schedule_block(user, restaurant)
+        if schedule_block:
+            snapshot = (snapshot or "") + schedule_block
+
+    memory_block = ""
+    try:
+        from miya.services.intelligence.memory import assemble_memory_bundle, memory_prompt_block
+
+        hint = dict(session_hint or {})
+        bundle = assemble_memory_bundle(
+            history=hint.get("history") if isinstance(hint.get("history"), list) else None,
+            conversation_id=str(hint.get("thread_id") or ""),
+            user=user,
+            restaurant=restaurant,
+        )
+        memory_block = memory_prompt_block(bundle)
+    except Exception:
+        from miya.services.intelligence.memory_priority import memory_priority_directive
+
+        memory_block = "\n" + memory_priority_directive()
 
     return (
         MIYA_SUPER_AGENT_PERSONA
@@ -154,4 +252,5 @@ def build_system_prompt(
         + vertical_note
         + persistent
         + snapshot
+        + memory_block
     )

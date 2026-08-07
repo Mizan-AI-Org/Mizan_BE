@@ -1,11 +1,13 @@
 """JWT CRUD for restaurant compliance documents (Settings UI)."""
 from __future__ import annotations
 
+import logging
+
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import permissions, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.serializers import ModelSerializer, CharField, DateField, IntegerField
 
@@ -15,6 +17,28 @@ from payroll.services.compliance_documents import (
     seed_starter_documents,
     serialize_document,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _request_payload(request) -> dict:
+    """Normalize DRF request.data (JSON dict or QueryDict) for create/update."""
+    data = getattr(request, "data", None)
+    if isinstance(data, dict):
+        return data
+    try:
+        return data.dict()
+    except Exception:
+        return {}
+
+
+def _sync_reminder_safe(doc, *, owner, reset_nudges: bool = False) -> None:
+    try:
+        from payroll.services.compliance_reminder_sync import sync_compliance_document_reminder
+
+        sync_compliance_document_reminder(doc, owner=owner, reset_nudges=reset_nudges)
+    except Exception:
+        logger.exception("compliance reminder sync failed doc=%s", doc.id)
 
 
 class ComplianceDocumentSerializer(ModelSerializer):
@@ -52,7 +76,7 @@ class ComplianceDocumentViewSet(viewsets.ModelViewSet):
 
     serializer_class = ComplianceDocumentSerializer
     permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
 
     def get_restaurant(self):
         user = self.request.user
@@ -113,7 +137,7 @@ class ComplianceDocumentViewSet(viewsets.ModelViewSet):
                 {"success": False, "error": "Permission denied"},
                 status=status.HTTP_403_FORBIDDEN,
             )
-        data = request.data if isinstance(request.data, dict) else {}
+        data = _request_payload(request)
         title = str(data.get("title") or "").strip()
         if not title:
             return Response(
@@ -143,9 +167,7 @@ class ComplianceDocumentViewSet(viewsets.ModelViewSet):
         uploaded = request.FILES.get("file") or request.FILES.get("attachment")
         if uploaded:
             doc.file.save(uploaded.name, uploaded, save=True)
-        from payroll.services.compliance_reminder_sync import sync_compliance_document_reminder
-
-        sync_compliance_document_reminder(doc, owner=request.user, reset_nudges=True)
+        _sync_reminder_safe(doc, owner=request.user, reset_nudges=True)
         return Response(
             {"success": True, "document": serialize_document(doc)},
             status=status.HTTP_201_CREATED,
@@ -153,7 +175,7 @@ class ComplianceDocumentViewSet(viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         doc = self.get_object()
-        data = request.data if isinstance(request.data, dict) else {}
+        data = _request_payload(request)
         if "title" in data and str(data["title"]).strip():
             doc.title = str(data["title"]).strip()[:255]
         if "description" in data:
@@ -188,9 +210,8 @@ class ComplianceDocumentViewSet(viewsets.ModelViewSet):
         if uploaded:
             doc.file.save(uploaded.name, uploaded, save=False)
         doc.save()
-        from payroll.services.compliance_reminder_sync import sync_compliance_document_reminder
-
-        sync_compliance_document_reminder(doc, owner=request.user, reset_nudges=bool(data.get("expires_at")))
+        reset_nudges = bool(data.get("expires_at")) or "remind_days_before" in data
+        _sync_reminder_safe(doc, owner=request.user, reset_nudges=reset_nudges)
         return Response({"success": True, "document": serialize_document(doc)})
 
     def destroy(self, request, *args, **kwargs):

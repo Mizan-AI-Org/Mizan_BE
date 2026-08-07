@@ -582,7 +582,9 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
     # live GPS standing at the door both land on/near the site centroid. The
     # geofence match above is the security boundary (see product WhatsApp flow).
 
-    from datetime import timedelta as _td_cl
+    from timeclock.stale_sessions import close_stale_open_clock_in
+
+    close_stale_open_clock_in(user, source="whatsapp (auto)")
 
     last_event = ClockEvent.objects.filter(staff=user).order_by("-timestamp").first()
     if last_event and last_event.event_type == "in":
@@ -598,30 +600,7 @@ def _process_whatsapp_clock_in_from_gps(user, phone_digits, session, lat, lon, l
             session.state = "idle"
             session.save(update_fields=["state"])
             return True
-        try:
-            eight_hours_later = last_event.timestamp + _td_cl(hours=8)
-            end_of_that_day = last_event.timestamp.replace(hour=23, minute=59, second=59, microsecond=0)
-            auto_out_at = min(eight_hours_later, end_of_that_day)
-            auto_out = ClockEvent.objects.create(
-                staff=user,
-                event_type="out",
-                latitude=None,
-                longitude=None,
-                device_id="whatsapp (auto)",
-                notes=(
-                    "Auto clock-out: previous clock-in was left open "
-                    "across days. Closed so today's clock-in can be "
-                    "recorded on the manager dashboard."
-                ),
-                location=getattr(last_event, "location", None),
-                location_mismatch=False,
-            )
-            ClockEvent.objects.filter(pk=auto_out.pk).update(timestamp=auto_out_at)
-        except Exception:
-            logger.warning(
-                "whatsapp clock-in: auto clock-out for stale event %s failed; continuing to record today's clock-in.",
-                getattr(last_event, "id", None),
-            )
+        close_stale_open_clock_in(user, source="whatsapp (auto)")
 
     matched_loc_fk = matched_location if (
         getattr(matched_location, "pk", None) or getattr(matched_location, "id", None)
@@ -1395,7 +1374,7 @@ def _handle_checklist_response(notification_service, session, user, phone_digits
 
 
 def _attach_whatsapp_media_to_incident(notification_service, ticket, media_id, mime_type=None, filename=None, caption=None, user=None):
-    """Download WhatsApp media by media_id and save to SafetyConcernReport (S3 + photo_evidence)."""
+    """Download WhatsApp media by media_id and save via canonical incident evidence helpers."""
     if not media_id or not ticket:
         logger.warning("_attach_whatsapp_media_to_incident: missing media_id=%s or ticket=%s", media_id, ticket)
         return
@@ -1418,6 +1397,43 @@ def _attach_whatsapp_media_to_incident(notification_service, ticket, media_id, m
         name = (filename or resolved_name or f"incident_{ticket.id}.jpg").strip()
         is_image = mime.lower().startswith("image/") or not mime.lower()
 
+        if is_image and user is not None and getattr(user, "restaurant", None):
+            from miya.services.ops import build_ops_context
+            from miya.services.ops.incidents import attach_incident_photo_bytes
+
+            ctx = build_ops_context(
+                user=user,
+                restaurant=user.restaurant,
+                session_context={
+                    "channel": "whatsapp",
+                    "restaurant_id": str(user.restaurant_id),
+                    "user_id": str(user.id),
+                    "role": getattr(user, "role", "") or "",
+                },
+            )
+            if ctx is not None:
+                result = attach_incident_photo_bytes(
+                    ctx,
+                    incident_id=str(ticket.id),
+                    file_bytes=file_bytes,
+                    mime_type=mime,
+                    filename=name,
+                    caption=caption or "",
+                    media_id=media_id,
+                )
+                if result.success:
+                    logger.info(
+                        "Attached WhatsApp photo to incident %s via ops (%d bytes)",
+                        ticket.id,
+                        len(file_bytes),
+                    )
+                    return
+                logger.warning(
+                    "ops attach_incident_photo_bytes failed for %s: %s — falling back",
+                    ticket.id,
+                    result.message_for_user,
+                )
+
         if is_image:
             append_incident_photo_evidence(
                 ticket,
@@ -1429,6 +1445,12 @@ def _attach_whatsapp_media_to_incident(notification_service, ticket, media_id, m
                 source="whatsapp",
                 submitted_by=user,
             )
+            try:
+                from staff.incident_evidence import notify_owners_photo_attached
+
+                notify_owners_photo_attached(ticket)
+            except Exception:
+                pass
         else:
             append_incident_file_attachment(
                 ticket,
@@ -1577,32 +1599,43 @@ def _create_safety_concern_from_whatsapp(
     shift=None,
     audio_evidence=None,
 ):
-    """Create SafetyConcernReport with normalized category, location, and default assignee."""
-    from staff.models_task import SafetyConcernReport
-    from staff.incident_routing import (
-        normalize_incident_category_for_storage,
-        resolve_default_assignee_for_incident_type,
-    )
+    """Create SafetyConcernReport via canonical ops (same store as Miya/dashboard)."""
+    from miya.services.ops import build_ops_context
+    from miya.services.ops.incidents import create_incident
 
-    itype = normalize_incident_category_for_storage(incident_type or 'General')
-    when = occurred_at or timezone.now()
-    loc = extract_incident_location(description) or None
-    assignee = resolve_default_assignee_for_incident_type(user.restaurant, itype)
-    return SafetyConcernReport.objects.create(
-        restaurant=user.restaurant,
-        reporter=user,
-        is_anonymous=False,
-        incident_type=itype,
-        title=f"{itype} incident",
-        description=(description or '').strip(),
-        location=loc,
-        severity=severity or infer_severity(description),
-        status='OPEN',
-        occurred_at=when,
-        shift=shift,
-        assigned_to=assignee,
-        audio_evidence=audio_evidence or [],
+    restaurant = getattr(user, "restaurant", None)
+    ctx = build_ops_context(
+        user=user,
+        restaurant=restaurant,
+        session_context={
+            "restaurant_id": str(getattr(restaurant, "id", "") or ""),
+            "user_id": str(getattr(user, "id", "") or ""),
+            "role": getattr(user, "role", "") or "",
+            "channel": "whatsapp",
+        },
     )
+    if ctx is None:
+        raise ValueError("restaurant_required")
+
+    result = create_incident(
+        ctx,
+        description=description,
+        incident_type=incident_type,
+        severity=severity,
+        occurred_at=occurred_at,
+        shift=shift,
+        audio_evidence=audio_evidence,
+    )
+    if not result.success:
+        raise ValueError(result.message_for_user or result.code)
+
+    from staff.models_task import SafetyConcernReport
+
+    ticket_id = (result.data or {}).get("ticket_id")
+    ticket = SafetyConcernReport.objects.filter(id=ticket_id).first() if ticket_id else None
+    if ticket is None:
+        raise ValueError("verify_failed")
+    return ticket
 
 
 class NotificationPagination(PageNumberPagination):
@@ -1656,6 +1689,25 @@ class NotificationListView(generics.ListAPIView):
             queryset = queryset.filter(created_at__date__gte=date_from)
         if date_to:
             queryset = queryset.filter(created_at__date__lte=date_to)
+
+        # Multi-establishment: optional location_id + never leak other branches
+        location_id = (self.request.query_params.get("location_id") or "").strip() or None
+        try:
+            from miya.services.ops.scoping import (
+                filter_notifications_by_location,
+                visible_locations_for_user,
+            )
+
+            restaurant = getattr(user, "restaurant", None)
+            visible = visible_locations_for_user(user, restaurant) if restaurant else []
+            visible_ids = [str(L.id) for L in visible]
+            queryset = filter_notifications_by_location(
+                queryset,
+                location_id=location_id,
+                visible_ids=visible_ids if len(visible_ids) > 1 else None,
+            )
+        except Exception:
+            pass
         
         return queryset
 
@@ -2967,16 +3019,7 @@ def whatsapp_webhook(request):
                                                     "awaiting_dashboard_task_proof_complete"
                                                 )
                                             )
-                                            if should_complete:
-                                                dash_task.status = "COMPLETED"
-                                                dash_task.completed_at = timezone.now()
-                                                dash_task.completed_by = user
-                                                update_fields.extend(
-                                                    ["status", "completed_at", "completed_by"]
-                                                )
-                                            elif dash_task.status == "PENDING":
-                                                dash_task.status = "IN_PROGRESS"
-                                                update_fields.append("status")
+                                            # Save proof fields first (channel-specific media)
                                             dash_task.save(update_fields=update_fields)
                                             session.context.pop(
                                                 "awaiting_dashboard_task_proof_id", None
@@ -2987,25 +3030,66 @@ def whatsapp_webhook(request):
                                             session.state = "idle"
                                             session.save(update_fields=["state", "context"])
                                             if should_complete:
-                                                notification_service.send_whatsapp_text(
-                                                    phone_digits,
-                                                    f"Photo saved — marked *{dash_task.title}* as completed. Thanks!",
+                                                from notifications.dashboard_task_whatsapp import (
+                                                    complete_task_after_proof,
                                                 )
-                                                try:
-                                                    from notifications.dashboard_task_whatsapp import (
-                                                        _notify_managers_completed,
+
+                                                done = complete_task_after_proof(
+                                                    user=user,
+                                                    task_id=str(dash_task.id),
+                                                    notify_managers=True,
+                                                )
+                                                if done.get("success"):
+                                                    notification_service.send_whatsapp_text(
+                                                        phone_digits,
+                                                        f"Photo saved — marked *{dash_task.title}* as completed. Thanks!",
                                                     )
-    
-                                                    _notify_managers_completed(dash_task, user)
-                                                except Exception:
-                                                    logger.exception(
-                                                        "dashboard proof complete notify failed"
+                                                else:
+                                                    notification_service.send_whatsapp_text(
+                                                        phone_digits,
+                                                        done.get("message_for_user")
+                                                        or f"Photo saved for *{dash_task.title}*, but I couldn't verify completion.",
                                                     )
                                             else:
+                                                # Progress without complete — still via canonical status when PENDING
+                                                if dash_task.status == "PENDING":
+                                                    from miya.services.ops import build_ops_context
+                                                    from miya.services.ops.tasks import update_task_status
+
+                                                    octx = build_ops_context(
+                                                        user=user,
+                                                        restaurant=getattr(user, "restaurant", None),
+                                                        session_context={
+                                                            "channel": "whatsapp",
+                                                            "restaurant_id": str(
+                                                                getattr(user, "restaurant_id", "") or ""
+                                                            ),
+                                                            "user_id": str(user.id),
+                                                            "role": getattr(user, "role", "") or "",
+                                                        },
+                                                    )
+                                                    if octx:
+                                                        update_task_status(
+                                                            octx,
+                                                            status="IN_PROGRESS",
+                                                            task_id=str(dash_task.id),
+                                                            assignee_scope=True,
+                                                            notify_managers=False,
+                                                        )
                                                 notification_service.send_whatsapp_text(
                                                     phone_digits,
                                                     f"Photo proof saved for *{dash_task.title}*. Reply *done* when finished.",
                                                 )
+                                            try:
+                                                from dashboard.task_sync import broadcast_tasks_invalidate
+
+                                                broadcast_tasks_invalidate(
+                                                    dash_task.restaurant,
+                                                    reason="whatsapp_task_proof",
+                                                    task_id=str(dash_task.id),
+                                                )
+                                            except Exception:
+                                                pass
                                             continue
                                 except Exception:
                                     logger.exception(
@@ -4254,6 +4338,9 @@ def whatsapp_webhook(request):
                             if not user:
                                 notification_service.send_whatsapp_text(phone_digits, R(user, 'link_phone'))
                                 continue
+                            from timeclock.stale_sessions import close_stale_open_clock_in
+
+                            close_stale_open_clock_in(user, source="whatsapp (auto)")
                             active_shift = _get_shift_for_checklist(user, allow_standing=True)
                             if not active_shift:
                                 notification_service.send_whatsapp_text(
@@ -4723,4 +4810,25 @@ class NotificationListView(generics.ListAPIView):
         if date_to:
             queryset = queryset.filter(created_at__date__lte=date_to)
 
+        location_id = (self.request.query_params.get("location_id") or "").strip() or None
+        try:
+            from miya.services.ops.scoping import (
+                filter_notifications_by_location,
+                visible_locations_for_user,
+            )
+
+            restaurant = getattr(user, "restaurant", None)
+            visible = visible_locations_for_user(user, restaurant) if restaurant else []
+            visible_ids = [str(L.id) for L in visible]
+            queryset = filter_notifications_by_location(
+                queryset,
+                location_id=location_id,
+                visible_ids=visible_ids if len(visible_ids) > 1 else None,
+            )
+        except Exception:
+            pass
+
         return queryset
+
+
+# NOTE: duplicate NotificationListView above is legacy; keep scoping in sync.

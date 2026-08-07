@@ -445,14 +445,40 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         yesterday = today - timedelta(days=1)
         
         # 1. Active Ongoing Processes
-        # Count of active shifts today that have at least one TaskTemplate assigned
+        # Shifts today with at least one process template assigned (scheduled or in progress).
         from scheduling.models import AssignedShift
-        active_processes_count = AssignedShift.objects.filter(
-            schedule__restaurant=user.restaurant, 
+        active_shift_qs = AssignedShift.objects.filter(
+            schedule__restaurant=user.restaurant,
             shift_date=today,
             status__in=['SCHEDULED', 'CONFIRMED', 'IN_PROGRESS'],
-            task_templates__isnull=False
-        ).distinct().count()
+            task_templates__isnull=False,
+        ).distinct().prefetch_related('task_templates', 'staff_members').select_related('staff')
+        active_processes_count = active_shift_qs.count()
+        active_processes = []
+        for shift in active_shift_qs:
+            templates = list(shift.task_templates.all())
+            if not templates:
+                continue
+            staff_entries = []
+            for member in shift.staff_members.all():
+                staff_entries.append({
+                    'id': str(member.id),
+                    'name': f"{member.first_name} {member.last_name}".strip() or member.email,
+                })
+            if shift.staff and str(shift.staff.id) not in {e['id'] for e in staff_entries}:
+                staff_entries.append({
+                    'id': str(shift.staff.id),
+                    'name': f"{shift.staff.first_name} {shift.staff.last_name}".strip() or shift.staff.email,
+                })
+            active_processes.append({
+                'shift_id': str(shift.id),
+                'process_name': templates[0].name,
+                'template_names': [t.name for t in templates],
+                'staff': staff_entries,
+                'shift_status': shift.status,
+                'start_time': shift.start_time.isoformat() if hasattr(shift.start_time, 'isoformat') else str(shift.start_time or ''),
+                'end_time': shift.end_time.isoformat() if hasattr(shift.end_time, 'isoformat') else str(shift.end_time or ''),
+            })
         
         # 2. Tasks Today (using ShiftTask)
         tasks_today_queryset = ShiftTask.objects.filter(shift__schedule__restaurant=user.restaurant, shift__shift_date=today)
@@ -480,6 +506,7 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             
         return Response({
             'active_processes_count': active_processes_count,
+            'active_processes': active_processes,
             'tasks_today': {
                 'total': total_tasks,
                 'completed': completed_tasks,
@@ -495,6 +522,7 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         """Get live operational metrics for each staff member on shift (today only)."""
         from datetime import datetime, time, timedelta
         from scheduling.models import AssignedShift
+        from timeclock.models import ClockEvent
         from dashboard.services.staff_daily_progress import staff_has_today_live_activity
 
         user = request.user
@@ -505,6 +533,18 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
         now = timezone.now()
         day_start = timezone.make_aware(datetime.combine(today, time.min))
         day_end = day_start + timedelta(days=1)
+
+        clocked_in_ids = set()
+        last_event_by_staff: dict = {}
+        for staff_id, event_type in ClockEvent.objects.filter(
+            staff__restaurant=user.restaurant,
+            timestamp__gte=day_start,
+            timestamp__lt=day_end,
+        ).order_by('staff_id', 'timestamp').values_list('staff_id', 'event_type'):
+            last_event_by_staff[staff_id] = (event_type or '').lower()
+        for staff_id, event_type in last_event_by_staff.items():
+            if event_type in ('in', 'clock_in'):
+                clocked_in_ids.add(staff_id)
 
         # Today's shifts only — stale rows from prior days belong in archives.
         active_shifts = AssignedShift.objects.filter(
@@ -554,7 +594,44 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
             ).select_related("staff"):
                 if prog.staff and prog.staff not in staff_list:
                     staff_list.append(prog.staff)
+            shift_has_template = shift.task_templates.exists()
             if not staff_list:
+                if shift_has_template:
+                    template = shift.task_templates.first()
+                    key = ('unassigned', str(shift.id))
+                    if key not in seen_staff_shift:
+                        seen_staff_shift.add(key)
+                        total_tasks = shift.tasks.count()
+                        staff_metrics.append({
+                            'staff_id': None,
+                            'shift_id': str(shift.id),
+                            'name': 'Unassigned shift',
+                            'role': '',
+                            'avatar': None,
+                            'shift_status': 'SCHEDULED',
+                            'current_process': {
+                                'name': template.name if template else 'Process',
+                                'progress': 0,
+                            },
+                            'tasks': {
+                                'completed': 0,
+                                'total': total_tasks,
+                                'overdue': 0,
+                                'is_completed': False,
+                                'tasks_marked_no': 0,
+                                'follow_up_needed': False,
+                                'photo_evidence_count': 0,
+                            },
+                            'pace': {
+                                'elapsed_minutes': 0,
+                                'avg_minutes': 0,
+                                'status': 'GREEN',
+                            },
+                            'attention': {
+                                'needed': False,
+                                'reason': '',
+                            },
+                        })
                 continue
 
             tasks = shift.tasks.all()
@@ -563,13 +640,21 @@ class DashboardAnalyticsViewSet(viewsets.ReadOnlyModelViewSet):
                 key = (str(staff.id), str(shift.id))
                 if key in seen_staff_shift:
                     continue
-                if not staff_has_today_live_activity(user.restaurant, staff, on_date=today):
+                has_live_activity = staff_has_today_live_activity(
+                    user.restaurant, staff, on_date=today
+                )
+                if not has_live_activity and not shift_has_template:
                     continue
                 seen_staff_shift.add(key)
 
-                # 1. Staff Status
-                shift_status = 'ON_SHIFT'
+                # 1. Staff Status — distinguish clocked-in vs scheduled-with-process
                 if shift.status == 'COMPLETED':
+                    shift_status = 'OFF_SHIFT'
+                elif staff.id in clocked_in_ids:
+                    shift_status = 'ON_SHIFT'
+                elif shift_has_template or has_live_activity:
+                    shift_status = 'SCHEDULED'
+                else:
                     shift_status = 'OFF_SHIFT'
 
                 # 2. Current Process & Task Stats — use this staff's own checklist progress (per-staff live report)

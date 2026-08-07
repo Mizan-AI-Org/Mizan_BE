@@ -204,6 +204,14 @@ class Task(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     restaurant = models.ForeignKey('accounts.Restaurant', on_delete=models.CASCADE, related_name='tasks')
+    location = models.ForeignKey(
+        'accounts.BusinessLocation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='dashboard_tasks',
+        help_text='Establishment/branch this task belongs to (multi-site scoping).',
+    )
     assigned_to = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='dashboard_assigned_tasks')
     # All staff responsible for executing this task (M2M). ``assigned_to`` remains
     # the primary assignee (first entry) for legacy queries and WhatsApp #id refs.

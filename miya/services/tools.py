@@ -21,8 +21,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "staff_lookup",
             "description": (
-                "Find staff at this workspace by name, role, or list all staff. "
-                "Always pass restaurant_id from context. Use before assigning tasks."
+                "Find staff at this workspace by name, role, department/tag, or list all staff. "
+                "Aliases: find_staff. Always pass restaurant_id from context. "
+                "Use for 'who works in the kitchen', before assigning tasks."
             ),
             "parameters": {
                 "type": "object",
@@ -30,6 +31,30 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "restaurant_id": {"type": "string"},
                     "name": {"type": "string"},
                     "role": {"type": "string"},
+                    "tag": {"type": "string", "description": "e.g. KITCHEN, BAR, SERVICE"},
+                    "q": {"type": "string", "description": "Free-text name or department"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_staff",
+            "description": (
+                "Canonical staff search (same as staff_lookup). Tenant-scoped. "
+                "Use for 'who works in the kitchen/bar/service' or name lookup."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "role": {"type": "string"},
+                    "tag": {"type": "string"},
+                    "q": {"type": "string"},
+                    "limit": {"type": "integer"},
                 },
                 "required": ["restaurant_id"],
             },
@@ -239,7 +264,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "Use for status questions ('has the fridge been repaired?', 'any open incidents?'). "
                 "Use q with keywords from the user's question (e.g. 'computer screen', 'fridge'). "
                 "When q is set, all statuses are searched (OPEN and RESOLVED). "
-                "Call BEFORE close_incident when the user asks to close/resolve an incident."
+                "Call BEFORE close_incident / get_incident_photo when incident_id is unknown. "
+                "Returns has_photo / photo_count — use get_incident_photo to show the image."
             ),
             "parameters": {
                 "type": "object",
@@ -254,6 +280,94 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "description": "Search title/description (e.g. 'fridge', 'maintenance').",
                     },
                     "limit": {"type": "integer"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_incident",
+            "description": (
+                "Get one incident's full detail including whether a photo is attached "
+                "and secure photo references. Prefer list_incidents(q=…) first when id unknown."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "incident_id": {"type": "string"},
+                    "q": {
+                        "type": "string",
+                        "description": "Keyword when incident_id unknown (e.g. 'refrigerator').",
+                    },
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_incident_photo",
+            "description": (
+                "Show / retrieve the photo attached to an incident. "
+                "Use when the user asks to see the photo (e.g. 'Show me the photo attached to "
+                "the refrigerator incident'). On WhatsApp this sends the stored image; "
+                "on dashboard it returns a secure document/image reference. "
+                "Call list_incidents(q=…) first when incident_id is unknown."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "incident_id": {"type": "string"},
+                    "q": {
+                        "type": "string",
+                        "description": "Keyword when incident_id unknown (e.g. 'refrigerator').",
+                    },
+                    "index": {
+                        "type": "integer",
+                        "description": "0-based photo index when multiple photos exist.",
+                    },
+                    "phone": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "route_incident",
+            "description": "Re-route an open incident to the configured category owner.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "incident_id": {"type": "string"},
+                    "incident_type": {"type": "string"},
+                },
+                "required": ["restaurant_id", "incident_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "confirm_meeting",
+            "description": (
+                "Confirm attendance for an upcoming meeting/reminder when supported "
+                "(personal reminder / calendar-linked). Use after approach pings."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "title": {"type": "string"},
+                    "event_id": {"type": "string"},
                 },
                 "required": ["restaurant_id"],
             },
@@ -302,13 +416,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "create_dashboard_task",
             "description": (
-                "Create a trackable dashboard task and WhatsApp the assignee by default. "
-                "Tasks auto-route to custom widgets when the title/description/source_text "
-                "matches routing_keywords (e.g. 'wedding' → Wedding tile). "
-                "Call list_dashboard_widgets first when widget names/keywords are unclear. "
-                "Pass custom_widget_id when the manager names a specific tile. "
-                "Include source_text with the user's original WhatsApp phrase for keyword matching. "
-                "Staff without manage_widgets: use assign_to_self=true only."
+                "Delegate a trackable task to a STAFF member (not the manager). "
+                "Tasks auto-route to custom widgets when title/description/source_text "
+                "matches routing_keywords. NEVER use for the manager's own reminders — "
+                "use create_personal_reminder, create_calendar_event, or compliance tools. "
+                "NEVER set assign_to_self for managers. Staff without manage_widgets: "
+                "assign_to_self=true only."
             ),
             "parameters": {
                 "type": "object",
@@ -374,10 +487,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "list_dashboard_tasks",
             "description": (
-                "List Operations Live / dashboard tasks. Default = OPEN "
-                "(PENDING+ACCEPTED+IN_PROGRESS). Use q for title search "
-                "('photos pour maxime', 'Dj Zia'). status=ALL for history including completed. "
-                "Prefer this or list_operations_live for 'tâches en attente'."
+                "List dashboard Task rows only (subset of Operations Live). "
+                "Does NOT include staff inbox requests, invoices, or scheduling tasks. "
+                "For 'pending tasks', 'what is open today', or Operations Live → use "
+                "list_operations_live instead and report every row in pending[]."
             ),
             "parameters": {
                 "type": "object",
@@ -404,9 +517,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "list_operations_live",
             "description": (
-                "Read the Operations Live board (New demands / In progress / Completed). "
-                "Use for 'what's on Operations Live?', 'any urgent demands?', or before "
-                "updating/cancelling a lane item. Set urgent_only=true for pressing items."
+                "Read the Operations Live board: new demands + in progress. "
+                "REQUIRED for 'where are we at today', status updates, pending tasks, "
+                "'what needs attention', or before updating lane items. "
+                "Relay message_for_user / pending_summary verbatim — one concise briefing, "
+                "critical items first. Set urgent_only=true for critical-only filter."
             ),
             "parameters": {
                 "type": "object",
@@ -419,6 +534,51 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     },
                     "urgent_only": {"type": "boolean"},
                     "limit": {"type": "integer"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cross_location_report",
+            "description": (
+                "Compare all branches: staff count, clocked-in now, open requests by priority. "
+                "Use for 'how is Marrakech vs Casablanca?', 'which branch is busiest?', "
+                "or 'across all my locations'. period: today | week | month."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "period": {
+                        "type": "string",
+                        "description": "today (default) | week | month",
+                    },
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "location_detail",
+            "description": (
+                "Live ops for ONE branch: team, coverage, labor today, shifts, staff roster. "
+                "Use for 'how is Marrakech doing?', 'who is clocked in at the downtown branch?'. "
+                "Pass location_name (partial match) or location_id."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "location_id": {"type": "string"},
+                    "location_name": {
+                        "type": "string",
+                        "description": "Branch name e.g. Marrakech, Casablanca",
+                    },
                 },
                 "required": ["restaurant_id"],
             },
@@ -460,8 +620,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "get_dashboard_task",
             "description": (
-                "Get one task by UUID or short ref (e.g. 7FFC0D68 from 'Task #7FFC0D68'). "
-                "Use for 'what is the status of this task?'"
+                "Get current DB state of one task by UUID, short ref, title, or assignee query. "
+                "Use for 'is Ahmed's task completed?', 'status of closing checklist'. "
+                "Never invent status — only relay verified tool results."
             ),
             "parameters": {
                 "type": "object",
@@ -469,6 +630,32 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "restaurant_id": {"type": "string"},
                     "task_id": {"type": "string"},
                     "task_ref": {"type": "string"},
+                    "title": {"type": "string"},
+                    "q": {"type": "string"},
+                    "assignee_name": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_tasks",
+            "description": (
+                "Search tasks by title, status, or assignee name. Tenant-scoped. "
+                "Prefer this for 'find Ahmed's open tasks' / 'closing checklist'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "title": {"type": "string"},
+                    "status": {"type": "string"},
+                    "assignee_name": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "limit": {"type": "integer"},
                 },
                 "required": ["restaurant_id"],
             },
@@ -506,8 +693,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "reassign_dashboard_task",
             "description": (
-                "Reassign a dashboard task to another staff member. "
-                "Use staff_lookup first if you only have a name."
+                "Assign/reassign a dashboard task to another staff member. "
+                "Resolve by task_id/short ref OR title/q. "
+                "If the user says 'assign it to X' without a clear task, ask which task — do not guess. "
+                "Use find_staff/staff_lookup first if you only have a name. "
+                "Never say Done unless success=true and verified=true."
             ),
             "parameters": {
                 "type": "object",
@@ -515,10 +705,451 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "restaurant_id": {"type": "string"},
                     "task_id": {"type": "string"},
                     "task_ref": {"type": "string"},
+                    "title": {"type": "string"},
+                    "q": {"type": "string"},
                     "assignee_id": {"type": "string"},
+                    "assignee_name": {"type": "string"},
                     "staff_name": {"type": "string"},
                 },
                 "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_incidents",
+            "description": (
+                "Find safety/ops incidents by day window, status, or text. "
+                "Use for 'show today's incidents', 'incident from yesterday'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "status": {"type": "string"},
+                    "since": {"type": "string", "description": "today | yesterday"},
+                    "days": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_category_owners",
+            "description": (
+                "Who is responsible for a category (finance, HR, maintenance, …). "
+                "Aliases: find_responsible_people, find_category."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "category": {"type": "string"},
+                    "q": {"type": "string"},
+                    "kind": {"type": "string", "description": "omit or 'incident'"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_category",
+            "description": "Same as find_category_owners — resolve who owns a category.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "category": {"type": "string"},
+                    "q": {"type": "string"},
+                    "kind": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_responsible_people",
+            "description": "Same as find_category_owners. Use for 'who should receive this incident?'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "category": {"type": "string"},
+                    "q": {"type": "string"},
+                    "kind": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "assign_responsibility",
+            "description": (
+                "Assign one or more responsible people to a category "
+                "(Settings → Who owns what). Supports multiple owners "
+                "(e.g. INCIDENT → Manager + HR). Optional location_id for "
+                "establishment-scoped ownership. Verify before saying Done."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "category": {"type": "string"},
+                    "owner_name": {"type": "string"},
+                    "owner_id": {"type": "string"},
+                    "owner_names": {"type": "array", "items": {"type": "string"}},
+                    "owner_ids": {"type": "array", "items": {"type": "string"}},
+                    "staff_name": {"type": "string"},
+                    "location_id": {"type": "string"},
+                    "strategy": {
+                        "type": "string",
+                        "description": "notify_all | first_available | round_robin",
+                    },
+                },
+                "required": ["restaurant_id", "category"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_responsibility_category",
+            "description": (
+                "Create a responsibility category (e.g. ORDERS, DELIVERIES) "
+                "then use assign_responsibility to set owners."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "code": {"type": "string"},
+                    "label": {"type": "string"},
+                    "kind": {"type": "string", "description": "request | task | incident | mixed"},
+                    "slugs": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["restaurant_id", "code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "route_responsibility_event",
+            "description": (
+                "Route an event to category owners: resolve people, optionally "
+                "create a task assignment, notify on WhatsApp, write audit."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "category": {"type": "string"},
+                    "kind": {"type": "string"},
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "create_task": {"type": "boolean"},
+                    "location_id": {"type": "string"},
+                    "entity_id": {"type": "string"},
+                    "notify": {"type": "boolean"},
+                },
+                "required": ["restaurant_id", "category"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_establishments",
+            "description": "List/find establishments (branches) for this tenant/org.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "name": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_establishment",
+            "description": "Same as find_establishments — resolve a branch/location by name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "name": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_establishment_context",
+            "description": (
+                "Switch sticky establishment/branch context for this user. "
+                "Use when the user says 'What about Casablanca?', 'switch to Marrakech', "
+                "or picks a branch after you asked which establishment. "
+                "Subsequent task/incident/invoice/document queries use this location."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "location_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "name": {"type": "string"},
+                    "location_name": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "switch_establishment",
+            "description": "Alias for set_establishment_context.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "location_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "name": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_documents",
+            "description": (
+                "Search compliance docs, Miya uploads, and invoices using STRUCTURED fields "
+                "(vendor, amount, expiry_date) — not raw OCR alone. "
+                "Use for insurance expiry, document lists, invoices uploaded yesterday. "
+                "Pass since=yesterday for day filters."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "kind": {
+                        "type": "string",
+                        "description": "all | compliance | tenant | invoice",
+                    },
+                    "category": {"type": "string"},
+                    "since": {"type": "string", "description": "yesterday | today"},
+                    "days": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_document",
+            "description": (
+                "Get one document's structured fields (vendor, amount, expiry) plus summary. "
+                "Prefer over guessing from OCR. Use document_id or q."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "document_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "kind": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "show_document",
+            "description": (
+                "Show / send a stored document (e.g. 'Show me the insurance document'). "
+                "On WhatsApp sends the file when possible; otherwise a secure dashboard reference."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "document_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "phone": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_document_intelligence",
+            "description": (
+                "Answer document questions from STRUCTURED extraction: insurance expiry, "
+                "invoice amount, supplier/vendor, yesterday's invoice upload. "
+                "Always prefer this (or get_document) over inventing values."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "question": {"type": "string"},
+                    "q": {"type": "string"},
+                    "document_id": {"type": "string"},
+                    "since": {"type": "string"},
+                    "days": {"type": "integer"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "find_invoices",
+            "description": (
+                "Find invoices by vendor/query with optional since=yesterday. "
+                "Returns structured amount, vendor, due_date."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "vendor": {"type": "string"},
+                    "since": {"type": "string"},
+                    "days": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "retrieve_operational_history",
+            "description": (
+                "Retrieve recent operational history across tasks, incidents, staff requests, "
+                "invoices, and uploaded documents (database records)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "days": {"type": "integer"},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "recall_operational_memory",
+            "description": (
+                "Reconstruct operational memory from the database + durable events. "
+                "Use for: 'What happened with the freezer incident?', timelines, "
+                "assignments, status changes. Never invent history from chat."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "q": {"type": "string", "description": "Keyword e.g. freezer, decoration"},
+                    "entity_type": {
+                        "type": "string",
+                        "description": "task | incident | invoice | document",
+                    },
+                    "entity_id": {"type": "string"},
+                    "days": {"type": "integer"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_event_history",
+            "description": (
+                "List durable operational events (TASK_COMPLETED, INCIDENT_CREATED, …). "
+                "Survives server restart. Lower priority than live get_current_* state."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "event_type": {"type": "string"},
+                    "entity_type": {"type": "string"},
+                    "entity_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "limit": {"type": "integer"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_entity_history",
+            "description": (
+                "Canonical entity timeline: current DB state + chronological audit events. "
+                "REQUIRED for 'What happened to X?', 'Who changed/reassigned X?', "
+                "'When was X completed?'. Never answer from conversation memory."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity_type": {"type": "string", "description": "task, incident, invoice, document"},
+                    "entity_id": {"type": "string"},
+                    "q": {"type": "string", "description": "Title search e.g. 'Maxime photos'"},
+                    "limit": {"type": "integer"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_current_entity_state",
+            "description": (
+                "Current DB state ONLY (no history). Use for 'What is the status of X?' — "
+                "not for 'what happened' questions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity_type": {"type": "string"},
+                    "entity_id": {"type": "string"},
+                    "q": {"type": "string"},
+                },
             },
         },
     },
@@ -553,7 +1184,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "Create NEW Google Calendar meeting(s) or reminders only — never for updates/reschedules. "
                 "For 'change/move/update meeting' use list_calendar_events then update_calendar_event. "
                 "Supports batch via events[] for multiple NEW meetings. "
-                "Requires Google Calendar connected in Settings."
+                "Use meeting_kind=FOH|KITCHEN|MANAGER for department meetings "
+                "(Front of House / Kitchen / Manager). "
+                "Requires Google Calendar connected in Settings. Syncs WhatsApp + Dashboard."
             ),
             "parameters": {
                 "type": "object",
@@ -566,7 +1199,33 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "location": {"type": "string"},
                     "attendees": {"type": "array", "items": {"type": "string"}},
                     "is_reminder": {"type": "boolean"},
+                    "meeting_kind": {
+                        "type": "string",
+                        "description": "FOH, KITCHEN, or MANAGER for department meetings.",
+                    },
                     "events": {"type": "array", "items": {"type": "object"}},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_meetings",
+            "description": (
+                "Unified agenda: Google Calendar meetings + personal/compliance reminders. "
+                "Use for 'what's on my calendar', department filters (meeting_kind=FOH|KITCHEN|MANAGER), "
+                "and before confirming attendance. Same events as Dashboard + WhatsApp."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "meeting_kind": {"type": "string"},
+                    "days": {"type": "integer"},
+                    "limit": {"type": "integer"},
                 },
                 "required": ["restaurant_id"],
             },
@@ -577,10 +1236,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "list_calendar_events",
             "description": (
-                "Search Google Calendar meetings by keyword (person name, title fragment, location). "
-                "Call BEFORE update_calendar_event or delete_calendar_event when the user asks to change, move, reschedule, "
-                "or cancel/remove a meeting ('update rendez-vous avec Loubna', 'remove meeting with Loubna'). "
-                "Returns event_id for each match."
+                "Search or list Google Calendar meetings (keyword, person, location). "
+                "Also merges personal reminders for parity. "
+                "Call BEFORE update/delete/reschedule. Use when the manager asks what's on "
+                "their calendar if [MANAGER SCHEDULE] is missing. Returns event_id per match."
             ),
             "parameters": {
                 "type": "object",
@@ -590,8 +1249,61 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "Keywords: person name, meeting title, or location fragment.",
                     },
+                    "days": {"type": "integer"},
                 },
-                "required": ["restaurant_id", "q"],
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_reminders",
+            "description": "List pending personal/daily/task/compliance reminders for this manager.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "q": {"type": "string"},
+                    "status": {"type": "string"},
+                    "limit": {"type": "integer"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_reminder",
+            "description": "Cancel a pending personal reminder by id or title keyword.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "reminder_id": {"type": "string"},
+                    "q": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "sync_compliance_reminder",
+            "description": (
+                "Ensure insurance/compliance document expiry has a Dashboard + WhatsApp reminder. "
+                "Use after setting expiry or when asked to remind about insurance/compliance expiry."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "document_id": {"type": "string"},
+                    "q": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
             },
         },
     },
@@ -630,17 +1342,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "description": (
                 "Remove/cancel an EXISTING Google Calendar meeting. Requires event_id from "
                 "list_calendar_events OR q when exactly one match. NEVER use create_calendar_event "
-                "to remove meetings."
+                "to remove meetings. Also cancels the linked WhatsApp reminder."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "restaurant_id": {"type": "string"},
-                    "event_id": {"type": "string", "description": "Google Calendar event id from list_calendar_events."},
-                    "q": {
-                        "type": "string",
-                        "description": "Search keywords if event_id unknown (only when one match).",
-                    },
+                    "event_id": {"type": "string"},
+                    "q": {"type": "string"},
                 },
                 "required": ["restaurant_id"],
             },
@@ -651,8 +1360,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "create_personal_reminder",
             "description": (
-                "Create a personal reminder (insurance renewal, deadlines). "
-                "Appears in dashboard + fires WhatsApp at due time."
+                "Create a WhatsApp personal reminder (one-shot or daily/weekly). "
+                "Also appears on Dashboard Meetings & Reminders. "
+                "Use for 'remind me', daily reminders, task reminders. "
+                "For insurance/compliance expiry prefer sync_compliance_reminder."
             ),
             "parameters": {
                 "type": "object",
@@ -662,7 +1373,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "due_at": {"type": "string"},
                     "body": {"type": "string"},
                     "recurrence": {"type": "string"},
-                    "attachment_url": {"type": "string"},
+                    "reminder_kind": {
+                        "type": "string",
+                        "description": "task | daily | insurance | compliance",
+                    },
                 },
                 "required": ["restaurant_id", "title", "due_at"],
             },
@@ -998,8 +1712,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "payment_approval",
             "description": (
-                "PayGuard payment approval: list pending, approve, reject, or read policy. "
-                "Use when an invoice exceeds the approval limit or manager asks about payment approval."
+                "PayGuard payment approval lifecycle: list pending, start, approve, reject, "
+                "or read policy. Use when invoice exceeds threshold; supports multi-step ladders."
             ),
             "parameters": {
                 "type": "object",
@@ -1007,11 +1721,53 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "restaurant_id": {"type": "string"},
                     "action": {
                         "type": "string",
-                        "enum": ["list", "approve", "reject", "request_info", "policy"],
+                        "enum": ["list", "start", "approve", "reject", "request_info", "get_policy", "policy"],
                     },
                     "approval_id": {"type": "string"},
                     "invoice_id": {"type": "string"},
+                    "vendor": {"type": "string"},
                     "reason": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_invoice",
+            "description": (
+                "Get one invoice live state: lifecycle_status, approval_status, amount, "
+                "supplier, establishment, has_payment_proof. Prefer over stale list snapshots."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "invoice_id": {"type": "string"},
+                    "vendor": {"type": "string"},
+                    "invoice_number": {"type": "string"},
+                    "q": {"type": "string"},
+                },
+                "required": ["restaurant_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_invoice_approval",
+            "description": (
+                "CHECK AMOUNT then DETERMINE APPROVAL tier for an invoice "
+                "(below/above threshold, multi-approver ladder)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "restaurant_id": {"type": "string"},
+                    "invoice_id": {"type": "string"},
+                    "vendor": {"type": "string"},
                 },
                 "required": ["restaurant_id"],
             },
@@ -1093,8 +1849,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "send_announcement",
             "description": (
-                "Manager→staff broadcast / ping via app + WhatsApp. "
-                "NOT for staff escalating their own issue to a manager."
+                "Manager→staff broadcast via app + WhatsApp for TEAM-WIDE messages only "
+                "(e.g. 'tell everyone we're closed tomorrow'). "
+                "NEVER use for one person — use create_dashboard_task with assignee_name instead. "
+                "Requires audience 'all' OR audience.staff_ids / roles / departments / tags."
             ),
             "parameters": {
                 "type": "object",
@@ -1181,9 +1939,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "description": (
                 "Classify a photo and optionally auto-create records. Categories include "
                 "invoice_or_receipt, task_or_app_screenshot (NOT an incident), equipment, "
-                "incident. Always pass document_id from [ATTACHED DOCUMENTS] when present. "
-                "For invoice photos with 'pay / garde en finance', call this then record_invoice "
-                "if needed — extract Total Due / vendor / invoice # from the image."
+                "incident, id_or_certification (insurance/permits → compliance doc when manager "
+                "asks for renewal reminders). Always pass document_id from [ATTACHED DOCUMENTS] "
+                "when present and note = manager caption (e.g. 'remind me 2 weeks before expiry'). "
+                "For invoice photos with 'pay / garde en finance', call this to extract fields "
+                "then use record_invoice through the control plane — extraction never creates records."
             ),
             "parameters": {
                 "type": "object",
@@ -1193,7 +1953,6 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "media_url": {"type": "string"},
                     "image_url": {"type": "string"},
                     "image_base64": {"type": "string"},
-                    "auto_create": {"type": "boolean"},
                     "note": {"type": "string"},
                 },
                 "required": ["restaurant_id"],
@@ -1205,8 +1964,10 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "parse_document",
             "description": (
-                "Read a PDF / Word / Excel / CSV document and optionally log invoices "
-                "or import process checklists. Use document_id or media_url from uploads."
+                "Read a PDF / Word / Excel / CSV document for extraction/classification. "
+                "Pass document_id from [ATTACHED DOCUMENTS] and note = caption. "
+                "Does NOT create invoices, compliance records, or process templates — "
+                "returns structured preview only. Use record_invoice or explicit import workflows for mutations."
             ),
             "parameters": {
                 "type": "object",
@@ -1216,8 +1977,6 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "media_url": {"type": "string"},
                     "document_url": {"type": "string"},
                     "document_base64": {"type": "string"},
-                    "auto_create": {"type": "boolean"},
-                    "import_processes": {"type": "boolean"},
                     "note": {"type": "string"},
                 },
                 "required": ["restaurant_id"],
@@ -1252,9 +2011,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "get_invoice_timeline",
             "description": (
-                "Full chronological history for one invoice — OCR, approvals, rejections, "
-                "payments, proof uploads, who did what and when. Use for 'what happened with "
-                "invoice #INV-204?', 'who approved?', 'why not paid?', 'show payment proof'."
+                "Full LIVE chronological history for one invoice — OCR, approvals, rejections, "
+                "payments, proof uploads. REQUIRED for 'What happened to the invoice from ABC Foods?'. "
+                "Never answer from a stale list — this returns current lifecycle_status + audit."
             ),
             "parameters": {
                 "type": "object",
@@ -1347,8 +2106,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "list_tenant_documents",
             "description": (
-                "List files managers/staff uploaded to Miya (PDFs, photos, certs). "
-                "Use for 'what documents do we have?' or to find a document_id."
+                "List Miya uploads (PDFs, photos, certs) with structured fields "
+                "(vendor, amount, expiry). Supports q and since=yesterday."
             ),
             "parameters": {
                 "type": "object",
@@ -1366,7 +2125,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "get_tenant_document",
             "description": (
-                "Get full details and extracted text for one uploaded tenant document by id."
+                "Get structured fields + summary + extracted text for one uploaded document. "
+                "Prefer structured vendor/amount/expiry over raw OCR."
             ),
             "parameters": {
                 "type": "object",
@@ -1428,6 +2188,8 @@ _ROUTE_MAP: dict[str, tuple[str, str]] = {
     "list_dashboard_tasks": ("POST", "/api/dashboard/agent/tasks/list/"),
     "get_dashboard_task": ("POST", "/api/dashboard/agent/tasks/list/"),
     "list_operations_live": ("POST", "/api/dashboard/agent/operations-live/"),
+    "cross_location_report": ("GET", "/api/dashboard/agent/cross-location-report/"),
+    "location_detail": ("GET", "/api/dashboard/agent/location-detail/"),
     "notify_manager_urgent": ("POST", "/api/dashboard/agent/operations-live/notify/"),
     "update_dashboard_task_status": ("POST", "/api/dashboard/agent/tasks/status/"),
     "reassign_dashboard_task": ("POST", "/api/dashboard/agent/tasks/reassign/"),
@@ -1486,6 +2248,8 @@ _GET_METHOD_TOOLS = frozenset(
         "list_inventory",
         "sales_summary",
         "list_compliance_documents",
+        "cross_location_report",
+        "location_detail",
     }
 )
 
@@ -1648,38 +2412,6 @@ def execute_tool(
                 "required_rbac": True,
             }
 
-    if name == "list_tenant_documents":
-        from miya.models import TenantDocument
-        from miya.services.tenant_documents import serialize_tenant_document
-
-        rid = (session_context or {}).get("restaurant_id")
-        if not rid:
-            return {"success": False, "error": "restaurant_id required"}
-        limit = min(int((arguments or {}).get("limit") or 20), 40)
-        q = str((arguments or {}).get("q") or "").strip().lower()
-        qs = TenantDocument.objects.filter(restaurant_id=rid).order_by("-created_at")
-        rows = []
-        for doc in qs[: limit * 3]:
-            if q and q not in doc.title.lower() and q not in (doc.summary or "").lower():
-                continue
-            rows.append(serialize_tenant_document(doc))
-            if len(rows) >= limit:
-                break
-        return {"success": True, "count": len(rows), "documents": rows}
-
-    if name == "get_tenant_document":
-        from miya.models import TenantDocument
-        from miya.services.tenant_documents import serialize_tenant_document
-
-        rid = (session_context or {}).get("restaurant_id")
-        doc_id = str((arguments or {}).get("document_id") or (arguments or {}).get("id") or "").strip()
-        if not rid or not doc_id:
-            return {"success": False, "error": "restaurant_id and document_id required"}
-        doc = TenantDocument.objects.filter(restaurant_id=rid, id=doc_id).first()
-        if not doc:
-            return {"success": False, "error": "Document not found"}
-        return {"success": True, "document": serialize_tenant_document(doc, include_text=True)}
-
     if name in ("parse_photo", "parse_document"):
         from miya.services.media_tools import dispatch_parse_document, dispatch_parse_photo
 
@@ -1693,16 +2425,48 @@ def execute_tool(
             body.setdefault("success", 200 <= status_code < 300)
         return body if isinstance(body, dict) else {"success": False, "raw": body}
 
+    from miya.services.ops import CANONICAL_TOOL_NAMES
+
+    is_canonical = name in CANONICAL_TOOL_NAMES
     route = _ROUTE_MAP.get(name)
-    if not route:
+    if not route and not is_canonical:
         return {"success": False, "error": f"Unknown tool: {name}"}
 
-    method, path = route
+    method, path = route if route else ("POST", "/canonical/ops/")
     if name in _GET_METHOD_TOOLS:
         method = "GET"
     if name == "category_routing" and str((arguments or {}).get("action") or "get").lower() == "get":
         method = "GET"
     payload = dict(arguments or {})
+
+    # Wrong tool choice: "tell Adama to …" must use create_dashboard_task with
+    # structured assignee_name — NEVER rewrite by parsing announcement NL text.
+    if name == "send_announcement":
+        from miya.services.staff_delegation import (
+            audience_has_specific_targets,
+            audience_is_broadcast,
+        )
+
+        audience = payload.get("audience")
+        if not audience_is_broadcast(audience) and not audience_has_specific_targets(audience):
+            return {
+                "success": False,
+                "code": "structured_tool_required",
+                "error": "structured_tool_required",
+                "message_for_user": (
+                    "I need a staff name to assign that as a task. "
+                    "Tell me who, and I'll create a dashboard task."
+                ),
+                "miya_directive": (
+                    "Do NOT encode the action in natural language. "
+                    "Call create_dashboard_task with structured fields: "
+                    "assignee_name (or assignee_id), title, description. "
+                    "Never parse your own reply to decide the assignee."
+                ),
+                "verified": False,
+            }
+
+    staff_self_task = name == "create_dashboard_task"
 
     payload, tenant_err = bind_tool_payload_to_tenant(user, payload, session_context)
     if tenant_err:
@@ -1734,6 +2498,14 @@ def execute_tool(
             payload["phone"] = phone
         if not payload.get("description") and payload.get("message"):
             payload["description"] = payload["message"]
+
+    if name == "get_incident_photo":
+        if not payload.get("phone") and phone:
+            payload["phone"] = phone
+
+    if name == "show_document":
+        if not payload.get("phone") and phone:
+            payload["phone"] = phone
 
     if name == "request_time_off" and not payload.get("staff_id"):
         payload["staff_id"] = uid
@@ -1781,6 +2553,55 @@ def execute_tool(
 
     payload = _enrich_agent_payload(name, payload, session_context)
 
+    if name == "create_dashboard_task" and user is not None:
+        from miya.services.manager_reminder_intent import (
+            is_manager_role,
+            looks_like_manager_reminder_intent,
+            manager_self_task_blocked_message,
+        )
+
+        if is_manager_role(user):
+            uid = str(session_context.get("user_id") or getattr(user, "id", "") or "")
+            assignee_id = str(
+                payload.get("assignee_id")
+                or payload.get("assignee_user_id")
+                or payload.get("user_id")
+                or ""
+            ).strip()
+            assign_to_self = payload.get("assign_to_self") in (True, "true", "1", 1)
+            has_staff_target = bool(
+                payload.get("assignee_name")
+                or payload.get("staff_name")
+                or payload.get("assign_to_category")
+                or (assignee_id and uid and assignee_id != uid)
+            )
+            combined = " ".join(
+                str(payload.get(k) or "")
+                for k in ("title", "description", "source_text", "user_message")
+            ).strip()
+            if assign_to_self or (
+                not has_staff_target
+                and (looks_like_manager_reminder_intent(combined) or not combined)
+            ):
+                from core.i18n import get_effective_language, tr
+
+                lang = get_effective_language(user=user, restaurant=tenant_rest)
+                if looks_like_manager_reminder_intent(combined) or assign_to_self:
+                    msg = tr("miya.use_reminder_not_task", lang)
+                else:
+                    msg = manager_self_task_blocked_message(language=lang)
+                return {
+                    "success": False,
+                    "code": "MANAGER_SELF_TASK_BLOCKED",
+                    "error": "manager_cannot_self_assign_task",
+                    "miya_directive": (
+                        "Do NOT use create_dashboard_task for the manager's own reminders. "
+                        "Call create_personal_reminder, create_calendar_event, or "
+                        "update_compliance_document / parse_document instead."
+                    ),
+                    "message_for_user": msg,
+                }
+
     # Resolve pronouns / missing ids from the turn-local working set
     # (list_invoices → "transfère-les", list tasks → "cancel it").
     try:
@@ -1795,6 +2616,116 @@ def execute_tool(
     except Exception:
         logger.exception("working_set apply failed for %s", name)
 
+    # Phase 1: structured intelligence actions (verify + audit + events)
+    from miya.services.intelligence.actions import execute_structured_action, is_structured_action
+    from miya.services.intelligence.context_engine import execution_context_from_session
+    from miya.services.ops import build_ops_context, dispatch_canonical_tool
+
+    if is_structured_action(name) or is_canonical:
+        ops_ctx = build_ops_context(
+            user=user,
+            restaurant=tenant_rest,
+            session_context=session_context,
+        )
+        if ops_ctx is None:
+            return {
+                "success": False,
+                "code": "restaurant_required",
+                "error": "restaurant_required",
+                "message_for_user": "I couldn't determine which establishment this is for.",
+                "miya_directive": (
+                    "Do NOT tell the user the action succeeded. "
+                    "Ask which location/workspace if needed."
+                ),
+                "verified": False,
+            }
+
+        ops_result = None
+        if is_structured_action(name):
+            exec_pub = {}
+            try:
+                ectx = execution_context_from_session(
+                    user=user,
+                    session_context=session_context,
+                    restaurant=tenant_rest,
+                )
+                if ectx:
+                    exec_pub = ectx.to_public_dict()
+            except Exception:
+                exec_pub = {
+                    "message_id": (session_context or {}).get("_pipeline_message_id"),
+                    "conversation_id": (session_context or {}).get("_pipeline_conversation_id"),
+                    "user_id": (session_context or {}).get("user_id"),
+                    "organization_id": (session_context or {}).get("restaurant_id"),
+                    "establishment_id": (session_context or {}).get("location_id"),
+                    "channel": (session_context or {}).get("channel"),
+                }
+            # Ensure tool-call operation id flows into the action layer
+            if payload.get("_operation_id"):
+                payload = dict(payload)
+            ops_result = execute_structured_action(
+                name,
+                payload,
+                ctx=ops_ctx,
+                execution_context=exec_pub,
+                intent=str(payload.get("intent") or name),
+            )
+        else:
+            ops_result = dispatch_canonical_tool(name, payload, ctx=ops_ctx)
+
+        if ops_result is not None:
+            from miya.services.intelligence.mutation_pipeline import (
+                ensure_ops_mutation_verified,
+                enforce_mutation_tool_response,
+            )
+
+            ops_result = ensure_ops_mutation_verified(name, ops_result)
+            body = ops_result.as_tool_response()
+            body = enforce_mutation_tool_response(name, body)
+            try:
+                from miya.services.reply_format import sanitize_tool_payload_for_llm
+
+                body = sanitize_tool_payload_for_llm(body)
+            except Exception:
+                pass
+            # Persist establishment switch into the live session for follow-up tools
+            if ops_result.success and isinstance(body, dict) and isinstance(session_context, dict):
+                patch = body.get("session_patch")
+                if not isinstance(patch, dict) and isinstance(body.get("data"), dict):
+                    patch = body["data"].get("session_patch")
+                if isinstance(patch, dict):
+                    for key in ("location_id", "location_name"):
+                        if patch.get(key):
+                            session_context[key] = patch[key]
+                    if ops_ctx.location_id:
+                        session_context["location_id"] = ops_ctx.location_id
+                    if ops_ctx.location_name:
+                        session_context["location_name"] = ops_ctx.location_name
+                elif ops_ctx.location_id and name in (
+                    "set_establishment_context",
+                    "switch_establishment",
+                ):
+                    session_context["location_id"] = ops_ctx.location_id
+                    if ops_ctx.location_name:
+                        session_context["location_name"] = ops_ctx.location_name
+            if ops_result.success and isinstance(body, dict):
+                try:
+                    from miya.services.working_set import extract_list_entities, remember_entities
+
+                    kind, entities = extract_list_entities(name, body)
+                    if kind and entities:
+                        remember_entities(
+                            restaurant_id=str(rid or payload.get("restaurant_id") or "") or None,
+                            user_id=str(uid or "") or None,
+                            kind=kind,
+                            entities=entities,
+                        )
+                except Exception:
+                    logger.exception("working_set remember failed for canonical %s", name)
+            return body
+        if not route:
+            return {"success": False, "error": f"Unknown tool: {name}"}
+
     if name == "platform_knowledge":
         payload.setdefault("q", payload.pop("query", ""))
         role = (session_context.get("role") or "MANAGER").upper()
@@ -1807,6 +2738,14 @@ def execute_tool(
 
     if name == "send_announcement":
         payload["sender_id"] = uid
+        audience = payload.get("audience")
+        from miya.services.staff_delegation import audience_has_specific_targets, audience_is_broadcast
+
+        if not audience_is_broadcast(audience) and not audience_has_specific_targets(audience):
+            payload["broadcast_all"] = False
+        elif audience_is_broadcast(audience):
+            payload["broadcast_all"] = True
+            payload["audience"] = "all"
 
     url = f"{_api_base()}{path}"
     headers = _auth_headers(access_token, session_context)
@@ -1838,35 +2777,14 @@ def execute_tool(
                 body = {"raw": resp.text[:500]}
     except requests.RequestException as exc:
         logger.warning("Miya tool %s request failed: %s", name, exc)
-        return {"success": False, "error": str(exc)}
+        return {"success": False, "error": str(exc), "verified": False}
 
-    if status_code >= 400:
-        from miya.services.user_errors import pick_user_message, sanitize_user_error
+    from miya.services.intelligence.mutation_pipeline import finalize_legacy_tool_response
 
-        body_dict = body if isinstance(body, dict) else {}
-        user_msg = pick_user_message(body_dict)
-        return {
-            "success": False,
-            "status_code": status_code,
-            "error": sanitize_user_error(body_dict.get("error") or user_msg),
-            "message_for_user": user_msg,
-            "details": body,
-        }
-
-    if isinstance(body, dict) and body.get("message_for_user"):
-        from miya.services.user_errors import sanitize_user_error
-
-        body = {**body, "message_for_user": sanitize_user_error(body["message_for_user"])}
-
-    if isinstance(body, dict):
-        from miya.services.reply_format import sanitize_tool_payload_for_llm
-
-        body = sanitize_tool_payload_for_llm(body)
-
-    result = {"success": True, "data": body}
+    result = finalize_legacy_tool_response(name, status_code=status_code, body=body)
 
     # Remember listed entities for the next short reply / pronoun turn.
-    if isinstance(body, dict):
+    if result.get("success") and isinstance(body, dict):
         try:
             from miya.services.working_set import extract_list_entities, remember_entities
 

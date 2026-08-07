@@ -7,7 +7,7 @@ follow-up record (invoice, maintenance request, incident, etc.).
 
 POST /api/dashboard/agent/parse-photo/
    image          required (file)
-   auto_create    optional bool, default true
+   auto_create    IGNORED (Phase 14.2 hardening — extraction only; use Miya control plane)
    note           optional manager-supplied caption (used as a hint for
                   ambiguous photos and stored on whatever record we create)
 
@@ -31,7 +31,8 @@ Auto-creation rules
 - ``incident``            + confidence >= 0.5
                           -> create reporting.Incident
 - ``schedule``            -> DON'T auto-import (scheduling has its own flow)
-- ``id_or_certification`` -> DON'T auto-create (need a target staff member)
+- ``id_or_certification`` -> restaurant compliance doc when manager asks for renewal
+                          reminders; otherwise staff HR pending
 - everything else         -> just return the classification.
 """
 from __future__ import annotations
@@ -54,7 +55,6 @@ from scheduling.photo_router_service import parse_photo
 
 from .agent_dates import coerce_agent_date
 from core.media_fetch import fetch_remote_media_bytes
-
 logger = logging.getLogger(__name__)
 
 
@@ -174,8 +174,23 @@ def _try_create_invoice(
                 ocr_dec = Decimal(str(round(float(ocr_confidence), 3)))
             except Exception:
                 ocr_dec = None
+        location = None
+        try:
+            from finance.views_agent import _resolve_location
+
+            location = _resolve_location(
+                restaurant,
+                fields.get("location")
+                or fields.get("location_name")
+                or fields.get("establishment")
+                or fields.get("branch")
+                or fields.get("location_hint"),
+            )
+        except Exception:
+            location = None
         invoice = Invoice.objects.create(
             restaurant=restaurant,
+            location=location,
             vendor_name=vendor,
             invoice_number=invoice_number,
             amount=amount,
@@ -418,12 +433,14 @@ def agent_parse_photo(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    auto_create_raw = request.data.get("auto_create")
-    auto_create = True
-    if auto_create_raw is not None:
-        auto_create = str(auto_create_raw).strip().lower() not in ("0", "false", "no", "off", "")
-
     note = str(request.data.get("note") or "").strip()
+
+    # Phase 14.2 hardening (D5): agent/LLM path must never mutate via auto_create.
+    if request.data.get("auto_create") is not None:
+        logger.info(
+            "parse_photo: auto_create ignored (extraction-only) restaurant=%s",
+            getattr(restaurant, "id", ""),
+        )
 
     classification = parse_photo(
         image_bytes,
@@ -451,121 +468,51 @@ def agent_parse_photo(request):
         message=summary or "Got the photo, not sure what to do with it.",
     )
 
-    if auto_create:
-        if category == "invoice_or_receipt" and confidence >= 0.55:
-            invoice, msg = _try_create_invoice(
-                restaurant,
-                fields,
-                note,
-                summary,
-                photo_url=image_url,
-                file_bytes=image_bytes,
-                content_type=content_type,
-                acting_user=acting_user,
-                ocr_confidence=confidence,
-            )
-            if invoice:
-                if confidence < 0.75:
-                    msg = (
-                        f"{msg} (OCR confidence {confidence:.0%} — double-check "
-                        "vendor/amount/due date if anything looks off.)"
-                    )
-                try:
-                    from dashboard.task_sync import broadcast_tasks_invalidate
-
-                    broadcast_tasks_invalidate(
-                        restaurant, reason="invoice_created", task_id=str(invoice.id)
-                    )
-                except Exception:
-                    pass
-                action_envelope = _action_envelope(
-                    type_="invoice",
-                    record_id=str(invoice.id),
-                    message=msg,
-                    extra={
-                        "invoice_status": invoice.status,
-                        "ocr_confidence": confidence,
-                    },
-                )
-            else:
-                action_envelope = _action_envelope(
-                    type_="invoice_pending",
-                    record_id=None,
-                    message=msg,
-                )
-
-        elif category == "task_or_app_screenshot":
-            action_envelope = _action_envelope(
-                type_="task_screenshot",
-                record_id=None,
-                message=(
-                    "That looks like a screenshot of your tasks / Operations Live board — "
-                    "not an incident. Tell me what you want done with those items "
-                    "(list pending, complete one, reassign, cancel) and I'll do it."
-                ),
-                extra={"suggested_action": "review_tasks"},
-            )
-
-        elif category == "equipment_issue" and confidence >= 0.5:
-            sr, msg = _try_create_maintenance_request(
-                restaurant, acting_user, fields, summary, note
-            )
-            if sr:
-                action_envelope = _action_envelope(
-                    type_="staff_request",
-                    record_id=str(sr.id),
-                    message=msg,
-                    extra={"category": "MAINTENANCE", "priority": sr.priority},
-                )
-
-        elif category == "incident" and confidence >= 0.5:
-            result, _err = _try_create_incident(
-                restaurant, acting_user, fields, summary, note
-            )
-            if result:
-                type_, rid, msg = result
-                action_envelope = _action_envelope(
-                    type_=type_,
-                    record_id=str(rid) if rid else None,
-                    message=msg,
-                )
-
-        elif category == "schedule":
-            action_envelope = _action_envelope(
-                type_="schedule_pending",
-                record_id=None,
-                message=(
-                    "That looks like a staff schedule. Open the Schedule page > 'Import from photo' "
-                    "and I'll parse the shifts in detail."
-                ),
-            )
-
-        elif category == "id_or_certification":
-            doc_type = (fields.get("document_type") or "document").strip()
-            person = (fields.get("person_name") or "").strip()
-            expiry = fields.get("expiry_date") or None
-            who = f" for {person}" if person else ""
-            when = f" (expires {expiry})" if expiry else ""
-            action_envelope = _action_envelope(
-                type_="document_pending",
-                record_id=None,
-                message=(
-                    f"I see a {doc_type}{who}{when}. Tell me which staff member this belongs to "
-                    "and I'll attach it to their HR profile."
-                ),
-            )
-
-        elif category == "inventory":
-            items = fields.get("items") or []
-            count = len(items) if isinstance(items, list) else 0
-            action_envelope = _action_envelope(
-                type_="inventory_pending",
-                record_id=None,
-                message=(
-                    f"I can read about {count} items off this photo. "
-                    "Open Inventory > 'Stock count from photo' to commit the count."
-                ),
-            )
+    if category == "schedule":
+        action_envelope = _action_envelope(
+            type_="schedule_pending",
+            record_id=None,
+            message=(
+                "That looks like a staff schedule. Open the Schedule page > 'Import from photo' "
+                "and I'll parse the shifts in detail."
+            ),
+        )
+    elif category == "task_or_app_screenshot":
+        action_envelope = _action_envelope(
+            type_="task_screenshot",
+            record_id=None,
+            message=(
+                "That looks like a screenshot of your tasks / Operations Live board — "
+                "not an incident. Tell me what you want done with those items "
+                "(list pending, complete one, reassign, cancel) and I'll do it."
+            ),
+            extra={"suggested_action": "review_tasks"},
+        )
+    elif category == "inventory":
+        items = fields.get("items") or []
+        count = len(items) if isinstance(items, list) else 0
+        action_envelope = _action_envelope(
+            type_="inventory_pending",
+            record_id=None,
+            message=(
+                f"I can read about {count} items off this photo. "
+                "Open Inventory > 'Stock count from photo' to commit the count."
+            ),
+        )
+    elif category == "id_or_certification":
+        doc_type = (fields.get("document_type") or "document").strip()
+        person = (fields.get("person_name") or "").strip()
+        expiry = fields.get("expiry_date") or None
+        who = f" for {person}" if person else ""
+        when = f" (expires {expiry})" if expiry else ""
+        action_envelope = _action_envelope(
+            type_="document_pending",
+            record_id=None,
+            message=(
+                f"I see a {doc_type}{who}{when}. Tell me what you'd like me to do with it "
+                "(reminder, compliance record, attach to staff)."
+            ),
+        )
 
     return Response(
         {

@@ -25,8 +25,14 @@ class UserErrorSanitizeTests(SimpleTestCase):
 
 class ToolRegistryTests(SimpleTestCase):
     def test_all_tools_have_routes(self):
+        from miya.services.ops import CANONICAL_TOOL_NAMES
+
         names = {(s.get("function") or {}).get("name") for s in TOOL_SCHEMAS}
-        self.assertEqual(names, set(_ROUTE_MAP.keys()))
+        # Canonical ops tools may be DB-backed without an HTTP route.
+        routed = set(_ROUTE_MAP.keys()) | set(CANONICAL_TOOL_NAMES)
+        self.assertTrue(names.issubset(routed), sorted(names - routed))
+        # Every HTTP route still has a schema.
+        self.assertTrue(set(_ROUTE_MAP.keys()).issubset(names), sorted(set(_ROUTE_MAP.keys()) - names))
 
     def test_list_shifts_uses_get(self):
         from miya.services.tools import _GET_METHOD_TOOLS, _ROUTE_MAP

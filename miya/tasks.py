@@ -29,6 +29,7 @@ def run_miya_dashboard_chat(
     access_token: str | None = None,
     want_voice: bool = False,
     attachment_ids: list[str] | None = None,
+    session_hint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run one dashboard Miya turn off the HTTP worker (Mastra can take 60–120s)."""
     from accounts.models import CustomUser
@@ -55,6 +56,7 @@ def run_miya_dashboard_chat(
             channel=channel,
             preferred_restaurant_id=preferred_restaurant_id,
             attachment_ids=attachment_ids,
+            session_hint=session_hint,
         )
     except RuntimeError as exc:
         logger.warning("run_miya_dashboard_chat runtime error user=%s: %s", user_id, exc)
@@ -75,6 +77,14 @@ def run_miya_dashboard_chat(
         "reply": reply or tr("miya.wa.idle_prompt", lang),
         "tool_trace": result.get("tool_trace") or [],
     }
+    ctx = result.get("session_context")
+    if isinstance(ctx, dict):
+        payload["session_context"] = {
+            "location_id": ctx.get("location_id"),
+            "location_name": ctx.get("location_name"),
+            "restaurant_id": ctx.get("restaurant_id"),
+            "available_locations": ctx.get("available_locations") or [],
+        }
 
     if want_voice and payload["reply"]:
         audio_bytes, mime = notification_service.synthesize_speech_bytes(payload["reply"])

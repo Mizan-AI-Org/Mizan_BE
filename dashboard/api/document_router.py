@@ -5,22 +5,12 @@ Sibling of ``photo_router`` for non-image attachments.
 
 POST /api/dashboard/agent/parse-document/
    document       required (file)   — PDF / DOCX / XLSX / CSV / TXT
-   auto_create    optional bool, default true
+   auto_create    IGNORED (Phase 14.2 — extraction only)
+   import_processes IGNORED (Phase 14.2.1 — preview only; use explicit import endpoint)
    note           optional manager-supplied caption
 
-Auto-creation rules
--------------------
-- ``invoice_or_receipt``  + confidence >= 0.55 + amount + due_date + vendor
-                          -> create finance.Invoice (status=OPEN)
-- ``schedule``            -> DON'T auto-import (use the existing scheduling flow)
-- ``id_or_certification`` -> DON'T auto-create (need a target staff member)
-- everything else         -> just return the classification.
-
-When fields are missing or confidence is low we DO NOT auto-create.
-We return a `message_for_user` that asks the manager for the missing
-data — the agent must then call `record_invoice` directly with the
-values the manager confirms. Hallucinating amounts or invoice numbers
-is forbidden.
+Phase 14.2.1: This agent endpoint is EXTRACTION + PREVIEW only.
+TaskTemplate creation requires explicit ``agent_import_process_templates`` or Miya control plane.
 """
 from __future__ import annotations
 
@@ -39,12 +29,11 @@ from rest_framework.response import Response
 
 from scheduling.document_router_service import parse_document
 from scheduling.process_template_import_service import (
-    bulk_create_task_templates,
     looks_like_process_import,
     parse_process_templates_from_bytes,
 )
 
-from .photo_router import _action_envelope, _try_create_invoice
+from .photo_router import _action_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -102,25 +91,25 @@ def agent_parse_document(request):
             status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
         )
 
-    auto_create_raw = request.data.get("auto_create")
-    auto_create = True
-    if auto_create_raw is not None:
-        auto_create = str(auto_create_raw).strip().lower() not in ("0", "false", "no", "off", "")
-
     note = str(request.data.get("note") or "").strip()
 
-    import_processes_raw = request.data.get("import_processes")
-    import_processes = False
-    if import_processes_raw is not None:
-        import_processes = str(import_processes_raw).strip().lower() not in (
-            "0",
-            "false",
-            "no",
-            "off",
-            "",
+    # Phase 14.2 hardening (D5): agent/LLM path must never mutate via auto_create.
+    if request.data.get("auto_create") is not None:
+        logger.info(
+            "parse_document: auto_create ignored (extraction-only) restaurant=%s",
+            getattr(restaurant, "id", ""),
         )
-    if not import_processes:
-        import_processes = looks_like_process_import(note, name)
+
+    # Phase 14.2.1: import_processes on agent path is preview-only — never bulk-create here.
+    wants_process_preview = False
+    if request.data.get("import_processes") is not None:
+        logger.info(
+            "parse_document: import_processes ignored for mutation (preview-only) restaurant=%s",
+            getattr(restaurant, "id", ""),
+        )
+        wants_process_preview = str(request.data.get("import_processes")).strip().lower() not in (
+            "0", "false", "no", "off", "",
+        )
 
     try:
         blob = doc_file.read()
@@ -132,71 +121,49 @@ def agent_parse_document(request):
 
     classification = parse_document(blob, content_type=content_type, name=name)
 
-    # Manager uploaded a Processes & Tasks document — import checklists directly.
-    if import_processes or classification.get("category") == "process_checklist":
+    if not wants_process_preview:
+        wants_process_preview = looks_like_process_import(note, name)
+    if not wants_process_preview:
+        wants_process_preview = classification.get("category") == "process_checklist"
+
+    # Process/checklist documents → structured preview only (no TaskTemplate mutation).
+    if wants_process_preview:
         parsed = parse_process_templates_from_bytes(
             blob, content_type=content_type, name=name, note=note,
         )
         templates = parsed.get("templates") or []
         if templates:
-            result = bulk_create_task_templates(
-                restaurant,
-                templates,
-                acting_user=_acting_user,
-                skip_duplicates=True,
-                source_note=note or f"Imported via parse_document from {name or 'document'}",
+            names = ", ".join(t["name"] for t in templates[:5])
+            extra = f" (+{len(templates) - 5} more)" if len(templates) > 5 else ""
+            msg = (
+                f"I found {len(templates)} process checklist(s): {names}{extra}. "
+                "Tell me when you want to import them and I'll add them to Templates."
             )
-            created = result.get("created") or []
-            skipped = result.get("skipped") or []
-            if created:
-                names = ", ".join(c["name"] for c in created[:5])
-                extra = f" (+{len(created) - 5} more)" if len(created) > 5 else ""
-                msg = (
-                    f"Imported {len(created)} process(es) to Processes & Tasks → Templates: "
-                    f"{names}{extra}."
-                )
-                if skipped:
-                    msg += f" Skipped {len(skipped)} duplicate name(s)."
-                action_envelope = _action_envelope(
-                    type_="process_templates_imported",
-                    record_id=created[0]["id"] if len(created) == 1 else None,
-                    message=msg,
-                    extra={
-                        "created_count": len(created),
-                        "skipped_count": len(skipped),
-                        "created_templates": created,
+            action_envelope = _action_envelope(
+                type_="process_import_preview",
+                record_id=None,
+                message=msg,
+                extra={
+                    "template_count": len(templates),
+                    "template_names": [t["name"] for t in templates],
+                    "preview_only": True,
+                },
+            )
+            return Response(
+                {
+                    "success": True,
+                    "classification": classification,
+                    "action_taken": action_envelope,
+                    "message_for_user": msg,
+                    "process_preview": {
+                        "templates": templates,
+                        "template_count": len(templates),
+                        "extracted_kind": parsed.get("extracted_kind"),
+                        "preview_only": True,
                     },
-                )
-                return Response(
-                    {
-                        "success": True,
-                        "classification": classification,
-                        "action_taken": action_envelope,
-                        "message_for_user": msg,
-                        "import_result": result,
-                    },
-                    status=status.HTTP_201_CREATED,
-                )
-            if skipped:
-                return Response(
-                    {
-                        "success": True,
-                        "classification": classification,
-                        "action_taken": _action_envelope(
-                            type_="process_templates_skipped",
-                            record_id=None,
-                            message=(
-                                "Those process names already exist under Processes & Tasks → Templates. "
-                                "Open Templates to review or rename the file sections and re-import."
-                            ),
-                        ),
-                        "message_for_user": (
-                            "All process names in that file already exist — nothing new was created."
-                        ),
-                        "import_result": result,
-                    },
-                    status=status.HTTP_200_OK,
-                )
+                },
+                status=status.HTTP_200_OK,
+            )
 
     # Hard-error paths — bubble up to Miya so she asks the user for fields
     # rather than fabricating them.
@@ -266,32 +233,7 @@ def agent_parse_document(request):
         message=summary or "Got the document, not sure what to do with it.",
     )
 
-    if auto_create and category == "invoice_or_receipt" and confidence >= 0.55:
-        invoice, msg = _try_create_invoice(
-            restaurant,
-            fields,
-            note,
-            summary,
-            file_bytes=blob,
-            content_type=content_type,
-            filename_hint=name,
-            acting_user=_acting_user,
-        )
-        if invoice:
-            action_envelope = _action_envelope(
-                type_="invoice",
-                record_id=str(invoice.id),
-                message=msg,
-                extra={"invoice_status": invoice.status},
-            )
-        else:
-            # Couldn't create — required fields missing. Surface that honestly.
-            action_envelope = _action_envelope(
-                type_="invoice_pending",
-                record_id=None,
-                message=msg,
-            )
-    elif category == "schedule":
+    if category == "schedule":
         action_envelope = _action_envelope(
             type_="schedule_pending",
             record_id=None,
@@ -310,8 +252,8 @@ def agent_parse_document(request):
             type_="document_pending",
             record_id=None,
             message=(
-                f"I see a {doc_type}{who}{when}. Tell me which staff member this belongs to "
-                "and I'll attach it to their HR profile."
+                f"I see a {doc_type}{who}{when}. Tell me what you'd like me to do with it "
+                "(reminder, compliance record, attach to staff)."
             ),
         )
     elif confidence < 0.55:

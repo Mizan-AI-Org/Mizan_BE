@@ -60,8 +60,11 @@ PLATFORM_KNOWLEDGE: list[dict[str, str]] = [
         "category": "feature",
         "audience": "manager",
         "content": (
-            "Managers with WhatsApp can receive an evening ops digest: no-shows, understaffing, "
-            "open staff requests, overdue invoices. Toggle digest_enabled in notification preferences."
+            "Managers with WhatsApp receive a morning Operations Live brief (~07:00) and an "
+            "evening debrief (~21:00): new demands, in-progress work, critical items first. "
+            "Ask anytime: *where are we at today?* for a fresh snapshot. "
+            "A separate staffing/invoices digest may arrive ~08:30. "
+            "Set whatsapp_enabled off in notification preferences to stop proactive messages."
         ),
         "keywords": "digest briefing nightly proactive whatsapp summary",
     },

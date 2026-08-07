@@ -483,6 +483,40 @@ class OnboardingWidgetVisibilityView(APIView):
         })
 
 
+def _category_owner_staff_directory(restaurant, owner_ids: set[str] | list[str]) -> dict[str, dict]:
+    """Resolve display names for category owner UUIDs (incl. linked-branch staff)."""
+    from django.db.models import Q
+
+    from accounts.models import CustomUser, StaffRestaurantLink
+
+    ids = {str(x) for x in (owner_ids or []) if str(x).strip()}
+    if not ids or not restaurant:
+        return {}
+
+    tenant_scope = Q(restaurant=restaurant) | Q(
+        id__in=StaffRestaurantLink.objects.filter(
+            restaurant=restaurant,
+            is_active=True,
+        ).values_list('user_id', flat=True)
+    )
+    rows = (
+        CustomUser.objects.filter(tenant_scope, id__in=ids, is_active=True)
+        .only('id', 'first_name', 'last_name', 'email', 'role')
+        .order_by('first_name', 'last_name')
+    )
+    out: dict[str, dict] = {}
+    for user in rows:
+        uid = str(user.id)
+        out[uid] = {
+            'id': uid,
+            'first_name': user.first_name or '',
+            'last_name': user.last_name or '',
+            'email': user.email or '',
+            'role': getattr(user, 'role', '') or '',
+        }
+    return out
+
+
 class OnboardingCategoryOwnersView(APIView):
     """Which staff member is the default owner for each category.
 
@@ -547,7 +581,21 @@ class OnboardingCategoryOwnersView(APIView):
         gs = dict(restaurant.general_settings or {})
         owners = gs.get('category_owners') or {}
         routing = gs.get('category_routing') or {}
-        return Response({'success': True, 'owners': owners, 'routing': routing})
+        owner_ids: set[str] = set()
+        for value in owners.values():
+            if isinstance(value, list):
+                owner_ids.update(str(v) for v in value if v)
+            elif value:
+                owner_ids.add(str(value))
+        staff_directory = _category_owner_staff_directory(restaurant, owner_ids)
+        return Response(
+            {
+                'success': True,
+                'owners': owners,
+                'routing': routing,
+                'staff_directory': staff_directory,
+            }
+        )
 
     def put(self, request):
         if not _is_owner_like(request.user):
@@ -570,11 +618,19 @@ class OnboardingCategoryOwnersView(APIView):
             )
 
         from accounts.models import CustomUser
+        from django.db.models import Q
 
         tenant_user_ids = set(
-            str(uid) for uid in
-            CustomUser.objects.filter(restaurant=restaurant)
+            str(uid)
+            for uid in CustomUser.objects.filter(
+                Q(restaurant=restaurant)
+                | Q(
+                    restaurant_links__restaurant=restaurant,
+                    restaurant_links__is_active=True,
+                )
+            )
             .values_list('id', flat=True)
+            .distinct()
         )
 
         clean: dict[str, list[str]] = {}

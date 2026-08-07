@@ -605,97 +605,89 @@ def agent_list_task_templates(request):
 def agent_create_task_template(request):
     """
     Create a task template for the restaurant.
-    Used by Miya when a requested template doesn't exist - Miya can create the perfect template for that shift.
+
+    Phase 14.2.3: thin endpoint → canonical ops service (authorize/verify/audit).
+    NOT exposed via Miya parse_document tool registry.
+
     Auth: Bearer MIYA_MASTRA_API_KEY or Bearer <user JWT>.
-    Payload: restaurant_id, name, description (optional), template_type (optional, default CUSTOM),
-             tasks: [{title, description?, priority?}]
+    Payload: restaurant_id, name, description (optional), template_type (optional),
+             tasks: [{title, description?, priority?}], operation_id (optional).
     """
+    from miya.services.ops.context import OpsContext
+    from miya.services.ops.process_templates import create_task_template
+
     try:
         restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
         if err:
-            return Response({'error': err['error']}, status=err['status'])
-        
+            return Response({'success': False, 'error': err['error']}, status=err['status'])
+
+        if acting_user is None:
+            return Response(
+                {'success': False, 'error': 'actor_required', 'verified': False},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        user_rid = str(getattr(acting_user, "restaurant_id", "") or "")
+        if user_rid and user_rid != str(restaurant.id):
+            return Response(
+                {'success': False, 'error': 'tenant_mismatch', 'verified': False},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
-        name = (data.get('name') or '').strip()
-        if not name:
-            return Response({'error': 'Missing required field: name'}, status=status.HTTP_400_BAD_REQUEST)
+        name = data.get('name') or ''
         tasks_raw = data.get('tasks') or []
         if not isinstance(tasks_raw, list):
-            return Response({'error': 'tasks must be an array of {title, description?, priority?}'}, status=status.HTTP_400_BAD_REQUEST)
-        import uuid as uuid_mod
-        tasks = []
-        for t in tasks_raw:
-            if not isinstance(t, dict):
-                continue
-            title = str(t.get('title') or '').strip()
-            if not title:
-                continue
-            tasks.append({
-                'id': str(uuid_mod.uuid4()),
-                'title': title,
-                'description': str(t.get('description') or '').strip(),
-                'priority': (str(t.get('priority') or 'MEDIUM')).upper()[:20] or 'MEDIUM',
-                'completed': False,
-            })
-        if not tasks:
-            return Response({'error': 'tasks must contain at least one item with a title'}, status=status.HTTP_400_BAD_REQUEST)
-        template_type = (data.get('template_type') or '').upper().strip()
-        valid_types = [c[0] for c in TaskTemplate.TEMPLATE_TYPES]
-        if template_type not in valid_types:
-            # Infer from name so "Runner Opening Checklist" lands as OPENING, not only CUSTOM
-            n = name.lower()
-            if any(k in n for k in ("opening", "open checklist", "mise en place", "démarrage", "ouverture")):
-                template_type = "OPENING"
-            elif any(k in n for k in ("closing", "close checklist", "fermeture", "close-down")):
-                template_type = "CLOSING"
-            elif any(k in n for k in ("clean", "hygiene", "nettoyage")):
-                template_type = "CLEANING"
-            elif any(k in n for k in ("maintenance", "equipment", "entretien")):
-                template_type = "MAINTENANCE"
-            elif any(k in n for k in ("safety", "haccp", "health", "sécurité")):
-                template_type = "SAFETY"
-            else:
-                template_type = "CUSTOM"
-        acting_user = None
-        try:
-            _, acting_user = _try_jwt_restaurant_and_user(request)
-        except Exception:
-            pass
-        template = TaskTemplate.objects.create(
+            return Response(
+                {
+                    'success': False,
+                    'code': 'invalid_tasks',
+                    'error': 'tasks must be an array of {title, description?, priority?}',
+                    'verified': False,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        operation_id = str(
+            data.get('operation_id') or data.get('operationId') or ''
+        ).strip()
+
+        ctx = OpsContext.from_session(
+            user=acting_user,
             restaurant=restaurant,
-            name=name,
-            description=(data.get('description') or '').strip() or None,
-            template_type=template_type,
-            tasks=tasks,
-            frequency='CUSTOM',
-            ai_generated=True,
-            ai_prompt=data.get('ai_prompt') or f"Created by Miya for shift: {name}",
-            created_by=acting_user,
-            is_active=True,
-        )
-        # Drop stale agent list cache so list_task_templates sees the new row immediately
-        try:
-            cache.delete(f"agent:sched:task_templates:{restaurant.id}")
-        except Exception:
-            pass
-        return Response({
-            'success': True,
-            'task_template': {
-                'id': str(template.id),
-                'name': template.name,
-                'template_type': template.template_type,
-                'tasks_count': len(tasks),
+            session_context={
+                'restaurant_id': str(restaurant.id),
+                'user_id': str(acting_user.id),
+                'role': getattr(acting_user, 'role', ''),
+                'channel': 'agent',
             },
-            'message': (
-                f"Created template '{template.name}' with {len(tasks)} task(s). "
-                f"It appears under Processes & Tasks → Templates on the dashboard. "
-                f"Use task_template_ids=[{template.id}] when creating shifts."
-            ),
-        }, status=status.HTTP_201_CREATED)
+        )
+        result = create_task_template(
+            ctx,
+            name=name,
+            tasks=tasks_raw,
+            description=str(data.get('description') or ''),
+            template_type=str(data.get('template_type') or ''),
+            ai_prompt=str(data.get('ai_prompt') or ''),
+            operation_id=operation_id,
+        )
+        body = result.as_tool_response()
+        if result.verified and result.success:
+            status_code = status.HTTP_201_CREATED
+        elif body.get('code') in ('permission_denied', 'actor_required'):
+            status_code = status.HTTP_403_FORBIDDEN
+        elif body.get('code') == 'verification_failed':
+            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+        else:
+            status_code = status.HTTP_400_BAD_REQUEST
+        return Response(body, status=status_code)
     except Exception as e:
         logger.exception("Agent create task template error")
         err = str(e).strip()[:200] if e else "Unable to create task template"
-        return Response({'error': err}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response(
+            {'success': False, 'error': err, 'verified': False},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
 
 
 @api_view(['POST'])
@@ -705,20 +697,34 @@ def agent_create_task_template(request):
 def agent_import_process_templates(request):
     """
     Import Processes & Tasks (TaskTemplate) from an uploaded document.
-    Used by Miya when a manager attaches CSV/PDF/DOCX/XLSX and wants checklists recreated.
+
+    Phase 14.2.2: thin endpoint → canonical ops service (authorize/verify/audit).
+    NOT exposed via Miya parse_document tool registry.
 
     Auth: Bearer MIYA_MASTRA_API_KEY or Bearer <user JWT>.
-    Multipart: document (file), optional note, optional skip_duplicates (default true).
+    Multipart: document (file), optional note, skip_duplicates, operation_id.
     """
-    from scheduling.process_template_import_service import (
-        bulk_create_task_templates,
-        parse_process_templates_from_bytes,
-    )
+    from miya.services.ops.context import OpsContext
+    from miya.services.ops.process_templates import import_process_templates
+    from scheduling.process_template_import_service import parse_process_templates_from_bytes
 
     try:
         restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
         if err:
             return Response({'success': False, 'error': err['error']}, status=err['status'])
+
+        if acting_user is None:
+            return Response(
+                {'success': False, 'error': 'actor_required', 'verified': False},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        user_rid = str(getattr(acting_user, "restaurant_id", "") or "")
+        if user_rid and user_rid != str(restaurant.id):
+            return Response(
+                {'success': False, 'error': 'tenant_mismatch', 'verified': False},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         doc_file = (
             request.FILES.get('document')
@@ -730,6 +736,7 @@ def agent_import_process_templates(request):
                 {
                     'success': False,
                     'error': 'Missing document',
+                    'verified': False,
                     'message_for_user': (
                         'Attach your Processes & Tasks file (CSV, PDF, Excel, Word, or JSON) '
                         'and I will import the checklists.'
@@ -746,11 +753,13 @@ def agent_import_process_templates(request):
                     'success': False,
                     'code': 'USE_PARSE_PHOTO',
                     'error': 'Use parse_photo for image attachments.',
+                    'verified': False,
                 },
                 status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
             )
 
         note = str(request.data.get('note') or '').strip()
+        operation_id = str(request.data.get('operation_id') or request.data.get('operationId') or '').strip()
         skip_dup_raw = request.data.get('skip_duplicates')
         skip_duplicates = True
         if skip_dup_raw is not None:
@@ -760,7 +769,7 @@ def agent_import_process_templates(request):
             blob = doc_file.read()
         except Exception:
             return Response(
-                {'success': False, 'error': 'Could not read uploaded file'},
+                {'success': False, 'error': 'Could not read uploaded file', 'verified': False},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -772,6 +781,7 @@ def agent_import_process_templates(request):
                 {
                     'success': False,
                     'code': 'UNSUPPORTED_DOCUMENT_TYPE',
+                    'verified': False,
                     'message_for_user': "I can't read that file format. Try CSV, Excel, PDF, Word, or JSON.",
                 },
                 status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
@@ -781,6 +791,7 @@ def agent_import_process_templates(request):
                 {
                     'success': False,
                     'code': 'EMPTY_DOCUMENT',
+                    'verified': False,
                     'message_for_user': (
                         "I couldn't extract any text from that file (it may be a scan). "
                         "Try CSV/Excel, or paste the checklist as text."
@@ -795,6 +806,7 @@ def agent_import_process_templates(request):
                 {
                     'success': False,
                     'code': 'NO_TEMPLATES_PARSED',
+                    'verified': False,
                     'message_for_user': (
                         "I read the file but couldn't find process/checklist steps. "
                         "Make sure it lists process names and task steps (bullets or a task column)."
@@ -804,50 +816,41 @@ def agent_import_process_templates(request):
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-        result = bulk_create_task_templates(
-            restaurant,
-            templates,
-            acting_user=acting_user,
-            skip_duplicates=skip_duplicates,
-            source_note=note or f"Imported from {name or 'document'}",
-        )
-        created = result.get('created') or []
-        skipped = result.get('skipped') or []
-
-        if not created and skipped:
-            msg = (
-                f"All {len(skipped)} process(es) already exist under the same names — nothing new was created. "
-                "Open Processes & Tasks → Templates to review them."
-            )
-        elif created:
-            names = ", ".join(c['name'] for c in created[:5])
-            extra = f" (+{len(created) - 5} more)" if len(created) > 5 else ""
-            msg = (
-                f"Imported {len(created)} process(es) to Processes & Tasks → Templates: {names}{extra}."
-            )
-            if skipped:
-                msg += f" Skipped {len(skipped)} duplicate name(s)."
-        else:
-            msg = "No processes were imported."
-
-        return Response(
-            {
-                'success': bool(created),
-                'created': created,
-                'skipped': skipped,
-                'errors': result.get('errors') or [],
-                'message_for_user': msg,
-                'parse_preview': {
-                    'extracted_kind': parsed.get('extracted_kind'),
-                    'template_count': len(templates),
-                },
+        ctx = OpsContext.from_session(
+            user=acting_user,
+            restaurant=restaurant,
+            session_context={
+                'restaurant_id': str(restaurant.id),
+                'user_id': str(acting_user.id),
+                'role': getattr(acting_user, 'role', ''),
+                'channel': 'agent',
             },
-            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
+        result = import_process_templates(
+            ctx,
+            templates=templates,
+            source_note=note or f"Imported from {name or 'document'}",
+            skip_duplicates=skip_duplicates,
+            operation_id=operation_id,
+        )
+        body = result.as_tool_response()
+        body['parse_preview'] = {
+            'extracted_kind': parsed.get('extracted_kind'),
+            'template_count': len(templates),
+        }
+        if result.verified and result.success:
+            status_code = status.HTTP_201_CREATED if (result.data or {}).get('created') else status.HTTP_200_OK
+        elif body.get('code') == 'permission_denied':
+            status_code = status.HTTP_403_FORBIDDEN
+        elif body.get('code') in ('verification_failed', 'import_failed', 'no_templates'):
+            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+        else:
+            status_code = status.HTTP_400_BAD_REQUEST
+        return Response(body, status=status_code)
     except Exception as e:
         logger.exception("Agent import process templates error")
         err = str(e).strip()[:200] if e else "Unable to import process templates"
-        return Response({'success': False, 'error': err}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({'success': False, 'error': err, 'verified': False}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @api_view(['POST'])
@@ -2596,6 +2599,7 @@ def agent_get_restaurant_details(request):
             )
         
         def _compute_details():
+            from accounts.models import BusinessLocation
             from accounts.vertical_playbooks import (
                 normalize_business_vertical,
                 vertical_playbook_for_api,
@@ -2611,9 +2615,23 @@ def agent_get_restaurant_details(request):
                 'breakfast': {'start': '07:00', 'end': '10:30'},
             }
             labor_policy = SchedulingService._get_labor_policy(restaurant)
+            locations = [
+                {
+                    "id": str(loc.id),
+                    "name": loc.name,
+                    "is_primary": bool(loc.is_primary),
+                    "is_active": bool(loc.is_active),
+                    "address": loc.address or "",
+                    "timezone": loc.timezone or "",
+                }
+                for loc in BusinessLocation.objects.filter(
+                    restaurant=restaurant, is_active=True
+                ).order_by("-is_primary", "name")
+            ]
             return {
                 'id': str(restaurant.id),
                 'name': restaurant.name,
+                'locations': locations,
                 'timezone': str(restaurant.timezone) if hasattr(restaurant, 'timezone') else 'Africa/Casablanca',
                 'currency': getattr(restaurant, 'currency', None) or 'MAD',
                 'country_code': getattr(restaurant, 'country_code', None) or 'MA',
@@ -3515,7 +3533,7 @@ def agent_assign_coverage(request):
         shift = AssignedShift.objects.filter(
             id=shift_id,
             schedule__restaurant=restaurant,
-        ).select_related('staff').first()
+        ).select_related('staff', 'schedule').first()
         if not shift:
             return Response({'error': 'Shift not found'}, status=status.HTTP_404_NOT_FOUND)
         new_staff = CustomUser.objects.filter(
@@ -3525,15 +3543,26 @@ def agent_assign_coverage(request):
         ).first()
         if not new_staff:
             return Response({'error': 'Staff not found or not in this restaurant'}, status=status.HTTP_404_NOT_FOUND)
-        shift.staff = new_staff
-        shift.staff_members.clear()
-        shift.status = 'CONFIRMED'
-        shift.save(update_fields=['staff', 'status'])
+        from scheduling.services import SchedulingService
+        try:
+            result = SchedulingService.assign_shift_coverage(
+                shift, new_staff, restaurant=restaurant
+            )
+        except ValueError as exc:
+            code = str(exc)
+            if code == 'staff_not_in_restaurant':
+                return Response({'error': 'Staff not found or not in this restaurant'}, status=status.HTTP_404_NOT_FOUND)
+            if code == 'shift_not_in_restaurant':
+                return Response({'error': 'Shift not found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': code}, status=status.HTTP_400_BAD_REQUEST)
+        shift = result['shift']
         return Response({
             'success': True,
             'message': f'Coverage assigned: {new_staff.first_name} {new_staff.last_name}',
             'shift_id': str(shift.id),
             'staff_id': str(new_staff.id),
+            'idempotent': bool(result.get('idempotent')),
+            'notification_sent': bool(result.get('notification_sent')),
         })
     except Exception as e:
         logger.exception("Agent assign coverage error")
@@ -3554,12 +3583,21 @@ def agent_request_time_off(request):
         data = request.data if isinstance(getattr(request, 'data', None), dict) else {}
         phone = (data.get('phone') or data.get('phoneNumber') or '').strip()
         phone_digits = ''.join(filter(str.isdigit, str(phone)))
-        if not phone_digits or len(phone_digits) < 6:
-            return Response({'error': 'Valid phone is required'}, status=status.HTTP_400_BAD_REQUEST)
-        from accounts.services import _find_active_user_by_phone
-        staff = _find_active_user_by_phone(phone_digits)
-        if not staff or getattr(staff, 'restaurant_id', None) != restaurant.id:
-            return Response({'error': 'Staff not found for this phone in this restaurant'}, status=status.HTTP_404_NOT_FOUND)
+        staff_id = data.get('staff_id') or data.get('staffId')
+        staff = None
+        if staff_id:
+            staff = CustomUser.objects.filter(
+                id=staff_id, restaurant=restaurant, is_active=True
+            ).first()
+            if not staff:
+                return Response({'error': 'Staff not found for this restaurant'}, status=status.HTTP_404_NOT_FOUND)
+        elif phone_digits and len(phone_digits) >= 6:
+            from accounts.services import _find_active_user_by_phone
+            staff = _find_active_user_by_phone(phone_digits)
+            if not staff or getattr(staff, 'restaurant_id', None) != restaurant.id:
+                return Response({'error': 'Staff not found for this phone in this restaurant'}, status=status.HTTP_404_NOT_FOUND)
+        else:
+            return Response({'error': 'Valid phone or staff_id is required'}, status=status.HTTP_400_BAD_REQUEST)
         start_s = data.get('start_date') or data.get('startDate')
         end_s = data.get('end_date') or data.get('endDate')
         if not start_s or not end_s:
@@ -3569,21 +3607,40 @@ def agent_request_time_off(request):
             end_date = datetime.strptime(end_s[:10], '%Y-%m-%d').date()
         except ValueError:
             return Response({'error': 'Invalid date format. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
-        if end_date < start_date:
-            return Response({'error': 'end_date must be on or after start_date'}, status=status.HTTP_400_BAD_REQUEST)
         request_type = (data.get('request_type') or data.get('type') or 'VACATION').upper()
-        if request_type not in ('VACATION', 'SICK', 'PERSONAL', 'OTHER'):
-            request_type = 'VACATION'
         reason = (data.get('reason') or '').strip()
-        tor = TimeOffRequest.objects.create(
-            staff=staff, start_date=start_date, end_date=end_date,
-            request_type=request_type, reason=reason or None, status='PENDING',
-        )
+        location_id = (data.get('location_id') or data.get('locationId') or '').strip() or None
+        from scheduling.services import SchedulingService
+        try:
+            result = SchedulingService.create_time_off_request(
+                restaurant=restaurant,
+                staff=staff,
+                start_date=start_date,
+                end_date=end_date,
+                request_type=request_type,
+                reason=reason,
+                location_id=location_id,
+            )
+        except ValueError as exc:
+            code = str(exc)
+            if code == 'end_date_before_start':
+                return Response({'error': 'end_date must be on or after start_date'}, status=status.HTTP_400_BAD_REQUEST)
+            if code == 'location_mismatch':
+                return Response({'error': 'Staff is not assigned to this establishment.'}, status=status.HTTP_403_FORBIDDEN)
+            if code == 'location_not_found':
+                return Response({'error': 'Establishment not found.'}, status=status.HTTP_404_NOT_FOUND)
+            if code == 'staff_not_in_restaurant':
+                return Response({'error': 'Staff not found for this restaurant'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': code}, status=status.HTTP_400_BAD_REQUEST)
+        tor = result['time_off_request']
         return Response({
             'success': True,
             'id': str(tor.id),
             'message': 'Time-off request submitted. Your manager will be notified.',
             'status': 'PENDING',
+            'idempotent': bool(result.get('idempotent')),
+            'manager_id': result.get('manager_id'),
+            'manager_notified': bool(result.get('manager_notified')),
         }, status=status.HTTP_201_CREATED)
     except Exception as e:
         logger.exception("Agent request time off error")
