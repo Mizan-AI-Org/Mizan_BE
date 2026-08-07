@@ -182,10 +182,11 @@ def agent_submit_task_proof(request):
 def agent_department_owners(request):
     """
     Get/set who is automatically assigned per department/category.
-    Stored on Restaurant.general_settings['category_owners'].
+    Writes through ``staff.responsibility`` so Settings / Miya / WhatsApp share
+    the same slug contract and audit trail.
     """
     try:
-        restaurant, _, err = _resolve_dashboard_restaurant(request)
+        restaurant, acting_user, err = _resolve_dashboard_restaurant(request)
         if err:
             return Response({"error": err["error"]}, status=err["status"])
 
@@ -193,30 +194,61 @@ def agent_department_owners(request):
         owners = settings_blob.get("category_owners") or {}
 
         if request.method == "GET":
-            return Response({"success": True, "category_owners": owners})
+            return Response(
+                {
+                    "success": True,
+                    "category_owners": owners,
+                    "category_owners_by_location": settings_blob.get("category_owners_by_location") or {},
+                    "responsibility_categories": settings_blob.get("responsibility_categories") or {},
+                    "routing": settings_blob.get("category_routing") or {},
+                }
+            )
 
         data = request.data if isinstance(getattr(request, "data", None), dict) else {}
         updates = data.get("category_owners") or data.get("owners") or {}
         if not isinstance(updates, dict):
             return Response({"error": "category_owners must be an object"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Merge — accept list or single UUID per category
+        from staff.responsibility import set_responsible_people
+
+        location_id = str(data.get("location_id") or "").strip() or None
+        strategy = str(data.get("strategy") or "").strip()
+        results = []
         for k, v in updates.items():
             if v in (None, ""):
                 continue
-            key = str(k).upper()
             if isinstance(v, (list, tuple)):
-                owners[key] = [str(x) for x in v if x]
+                owner_ids = [str(x) for x in v if x]
             else:
-                owners[key] = str(v)
-        settings_blob["category_owners"] = owners
-        restaurant.general_settings = settings_blob
-        restaurant.save(update_fields=["general_settings", "updated_at"])
+                owner_ids = [str(v)]
+            try:
+                results.append(
+                    set_responsible_people(
+                        restaurant,
+                        category=str(k),
+                        owner_ids=owner_ids,
+                        location_id=location_id,
+                        strategy=strategy,
+                        replace=True,
+                        actor=acting_user,
+                    )
+                )
+            except ValueError as exc:
+                return Response(
+                    {"success": False, "error": str(exc), "category": str(k)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        restaurant.refresh_from_db()
+        settings_blob = restaurant.general_settings if isinstance(restaurant.general_settings, dict) else {}
         return Response(
             {
                 "success": True,
-                "category_owners": owners,
+                "category_owners": settings_blob.get("category_owners") or {},
+                "updates": results,
                 "message": "Department assignees updated.",
+                "message_for_user": "Responsibility owners updated.",
+                "verified": True,
             }
         )
     except Exception as e:

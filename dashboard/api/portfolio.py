@@ -32,6 +32,7 @@ from typing import Any
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from rest_framework import permissions
+from rest_framework.decorators import api_view, authentication_classes, permission_classes
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -348,12 +349,15 @@ class PortfolioSummaryView(APIView):
         primary_id = primary_location.id if primary_location else None
         known_ids = {loc.id for loc in locations}
 
-        def bucket_for(loc_id):
-            """Return the location id this row should count against,
-            falling back to primary when unknown/null."""
-            if loc_id in known_ids:
-                return loc_id
-            return primary_id
+        def bucket_for(loc_id, staff_primary_id=None):
+            from dashboard.api.location_bucketing import resolve_location_bucket
+
+            return resolve_location_bucket(
+                loc_id,
+                staff_primary_location_id=staff_primary_id,
+                known_location_ids=known_ids,
+                primary_location_id=primary_id,
+            )
 
         # Per-location metric buckets (initialised so every branch always
         # appears in the response, even if it had zero activity today).
@@ -397,7 +401,8 @@ class PortfolioSummaryView(APIView):
                 slot = per_staff[sid]
                 if is_in and slot["first_in"] is None:
                     slot["first_in"] = ev.timestamp
-                    slot["location_of_first_in"] = bucket_for(ev.location_id)
+                    staff_primary = getattr(ev.staff, "primary_location_id", None)
+                    slot["location_of_first_in"] = bucket_for(ev.location_id, staff_primary)
                     profile = getattr(ev.staff, "profile", None)
                     slot["hourly_rate"] = (
                         profile.hourly_rate if profile and profile.hourly_rate else Decimal("0")
@@ -405,7 +410,8 @@ class PortfolioSummaryView(APIView):
                 if is_out:
                     slot["last_out"] = ev.timestamp
                 if ev.location_mismatch:
-                    b = bucket_for(ev.location_id)
+                    staff_primary = getattr(ev.staff, "primary_location_id", None)
+                    b = bucket_for(ev.location_id, staff_primary)
                     if b is not None:
                         mismatches_by_loc[b] += 1
 
@@ -437,8 +443,9 @@ class PortfolioSummaryView(APIView):
             shifts_today = AssignedShift.objects.filter(
                 schedule__restaurant=restaurant,
                 shift_date=today,
-            ).only(
-                "id", "status", "start_time", "staff_id", "location_id"
+            ).select_related("staff").only(
+                "id", "status", "start_time", "staff_id", "location_id",
+                "staff__primary_location_id",
             )
 
             staff_clocked_in_today = {
@@ -447,7 +454,8 @@ class PortfolioSummaryView(APIView):
             grace_cutoff = now - timedelta(minutes=GRACE_MINUTES_FOR_POTENTIAL_NOSHOW)
 
             for s in shifts_today:
-                loc_id = bucket_for(s.location_id)
+                staff_primary = getattr(s.staff, "primary_location_id", None) if s.staff_id else None
+                loc_id = bucket_for(s.location_id, staff_primary)
                 if loc_id not in metrics_by_loc:
                     continue
                 bucket = metrics_by_loc[loc_id]
@@ -472,11 +480,14 @@ class PortfolioSummaryView(APIView):
                 schedule__restaurant=restaurant,
                 shift_date=today,
                 status__in=["SCHEDULED", "CONFIRMED"],
-            ).annotate(members_count=Count("staff_members"))
+            ).annotate(members_count=Count("staff_members")).select_related("staff")
 
-            for s in shifts_with_staff_counts.only("id", "staff_id", "location_id"):
+            for s in shifts_with_staff_counts.only(
+                "id", "staff_id", "location_id", "staff__primary_location_id"
+            ):
                 if s.staff_id is None and s.members_count == 0:
-                    loc_id = bucket_for(s.location_id)
+                    staff_primary = getattr(s.staff, "primary_location_id", None) if s.staff_id else None
+                    loc_id = bucket_for(s.location_id, staff_primary)
                     if loc_id in metrics_by_loc:
                         metrics_by_loc[loc_id]["shift_gaps_today"] += 1
         except Exception:
@@ -492,11 +503,12 @@ class PortfolioSummaryView(APIView):
                 # Prefer the shift's branch; fall back to the staff member's
                 # primary_location; fall back to tenant primary.
                 loc_id = None
+                staff_primary = None
                 if cs.shift_id and cs.shift and cs.shift.location_id:
                     loc_id = cs.shift.location_id
                 elif cs.staff and getattr(cs.staff, "primary_location_id", None):
-                    loc_id = cs.staff.primary_location_id
-                loc_id = bucket_for(loc_id)
+                    staff_primary = cs.staff.primary_location_id
+                loc_id = bucket_for(loc_id, staff_primary)
                 if loc_id not in metrics_by_loc:
                     continue
                 bucket = metrics_by_loc[loc_id]
@@ -753,10 +765,13 @@ class LocationDetailView(APIView):
         ).first()
         is_primary_branch = primary and primary.id == location.id
 
-        # ---- Today's shifts at this branch (or unscoped shifts if primary)
-        shift_filter = Q(location_id=location.id)
+        # ---- Today's shifts at this branch (explicit tag or staff home branch)
+        shift_filter = Q(location_id=location.id) | Q(
+            location__isnull=True,
+            staff__primary_location_id=location.id,
+        )
         if is_primary_branch:
-            shift_filter = shift_filter | Q(location__isnull=True)
+            shift_filter = shift_filter | Q(location__isnull=True, staff__primary_location__isnull=True)
         shifts = (
             AssignedShift.objects.filter(
                 schedule__restaurant=restaurant,
@@ -783,9 +798,12 @@ class LocationDetailView(APIView):
         ]
 
         # ---- Today's clock events at this branch
-        clock_filter = Q(location_id=location.id)
+        clock_filter = Q(location_id=location.id) | Q(
+            location__isnull=True,
+            staff__primary_location_id=location.id,
+        )
         if is_primary_branch:
-            clock_filter = clock_filter | Q(location__isnull=True)
+            clock_filter = clock_filter | Q(location__isnull=True, staff__primary_location__isnull=True)
         events = (
             ClockEvent.objects.filter(
                 staff__restaurant=restaurant,
@@ -880,7 +898,10 @@ class LocationDetailView(APIView):
                 ClockEvent.objects.filter(
                     staff__restaurant=restaurant,
                     timestamp__date=today,
-                    location_id=location.id,
+                )
+                .filter(
+                    Q(location_id=location.id)
+                    | Q(location__isnull=True, staff__primary_location_id=location.id)
                 )
                 .order_by("staff_id", "timestamp")
                 .values_list("staff_id", "event_type")
@@ -1103,3 +1124,119 @@ class LocationDetailView(APIView):
             },
             "daily": series,
         }
+
+
+def format_location_detail_message(payload: dict[str, Any]) -> str:
+    """Natural-language branch summary for Miya."""
+    loc = payload.get("location") or {}
+    name = loc.get("name") or "this branch"
+    metrics = loc.get("metrics") or {}
+    staff_summary = payload.get("staff_summary") or {}
+    shifts = payload.get("shifts_today") or []
+    lines = [
+        f"*{name}* — status: {loc.get('status', 'unknown')}",
+        (
+            f"Team: {staff_summary.get('total', metrics.get('staff_count', 0))} assigned, "
+            f"{metrics.get('clocked_in_now', 0)} clocked in now"
+        ),
+        (
+            f"Today: {metrics.get('scheduled_today', 0)} scheduled, "
+            f"{len(shifts)} shift(s) on the board, "
+            f"{metrics.get('no_shows_today', 0)} no-show(s)"
+        ),
+        f"Labor today: {metrics.get('labor_cost_today', 0)} · Coverage: {metrics.get('coverage_pct', 0)}%",
+    ]
+    concern = loc.get("top_concern")
+    if concern:
+        lines.append(f"Top concern: {concern}")
+    return "\n".join(lines)
+
+
+@api_view(["GET", "POST"])
+@authentication_classes([])
+@permission_classes([permissions.AllowAny])
+def agent_location_detail(request):
+    """
+    GET|POST /api/dashboard/agent/location-detail/
+
+    Live ops for one branch (matches Locations Overview drill-in).
+    Params: location_id or location_name (partial match).
+    """
+    from scheduling.views_agent import _resolve_restaurant_for_agent
+
+    restaurant, acting_user, err = _resolve_restaurant_for_agent(request)
+    if err:
+        return Response({"success": False, "error": err["error"]}, status=err["status"])
+
+    data = request.data if isinstance(getattr(request, "data", None), dict) else {}
+    params = request.query_params
+
+    def _pick(*keys, default=None):
+        for key in keys:
+            if key in data and data.get(key) not in (None, ""):
+                return data.get(key)
+            if key in params and params.get(key) not in (None, ""):
+                return params.get(key)
+        return default
+
+    loc_id = str(_pick("location_id", "locationId", "id") or "").strip()
+    loc_name = str(_pick("location_name", "locationName", "name", "branch") or "").strip()
+
+    locations_qs = BusinessLocation.objects.filter(restaurant=restaurant, is_active=True)
+    role = getattr(acting_user, "role", None) if acting_user else None
+    if acting_user and role == "MANAGER":
+        managed_ids = list(acting_user.managed_locations.values_list("id", flat=True))
+        if managed_ids:
+            locations_qs = locations_qs.filter(id__in=managed_ids)
+
+    location = None
+    if loc_id:
+        location = locations_qs.filter(id=loc_id).first()
+    elif loc_name:
+        location = locations_qs.filter(name__icontains=loc_name).order_by("-is_primary").first()
+    else:
+        location = locations_qs.filter(is_primary=True).first()
+
+    if not location:
+        return Response(
+            {
+                "success": False,
+                "error": "location_not_found",
+                "message_for_user": (
+                    "Which branch should I check? Give me the branch name "
+                    "(e.g. Marrakech) or location_id."
+                ),
+            },
+            status=404,
+        )
+
+    today = timezone.now().date()
+    portfolio = PortfolioSummaryView()
+    full = portfolio._compute(restaurant, acting_user, role or "OWNER", today)
+    row = next((r for r in full["locations"] if str(r["id"]) == str(location.id)), None)
+    if not row:
+        return Response({"success": False, "error": "location_not_in_scope"}, status=404)
+
+    detail_view = LocationDetailView()
+    details = detail_view._collect_today(restaurant, location, today)
+    staff_block = detail_view._collect_staff(restaurant, location, today)
+
+    payload = {
+        "success": True,
+        "generated_at": full["generated_at"],
+        "today": full["today"],
+        "tenant": full["tenant"],
+        "location": {
+            **row,
+            "address": location.address or "",
+            "timezone": location.timezone or getattr(restaurant, "timezone", "") or "",
+        },
+        **details,
+        **staff_block,
+    }
+    payload["message_for_user"] = format_location_detail_message(payload)
+    payload["locations_available"] = [
+        {"id": str(loc.id), "name": loc.name, "is_primary": loc.is_primary}
+        for loc in locations_qs.order_by("-is_primary", "name")
+    ]
+    return Response(payload)

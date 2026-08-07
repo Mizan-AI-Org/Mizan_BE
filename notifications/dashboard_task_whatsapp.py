@@ -1,8 +1,7 @@
-"""
-WhatsApp lifecycle for ``dashboard.Task`` (Miya-assigned ops tasks).
+"""WhatsApp lifecycle for ``dashboard.Task`` — thin adapter over unified experience.
 
-Staff can reply with accept / start / done / unable so status syncs to the
-dashboard without waiting for Mastra. Managers still use Miya for create/reassign.
+Staff keyword replies call the same ``execute_structured_action`` → ops path
+used by Dashboard, Mobile, Voice, and Miya. No WhatsApp-specific business logic.
 """
 from __future__ import annotations
 
@@ -10,11 +9,7 @@ import logging
 import re
 from typing import Any
 
-from django.utils import timezone
-
 logger = logging.getLogger(__name__)
-
-_OPEN = ("PENDING", "ACCEPTED", "IN_PROGRESS")
 
 
 def looks_like_dashboard_task_status_reply(text: str | None) -> bool:
@@ -43,81 +38,84 @@ def looks_like_dashboard_task_status_reply(text: str | None) -> bool:
         return True
     if re.match(r"^(done|complete|accept|start|unable)\s+#?\d", tl):
         return True
+    # Natural language: "I completed my closing checklist"
+    if re.search(r"\b(i\s+)?(have\s+)?(completed?|finished|done)\b", tl) and re.search(
+        r"\b(task|checklist|demande|closing|my)\b", tl
+    ):
+        return True
+    if re.search(r"\b(mark|set|change)\b.+\b(completed?|done|finished|in\s+progress)\b", tl):
+        return True
     return False
 
 
 def _normalize_status_intent(text: str) -> str | None:
     t = (text or "").strip().lower()
-    if re.search(r"\b(done|complete|completed|finish|finished|terminer|إتمام)\b", t):
-        return "COMPLETED"
+    if re.match(
+        r"^(start|begin|run|do)\s+(my\s+)?(the\s+)?(task\s+)?checklist\b",
+        t,
+    ):
+        return None
+    if re.search(r"\b(my tasks|tasks|list tasks)\b", t) and not re.search(
+        r"\b(done|complete|accept|start|unable)\b", t
+    ):
+        return "LIST"
     if re.search(r"\b(unable|can'?t complete|cannot complete|incapable|تعذر)\b", t):
         return "UNABLE_TO_COMPLETE"
     if re.search(r"\b(reject|rejected|cancel|cancelled)\b", t):
         return "CANCELLED"
+    if re.search(r"\b(done|complete|completed|finish|finished|terminer|إتمام)\b", t):
+        return "COMPLETED"
     if re.search(r"\b(accept|accepted|قبول|accepté)\b", t):
         return "ACCEPTED"
     if re.search(r"\b(start|started|progress|in progress|commencer|بدء)\b", t):
         return "IN_PROGRESS"
-    if re.search(r"\b(my tasks|tasks|list tasks)\b", t):
-        return "LIST"
     return None
 
 
-def _pick_task(user, text: str):
-    from dashboard.models import Task
-    from django.db.models import Q
-
-    qs = (
-        Task.objects.filter(status__in=_OPEN)
-        .filter(Q(assigned_to=user) | Q(assignees=user))
-        .distinct()
-        .order_by("-updated_at")
-    )
-    m = re.search(r"#?([0-9a-f]{8})", text.lower())
+def _extract_task_query(text: str) -> str:
+    """Pull title fragment / short ref from natural language."""
+    t = (text or "").strip()
+    m = re.search(r"#([0-9a-fA-F]{6,8})\b", t)
     if m:
-        ref = m.group(1)
-        for task in qs[:40]:
-            if str(task.id).replace("-", "").startswith(ref):
-                return task
-    return qs.first()
+        return m.group(1)
+    # "I completed my closing checklist" → closing checklist
+    m = re.search(
+        r"(?:completed?|finished|done|accepted?|started?)\s+(?:my\s+|the\s+)?(.+?)(?:\s+task)?\s*[.!]?\s*$",
+        t,
+        re.I,
+    )
+    if m:
+        frag = m.group(1).strip(" .!")
+        if frag.lower() not in ("it", "that", "this", "my task", "the task"):
+            return frag
+    return ""
 
 
-def _notify_managers_completed(task, acting_user) -> None:
-    try:
-        from notifications.services import notification_service
-        from accounts.models import CustomUser
+def _ops_ctx(user):
+    from miya.services.intelligence.unified import ops_context_for_channel
 
-        restaurant = task.restaurant
-        managers = CustomUser.objects.filter(
-            restaurant=restaurant,
-            is_active=True,
-            role__in=("SUPER_ADMIN", "OWNER", "ADMIN", "MANAGER"),
-        ).exclude(pk=getattr(acting_user, "id", None))[:8]
-        actor = ""
-        if acting_user:
-            actor = (
-                f"{(acting_user.first_name or '').strip()} "
-                f"{(acting_user.last_name or '').strip()}"
-            ).strip() or acting_user.email
-        for mgr in managers:
-            notification_service.send_custom_notification(
-                recipient=mgr,
-                message=f"{actor or 'Staff'} completed: {task.title}",
-                title="Task completed",
-                notification_type="TASK_COMPLETED",
-                channels=["app", "push"],
-                sender=acting_user,
-            )
-            if (mgr.phone or "").strip():
-                try:
-                    notification_service.send_whatsapp_text(
-                        mgr.phone,
-                        f"✅ Task completed by {actor or 'staff'}: *{task.title}*",
-                    )
-                except Exception:
-                    pass
-    except Exception:
-        logger.exception("dashboard_task_whatsapp: manager notify failed task=%s", task.id)
+    return ops_context_for_channel(user=user, channel="whatsapp")
+
+
+def complete_task_after_proof(
+    *,
+    user,
+    task_id: str,
+    notify_managers: bool = True,
+) -> dict[str, Any]:
+    """Called after photo proof is saved — unified COMPLETED path (events + memory)."""
+    from miya.services.intelligence.unified import apply_task_status
+
+    result = apply_task_status(
+        user=user,
+        channel="whatsapp",
+        status="COMPLETED",
+        task_id=str(task_id),
+        assignee_scope=True,
+        notify_managers=notify_managers,
+        message_id=f"whatsapp:proof:{task_id}",
+    )
+    return result.as_tool_response()
 
 
 def handle_dashboard_task_whatsapp_reply(
@@ -130,24 +128,31 @@ def handle_dashboard_task_whatsapp_reply(
 ) -> bool:
     """
     Returns True if the message was handled (caller should ``continue``).
+    Mutates tasks only via unified ``apply_task_status`` (execute_structured_action).
     """
     if not user or not text_body:
+        return False
+    if not looks_like_dashboard_task_status_reply(text_body):
         return False
     intent = _normalize_status_intent(text_body)
     if not intent:
         return False
 
-    from dashboard.models import Task
-    from django.db.models import Q
+    ctx = _ops_ctx(user)
+    if ctx is None:
+        notification_service.send_whatsapp_text(
+            phone_digits,
+            "I couldn't determine your workspace. Ask your manager to link your account.",
+        )
+        return True
+
+    from miya.services.intelligence.unified import apply_task_status
+    from miya.services.ops.tasks import find_tasks
 
     if intent == "LIST":
-        tasks = list(
-            Task.objects.filter(status__in=_OPEN)
-            .filter(Q(assigned_to=user) | Q(assignees=user))
-            .distinct()
-            .order_by("due_date", "-created_at")[:15]
-        )
-        if not tasks:
+        result = find_tasks(ctx, mine_only=True, status="OPEN", limit=15)
+        tasks = (result.data or {}).get("tasks") or []
+        if not result.success or not tasks:
             notification_service.send_whatsapp_text(
                 phone_digits,
                 "No open tasks assigned to you right now.",
@@ -155,9 +160,9 @@ def handle_dashboard_task_whatsapp_reply(
             return True
         lines = ["*Your open tasks:*"]
         for i, t in enumerate(tasks, 1):
-            due = f" · due {t.due_date}" if t.due_date else ""
-            ref = str(t.id).replace("-", "")[:8]
-            lines.append(f"{i}. [{t.status}] {t.title}{due}\n   Reply: done #{ref}")
+            due = f" · due {t['due_date']}" if t.get("due_date") else ""
+            ref = (t.get("task_ref") or "").lstrip("#") or str(t.get("id") or "")[:8]
+            lines.append(f"{i}. [{t.get('status')}] {t.get('title')}{due}\n   Reply: done #{ref}")
         lines.append(
             "\nCommands: *accept*, *start*, *done*, *unable* "
             "(add #id if you have several)."
@@ -165,96 +170,99 @@ def handle_dashboard_task_whatsapp_reply(
         notification_service.send_whatsapp_text(phone_digits, "\n".join(lines))
         return True
 
-    task = _pick_task(user, text_body)
-    if not task:
+    q = _extract_task_query(text_body)
+    # Resolve target for photo-proof gate before mutating
+    preview = find_tasks(
+        ctx,
+        mine_only=True,
+        status="OPEN",
+        q=q,
+        task_id=q if re.fullmatch(r"[0-9a-fA-F-]{8,}", q or "") else "",
+        limit=5,
+    )
+    task_row = None
+    if preview.success:
+        rows = (preview.data or {}).get("tasks") or []
+        if len(rows) == 1:
+            task_row = rows[0]
+        elif q and rows:
+            task_row = rows[0]
+
+    if intent == "COMPLETED" and task_row:
+        # Load require_photo_proof from DB
+        try:
+            from dashboard.models import Task
+
+            task_obj = Task.objects.filter(id=task_row["id"], restaurant=ctx.restaurant).first()
+        except Exception:
+            task_obj = None
+        if (
+            task_obj
+            and getattr(task_obj, "require_photo_proof", False)
+            and not getattr(task_obj, "proof_media_url", None)
+        ):
+            if session is not None:
+                try:
+                    session.context["awaiting_dashboard_task_proof_id"] = str(task_obj.id)
+                    session.context["awaiting_dashboard_task_proof_complete"] = True
+                    session.save(update_fields=["context"])
+                except Exception:
+                    logger.exception(
+                        "dashboard_task_whatsapp: failed to arm proof session task=%s",
+                        task_obj.id,
+                    )
+            notification_service.send_whatsapp_text(
+                phone_digits,
+                f"Before I mark *{task_obj.title}* done, please send a photo as proof "
+                "(you can add a short caption with it).",
+            )
+            return True
+
+    result = apply_task_status(
+        user=user,
+        channel="whatsapp",
+        status=intent,
+        task_id=str(task_row["id"]) if task_row else "",
+        q=q if not task_row else "",
+        restaurant=ctx.restaurant,
+        assignee_scope=True,
+        notify_managers=True,
+        message_id=f"whatsapp:task:{intent}:{q or (task_row or {}).get('id', '')}",
+    )
+    if result.needs_clarification:
+        cands = (result.data or {}).get("candidates") or []
+        if cands:
+            lines = [result.message_for_user or "Which task?"]
+            for c in cands[:5]:
+                if isinstance(c, dict):
+                    lines.append(f"- {c.get('task_ref')} {c.get('title')} ({c.get('status')})")
+            notification_service.send_whatsapp_text(phone_digits, "\n".join(lines))
+        else:
+            notification_service.send_whatsapp_text(
+                phone_digits,
+                result.message_for_user or "Which task should I update?",
+            )
+        return True
+
+    if not result.success:
         notification_service.send_whatsapp_text(
             phone_digits,
-            "I couldn't find an open task for you. Reply *tasks* to list them.",
+            result.message_for_user
+            or "I couldn't update that task. Reply *tasks* to list yours.",
         )
         return True
 
-    if (
-        intent == "COMPLETED"
-        and getattr(task, "require_photo_proof", False)
-        and not getattr(task, "proof_media_url", None)
-    ):
-        if session is not None:
-            try:
-                session.context["awaiting_dashboard_task_proof_id"] = str(task.id)
-                session.context["awaiting_dashboard_task_proof_complete"] = True
-                session.save(update_fields=["context"])
-            except Exception:
-                logger.exception(
-                    "dashboard_task_whatsapp: failed to arm proof session task=%s", task.id
-                )
-        notification_service.send_whatsapp_text(
-            phone_digits,
-            f"Before I mark *{task.title}* done, please send a photo as proof "
-            "(you can add a short caption with it).",
-        )
-        return True
-
-    old = task.status
-    task.status = intent
-    update_fields = ["status", "updated_at"]
-    if intent == "ACCEPTED":
-        meta = dict(getattr(task, "routing_metadata", None) or {})
-        meta["acknowledged_by"] = str(user.id)
-        meta["acknowledged_at"] = timezone.now().isoformat()
-        task.routing_metadata = meta
-        update_fields.append("routing_metadata")
-    if intent == "COMPLETED":
-        if hasattr(task, "completed_at"):
-            task.completed_at = timezone.now()
-            update_fields.append("completed_at")
-        if hasattr(task, "completed_by_id"):
-            task.completed_by = user
-            update_fields.append("completed_by")
-    task.save(update_fields=update_fields)
-
-    try:
-        from dashboard.task_sync import broadcast_tasks_invalidate
-
-        broadcast_tasks_invalidate(task.restaurant, reason="whatsapp_task_status", task_id=str(task.id))
-    except Exception:
-        pass
-
+    task = (result.data or {}).get("task") or {}
     label = intent.replace("_", " ").title()
     notification_service.send_whatsapp_text(
         phone_digits,
-        f"Updated *{task.title}* → {label}.",
+        f"Updated *{task.get('title') or 'task'}* → {label}.",
     )
-    if intent == "COMPLETED" and old != "COMPLETED":
-        _notify_managers_completed(task, user)
-    elif intent == "UNABLE_TO_COMPLETE":
-        try:
-            from accounts.models import CustomUser
-
-            actor = (
-                f"{(user.first_name or '').strip()} {(user.last_name or '').strip()}".strip()
-                or user.email
-            )
-            for mgr in CustomUser.objects.filter(
-                restaurant=task.restaurant,
-                is_active=True,
-                role__in=("SUPER_ADMIN", "OWNER", "ADMIN", "MANAGER"),
-            )[:6]:
-                notification_service.send_custom_notification(
-                    recipient=mgr,
-                    message=f"{actor} cannot complete: {task.title}",
-                    title="Task unable to complete",
-                    notification_type="TASK_ASSIGNED",
-                    channels=["app", "push"],
-                    sender=user,
-                )
-                if (mgr.phone or "").strip():
-                    try:
-                        notification_service.send_whatsapp_text(
-                            mgr.phone,
-                            f"⚠️ {actor} marked unable to complete: *{task.title}*",
-                        )
-                    except Exception:
-                        pass
-        except Exception:
-            logger.exception("unable notify failed")
     return True
+
+
+# Back-compat for views that still import this name
+def _notify_managers_completed(task, acting_user) -> None:
+    from miya.services.ops.tasks import _notify_managers_task_outcome
+
+    _notify_managers_task_outcome(task, acting_user, kind="COMPLETED")

@@ -1311,7 +1311,9 @@ def agent_clock_in(request):
         # outstanding "in" event is from TODAY — a stale open clock-in from
         # a prior day means the staff just forgot to clock out, and we
         # should auto-close it so today's event can land on the dashboard.
-        from datetime import timedelta as _td
+        from timeclock.stale_sessions import close_stale_open_clock_in
+
+        close_stale_open_clock_in(user, source="Mastra Agent (auto)")
 
         last_event = ClockEvent.objects.filter(staff=user).order_by('-timestamp').first()
         if last_event and last_event.event_type == 'in':
@@ -1321,36 +1323,7 @@ def agent_clock_in(request):
                     'error': 'Already clocked in',
                     'last_clock_in': last_event.timestamp.isoformat()
                 }, status=status.HTTP_400_BAD_REQUEST)
-            # Stale prior-day open clock-in — auto-close so today's "in"
-            # event reaches the manager's dashboard. Mirrors the by-phone
-            # endpoint so both Miya entry points behave identically.
-            try:
-                eight_hours_later = last_event.timestamp + _td(hours=8)
-                end_of_that_day = last_event.timestamp.replace(
-                    hour=23, minute=59, second=59, microsecond=0
-                )
-                auto_out_at = min(eight_hours_later, end_of_that_day)
-                auto_out = ClockEvent.objects.create(
-                    staff=user,
-                    event_type='out',
-                    latitude=None,
-                    longitude=None,
-                    device_id="Mastra Agent (auto)",
-                    notes=(
-                        "Auto clock-out: previous clock-in was left open "
-                        "across days. Closed so today's clock-in can be "
-                        "recorded on the manager dashboard."
-                    ),
-                    location=last_event.location,
-                    location_mismatch=False,
-                )
-                ClockEvent.objects.filter(pk=auto_out.pk).update(timestamp=auto_out_at)
-            except Exception:
-                logger.warning(
-                    "agent_clock_in: auto clock-out for stale event %s failed; "
-                    "continuing to record today's clock-in.",
-                    getattr(last_event, 'id', None),
-                )
+            # Prior-day stale should have been closed above; continue to fresh clock-in.
 
         matched_loc_fk = matched_location if getattr(matched_location, 'id', None) else None
         location_mismatch = bool(matched_loc_fk and not user.can_work_at(matched_loc_fk))
@@ -1574,7 +1547,7 @@ def agent_clock_in_by_phone(request):
                 'message_for_user': "Please share your live location to clock in.",
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        from datetime import timedelta as _td
+        from timeclock.stale_sessions import close_stale_open_clock_in
 
         with transaction.atomic():
             last_event = (
@@ -1586,12 +1559,16 @@ def agent_clock_in_by_phone(request):
             now_ts = timezone.now()
 
             if last_event and last_event.event_type == 'in':
-                # If the previous "in" is from TODAY, the staff is genuinely
-                # already clocked in — don't double-log, just acknowledge it
-                # honestly. We still return ``success: True`` because from the
-                # user's POV the action ("be clocked in now") IS satisfied;
-                # ``already_clocked_in: True`` lets Miya word it correctly and
-                # also signals the dashboard / tests that no NEW row landed.
+                close_stale_open_clock_in(user, now=now_ts, source="Mastra Agent (auto)")
+                last_event = (
+                    ClockEvent.objects.select_for_update()
+                    .filter(staff=user)
+                    .order_by('-timestamp')
+                    .first()
+                )
+
+            if last_event and last_event.event_type == 'in':
+                # Genuinely still clocked in on an active session.
                 if timezone.localtime(last_event.timestamp).date() == timezone.localtime(now_ts).date():
                     local_time = timezone.localtime(last_event.timestamp).strftime('%H:%M')
                     return Response({
@@ -1604,47 +1581,6 @@ def agent_clock_in_by_phone(request):
                         ),
                         'clock_event_id': str(last_event.id),
                     }, status=status.HTTP_200_OK)
-
-                # Stale open "in" from a PRIOR day — staff forgot to clock out.
-                # Without this branch we'd hit the "already clocked in" guard
-                # forever and today's clock-in would never reach the manager's
-                # dashboard (the widget filters by ``timestamp__date=today``,
-                # so yesterday's row is invisible to it). Auto-close yesterday
-                # at +8h-or-end-of-day, then proceed to record today's clock-in
-                # below as a fresh event. We DON'T set lat/lng on the auto-out
-                # because we're not pretending to know where the user was.
-                try:
-                    eight_hours_later = last_event.timestamp + _td(hours=8)
-                    end_of_that_day = last_event.timestamp.replace(
-                        hour=23, minute=59, second=59, microsecond=0
-                    )
-                    auto_out_at = min(eight_hours_later, end_of_that_day)
-                    auto_out = ClockEvent.objects.create(
-                        staff=user,
-                        event_type='out',
-                        latitude=None,
-                        longitude=None,
-                        device_id="Mastra Agent (auto)",
-                        notes=(
-                            "Auto clock-out: previous clock-in was left open "
-                            "across days. Closed so today's clock-in can be "
-                            "recorded on the manager dashboard."
-                        ),
-                        location=last_event.location,
-                        location_mismatch=False,
-                    )
-                    # ``timestamp`` uses ``auto_now_add=True`` so the create
-                    # set it to "now". Override after-the-fact so the audit
-                    # trail reflects the correct historical close time.
-                    ClockEvent.objects.filter(pk=auto_out.pk).update(
-                        timestamp=auto_out_at
-                    )
-                except Exception:
-                    logger.warning(
-                        "agent_clock_in_by_phone: auto clock-out for stale event "
-                        "%s failed; continuing to record today's clock-in.",
-                        getattr(last_event, 'id', None),
-                    )
 
             matched_loc_fk = matched_location if getattr(matched_location, 'id', None) else None
             location_mismatch = bool(matched_loc_fk and not user.can_work_at(matched_loc_fk))
@@ -1755,7 +1691,7 @@ def agent_clock_out_by_phone(request):
 
         duration = timezone.now() - last_event.timestamp
         hours = round(duration.total_seconds() / 3600, 2)
-        ClockEvent.objects.create(
+        clock_event = ClockEvent.objects.create(
             staff=user,
             event_type='out',
             device_id="Mastra Agent",
@@ -1764,6 +1700,9 @@ def agent_clock_out_by_phone(request):
         first_name = getattr(user, 'first_name', None) or 'Team Member'
         return Response({
             'success': True,
+            'staff_id': str(user.id),
+            'clock_event_id': str(clock_event.id),
+            'hours_worked': hours,
             'message_for_user': f"You're clocked out. You worked {hours} hours today. Have a great rest of your day, {first_name}!",
         }, status=status.HTTP_200_OK)
     except Exception as e:

@@ -54,7 +54,22 @@ def sanitize_tool_payload_for_llm(payload: Any) -> Any:
     if isinstance(payload, dict):
         cleaned: dict[str, Any] = {}
         for key, val in payload.items():
-            if isinstance(val, str) and _is_url_key(key):
+            # Keep storage keys / filenames; scrub only URL-like values.
+            if key in ("storage_key", "filename", "mime_type", "secure_photo_refs"):
+                if key == "secure_photo_refs" and isinstance(val, list):
+                    cleaned[key] = [
+                        {
+                            "storage_key": (item.get("storage_key") or "") if isinstance(item, dict) else "",
+                            "filename": (item.get("filename") or "photo.jpg") if isinstance(item, dict) else "photo.jpg",
+                            "mime_type": (item.get("mime_type") or "image/jpeg") if isinstance(item, dict) else "image/jpeg",
+                            "index": item.get("index") if isinstance(item, dict) else None,
+                            "has_secure_url": bool(isinstance(item, dict) and item.get("url")),
+                        }
+                        for item in val
+                    ]
+                else:
+                    cleaned[key] = val
+            elif isinstance(val, str) and _is_url_key(key):
                 cleaned[key] = _scrub_url_value(val)
             elif isinstance(val, (dict, list)):
                 cleaned[key] = sanitize_tool_payload_for_llm(val)

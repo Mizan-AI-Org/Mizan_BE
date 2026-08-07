@@ -28,4 +28,5 @@ class ManagerMessageTemplateTests(SimpleTestCase):
         params = components[0]["parameters"]
         self.assertEqual(params[0]["parameter_name"], "message")
         self.assertEqual(params[0]["text"], "Please come in")
+        self.assertEqual(kwargs["language_code"], "en_US")
         self.assertIs(kwargs["allow_text_fallback"], False)

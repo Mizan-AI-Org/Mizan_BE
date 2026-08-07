@@ -169,8 +169,29 @@ def extract_list_entities(tool_name: str, body: dict[str, Any]) -> tuple[str, li
             )
         return "invoices", entities
 
-    if tool_name in ("list_operations_live", "list_dashboard_tasks", "list_tasks_demands"):
+    if tool_name in (
+        "list_operations_live",
+        "list_dashboard_tasks",
+        "list_tasks_demands",
+        "find_tasks",
+        "get_dashboard_task",
+        "create_dashboard_task",
+        "create_ops_task",
+        "reassign_dashboard_task",
+        "assign_ops_task",
+        "update_dashboard_task_status",
+        "update_ops_task_status",
+    ):
         entities = []
+        single = data.get("task")
+        if isinstance(single, dict):
+            entities.append(
+                {
+                    "id": single.get("id"),
+                    "label": single.get("title") or "",
+                    "status": single.get("status") or "",
+                }
+            )
         for key in ("pending", "in_progress", "completed", "items", "tasks", "results"):
             rows = data.get(key) or []
             if not isinstance(rows, list):
@@ -195,8 +216,10 @@ def extract_list_entities(tool_name: str, body: dict[str, Any]) -> tuple[str, li
                 entities.append({"id": r.get("id"), "label": r.get("subject") or r.get("title") or ""})
         return "tasks", entities
 
-    if tool_name == "list_incidents":
+    if tool_name in ("list_incidents", "find_incidents", "get_incident"):
         rows = data.get("incidents") or []
+        if not rows and isinstance(data.get("incident"), dict):
+            rows = [data["incident"]]
         entities = []
         for r in rows if isinstance(rows, list) else []:
             if isinstance(r, dict):
@@ -285,7 +308,14 @@ def apply_working_set_to_args(
                 args.pop("invoice_id", None)
                 args.pop("invoiceId", None)
 
-    if tool_name in ("update_dashboard_task_status", "update_dashboard_task", "reassign_dashboard_task"):
+    if tool_name in (
+        "update_dashboard_task_status",
+        "update_dashboard_task",
+        "reassign_dashboard_task",
+        "get_dashboard_task",
+        "assign_ops_task",
+        "update_ops_task_status",
+    ):
         tid = str(args.get("task_id") or args.get("taskId") or args.get("id") or "").strip()
         if looks_like_pronoun_ref(tid):
             resolved = resolve_ids(
@@ -294,12 +324,19 @@ def apply_working_set_to_args(
                 kind="tasks",
                 pronoun_hint=tid,
             )
-            if resolved:
+            if len(resolved) == 1:
                 args["task_id"] = resolved[0]
+                args.pop("taskId", None)
+            elif len(resolved) > 1:
+                # Ambiguous — leave empty so canonical layer asks for clarification
+                args["task_id"] = ""
+                args["_ambiguous_task_candidates"] = resolved
+            else:
+                args["task_id"] = ""
                 args.pop("taskId", None)
                 args.pop("id", None)
 
-    if tool_name == "close_incident":
+    if tool_name in ("close_incident", "resolve_incident", "get_incident", "get_incident_photo", "route_incident"):
         iid = str(args.get("incident_id") or args.get("incidentId") or args.get("id") or "").strip()
         if looks_like_pronoun_ref(iid) or not iid:
             resolved = resolve_ids(
@@ -345,3 +382,48 @@ def apply_working_set_to_args(
                 args.pop("id", None)
 
     return args
+
+
+def get_working_set_entity(
+    ctx,
+    *,
+    kind: str,
+    session_context: dict[str, Any] | None = None,
+) -> str:
+    """Return sole working-set entity id when unambiguous."""
+    sess = session_context or {}
+    ws = sess.get("working_set") or {}
+    ids = ws.get(kind) or ws.get(f"{kind}s") or []
+    if isinstance(ids, list) and len(ids) == 1:
+        return str(ids[0])
+    listed = get_entities(
+        restaurant_id=getattr(ctx, "restaurant_id", None),
+        user_id=getattr(ctx, "user_id", None),
+        kind=kind,
+    )
+    if len(listed) == 1:
+        return str(listed[0].get("id") or "")
+    return ""
+
+
+def get_working_set_entity_at_index(
+    ctx,
+    *,
+    kind: str,
+    index: int,
+    session_context: dict[str, Any] | None = None,
+) -> str:
+    """Return entity id at 0-based index from working set."""
+    sess = session_context or {}
+    ws = sess.get("working_set") or {}
+    ids = ws.get(kind) or ws.get(f"{kind}s") or []
+    if isinstance(ids, list) and 0 <= index < len(ids):
+        return str(ids[index])
+    listed = get_entities(
+        restaurant_id=getattr(ctx, "restaurant_id", None),
+        user_id=getattr(ctx, "user_id", None),
+        kind=kind,
+    )
+    if 0 <= index < len(listed):
+        return str(listed[index].get("id") or "")
+    return ""

@@ -2,12 +2,17 @@
 Scheduling service layer - contains business logic for scheduling operations
 """
 from datetime import datetime, timedelta, time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+import hashlib
+import logging
+
 from django.db.models import Q, Count, Avg
 from django.utils import timezone
-from .models import AssignedShift, WeeklySchedule, ScheduleTemplate, TemplateShift, StaffAvailability, TimeOffRequest, Holiday
+
 from accounts.models import CustomUser, Restaurant
-import hashlib
+from .models import AssignedShift, WeeklySchedule, ScheduleTemplate, TemplateShift, StaffAvailability, TimeOffRequest, Holiday
+
+logger = logging.getLogger(__name__)
 
 
 class SchedulingService:
@@ -726,6 +731,242 @@ class SchedulingService:
         except Exception as e:
             pass
 
+    @staticmethod
+    def _time_off_manager_already_notified(time_off_request_id) -> bool:
+        from notifications.models import Notification
+
+        return Notification.objects.filter(
+            notification_type="AVAILABILITY_REQUEST",
+            data__time_off_request_id=str(time_off_request_id),
+        ).exists()
+
+    @staticmethod
+    def _resolve_time_off_manager(
+        restaurant: Restaurant,
+        *,
+        location_id: Optional[str] = None,
+        exclude_staff_id=None,
+    ) -> Optional[CustomUser]:
+        from staff.category_routing_engine import resolve_routing_for_staff_category
+
+        routing = resolve_routing_for_staff_category(
+            restaurant, "SCHEDULING", location_id=location_id
+        )
+        manager = routing.primary
+        if manager and exclude_staff_id and str(manager.id) == str(exclude_staff_id):
+            manager = None
+        if manager:
+            return manager
+
+        qs = CustomUser.objects.filter(
+            restaurant=restaurant,
+            role__in=["MANAGER", "ADMIN", "OWNER", "SUPER_ADMIN"],
+            is_active=True,
+        ).order_by("role", "first_name")
+        if exclude_staff_id:
+            qs = qs.exclude(id=exclude_staff_id)
+        return qs.first()
+
+    @staticmethod
+    def _ensure_time_off_manager_notified(
+        tor: TimeOffRequest,
+        restaurant: Restaurant,
+        *,
+        location_id: Optional[str] = None,
+    ) -> Tuple[Optional[str], bool]:
+        """Notify the scheduling responsible manager exactly once."""
+        if SchedulingService._time_off_manager_already_notified(tor.id):
+            from notifications.models import Notification
+
+            existing = (
+                Notification.objects.filter(
+                    notification_type="AVAILABILITY_REQUEST",
+                    data__time_off_request_id=str(tor.id),
+                )
+                .order_by("created_at")
+                .first()
+            )
+            mid = str(existing.recipient_id) if existing else None
+            return mid, False
+
+        manager = SchedulingService._resolve_time_off_manager(
+            restaurant,
+            location_id=location_id,
+            exclude_staff_id=getattr(tor.staff, "id", None),
+        )
+        if not manager:
+            logger.warning(
+                "Time-off request %s: no scheduling manager found for restaurant %s",
+                tor.id,
+                restaurant.id,
+            )
+            return None, False
+
+        from notifications.models import Notification
+        from notifications.services import notification_service
+
+        staff_name = tor.staff.get_full_name() or tor.staff.first_name or "Staff member"
+        date_range = f"{tor.start_date.isoformat()} to {tor.end_date.isoformat()}"
+        reason_bit = f" Reason: {(tor.reason or '')[:120]}." if tor.reason else ""
+        message = (
+            f"📅 {staff_name} requested time off ({tor.request_type.replace('_', ' ').title()}) "
+            f"for {date_range}.{reason_bit}"
+        )
+        notif_data = {
+            "time_off_request_id": str(tor.id),
+            "staff_id": str(tor.staff_id),
+            "start_date": tor.start_date.isoformat(),
+            "end_date": tor.end_date.isoformat(),
+            "request_type": tor.request_type,
+            "status": tor.status,
+        }
+        if location_id:
+            notif_data["location_id"] = str(location_id)
+
+        notification = Notification.objects.create(
+            recipient=manager,
+            sender=tor.staff,
+            title="Time-off request",
+            message=message,
+            notification_type="AVAILABILITY_REQUEST",
+            priority="MEDIUM",
+            data=notif_data,
+        )
+        try:
+            notification_service.send_custom_notification(
+                recipient=manager,
+                notification=notification,
+                message=message,
+                notification_type="AVAILABILITY_REQUEST",
+                title="Time-off request",
+                channels=["app"],
+            )
+        except Exception as exc:
+            logger.warning("Time-off in-app manager notification failed: %s", exc)
+
+        if getattr(manager, "phone", None):
+            try:
+                notification_service.send_whatsapp_text(
+                    phone=manager.phone,
+                    body=message,
+                    notification=notification,
+                )
+            except Exception as exc:
+                logger.warning("Time-off manager WhatsApp notification failed: %s", exc)
+
+        return str(manager.id), True
+
+    @staticmethod
+    def create_time_off_request(
+        *,
+        restaurant: Restaurant,
+        staff: CustomUser,
+        start_date,
+        end_date,
+        request_type: str = "VACATION",
+        reason: Optional[str] = None,
+        location_id: Optional[str] = None,
+    ) -> dict:
+        """
+        Create a pending time-off request and notify the scheduling responsible
+        manager exactly once (idempotent on duplicate pending rows).
+        """
+        if end_date < start_date:
+            raise ValueError("end_date_before_start")
+
+        if getattr(staff, "restaurant_id", None) != restaurant.id:
+            raise ValueError("staff_not_in_restaurant")
+
+        if location_id:
+            from accounts.models import BusinessLocation
+
+            loc = BusinessLocation.objects.filter(
+                id=location_id, restaurant_id=restaurant.id, is_active=True
+            ).first()
+            if not loc:
+                raise ValueError("location_not_found")
+            eff = staff.effective_shift_location()
+            if eff and str(eff.id) != str(location_id) and not staff.can_work_at(loc):
+                raise ValueError("location_mismatch")
+
+        request_type = (request_type or "VACATION").upper()
+        if request_type not in ("VACATION", "SICK", "PERSONAL", "OTHER"):
+            request_type = "VACATION"
+
+        existing = TimeOffRequest.objects.filter(
+            staff=staff,
+            start_date=start_date,
+            end_date=end_date,
+            request_type=request_type,
+            status="PENDING",
+        ).first()
+        if existing:
+            manager_id, notified = SchedulingService._ensure_time_off_manager_notified(
+                existing, restaurant, location_id=location_id
+            )
+            return {
+                "time_off_request": existing,
+                "idempotent": True,
+                "manager_id": manager_id,
+                "manager_notified": notified,
+            }
+
+        tor = TimeOffRequest.objects.create(
+            staff=staff,
+            start_date=start_date,
+            end_date=end_date,
+            request_type=request_type,
+            reason=(reason or "").strip() or None,
+            status="PENDING",
+        )
+        manager_id, notified = SchedulingService._ensure_time_off_manager_notified(
+            tor, restaurant, location_id=location_id
+        )
+        return {
+            "time_off_request": tor,
+            "idempotent": False,
+            "manager_id": manager_id,
+            "manager_notified": notified,
+        }
+
+    @staticmethod
+    def assign_shift_coverage(
+        shift: AssignedShift,
+        new_staff: CustomUser,
+        *,
+        restaurant: Restaurant,
+    ) -> dict:
+        """
+        Reassign shift coverage to ``new_staff`` and notify the assignee once.
+        Idempotent when the shift is already CONFIRMED for the same staff member.
+        """
+        if shift.schedule.restaurant_id != restaurant.id:
+            raise ValueError("shift_not_in_restaurant")
+        if new_staff.restaurant_id != restaurant.id or not new_staff.is_active:
+            raise ValueError("staff_not_in_restaurant")
+
+        prior_staff_id = shift.staff_id
+        idempotent = prior_staff_id == new_staff.id and shift.status == "CONFIRMED"
+        if idempotent:
+            return {
+                "shift": shift,
+                "idempotent": True,
+                "notification_sent": False,
+                "staff_id": str(new_staff.id),
+            }
+
+        shift.staff = new_staff
+        shift.staff_members.clear()
+        shift.status = "CONFIRMED"
+        shift.save(update_fields=["staff", "status"])
+
+        SchedulingService.notify_shift_assignment(shift, force_whatsapp=True)
+        return {
+            "shift": shift,
+            "idempotent": False,
+            "notification_sent": True,
+            "staff_id": str(new_staff.id),
+        }
 
     @staticmethod
     def staff_shift_color(staff_id: str) -> str:

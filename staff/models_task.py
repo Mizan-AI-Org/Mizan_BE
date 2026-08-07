@@ -101,6 +101,14 @@ class SafetyConcernReport(models.Model):
     title = models.CharField(max_length=255)
     description = models.TextField()
     location = models.CharField(max_length=255, blank=True, null=True)
+    business_location = models.ForeignKey(
+        'accounts.BusinessLocation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='safety_concerns',
+        help_text='Establishment this incident belongs to (multi-site scoping).',
+    )
     severity = models.CharField(max_length=20, choices=[
         ('LOW', 'Low'),
         ('MEDIUM', 'Medium'),

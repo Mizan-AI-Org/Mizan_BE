@@ -68,13 +68,23 @@ def _lookup_user(restaurant: "Restaurant", uid: str):
     from accounts.models import CustomUser
 
     try:
-        return CustomUser.objects.get(
-            id=uid,
-            restaurant_id=restaurant.id,
-            is_active=True,
-        )
-    except (CustomUser.DoesNotExist, ValueError, TypeError):
+        user = CustomUser.objects.filter(id=uid, is_active=True).first()
+    except (ValueError, TypeError):
         return None
+    if user is None:
+        return None
+    if str(getattr(user, "restaurant_id", "")) == str(restaurant.id):
+        return user
+    try:
+        from accounts.models import StaffRestaurantLink
+
+        if StaffRestaurantLink.objects.filter(
+            user_id=uid, restaurant_id=restaurant.id, is_active=True
+        ).exists():
+            return user
+    except Exception:
+        pass
+    return None
 
 
 def _all_uids_for_slugs(mapping: dict, slugs: Iterable[str]) -> tuple[list[str], str | None]:
@@ -100,6 +110,26 @@ def _all_uids_for_slugs(mapping: dict, slugs: Iterable[str]) -> tuple[list[str],
         if key in lowered and slug not in mapping:
             orig_slug, val = lowered[key]
             _consume(val, str(orig_slug))
+    # Accept legacy FINANCE / HR keys written by older Miya/agent paths
+    code_aliases = {
+        "request.finance": "FINANCE",
+        "task.finance": "FINANCE",
+        "request.hr": "HR",
+        "incident.hr": "HR",
+        "request.maintenance": "MAINTENANCE",
+        "incident.equipment": "MAINTENANCE",
+        "request.inventory": "INVENTORY",
+        "request.payroll": "PAYROLL",
+        "request.scheduling": "SCHEDULING",
+        "request.document": "DOCUMENT",
+        "request.orders": "ORDERS",
+        "task.orders": "ORDERS",
+        "request.purchase_order": "DELIVERIES",
+    }
+    for slug in slugs:
+        alias = code_aliases.get(str(slug).lower())
+        if alias and alias in mapping and slug not in mapping:
+            _consume(mapping.get(alias), slug)
     return out, matched_slug
 
 
@@ -136,6 +166,7 @@ def _advance_round_robin(restaurant: "Restaurant", slug: str, owner_count: int) 
 def resolve_routing_for_slugs(
     restaurant: Optional["Restaurant"],
     slugs: tuple[str, ...],
+    location_id: str | None = None,
 ) -> CategoryRoutingResult:
     """Resolve primary assignee and notification targets for slug list."""
     result = CategoryRoutingResult()
@@ -146,6 +177,13 @@ def resolve_routing_for_slugs(
     mapping = gs.get("category_owners") or {}
     if not isinstance(mapping, dict):
         return result
+
+    if location_id:
+        by_loc = gs.get("category_owners_by_location") or {}
+        if isinstance(by_loc, dict):
+            loc_map = by_loc.get(str(location_id))
+            if isinstance(loc_map, dict) and loc_map:
+                mapping = {**mapping, **loc_map}
 
     uids, matched_slug = _all_uids_for_slugs(mapping, slugs)
     policy = _routing_policy(gs, matched_slug)
@@ -199,10 +237,22 @@ def resolve_routing_for_slugs(
 def resolve_routing_for_staff_category(
     restaurant: Optional["Restaurant"],
     category: Optional[str],
+    location_id: str | None = None,
 ) -> CategoryRoutingResult:
-    from staff.request_routing import slugs_for_category
+    try:
+        from staff.responsibility import resolve_responsibility, slugs_for_responsibility
 
-    return resolve_routing_for_slugs(restaurant, slugs_for_category(category))
+        if restaurant and category:
+            # Prefer full responsibility resolver (custom cats + location isolation)
+            return resolve_responsibility(
+                restaurant, category=str(category), location_id=location_id
+            )
+        slugs = slugs_for_responsibility(restaurant, str(category or ""))
+    except Exception:
+        from staff.request_routing import slugs_for_category
+
+        slugs = slugs_for_category(category)
+    return resolve_routing_for_slugs(restaurant, slugs, location_id=location_id)
 
 
 def resolve_routing_for_incident_type(

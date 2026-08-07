@@ -111,6 +111,7 @@ MIDDLEWARE = [
     'core.middleware.AgentPathCsrfExemptMiddleware',              # Before CSRF: exempt agent API paths
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',    # REQUIRED for admin
+    'core.middleware.TenantContextMiddleware',                    # JWT/session tenant injection
     'django.contrib.messages.middleware.MessageMiddleware',       # REQUIRED for admin
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'core.middleware.AuditLoggingMiddleware',                     # Persists "who did what"
@@ -737,18 +738,33 @@ CELERY_BEAT_SCHEDULE = {
         "task": "scheduling.memory_tasks.personal_reminder_approach_sweep",
         "schedule": crontab(minute='*/15'),  # nudge as due dates approach
     },
+    "calendar_event_approach_sweep": {
+        "task": "scheduling.memory_tasks.calendar_event_approach_sweep",
+        "schedule": crontab(minute='*/10'),  # meeting pings (30m / 1h / 1d before)
+    },
     "daily_briefing_sweep": {
         "task": "scheduling.memory_tasks.daily_briefing_sweep",
-        "schedule": crontab(minute=30, hour=7),  # 07:30 local
+        "schedule": crontab(minute=30, hour=7),  # 07:30 local — personal memory briefing
+    },
+    # Operations Live / Phase 6 Daily Operations Intelligence (07:00)
+    # Prefs + severity + fingerprint dedupe — see miya.services.intelligence.proactive
+    "operations_live_morning_brief": {
+        "task": "dashboard.tasks.operations_live_morning_brief",
+        "schedule": crontab(minute=0, hour=7),  # 07:00 local
+    },
+    "operations_live_evening_debrief": {
+        "task": "dashboard.tasks.operations_live_evening_debrief",
+        "schedule": crontab(minute=0, hour=21),  # 21:00 local
     },
     "memory_serendipity_weekly": {
         "task": "scheduling.memory_tasks.serendipity_sweep",
         "schedule": crontab(minute=0, hour=18, day_of_week=0),  # Sunday 18:00
     },
-    # Manager ops digests (WhatsApp) — staffing + open requests + invoices
+    # Manager ops digests (staffing + invoices) — weekly; daily ops snapshot is
+    # operations_live_evening_debrief at 21:00.
     "manager_ops_digest_daily": {
         "task": "scheduling.tasks_digest.manager_ops_digest_sweep",
-        "schedule": crontab(minute=0, hour=21),  # 21:00 local
+        "schedule": crontab(minute=30, hour=8),  # 08:30 — staffing/invoices supplement
     },
     "manager_ops_digest_weekly": {
         "task": "scheduling.tasks_digest.manager_ops_digest_weekly",

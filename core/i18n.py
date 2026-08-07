@@ -68,6 +68,63 @@ def whatsapp_language_code(lang: str) -> str:
     return "en_US"
 
 
+def detect_message_language(text: str | None) -> str:
+    """Best-effort language tag for a free-form message body (en/fr/ar)."""
+    import re
+
+    raw = (text or "").strip()
+    if not raw:
+        return "en"
+    if re.search(r"[\u0600-\u06FF]", raw):
+        return "ar"
+    lower = raw.lower()
+    if re.search(r"[àâäéèêëïîôùûüç]", lower):
+        return "fr"
+    fr_markers = (
+        " bonjour ",
+        " merci ",
+        " veuillez ",
+        " préparer ",
+        " prépare ",
+        " responsable ",
+        " équipe ",
+        " tâche ",
+        " répondez ",
+        " vous ",
+        " votre ",
+        " demain ",
+    )
+    padded = f" {lower} "
+    if any(marker in padded for marker in fr_markers):
+        return "fr"
+    return "en"
+
+
+def resolve_manager_message_language(
+    *,
+    user=None,
+    restaurant=None,
+    message: str = "",
+    fallback: str = "en",
+) -> str:
+    """
+    Pick one language for an entire manager→staff WhatsApp message.
+    Prefer the message body language so Meta template shell and {{message}} match.
+    """
+    body = (message or "").strip()
+    if body:
+        return detect_message_language(body)
+    return get_effective_language(user=user, restaurant=restaurant, fallback=fallback)
+
+
+def format_manager_whatsapp_freeform(message: str, *, lang: str) -> str:
+    """Localized free-form manager ping (single language, no template shell mix)."""
+    body = " ".join((message or "").split()).strip()
+    if not body:
+        body = tr("notify.manager_message.default", lang)
+    return tr("notify.manager_message.wrapper", lang, message=body)
+
+
 # -------------------------------------------------------------------------
 # Simple message catalog for operational notifications/templates
 # -------------------------------------------------------------------------
@@ -90,8 +147,8 @@ _CATALOG: dict[str, dict[str, str]] = {
         # Process start (manager Play → staff WA)
         "process.started.wa": (
             "📋 New process for you: *{name}*\n\n"
-            "When you're clocked in, say *start checklist* (or *démarrer la checklist* / *ابدأ المهام*) "
-            "to Miya and I'll walk you through it."
+            "Clock in when you arrive, or say *start checklist* (or *démarrer la checklist* / *ابدأ المهام*) "
+            "to Miya anytime — your answers are tracked separately from everyone else."
         ),
         # Checklist conversational
         "checklist.none": "No tasks or checklists are assigned to your shift right now. You're all set!",
@@ -174,6 +231,19 @@ _CATALOG: dict[str, dict[str, str]] = {
             "Type: {doc_type}. Renew it so you don't miss compliance — reply to Miya when updated."
         ),
         "compliance.expiry.app": "{title} — {when_plain}",
+        "compliance.upload.tracked_with_expiry": (
+            "✓ Tracking *{title}* ({doc_type}) — expires {expiry}. "
+            "I'll remind you on WhatsApp starting {remind_days} days before."
+        ),
+        "compliance.upload.tracked_no_expiry": (
+            "✓ Saved *{title}* ({doc_type}) under compliance documents. "
+            "Tell me the expiry date and I'll set reminders before renewal."
+        ),
+        "notify.manager_message.default": "You have a new message from your manager.",
+        "notify.manager_message.wrapper": (
+            "*Message from your manager:*\n\n{message}\n\n"
+            "_Reply in this chat to continue._"
+        ),
         # Staff escalations (wages, payslip, etc. sent to a manager)
         "escalation.cancelled": "Okay — I cancelled that. Nothing was sent to your manager.",
         "escalation.retry_prompt": (
@@ -200,6 +270,15 @@ _CATALOG: dict[str, dict[str, str]] = {
         "miya.wa.unexpected_error": "Something went wrong on my side. Please try again in a moment.",
         "miya.wa.empty_reply": "I couldn't process that message. Please try again in a moment.",
         "miya.wa.idle_prompt": "I'm here. What would you like me to help with?",
+        "miya.manager_self_task_blocked": (
+            "I won't assign a dashboard task to you — that's for your team. "
+            "For your own deadlines use a reminder (I'll ping you on WhatsApp), "
+            "a calendar event, or a compliance document for insurance/permits."
+        ),
+        "miya.use_reminder_not_task": (
+            "That sounds like a personal reminder — I'll track it in Meetings & Reminders "
+            "and ping you on WhatsApp, not as a task assigned to you."
+        ),
         # Mastra bridge endpoints (miya/views_mastra.py)
         "miya.mastra.no_miya_access": "Your role doesn't have Miya access for this workspace. Contact your manager.",
         "miya.mastra.voice_unrecognized": "I couldn't understand that voice note — please try again or type your message.",
@@ -225,8 +304,8 @@ _CATALOG: dict[str, dict[str, str]] = {
         "checklist.preview.more": "...",
         "process.started.wa": (
             "📋 Nouveau processus pour vous : *{name}*\n\n"
-            "Une fois pointé, dites *démarrer la checklist* (ou *start checklist* / *ابدأ المهام*) "
-            "à Miya et je vous guide étape par étape."
+            "Pointez à votre arrivée, ou dites *démarrer la checklist* (ou *start checklist* / *ابدأ المهام*) "
+            "à Miya quand vous voulez — vos réponses sont enregistrées séparément."
         ),
         "checklist.none": "Aucune tâche ni checklist n’est assignée à votre service pour le moment. Vous êtes prêt !",
         "checklist.already_complete": "Votre checklist est déjà terminée. Bravo !",
@@ -306,6 +385,19 @@ _CATALOG: dict[str, dict[str, str]] = {
             "Type : {doc_type}. Renouvelez-le pour rester conforme — répondez à Miya une fois mis à jour."
         ),
         "compliance.expiry.app": "{title} — {when_plain}",
+        "compliance.upload.tracked_with_expiry": (
+            "✓ J'ai enregistré *{title}* ({doc_type}) — expire le {expiry}. "
+            "Je vous rappellerai sur WhatsApp à partir de {remind_days} jours avant."
+        ),
+        "compliance.upload.tracked_no_expiry": (
+            "✓ *{title}* ({doc_type}) est enregistré dans les documents de conformité. "
+            "Donnez-moi la date d'expiration et je programmerai les rappels."
+        ),
+        "notify.manager_message.default": "Vous avez un nouveau message de votre responsable.",
+        "notify.manager_message.wrapper": (
+            "*Message de votre responsable :*\n\n{message}\n\n"
+            "_Répondez dans cette conversation pour continuer._"
+        ),
         "escalation.cancelled": "D’accord — c’est annulé. Rien n’a été envoyé à votre responsable.",
         "escalation.retry_prompt": (
             "Merci de reformuler ce que vous voulez dire à votre responsable "
@@ -330,6 +422,15 @@ _CATALOG: dict[str, dict[str, str]] = {
         "miya.wa.unexpected_error": "Un problème est survenu de mon côté. Réessayez dans un instant.",
         "miya.wa.empty_reply": "Je n’ai pas pu traiter ce message. Réessayez dans un instant.",
         "miya.wa.idle_prompt": "Je suis là. Comment puis-je vous aider ?",
+        "miya.manager_self_task_blocked": (
+            "Je ne vous assignerai pas de tâche tableau de bord — c'est pour votre équipe. "
+            "Pour vos propres échéances : rappel (WhatsApp), événement calendrier, "
+            "ou document de conformité pour assurance/permis."
+        ),
+        "miya.use_reminder_not_task": (
+            "Cela ressemble à un rappel personnel — je le suivrai dans Rendez-vous & Rappels "
+            "avec un ping WhatsApp, pas comme une tâche assignée à vous."
+        ),
         "miya.mastra.no_miya_access": "Votre rôle n’a pas accès à Miya pour cet espace de travail. Contactez votre responsable.",
         "miya.mastra.voice_unrecognized": "Je n’ai pas compris cette note vocale — réessayez ou tapez votre message.",
         "activation.welcome_back": (
@@ -353,8 +454,8 @@ _CATALOG: dict[str, dict[str, str]] = {
         "checklist.preview.more": "...",
         "process.started.wa": (
             "📋 عملية جديدة لك: *{name}*\n\n"
-            "بعد تسجيل الحضور، قل لـ ميّا *ابدأ المهام* (أو *start checklist* / *démarrer la checklist*) "
-            "وسأرشدك خطوة بخطوة."
+            "سجّل حضورك عند الوصول، أو قل لـ ميّا *ابدأ المهام* (أو *start checklist* / *démarrer la checklist*) "
+            "في أي وقت — إجاباتك تُسجَّل بشكل منفصل عن باقي الفريق."
         ),
         "checklist.none": "لا توجد مهام أو قوائم تحقق لورديتك الآن. أنت جاهز!",
         "checklist.already_complete": "قائمة التحقق مكتملة بالفعل. أحسنت!",
@@ -434,6 +535,19 @@ _CATALOG: dict[str, dict[str, str]] = {
             "النوع: {doc_type}. جدّده للبقاء ملتزماً — رد على ميّا بعد التحديث."
         ),
         "compliance.expiry.app": "{title} — {when_plain}",
+        "compliance.upload.tracked_with_expiry": (
+            "✓ تم تسجيل *{title}* ({doc_type}) — ينتهي في {expiry}. "
+            "سأذكّرك على واتساب قبل {remind_days} يوماً من الموعد."
+        ),
+        "compliance.upload.tracked_no_expiry": (
+            "✓ تم حفظ *{title}* ({doc_type}) ضمن مستندات الامتثال. "
+            "أعطني تاريخ الانتهاء وسأضبط التذكيرات."
+        ),
+        "notify.manager_message.default": "لديك رسالة جديدة من مسؤولك.",
+        "notify.manager_message.wrapper": (
+            "*رسالة من مسؤولك:*\n\n{message}\n\n"
+            "_رد في هذه المحادثة للمتابعة._"
+        ),
         "escalation.cancelled": "تم — ألغيت ذلك. لم يُرسل أي شيء إلى مديرك.",
         "escalation.retry_prompt": (
             "يرجى إعادة صياغة ما تريد إخبار مديرك به "
@@ -458,6 +572,15 @@ _CATALOG: dict[str, dict[str, str]] = {
         "miya.wa.unexpected_error": "حدث خطأ من جهتي. يرجى المحاولة مرة أخرى بعد قليل.",
         "miya.wa.empty_reply": "تعذّر معالجة تلك الرسالة. يرجى المحاولة مرة أخرى بعد قليل.",
         "miya.wa.idle_prompt": "أنا هنا. كيف يمكنني مساعدتك؟",
+        "miya.manager_self_task_blocked": (
+            "لن أُسند إليك مهمة لوحة تحكم — هذه لطاقمك. "
+            "لمواعيدك الشخصية استخدم تذكيراً (سأرسل لك على واتساب)، "
+            "حدثاً في التقويم، أو مستند امتثال للتأمين/التراخيص."
+        ),
+        "miya.use_reminder_not_task": (
+            "يبدو أن هذا تذكير شخصي — سأتابعه في الاجتماعات والتذكيرات "
+            "مع تنبيه واتساب، وليس كمهمة مُسندة إليك."
+        ),
         "miya.mastra.no_miya_access": "دورك لا يملك صلاحية استخدام ميّا في مساحة العمل هذه. تواصل مع مديرك.",
         "miya.mastra.voice_unrecognized": "لم أفهم تلك الملاحظة الصوتية — حاول مرة أخرى أو اكتب رسالتك.",
         "activation.welcome_back": "مرحباً بعودتك {name}! تم ربط واتساب بحسابك في {restaurant}. كيف يمكنني مساعدتك اليوم؟",

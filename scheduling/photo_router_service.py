@@ -57,7 +57,8 @@ Pick exactly one category from this list:
                               (columns like From/To/Status, "En attente",
                               "NEW DEMANDS"). NEVER treat as an incident.
   - "id_or_certification" — staff ID, food handler card, license,
-                              certification, training certificate
+                              certification, training certificate, OR restaurant-level
+                              insurance / hygiene permit / business registration
   - "inventory"           — stockroom shelves, fridge contents, ingredient
                               list, anything that needs a stock count
   - "other"               — anything that doesn't fit above
@@ -125,13 +126,8 @@ _VALID_ACTIONS = {
 }
 
 
-def parse_photo(image_bytes: bytes, content_type: str = "image/jpeg") -> dict[str, Any]:
-    """Classify a photo and extract action-relevant fields.
-
-    Always returns a dict with at least ``category`` and ``confidence``,
-    even on error — callers can branch on ``error`` or check the
-    confidence threshold.
-    """
+def _openai_parse_photo_impl(image_bytes: bytes, content_type: str = "image/jpeg") -> dict[str, Any]:
+    """Legacy GPT-4o vision extraction — used by OpenAIExtractionProvider."""
     api_key = getattr(settings, "OPENAI_API_KEY", "") or ""
     if not api_key:
         return {
@@ -246,3 +242,15 @@ def parse_photo(image_bytes: bytes, content_type: str = "image/jpeg") -> dict[st
         "suggested_action": suggested,
         "fields": parsed.get("fields") or {},
     }
+
+
+def parse_photo(image_bytes: bytes, content_type: str = "image/jpeg") -> dict[str, Any]:
+    """Classify a photo and extract action-relevant fields.
+
+    Always returns a dict with at least ``category`` and ``confidence``,
+    even on error — callers can branch on ``error`` or check the
+    confidence threshold.
+    """
+    from miya.services.multimodal_extraction_provider import run_photo_extraction
+
+    return run_photo_extraction(image_bytes, content_type=content_type)

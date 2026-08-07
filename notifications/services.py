@@ -260,11 +260,15 @@ class NotificationService:
         title='Notification',
         override_preferences=False,
         notification=None,     # <── NEW
+        data=None,
+        location_id=None,
+        location_name=None,
     ):
         """
         Unified notification sender.
         - If `notification` is provided → USE IT (do NOT create a new one)
         - If not provided → create a new Notification
+        - Optional location_id stamps establishment onto notification.data (multi-site scoping)
         """
 
         if channels is None:
@@ -275,18 +279,39 @@ class NotificationService:
         # -------------------------------------------------------------
         if notification is not None:
             # Already created by serializer/view/scheduler
-            pass
+            if location_id or data:
+                try:
+                    from miya.services.ops.scoping import notification_data_with_location
+
+                    merged = notification_data_with_location(
+                        {**(notification.data or {}), **(data or {})},
+                        location_id=location_id,
+                        location_name=location_name,
+                    )
+                    if merged != (notification.data or {}):
+                        notification.data = merged
+                        notification.save(update_fields=["data"])
+                except Exception:
+                    pass
 
         # -------------------------------------------------------------
         # OPTION B — create a new one (shifts, tasks, sms, etc)
         # -------------------------------------------------------------
         else:
+            from miya.services.ops.scoping import notification_data_with_location
+
+            payload = notification_data_with_location(
+                data,
+                location_id=location_id,
+                location_name=location_name,
+            )
             notification = Notification.objects.create(
                 recipient=recipient,
                 message=message,
                 notification_type=notification_type,
                 title=title,
-                sender=sender
+                sender=sender,
+                data=payload,
             )
 
         data = {
@@ -566,6 +591,7 @@ class NotificationService:
                     notification=notif,
                     audit=True,
                     allow_text_fallback=False,
+                    recipient=recipient,
                 )
                 if tpl_ok:
                     return True
@@ -609,6 +635,7 @@ class NotificationService:
                     notification=notif,
                     audit=True,
                     allow_text_fallback=False,
+                    recipient=recipient,
                 )
                 if tpl_ok:
                     return True
@@ -659,6 +686,7 @@ class NotificationService:
     def _send_manager_message_template(
         self, phone_digits, body, notification=None, *, audit: bool = True,
         allow_text_fallback: bool | None = None,
+        recipient=None,
     ):
         """
         Send (or fall back with) the approved manager_message UTILITY template.
@@ -668,8 +696,15 @@ class NotificationService:
         ``(#100) Parameter name is missing or empty`` and silently break
         Staff Messages / Miya inform_staff delivery outside the 24h window.
 
-        Tries the configured language first, then en_US / fr / ar.
+        Template locale is chosen to match the message body language so the
+        shell (header/footer) and {{message}} are never mixed (e.g. FR + EN).
         """
+        from core.i18n import (
+            format_manager_whatsapp_freeform,
+            resolve_manager_message_language,
+            whatsapp_language_code,
+        )
+
         template_name = (getattr(settings, "WHATSAPP_TEMPLATE_MANAGER_MESSAGE", None) or "").strip()
         if not template_name:
             logger.warning(
@@ -678,13 +713,23 @@ class NotificationService:
             return False, {
                 "error": "WHATSAPP_TEMPLATE_MANAGER_MESSAGE is not configured",
             }
-        primary = (
-            getattr(settings, "WHATSAPP_TEMPLATE_MANAGER_MESSAGE_LANGUAGE", None) or "fr"
-        ).strip() or "fr"
+
+        settings_default = (
+            getattr(settings, "WHATSAPP_TEMPLATE_MANAGER_MESSAGE_LANGUAGE", None) or "en"
+        ).strip() or "en"
+        lang = resolve_manager_message_language(
+            user=recipient,
+            restaurant=getattr(recipient, "restaurant", None) if recipient else None,
+            message=body or "",
+            fallback=settings_default,
+        )
+        primary = whatsapp_language_code(lang)
 
         # Meta rejects some control chars in template params — keep one line.
-        # Named params also reject tabs/newlines in some accounts.
-        text = " ".join((body or "").split())[:1024] or "You have a new message from your manager."
+        text = " ".join((body or "").split())[:1024]
+        if not text:
+            from core.i18n import tr
+            text = tr("notify.manager_message.default", lang)
         components = [
             {
                 "type": "body",
@@ -697,6 +742,7 @@ class NotificationService:
                 ],
             }
         ]
+        freeform = format_manager_whatsapp_freeform(text, lang=lang)
         return self.send_whatsapp_template(
             phone_digits,
             template_name,
@@ -704,8 +750,8 @@ class NotificationService:
             components=components,
             notification=notification,
             audit=audit,
-            fallback_body=text,
-            fallback_context={"message": text, "body": text},
+            fallback_body=freeform,
+            fallback_context={"message": text, "body": text, "language": lang},
             allow_text_fallback=allow_text_fallback,
         )
 
@@ -910,6 +956,7 @@ class NotificationService:
         tags=None,
         channels=None,
         source="miya_announcement",
+        broadcast_all=False,
     ):
         """
         Send an announcement (in-app + WhatsApp) to staff in a restaurant.
@@ -926,6 +973,9 @@ class NotificationService:
           ``StaffProfile.tags`` with any-of semantics. Enables
           "message the kitchen", "let housekeeping know", etc.
         - channels: List of channels; default ["app", "whatsapp"].
+        - broadcast_all: When True and no staff_ids/roles/departments/tags,
+          send to all active staff with phone numbers. Otherwise a specific
+          audience filter is required (prevents accidental whole-team pings).
         Returns (success: bool, notification_count: int, error_message: str|None).
         """
         from django.db.models import Q
@@ -962,13 +1012,25 @@ class NotificationService:
                 ).values_list("user_id", flat=True)
             )
             qs = CustomUser.objects.filter(is_active=True).filter(tenant_scope)
+            has_filters = bool(staff_ids or roles or departments or normalised_tags)
+            if not has_filters and not broadcast_all:
+                return (
+                    False,
+                    0,
+                    (
+                        "Specify who should receive this: audience 'all' for everyone, "
+                        "or audience.staff_ids / roles / departments / tags. "
+                        "To message one person, use create_dashboard_task instead."
+                    ),
+                    {},
+                )
             # When targeting specific staff_ids (e.g. Miya "inform Salima"), include them even if no phone — we still send in-app.
             if not staff_ids:
                 qs = qs.exclude(Q(phone__isnull=True) | Q(phone=""))
             if sender:
                 qs = qs.exclude(id=sender.id)
 
-            if staff_ids or roles or departments or normalised_tags:
+            if has_filters:
                 filters = Q()
                 if staff_ids:
                     filters |= Q(id__in=staff_ids)
@@ -1088,6 +1150,11 @@ class NotificationService:
         for lang in (language_code, "en_US", "en", "fr", "fr_FR", "ar"):
             if lang and lang not in alt_languages:
                 alt_languages.append(lang)
+        # When primary locale is English, skip French before retrying — avoids
+        # mixed-language manager_message shells (FR header + EN body).
+        primary_base = (language_code or "").split("_", 1)[0].lower()
+        if primary_base == "en":
+            alt_languages = [l for l in alt_languages if not l.lower().startswith("fr")]
 
         last_resp: dict = {"error": "WhatsApp template not sent"}
         last_status = 0
@@ -1338,9 +1405,10 @@ class NotificationService:
 
         self._ensure_shift_tasks_from_templates(user, active_shift)
 
-        tasks_qs = ShiftTask.objects.filter(shift=active_shift).exclude(
-            status__in=["COMPLETED", "CANCELLED"]
-        )
+        tasks_qs = ShiftTask.objects.filter(
+            shift=active_shift,
+            assigned_to=user,
+        ).exclude(status__in=["COMPLETED", "CANCELLED"])
         priority_order = {"URGENT": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
         tasks = sorted(
             list(tasks_qs),
@@ -1417,19 +1485,52 @@ class NotificationService:
         try:
             from scheduling.models import ShiftTask
             from scheduling.shift_auto_templates import _normalize_task_item
-            from scheduling.standing_checklist import attach_standing_templates_to_shift
+            from scheduling.standing_checklist import (
+                attach_standing_templates_to_shift,
+                user_can_run_template,
+            )
+            from scheduling.checklist_photo import (
+                apply_verification_fields_to_shift_task,
+                verification_fields_from_item,
+            )
 
             attach_standing_templates_to_shift(active_shift, user)
             templates = list(active_shift.task_templates.all())
         except Exception:
             return
 
-        existing_titles = set(
-            ShiftTask.objects.filter(shift=active_shift)
-            .values_list("title", flat=True)
-            .distinct()
-        )
         for tpl in templates:
+            if not user_can_run_template(user, tpl):
+                continue
+            tpl_id = str(getattr(tpl, "id", "") or "")
+            existing_for_tpl = ShiftTask.objects.filter(
+                shift=active_shift,
+                assigned_to=user,
+                branch_config__template_id=tpl_id,
+            )
+            if tpl_id and existing_for_tpl.exists():
+                steps = list(getattr(tpl, "tasks", None) or [])
+                for step in steps:
+                    if not isinstance(step, dict):
+                        continue
+                    title = (
+                        step.get("title")
+                        or step.get("name")
+                        or step.get("task")
+                        or getattr(tpl, "name", "Task")
+                    )
+                    title = str(title or "").strip()[:255]
+                    if not title:
+                        continue
+                    match = existing_for_tpl.filter(title=title).first()
+                    if match:
+                        apply_verification_fields_to_shift_task(match, step)
+                continue
+            existing_titles = set(
+                ShiftTask.objects.filter(shift=active_shift, assigned_to=user)
+                .values_list("title", flat=True)
+                .distinct()
+            )
             steps = []
             try:
                 if getattr(tpl, "sop_steps", None):
@@ -1455,27 +1556,29 @@ class NotificationService:
                     raw = {"title": title, "description": desc}
                 if not title:
                     title = getattr(tpl, "name", "Task") or "Task"
+                raw_item = raw if isinstance(raw, dict) else {"title": title, "description": desc}
                 if title in existing_titles:
+                    existing_task = ShiftTask.objects.filter(
+                        shift=active_shift,
+                        assigned_to=user,
+                        title=title,
+                    ).first()
+                    if existing_task:
+                        apply_verification_fields_to_shift_task(existing_task, raw_item)
                     continue
                 existing_titles.add(title)
                 try:
-                    t = _normalize_task_item(raw if isinstance(raw, dict) else {"title": title, "description": desc})
-                    branch_config = {}
-                    if (
-                        t.get("branches")
-                        or t.get("response_type") == "yes_no"
-                        or t.get("template_task_id")
-                        or t.get("requires_photo")
-                    ):
-                        branch_config = {
-                            "template_task_id": t.get("template_task_id") or "",
-                            "response_type": t.get("response_type") or "check",
-                            "branches": t.get("branches") or {},
-                            "template_id": str(getattr(tpl, "id", "") or ""),
-                            "template_name": getattr(tpl, "name", "") or "",
-                            "requires_photo": bool(t.get("requires_photo")),
-                            "verification_type": t.get("verification_type") or "NONE",
-                        }
+                    t = _normalize_task_item(raw_item)
+                    vfields = verification_fields_from_item(raw_item)
+                    branch_config = {
+                        "template_task_id": t.get("template_task_id") or "",
+                        "response_type": t.get("response_type") or "yes_no",
+                        "branches": t.get("branches") or {},
+                        "template_id": str(getattr(tpl, "id", "") or ""),
+                        "template_name": getattr(tpl, "name", "") or "",
+                        "requires_photo": bool(vfields["requires_photo"]),
+                        "verification_type": vfields["verification_type"],
+                    }
                     ShiftTask.objects.create(
                         shift=active_shift,
                         title=title,
@@ -1483,8 +1586,8 @@ class NotificationService:
                         status="TODO",
                         assigned_to=user,
                         branch_config=branch_config,
-                        verification_required=bool(t.get("verification_required") or t.get("requires_photo")),
-                        verification_type=t.get("verification_type") or "NONE",
+                        verification_required=vfields["verification_required"],
+                        verification_type=vfields["verification_type"],
                     )
                 except Exception as e:
                     logger.warning("_ensure_shift_tasks_from_templates: %s", e)
@@ -1531,7 +1634,10 @@ class NotificationService:
 
         self._ensure_shift_tasks_from_templates(user, active_shift)
 
-        tasks_qs = ShiftTask.objects.filter(shift=active_shift).exclude(status__in=["COMPLETED", "CANCELLED"])
+        tasks_qs = ShiftTask.objects.filter(
+            shift=active_shift,
+            assigned_to=user,
+        ).exclude(status__in=["COMPLETED", "CANCELLED"])
         priority_order = {"URGENT": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
         tasks = sorted(list(tasks_qs), key=lambda t: (priority_order.get((t.priority or "MEDIUM").upper(), 2), t.created_at))
         task_ids = [str(t.id) for t in tasks]

@@ -132,7 +132,7 @@ def agent_create_calendar_event(request):
             merged.pop("events", None)
             merged.pop("meetings", None)
             merged.pop("appointments", None)
-            one = _create_single_calendar_event(restaurant, merged)
+            one = _create_single_calendar_event(restaurant, merged, acting_user=acting_user)
             if one.get("success"):
                 results.append(one)
             else:
@@ -169,7 +169,7 @@ def agent_create_calendar_event(request):
             }
         )
 
-    one = _create_single_calendar_event(restaurant, data)
+    one = _create_single_calendar_event(restaurant, data, acting_user=acting_user)
     http_status = status.HTTP_200_OK
     if not one.get("success"):
         if one.get("error") == "calendar_not_connected":
@@ -399,6 +399,17 @@ def _delete_single_calendar_event(
     if when_display:
         msg += f" ({when_display})"
     msg += " from your calendar."
+
+    try:
+        from scheduling.calendar_reminder_sync import cancel_calendar_event_reminder
+
+        cancel_calendar_event_reminder(restaurant=restaurant, event_id=event_id)
+    except Exception:
+        logger.exception(
+            "calendar reminder cancel failed restaurant=%s event=%s",
+            restaurant.id,
+            event_id,
+        )
 
     return {
         "success": True,
@@ -692,6 +703,45 @@ def _update_single_calendar_event(
     if event.get("htmlLink"):
         msg += f" {event['htmlLink']}"
 
+    # Keep WhatsApp / dashboard PersonalReminder in sync with calendar
+    if acting_user and (event.get("id") or event_id):
+        try:
+            from scheduling.calendar_reminder_sync import (
+                meeting_kind_from_text,
+                sync_calendar_event_reminder,
+            )
+
+            start_dt = None
+            if start_raw:
+                if "T" in start_raw:
+                    start_dt = datetime.fromisoformat(start_raw.replace("Z", "+00:00"))
+                else:
+                    from datetime import time as _time
+
+                    start_dt = datetime.combine(
+                        datetime.fromisoformat(start_raw).date(),
+                        _time(9, 0),
+                    )
+                if start_dt.tzinfo is None:
+                    start_dt = dj_timezone.make_aware(start_dt)
+            if start_dt:
+                desc = (event.get("description") or "")[:500]
+                sync_calendar_event_reminder(
+                    restaurant=restaurant,
+                    owner=acting_user,
+                    event_id=str(event.get("id") or event_id),
+                    title=str(summary),
+                    start_at=start_dt,
+                    location=loc,
+                    meeting_kind=meeting_kind_from_text(str(summary), desc) or "",
+                )
+        except Exception:
+            logger.exception(
+                "calendar reminder sync on update failed restaurant=%s event=%s",
+                restaurant.id,
+                event_id,
+            )
+
     return {
         "success": True,
         "event_id": event.get("id") or event_id,
@@ -709,7 +759,7 @@ def _update_single_calendar_event(
     }
 
 
-def _create_single_calendar_event(restaurant, data: dict) -> dict[str, Any]:
+def _create_single_calendar_event(restaurant, data: dict, *, acting_user=None) -> dict[str, Any]:
     """Shared create path for one event; returns a response body dict."""
     title = str(data.get("title") or data.get("summary") or "").strip()
     if not title:
@@ -767,6 +817,25 @@ def _create_single_calendar_event(restaurant, data: dict) -> dict[str, Any]:
     description = str(data.get("description") or data.get("notes") or "").strip()
     location = str(data.get("location") or "").strip()
     is_reminder = bool(data.get("is_reminder") or data.get("isReminder"))
+
+    # Department meeting kinds (FOH / Kitchen / Manager)
+    try:
+        from scheduling.calendar_reminder_sync import (
+            meeting_kind_from_text,
+            normalize_meeting_kind,
+            title_with_meeting_kind,
+        )
+
+        kind = normalize_meeting_kind(
+            data.get("meeting_kind") or data.get("department") or data.get("kind")
+        ) or meeting_kind_from_text(title, description)
+        if kind:
+            title = title_with_meeting_kind(title, kind)
+            marker = f"meeting_kind:{kind}"
+            if marker.lower() not in description.lower():
+                description = f"{description}\n{marker}".strip() if description else marker
+    except Exception:
+        kind = None
 
     attendees = data.get("attendees") or []
     if isinstance(attendees, str):
@@ -849,6 +918,42 @@ def _create_single_calendar_event(restaurant, data: dict) -> dict[str, Any]:
     event = r.json() or {}
     event_id = event.get("id")
     html_link = event.get("htmlLink")
+
+    if event_id and acting_user:
+        try:
+            from scheduling.calendar_reminder_sync import sync_calendar_event_reminder
+
+            start_dt = None
+            start_iso = (start_obj or {}).get("dateTime") or (start_obj or {}).get("date") or ""
+            if start_iso:
+                if "T" in start_iso:
+                    start_dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+                else:
+                    from datetime import time as _time
+
+                    start_dt = datetime.combine(
+                        datetime.fromisoformat(start_iso).date(),
+                        _time(9, 0),
+                    )
+                if start_dt.tzinfo is None:
+                    start_dt = dj_timezone.make_aware(start_dt)
+            if start_dt:
+                sync_calendar_event_reminder(
+                    restaurant=restaurant,
+                    owner=acting_user,
+                    event_id=str(event_id),
+                    title=title,
+                    start_at=start_dt,
+                    location=location,
+                    is_reminder=is_reminder,
+                    meeting_kind=kind or "",
+                )
+        except Exception:
+            logger.exception(
+                "calendar reminder sync failed restaurant=%s event=%s",
+                restaurant.id,
+                event_id,
+            )
 
     # Friendly summary for the chat reply.
     when_display = ""

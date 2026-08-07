@@ -6,7 +6,7 @@ import logging
 
 from accounts.rbac_enforce import user_can_use_miya
 from core.whatsapp_config import get_miya_whatsapp_enabled
-from miya.services.tenant_documents import serialize_tenant_document, store_tenant_document
+from miya.services.document_input import ingest_acknowledgement_message, ingest_document
 from miya.services.whatsapp import enqueue_miya_whatsapp_turn
 from notifications.media_persist import download_whatsapp_media
 from notifications.services import notification_service
@@ -61,7 +61,8 @@ def try_miya_whatsapp_attachment(
         return True
 
     try:
-        doc = store_tenant_document(
+        session_ctx = dict(getattr(session, "context", None) or {}) if session else {}
+        doc_input = ingest_document(
             restaurant=restaurant,
             uploaded_by=user,
             uploader_phone=phone_digits,
@@ -70,6 +71,8 @@ def try_miya_whatsapp_attachment(
             filename=filename or filename_dl or "whatsapp-upload.bin",
             mime_type=mime_type or "",
             caption=caption,
+            location_id=str(session_ctx.get("location_id") or "") or None,
+            channel="whatsapp",
         )
     except ValueError as exc:
         code = str(exc)
@@ -97,10 +100,9 @@ def try_miya_whatsapp_attachment(
         )
         return True
 
-    row = serialize_tenant_document(doc)
-    user_message = caption or f"I shared a document: {row['title']}. Please review and remember it."
+    user_message = caption or ingest_acknowledgement_message(doc_input)
     session_hint = dict(getattr(session, "context", None) or {})
-    session_hint["attachment_ids"] = [str(doc.id)]
+    session_hint.update(doc_input.to_session_patch())
     session.context = session_hint
     session.save(update_fields=["context"])
 

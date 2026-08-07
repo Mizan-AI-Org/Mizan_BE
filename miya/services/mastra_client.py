@@ -125,12 +125,11 @@ def run_miya_chat_mastra(
     messages: list[dict[str, str]] = []
 
     # Mastra manages thread memory; still send recent turns for continuity on first call.
+    from miya.services.message_pipeline import sanitize_history
+
     max_history = 8
-    for turn in (history or [])[-max_history:]:
-        role = turn.get("role")
-        content = (turn.get("content") or "").strip()
-        if role in ("user", "assistant") and content:
-            messages.append({"role": role, "content": content})
+    for turn in sanitize_history(history)[-max_history:]:
+        messages.append({"role": turn["role"], "content": turn["content"]})
 
     messages.append({"role": "user", "content": user_message.strip()})
 

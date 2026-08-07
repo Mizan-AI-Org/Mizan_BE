@@ -99,9 +99,10 @@ def dispatch_parse_photo(
     rid = session_context.get("restaurant_id")
     form: dict[str, Any] = {
         "restaurant_id": str(rid or args.get("restaurant_id") or ""),
-        "auto_create": str(args.get("auto_create", True)).lower(),
         "note": str(args.get("note") or ""),
     }
+    if args.get("auto_create") not in (None, "", False, "false", "0"):
+        logger.info("parse_photo tool: auto_create ignored (extraction-only)")
     url = str(args.get("media_url") or args.get("image_url") or "").strip()
     if url:
         form["image_url"] = url
@@ -139,10 +140,12 @@ def dispatch_parse_document(
     rid = session_context.get("restaurant_id")
     form: dict[str, Any] = {
         "restaurant_id": str(rid or args.get("restaurant_id") or ""),
-        "auto_create": str(args.get("auto_create", True)).lower(),
         "note": str(args.get("note") or ""),
-        "import_processes": str(args.get("import_processes", False)).lower(),
     }
+    if args.get("auto_create") not in (None, "", False, "false", "0"):
+        logger.info("parse_photo tool: auto_create ignored (extraction-only)")
+    if args.get("import_processes") not in (None, "", False, "false", "0"):
+        logger.info("parse_document tool: import_processes ignored (preview-only on agent path)")
 
     blob, mime, filename = resolve_media_bytes(args, session_context)
     if not blob:

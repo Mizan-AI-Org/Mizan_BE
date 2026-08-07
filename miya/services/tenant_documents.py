@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
-import json
 import logging
+from decimal import Decimal
 from typing import Any
 
 from django.core.files.base import ContentFile
-from django.core.files.storage import default_storage
+from django.utils.dateparse import parse_date
 
 from core.s3_storage import file_field_download_url
 from miya.models import TenantDocument
+from miya.services.document_intelligence import (
+    fields_json_for_extracted,
+    merge_structured_into_metadata,
+    normalize_structured_fields,
+)
+from miya.services.document_versioning import (
+    _processing_status_from_parse,
+    ensure_document_family_id,
+    serialize_version_meta,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +81,23 @@ def _build_title(filename: str, parse_result: dict[str, Any]) -> str:
     return base[:255] or "Uploaded document"
 
 
+def _apply_structured_columns(doc: TenantDocument, structured: dict[str, Any]) -> None:
+    doc.structured_fields = structured or {}
+    doc.vendor_name = str(structured.get("vendor") or "")[:255]
+    doc.currency = str(structured.get("currency") or "")[:8]
+    doc.invoice_number = str(structured.get("invoice_number") or "")[:128]
+    amount_raw = structured.get("amount")
+    if amount_raw not in (None, ""):
+        try:
+            doc.amount = Decimal(str(amount_raw))
+        except Exception:
+            doc.amount = None
+    else:
+        doc.amount = None
+    exp = structured.get("expiry_date")
+    doc.expiry_date = parse_date(str(exp)) if exp else None
+
+
 def serialize_tenant_document(doc: TenantDocument, *, include_text: bool = False) -> dict[str, Any]:
     href = ""
     if doc.file:
@@ -80,6 +107,15 @@ def serialize_tenant_document(doc: TenantDocument, *, include_text: bool = False
             href = doc.file_url or ""
     elif doc.file_url:
         href = doc.file_url
+
+    structured = getattr(doc, "structured_fields", None) or {}
+    if not structured:
+        structured = normalize_structured_fields(
+            getattr(doc, "parse_metadata", None) or {},
+            category=doc.category,
+            title=doc.title,
+            summary=doc.summary,
+        )
 
     payload: dict[str, Any] = {
         "id": str(doc.id),
@@ -99,11 +135,148 @@ def serialize_tenant_document(doc: TenantDocument, *, include_text: bool = False
         "compliance_document_id": (
             str(doc.compliance_document_id) if doc.compliance_document_id else None
         ),
+        "invoice_id": str(doc.invoice_id) if getattr(doc, "invoice_id", None) else None,
         "tags": doc.tags or [],
+        "fields": structured,
+        "structured": structured,
+        "vendor": structured.get("vendor") or getattr(doc, "vendor_name", "") or None,
+        "amount": (
+            str(doc.amount)
+            if getattr(doc, "amount", None) is not None
+            else structured.get("amount")
+        ),
+        "currency": structured.get("currency") or getattr(doc, "currency", "") or None,
+        "invoice_number": (
+            structured.get("invoice_number") or getattr(doc, "invoice_number", "") or None
+        ),
+        "expiry_date": (
+            doc.expiry_date.isoformat()
+            if getattr(doc, "expiry_date", None)
+            else structured.get("expiry_date")
+        ),
+        "has_file": bool(href or (doc.file and getattr(doc.file, "name", None))),
+        **serialize_version_meta(doc),
     }
     if include_text and doc.extracted_text:
         payload["extracted_text"] = doc.extracted_text[:MAX_EXTRACT_CHARS]
     return payload
+
+
+def promote_linked_records(
+    doc: TenantDocument,
+    *,
+    file_bytes: bytes,
+    filename: str,
+    mime_type: str,
+    caption: str,
+    parse_result: dict[str, Any],
+    structured: dict[str, Any],
+) -> None:
+    """
+    Explicit legacy promotion — Invoice / Compliance from extraction.
+
+    Phase 14.2: NOT called during default ingestion. Opt-in only for controlled legacy paths.
+    """
+    _promote_linked_records(
+        doc,
+        file_bytes=file_bytes,
+        filename=filename,
+        mime_type=mime_type,
+        caption=caption,
+        parse_result=parse_result,
+        structured=structured,
+    )
+
+
+def _promote_linked_records(
+    doc: TenantDocument,
+    *,
+    file_bytes: bytes,
+    filename: str,
+    mime_type: str,
+    caption: str,
+    parse_result: dict[str, Any],
+    structured: dict[str, Any],
+) -> None:
+    """Create Invoice / ComplianceDocument from structured extraction and link."""
+    category = (doc.category or "").strip()
+    confidence = float(parse_result.get("confidence") or 0)
+    fields = parse_result.get("fields") if isinstance(parse_result.get("fields"), dict) else {}
+    promo_fields = {**fields, **{k: v for k, v in structured.items() if v}}
+    if structured.get("vendor"):
+        promo_fields["vendor"] = structured["vendor"]
+    if structured.get("amount"):
+        promo_fields["amount"] = structured["amount"]
+    if structured.get("expiry_date"):
+        promo_fields["expiry_date"] = structured["expiry_date"]
+
+    update_fields: list[str] = []
+
+    if category in ("invoice_or_receipt", "invoice", "receipt") or (
+        structured.get("vendor") and structured.get("amount")
+    ):
+        try:
+            from dashboard.api.photo_router import _try_create_invoice
+
+            invoice, _msg = _try_create_invoice(
+                doc.restaurant,
+                promo_fields,
+                caption or "",
+                doc.summary or "",
+                file_bytes=file_bytes,
+                content_type=mime_type,
+                filename_hint=filename,
+                acting_user=doc.uploaded_by,
+                ocr_confidence=confidence or None,
+            )
+            if invoice is not None:
+                doc.invoice = invoice
+                update_fields.append("invoice")
+                meta = dict(doc.parse_metadata or {})
+                meta["invoice_id"] = str(invoice.id)
+                doc.parse_metadata = meta
+                update_fields.append("parse_metadata")
+        except Exception:
+            logger.exception("promote invoice from tenant document failed")
+
+    try:
+        from payroll.services.compliance_import import try_create_compliance_from_classification
+
+        classification = {
+            **parse_result,
+            "fields": promo_fields,
+            "category": category or parse_result.get("category") or "other",
+        }
+        note = caption or doc.title or ""
+        if "insur" in (doc.title or "").lower() or "assurance" in (doc.title or "").lower():
+            note = f"{note} insurance"
+        compliance, _cmsg = try_create_compliance_from_classification(
+            restaurant=doc.restaurant,
+            acting_user=doc.uploaded_by,
+            classification=classification,
+            file_bytes=file_bytes,
+            filename=filename,
+            content_type=mime_type,
+            note=note,
+        )
+        if compliance is not None:
+            doc.compliance_document = compliance
+            update_fields.append("compliance_document")
+            if compliance.expires_at and not doc.expiry_date:
+                doc.expiry_date = compliance.expires_at
+                update_fields.append("expiry_date")
+                structured = {**structured, "expiry_date": compliance.expires_at.isoformat()}
+                doc.structured_fields = structured
+                update_fields.append("structured_fields")
+    except Exception:
+        logger.exception("promote compliance from tenant document failed")
+
+    if update_fields:
+        update_fields.append("updated_at")
+        try:
+            doc.save(update_fields=list(dict.fromkeys(update_fields)))
+        except Exception:
+            logger.exception("save linked records on tenant document failed")
 
 
 def store_tenant_document(
@@ -116,6 +289,15 @@ def store_tenant_document(
     filename: str,
     mime_type: str = "",
     caption: str = "",
+    location_id: str | None = None,
+    promote_linked_records: bool = False,
+    idempotency_key: str = "",
+    operation_id: str = "",
+    content_hash: str = "",
+    document_family_id: str = "",
+    version_number: int = 1,
+    is_current: bool = True,
+    supersedes=None,
 ) -> TenantDocument:
     if not file_bytes:
         raise ValueError("empty_file")
@@ -129,6 +311,21 @@ def store_tenant_document(
     summary = (parse_result.get("summary") or "").strip()[:MAX_SUMMARY_CHARS]
     category = (parse_result.get("category") or "other").strip()[:64]
 
+    raw_fields = parse_result.get("fields") if isinstance(parse_result.get("fields"), dict) else {}
+    structured = normalize_structured_fields(
+        parse_result,
+        fields=raw_fields,
+        category=category,
+        title=title,
+        summary=summary,
+    )
+    parse_result = merge_structured_into_metadata(parse_result, structured)
+    if idempotency_key:
+        parse_result["idempotency_key"] = idempotency_key
+    if operation_id:
+        parse_result["operation_id"] = operation_id
+    processing_status = _processing_status_from_parse(parse_result if isinstance(parse_result, dict) else {})
+
     extracted = ""
     if not (mime_type or "").lower().startswith("image/"):
         try:
@@ -138,9 +335,37 @@ def store_tenant_document(
             extracted = (raw_text or "").strip()[:MAX_EXTRACT_CHARS]
         except Exception:
             extracted = ""
-    fields = parse_result.get("fields") if isinstance(parse_result.get("fields"), dict) else {}
-    if not extracted and fields:
-        extracted = json.dumps(fields, ensure_ascii=False)[:MAX_EXTRACT_CHARS]
+    if not extracted and structured:
+        extracted = fields_json_for_extracted(structured)[:MAX_EXTRACT_CHARS]
+    elif structured and extracted:
+        prefix = fields_json_for_extracted(structured)
+        if prefix and prefix not in extracted:
+            extracted = f"{prefix}\n{extracted}"[:MAX_EXTRACT_CHARS]
+
+    tags = list(
+        {
+            t
+            for t in [
+                category,
+                structured.get("document_type") or "",
+                "invoice" if structured.get("vendor") and structured.get("amount") else "",
+                "insurance"
+                if "insur" in (title + summary + str(structured.get("document_type") or "")).lower()
+                or "assurance" in (title + summary).lower()
+                else "",
+            ]
+            if t
+        }
+    )
+
+    family_uuid = None
+    if document_family_id:
+        try:
+            import uuid as uuid_mod
+
+            family_uuid = uuid_mod.UUID(str(document_family_id))
+        except (ValueError, TypeError):
+            family_uuid = None
 
     doc = TenantDocument(
         restaurant=restaurant,
@@ -154,15 +379,68 @@ def store_tenant_document(
         summary=summary,
         extracted_text=extracted,
         parse_metadata=parse_result if isinstance(parse_result, dict) else {},
+        tags=tags,
+        content_hash=(content_hash or "")[:64],
+        document_family_id=family_uuid,
+        version_number=max(1, int(version_number or 1)),
+        is_current=bool(is_current),
+        supersedes=supersedes,
+        processing_status=processing_status,
     )
+    lid = (location_id or "").strip() if location_id else ""
+    if not lid and uploaded_by is not None:
+        try:
+            from miya.services.ops.scoping import visible_locations_for_user
+
+            visible = visible_locations_for_user(uploaded_by, restaurant)
+            if len(visible) == 1:
+                lid = str(visible[0].id)
+        except Exception:
+            lid = ""
+    if lid:
+        doc.location_id = lid
+    _apply_structured_columns(doc, structured)
     safe_name = (filename or "upload.bin").rsplit("/", 1)[-1]
     doc.file.save(safe_name, ContentFile(file_bytes), save=True)
     try:
         doc.file_url = doc.file.url or ""
         doc.storage_path = doc.file.name or ""
-        doc.save(update_fields=["file_url", "storage_path", "updated_at"])
+        doc.save(
+            update_fields=[
+                "file_url",
+                "storage_path",
+                "structured_fields",
+                "vendor_name",
+                "amount",
+                "currency",
+                "invoice_number",
+                "expiry_date",
+                "tags",
+                "parse_metadata",
+                "content_hash",
+                "document_family_id",
+                "version_number",
+                "is_current",
+                "supersedes",
+                "processing_status",
+                "updated_at",
+            ]
+        )
     except Exception:
         pass
+
+    doc = ensure_document_family_id(doc)
+
+    if promote_linked_records:
+        _promote_linked_records(
+            doc,
+            file_bytes=file_bytes,
+            filename=filename,
+            mime_type=mime_type,
+            caption=caption,
+            parse_result=parse_result,
+            structured=structured,
+        )
     return doc
 
 
@@ -187,22 +465,37 @@ def attachment_context_block(docs: list[TenantDocument]) -> str:
             f"• {row['title']} (document_id={row['id']}, category={row['category']}): "
             f"{row['summary'] or 'No summary yet.'}"
         )
+        structured = row.get("structured") or row.get("fields") or {}
+        if structured:
+            lines.append(f"  STRUCTURED: {structured}")
         if row.get("extracted_text"):
-            lines.append(f"  Details: {row['extracted_text'][:800]}")
+            lines.append(f"  OCR excerpt: {row['extracted_text'][:500]}")
+        lines.append(
+            "  Prefer STRUCTURED fields for amounts, vendors, expiry — do not invent values."
+        )
     return "\n".join(lines) + "\n"
 
 
 def recent_documents_block(restaurant, *, limit: int = 12) -> str:
     docs = list(
-        TenantDocument.objects.filter(restaurant=restaurant).order_by("-created_at")[:limit]
+        TenantDocument.objects.filter(restaurant=restaurant, is_current=True).order_by("-created_at")[:limit]
     )
     if not docs:
         return "\n[TENANT DOCUMENTS] None uploaded yet. Managers and staff can attach files in the Miya widget or WhatsApp.\n"
-    lines = ["\n[TENANT DOCUMENTS — Miya remembers these uploads]"]
+    lines = ["\n[TENANT DOCUMENTS — Miya remembers these uploads; use STRUCTURED fields]"]
     for doc in docs:
         row = serialize_tenant_document(doc)
+        bits = [f"document_id={row['id']}", row["category"] or ""]
+        if row.get("vendor"):
+            bits.append(f"vendor={row['vendor']}")
+        if row.get("amount"):
+            bits.append(
+                f"amount={row['amount']}{(' ' + row['currency']) if row.get('currency') else ''}"
+            )
+        if row.get("expiry_date"):
+            bits.append(f"expires={row['expiry_date']}")
         lines.append(
-            f"  • {row['title']} (document_id={row['id']}, {row['category']}): "
+            f"  • {row['title']} ({', '.join(b for b in bits if b)}): "
             f"{row['summary'] or 'stored file'}"
         )
     return "\n".join(lines) + "\n"

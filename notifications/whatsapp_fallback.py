@@ -191,6 +191,11 @@ def _clock_in_success_text(params: list[str], ctx: dict[str, Any]) -> str:
 
 def _announcement_text(params: list[str], ctx: dict[str, Any]) -> str:
     body = ctx.get("message") or ctx.get("body")
+    lang = ctx.get("language")
+    if body and lang:
+        from core.i18n import format_manager_whatsapp_freeform, normalize_language
+
+        return format_manager_whatsapp_freeform(str(body), lang=normalize_language(str(lang)))
     if body:
         return str(body).strip()
     if params:

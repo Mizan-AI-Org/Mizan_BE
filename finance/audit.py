@@ -118,7 +118,7 @@ def log_invoice_event(
     if not invoice:
         return None
     try:
-        return InvoiceAuditEvent.objects.create(
+        row = InvoiceAuditEvent.objects.create(
             invoice=invoice,
             restaurant_id=getattr(invoice, "restaurant_id", None),
             event_type=event_type,
@@ -128,6 +128,28 @@ def log_invoice_event(
             summary=(summary or "")[:4000],
             metadata=dict(metadata or {}),
         )
+        try:
+            from core.operational_audit.service import (
+                map_invoice_audit_event_type,
+                record_operational_audit_event,
+            )
+
+            record_operational_audit_event(
+                restaurant=invoice.restaurant,
+                event_type=map_invoice_audit_event_type(event_type),
+                entity_type="invoice",
+                entity_id=str(invoice.id),
+                entity_label=getattr(invoice, "vendor_name", "") or "",
+                actor=actor,
+                channel=channel or "system",
+                operation_id=f"invoice:{event_type}:{invoice.id}:{row.id}",
+                idempotency_key=f"invoice:{event_type}:{invoice.id}:{row.id}",
+                summary=(summary or "")[:512],
+                metadata=dict(metadata or {}),
+            )
+        except Exception:
+            pass
+        return row
     except Exception:
         logger.exception("log_invoice_event failed invoice=%s type=%s", getattr(invoice, "id", None), event_type)
         return None

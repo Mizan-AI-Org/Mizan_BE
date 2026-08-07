@@ -173,13 +173,15 @@ def agent_cross_location_report(request):
     primary_location = next((l for l in locations if l.is_primary), locations[0])
     known_ids = {loc.id for loc in locations}
 
-    def bucket_for(loc_id):
-        # Rows with a NULL location FK still need to count somewhere —
-        # we attribute them to the tenant's primary branch (matches the
-        # existing portfolio aggregator's behaviour).
-        if loc_id in known_ids:
-            return loc_id
-        return primary_location.id
+    def bucket_for(loc_id, staff_primary_id=None):
+        from dashboard.api.location_bucketing import resolve_location_bucket
+
+        return resolve_location_bucket(
+            loc_id,
+            staff_primary_location_id=staff_primary_id,
+            known_location_ids=known_ids,
+            primary_location_id=primary_location.id,
+        )
 
     # ── Staff per location ──
     # Users belong to a Restaurant, not a BusinessLocation directly. We
@@ -208,7 +210,13 @@ def agent_cross_location_report(request):
                 timestamp__date__gte=period_start,
                 timestamp__date__lte=today,
             )
-            .values("staff_id", "event_type", "location_id", "timestamp")
+            .values(
+                "staff_id",
+                "event_type",
+                "location_id",
+                "timestamp",
+                "staff__primary_location_id",
+            )
             .order_by("staff_id", "timestamp")
         )
     except Exception:
@@ -219,15 +227,19 @@ def agent_cross_location_report(request):
     # is IN ⇒ still clocked in at that location.
     last_event_per_staff_today: dict[Any, dict] = {}
     for ev in period_clock_events:
-        loc = bucket_for(ev.get("location_id"))
-        if ev.get("event_type") == "IN":
+        staff_primary = ev.get("staff__primary_location_id")
+        loc = bucket_for(ev.get("location_id"), staff_primary)
+        evt = (ev.get("event_type") or "").lower()
+        if evt in ("in", "clock_in"):
             clock_in_count_period_by_loc[loc] += 1
         if ev["timestamp"].date() == today:
             last_event_per_staff_today[ev["staff_id"]] = ev
 
     for ev in last_event_per_staff_today.values():
-        if ev.get("event_type") == "IN":
-            clocked_in_now_by_loc[bucket_for(ev.get("location_id"))] += 1
+        evt = (ev.get("event_type") or "").lower()
+        if evt in ("in", "clock_in"):
+            staff_primary = ev.get("staff__primary_location_id")
+            clocked_in_now_by_loc[bucket_for(ev.get("location_id"), staff_primary)] += 1
 
     # ── Open staff requests by location/priority ──
     # StaffRequest doesn't currently FK to BusinessLocation, but it does

@@ -14,86 +14,167 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# Shared prefixes for Miya/Mastra/agent HTTP bridges (CSRF exempt + tenant skip).
+AGENT_API_PATH_PREFIXES = (
+    '/api/agent/',
+    '/api/dashboard/agent/',
+    '/api/scheduling/agent/',
+    '/api/reporting/agent/',
+    '/api/checklists/agent/',
+    '/api/notifications/agent/',
+    '/api/timeclock/agent/',
+    '/api/pos/agent/',
+    '/api/staff/agent/',
+    '/api/inventory/agent/',
+    '/api/accounts/agent/',
+    '/api/finance/agent/',
+    '/api/payroll/agent/',
+    '/api/automations/agent/',
+)
+
+# Paths that must never require tenant JWT context (webhooks, public auth, onboarding).
+TENANT_CONTEXT_SKIP_PREFIXES = (
+    '/admin/',
+    '/api/docs/',
+    '/api/schema/',
+    '/api/swagger-ui/',
+    # Public / pre-tenant auth
+    '/api/auth/login',
+    '/api/auth/register',
+    '/api/auth/refresh',
+    '/api/auth/pin-login',
+    '/api/accounts/auth/login',
+    '/api/accounts/auth/logout',
+    '/api/accounts/auth/pin-login',
+    '/api/accounts/auth/staff-phone-login',
+    '/api/accounts/token/',
+    '/api/accounts/register/',
+    '/api/accounts/verify-email/',
+    '/api/accounts/resend-verification-email/',
+    '/api/accounts/password-reset-request/',
+    '/api/accounts/password-reset-confirm/',
+    '/api/accounts/staff/accept-invitation/',
+    '/api/accounts/onboarding/',
+    '/api/invitations/accept',
+    # External webhooks (no JWT tenant)
+    '/api/notifications/whatsapp/webhook/',
+    '/api/accounts/webhooks/',
+    '/api/billing/webhook/',
+    '/api/pos/webhooks/',
+    # Mastra bridge (agent bearer or optional user JWT — resolves tenant in-view)
+    '/api/miya/mastra/',
+    # Agent + Miya tool bridges resolve tenant from X-Restaurant-Id / payload
+    *AGENT_API_PATH_PREFIXES,
+)
+
+
+def request_uses_agent_bearer(request) -> bool:
+    """True when Authorization uses the Mizan agent/Mastra shared secret."""
+    from core.agent_auth import is_agent_bearer
+
+    auth = (request.META.get('HTTP_AUTHORIZATION') or '').strip()
+    if not auth.lower().startswith('bearer '):
+        return False
+    return is_agent_bearer(auth[7:].strip())
+
+
+def should_skip_tenant_context(request) -> bool:
+    """
+    Safe skip for WhatsApp webhooks, agent bridges, public auth, and Mastra.
+
+    Unauthenticated dashboard API calls are NOT skipped — DRF handles 401.
+    """
+    path = request.path or ''
+    if not path.startswith('/api/'):
+        return True
+    if any(path.startswith(prefix) for prefix in TENANT_CONTEXT_SKIP_PREFIXES):
+        return True
+    if request_uses_agent_bearer(request):
+        return True
+    return False
+
+
+def inject_tenant_from_user(request, user) -> bool:
+    """
+    Attach ``request.tenant*`` from an authenticated user.
+
+    Returns True when tenant context was injected (or superuser bypass).
+    """
+    if not user or not getattr(user, 'is_authenticated', False):
+        return False
+
+    restaurant = getattr(user, 'restaurant', None)
+    if restaurant is not None:
+        request.tenant_id = str(restaurant.id)
+        request.tenant = restaurant
+        request.tenant_name = getattr(restaurant, 'name', '') or ''
+        return True
+
+    if getattr(user, 'is_superuser', False):
+        request.tenant_id = None
+        request.tenant = None
+        request.tenant_name = 'System Admin'
+        return True
+
+    return False
+
+
 class TenantContextMiddleware(MiddlewareMixin):
     """
     Middleware that validates and injects tenant context into every request.
-    
+
     Flow:
-    1. Extract JWT token from request
-    2. Validate user authentication
-    3. Extract tenant_id (restaurant) from user
-    4. Inject tenant context into request
-    5. Validate user has access to requested tenant resources
+    1. Skip webhooks, agent bridges, Mastra, and public auth paths
+    2. Skip requests authenticated with the agent bearer secret
+    3. Resolve user from ``request.user`` (session) or JWT
+    4. Inject ``request.tenant_id`` / ``request.tenant`` when resolvable
+    5. Fail closed (403) for authenticated users without a restaurant
     """
-    
+
     def process_request(self, request):
-        # Skip for public endpoints
-        public_paths = [
-            '/api/auth/login',
-            '/api/auth/register',
-            '/api/auth/refresh',
-            '/api/auth/pin-login',
-            '/api/invitations/accept',
-            '/admin/',
-            '/api/docs/',
-            '/api/schema/',
-        ]
-        
-        if any(request.path.startswith(path) for path in public_paths):
+        if should_skip_tenant_context(request):
             return None
-        
-        # Skip for non-API requests
-        if not request.path.startswith('/api/'):
+
+        user = getattr(request, 'user', None)
+        if inject_tenant_from_user(request, user):
+            logger.debug(
+                "Tenant context (session): %s (%s)",
+                getattr(request, 'tenant_name', None),
+                getattr(request, 'tenant_id', None),
+            )
             return None
-        
-        # Extract and validate JWT token
+
         jwt_auth = JWTAuthentication()
         try:
-            validated_token = jwt_auth.get_validated_token(
-                jwt_auth.get_raw_token(jwt_auth.get_header(request))
-            )
+            header = jwt_auth.get_header(request)
+            if header is None:
+                return None
+            raw_token = jwt_auth.get_raw_token(header)
+            if raw_token is None:
+                return None
+            validated_token = jwt_auth.get_validated_token(raw_token)
             user = jwt_auth.get_user(validated_token)
-            
-            # Inject tenant context
-            if hasattr(user, 'restaurant') and user.restaurant:
-                request.tenant_id = str(user.restaurant.id)
-                request.tenant = user.restaurant
-                request.tenant_name = user.restaurant.name
-            else:
-                # User has no restaurant association
-                if user.is_superuser:
-                    # Superusers can access without tenant
-                    request.tenant_id = None
-                    request.tenant = None
-                    request.tenant_name = 'System Admin'
-                else:
-                    logger.warning(f"User {user.email} has no restaurant association")
-                    return JsonResponse({
-                        'error': 'No restaurant association',
-                        'detail': 'User must be associated with a restaurant'
-                    }, status=403)
-            
-            # Log tenant context for debugging
-            logger.debug(f"Tenant context: {request.tenant_name} ({request.tenant_id})")
-            
-        except (AuthenticationFailed, AttributeError, TypeError) as e:
-            # Authentication failed or no token provided
-            logger.debug(f"Authentication failed: {str(e)}")
-            # Let the view handle authentication
-            pass
-        
-        return None
-    
-    def process_view(self, request, view_func, view_args, view_kwargs):
-        """
-        Validate tenant access for specific resources
-        """
-        # If tenant context exists, validate access
-        if hasattr(request, 'tenant_id') and request.tenant_id:
-            # Check if view is accessing tenant-specific resource
-            # This is handled by view permissions, but we can add extra validation here
-            pass
-        
+            request.user = user
+            if inject_tenant_from_user(request, user):
+                logger.debug(
+                    "Tenant context (jwt): %s (%s)",
+                    getattr(request, 'tenant_name', None),
+                    getattr(request, 'tenant_id', None),
+                )
+                return None
+
+            logger.warning("User %s has no restaurant association", getattr(user, 'email', user))
+            return JsonResponse(
+                {
+                    'error': 'No restaurant association',
+                    'detail': 'User must be associated with a restaurant',
+                },
+                status=403,
+            )
+        except (AuthenticationFailed, AttributeError, TypeError) as exc:
+            logger.debug("Tenant middleware auth passthrough: %s", exc)
+            return None
+
         return None
 
 
@@ -426,24 +507,12 @@ class AuditLoggingMiddleware(MiddlewareMixin):
 
 class AgentPathCsrfExemptMiddleware(MiddlewareMixin):
     """
-    Exempts /api/scheduling/agent/ paths from CSRF.
+    Exempts agent API paths from CSRF.
     Mastra/Miya agent calls these from server-to-server with Bearer token auth;
     no Referer header is sent, causing Django's CSRF to reject with 403.
     Must run before CsrfViewMiddleware.
     """
-    AGENT_PATHS = (
-        '/api/agent/',  # account activation, reservations, activity log, …
-        '/api/dashboard/agent/',
-        '/api/scheduling/agent/',
-        '/api/reporting/agent/',
-        '/api/checklists/agent/',
-        '/api/notifications/agent/',
-        '/api/timeclock/agent/',
-        '/api/pos/agent/',
-        '/api/staff/agent/',
-        '/api/inventory/agent/',
-        '/api/accounts/agent/',
-    )
+    AGENT_PATHS = AGENT_API_PATH_PREFIXES
 
     def process_view(self, request, view_func, view_args, view_kwargs):
         if request.path.startswith(self.AGENT_PATHS):
