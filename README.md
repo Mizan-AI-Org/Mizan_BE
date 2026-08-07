@@ -241,7 +241,7 @@ docker-compose up -d --build
 Typical flow on the server (e.g. EC2) where the app and Docker are already set up:
 
 ```bash
-git pull
+git pull origin dev
 docker-compose down
 docker-compose up -d --build
 ```
